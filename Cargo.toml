@@ -1,0 +1,17 @@
+[package]
+name = "firewall"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2"
+tokio = { version = "1", features = ["full"] }
+rtnetlink = "0.14"
+netns-rs = "0.1"
+nix = { version = "0.27", features = ["sched", "mount"] }
+futures = "0.3"
+rcgen = "0.12"
+tokio-rustls = "0.26"
+rustls = { version = "0.23", features = ["ring"] }
+
+[dev-dependencies]
