@@ -1,6 +1,7 @@
 use std::process::{Child, Command, Stdio};
 
 use nix::sched::{setns, CloneFlags};
+use rustls;
 use std::os::unix::process::CommandExt;
 
 use firewall::e2e::services::UpstreamServices;
@@ -9,6 +10,7 @@ use firewall::e2e::topology::{Topology, TopologyConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_root()?;
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     let cfg = TopologyConfig::default();
     let topology = Topology::create(&cfg)?;
@@ -20,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (cfg.up_mgmt_ip, 53).into(),
         (cfg.up_dp_ip, 80).into(),
         (cfg.up_dp_ip, 443).into(),
+        (cfg.up_dp_ip, cfg.up_udp_port).into(),
         cfg.up_dp_ip,
     )?;
 
@@ -69,6 +72,8 @@ fn spawn_firewall(topology: &Topology, cfg: &TopologyConfig) -> Result<Child, St
         .arg(&cfg.dp_tun_iface)
         .arg("--data-plane-mode")
         .arg("tun")
+        .arg("--idle-timeout-secs")
+        .arg("1")
         .arg("--dns-upstream")
         .arg(format!("{}:53", cfg.up_mgmt_ip))
         .arg("--dns-listen")

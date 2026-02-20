@@ -1,7 +1,10 @@
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
-use firewall::controlplane::Allowlist;
+use firewall::dataplane::policy::{
+    CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction,
+    RuleMatch, SourceGroup,
+};
 use firewall::dataplane::{handle_packet, Action, EngineState, FlowKey, Packet};
 
 fn build_ipv4_udp(
@@ -69,6 +72,42 @@ fn build_ipv4_tcp(
     let mut pkt = Packet::new(buf);
     pkt.recalc_checksums();
     pkt
+}
+
+fn policy_with_allowlist(
+    internal_net: Ipv4Addr,
+    internal_prefix: u8,
+    default_policy: DefaultPolicy,
+    allowlist: DynamicIpSetV4,
+) -> Arc<RwLock<PolicySnapshot>> {
+    let mut sources = IpSetV4::new();
+    sources.add_cidr(CidrV4::new(internal_net, internal_prefix));
+
+    let rule = Rule {
+        id: "allowlist".to_string(),
+        priority: 0,
+        matcher: RuleMatch {
+            dst_ips: Some(IpSetV4::with_dynamic(allowlist)),
+            proto: Proto::Any,
+            src_ports: Vec::new(),
+            dst_ports: Vec::new(),
+            tls: None,
+        },
+        action: RuleAction::Allow,
+    };
+
+    let group = SourceGroup {
+        id: "internal".to_string(),
+        priority: 0,
+        sources,
+        rules: vec![rule],
+        default_action: None,
+    };
+
+    Arc::new(RwLock::new(PolicySnapshot::new(
+        default_policy,
+        vec![group],
+    )))
 }
 
 fn checksum_sum(data: &[u8]) -> u32 {
@@ -158,13 +197,16 @@ fn test_tcp_parsing() {
 
 #[test]
 fn test_nat_rewrite_and_flow() {
-    let allowlist = Arc::new(RwLock::new(Allowlist::new()));
-    allowlist
-        .write()
-        .unwrap()
-        .add_v4(Ipv4Addr::new(93, 184, 216, 34));
-    let mut state = EngineState::new(
+    let allowlist = DynamicIpSetV4::new();
+    allowlist.insert(Ipv4Addr::new(93, 184, 216, 34));
+    let policy = policy_with_allowlist(
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        DefaultPolicy::Deny,
         allowlist,
+    );
+    let mut state = EngineState::new(
+        policy,
         Ipv4Addr::new(10, 0, 0, 0),
         24,
         Ipv4Addr::new(203, 0, 113, 1),
@@ -207,7 +249,7 @@ fn test_reverse_lookup() {
         dst_port: 53,
         proto: 17,
     };
-    let external_port = nat.get_or_create(&flow);
+    let external_port = nat.get_or_create(&flow, 0);
     let reverse = firewall::dataplane::ReverseKey {
         external_port,
         remote_ip: flow.dst_ip,
@@ -220,9 +262,15 @@ fn test_reverse_lookup() {
 
 #[test]
 fn test_drop_vs_forward() {
-    let allowlist = Arc::new(RwLock::new(Allowlist::new()));
-    let mut state = EngineState::new(
+    let allowlist = DynamicIpSetV4::new();
+    let policy = policy_with_allowlist(
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        DefaultPolicy::Deny,
         allowlist,
+    );
+    let mut state = EngineState::new(
+        policy,
         Ipv4Addr::new(10, 0, 0, 0),
         24,
         Ipv4Addr::new(203, 0, 113, 1),
@@ -238,4 +286,109 @@ fn test_drop_vs_forward() {
     );
     let action = handle_packet(&mut pkt, &mut state);
     assert_eq!(action, Action::Drop);
+}
+
+#[test]
+fn test_nat_eviction_after_idle_timeout() {
+    let allowlist = DynamicIpSetV4::new();
+    allowlist.insert(Ipv4Addr::new(93, 184, 216, 34));
+    let policy = policy_with_allowlist(
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        DefaultPolicy::Deny,
+        allowlist,
+    );
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::new(203, 0, 113, 1),
+        0,
+    );
+    let timeout = state.nat.idle_timeout_secs();
+
+    state.set_time_override(Some(100));
+    let mut pkt = build_ipv4_udp(
+        Ipv4Addr::new(10, 0, 0, 2),
+        Ipv4Addr::new(93, 184, 216, 34),
+        40000,
+        80,
+        b"ping",
+    );
+    let action = handle_packet(&mut pkt, &mut state);
+    assert_eq!(action, Action::Forward { out_port: 0 });
+
+    let flow = FlowKey {
+        src_ip: Ipv4Addr::new(10, 0, 0, 2),
+        dst_ip: Ipv4Addr::new(93, 184, 216, 34),
+        src_port: 40000,
+        dst_port: 80,
+        proto: 17,
+    };
+    assert!(state.nat.get_entry(&flow).is_some());
+    assert!(state.flows.contains(&flow));
+
+    state.set_time_override(Some(100 + timeout + 1));
+    state.evict_expired_now();
+    assert!(state.nat.get_entry(&flow).is_none());
+    assert!(!state.flows.contains(&flow));
+}
+
+#[test]
+fn test_inbound_updates_last_seen() {
+    let allowlist = DynamicIpSetV4::new();
+    allowlist.insert(Ipv4Addr::new(198, 51, 100, 10));
+    let policy = policy_with_allowlist(
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        DefaultPolicy::Deny,
+        allowlist,
+    );
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::new(203, 0, 113, 1),
+        0,
+    );
+    let timeout = state.nat.idle_timeout_secs();
+
+    state.set_time_override(Some(200));
+    let mut outbound = build_ipv4_udp(
+        Ipv4Addr::new(10, 0, 0, 42),
+        Ipv4Addr::new(198, 51, 100, 10),
+        50000,
+        8080,
+        b"hello",
+    );
+    let action = handle_packet(&mut outbound, &mut state);
+    assert_eq!(action, Action::Forward { out_port: 0 });
+    let nat_src_port = outbound.ports().unwrap().0;
+
+    state.set_time_override(Some(200 + timeout - 1));
+    let mut inbound = build_ipv4_udp(
+        Ipv4Addr::new(198, 51, 100, 10),
+        Ipv4Addr::new(203, 0, 113, 1),
+        8080,
+        nat_src_port,
+        b"world",
+    );
+    let action = handle_packet(&mut inbound, &mut state);
+    assert_eq!(action, Action::Forward { out_port: 0 });
+
+    let flow = FlowKey {
+        src_ip: Ipv4Addr::new(10, 0, 0, 42),
+        dst_ip: Ipv4Addr::new(198, 51, 100, 10),
+        src_port: 50000,
+        dst_port: 8080,
+        proto: 17,
+    };
+
+    state.set_time_override(Some(200 + timeout - 1 + timeout - 1));
+    state.evict_expired_now();
+    assert!(state.flows.contains(&flow));
+
+    state.set_time_override(Some(200 + timeout - 1 + timeout + 1));
+    state.evict_expired_now();
+    assert!(!state.flows.contains(&flow));
 }

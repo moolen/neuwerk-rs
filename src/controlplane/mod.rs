@@ -1,8 +1,9 @@
-pub mod allowlist;
 pub mod cluster;
 pub mod dns_proxy;
+pub mod policy_config;
+pub mod policy_store;
 
-pub use allowlist::Allowlist;
+pub use policy_store::PolicyStore;
 
 #[derive(Debug, Clone)]
 pub struct ControlPlaneConfig {

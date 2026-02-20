@@ -18,6 +18,7 @@ pub struct UpstreamServices {
     pub dns_addr: SocketAddr,
     pub http_addr: SocketAddr,
     pub https_addr: SocketAddr,
+    pub udp_echo_addr: SocketAddr,
     pub answer_ip: Ipv4Addr,
 }
 
@@ -27,6 +28,7 @@ impl UpstreamServices {
         dns_addr: SocketAddr,
         http_addr: SocketAddr,
         https_addr: SocketAddr,
+        udp_echo_addr: SocketAddr,
         answer_ip: Ipv4Addr,
     ) -> Result<Self, String> {
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -40,11 +42,13 @@ impl UpstreamServices {
                     let dns_task = tokio::spawn(run_dns_server(dns_addr, answer_ip));
                     let http_task = tokio::spawn(run_http_server(http_addr));
                     let https_task = tokio::spawn(run_https_server(https_addr));
+                    let udp_task = tokio::spawn(run_udp_echo_server(udp_echo_addr));
 
                     let _ = shutdown_rx.await;
                     dns_task.abort();
                     http_task.abort();
                     https_task.abort();
+                    udp_task.abort();
                     Ok::<(), String>(())
                 })
             });
@@ -56,6 +60,7 @@ impl UpstreamServices {
             dns_addr,
             http_addr,
             https_addr,
+            udp_echo_addr,
             answer_ip,
         })
     }
@@ -163,13 +168,29 @@ async fn run_http_server(bind: SocketAddr) -> Result<(), String> {
     }
 }
 
+async fn run_udp_echo_server(bind: SocketAddr) -> Result<(), String> {
+    let socket = UdpSocket::bind(bind)
+        .await
+        .map_err(|e| format!("udp echo bind failed: {e}"))?;
+    let mut buf = vec![0u8; 2048];
+    loop {
+        let (len, peer) = socket
+            .recv_from(&mut buf)
+            .await
+            .map_err(|e| format!("udp echo recv failed: {e}"))?;
+        socket
+            .send_to(&buf[..len], peer)
+            .await
+            .map_err(|e| format!("udp echo send failed: {e}"))?;
+    }
+}
+
 async fn run_https_server(bind: SocketAddr) -> Result<(), String> {
+    ensure_rustls_provider();
     let cert = generate_simple_self_signed(vec!["foo.allowed".to_string()])
         .map_err(|e| format!("cert gen failed: {e}"))?;
     let cert_der = CertificateDer::from(cert.serialize_der().map_err(|e| e.to_string())?);
-    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-        cert.serialize_private_key_der(),
-    ));
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.serialize_private_key_der()));
     let config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(vec![cert_der], key_der)
@@ -192,9 +213,39 @@ async fn run_https_server(bind: SocketAddr) -> Result<(), String> {
     }
 }
 
-async fn handle_http<S: AsyncReadExt + AsyncWriteExt + Unpin>(stream: &mut S) -> Result<(), String> {
+async fn handle_http<S: AsyncReadExt + AsyncWriteExt + Unpin>(
+    stream: &mut S,
+) -> Result<(), String> {
     let mut buf = [0u8; 1024];
-    let _ = stream.read(&mut buf).await.map_err(|e| e.to_string())?;
+    let read = stream.read(&mut buf).await.map_err(|e| e.to_string())?;
+    if read == 0 {
+        return Ok(());
+    }
+    let req = String::from_utf8_lossy(&buf[..read]);
+    let mut parts = req.split_whitespace();
+    let _method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("/");
+
+    if path == "/stream" {
+        let chunk = vec![b'x'; 256];
+        let chunks = 20usize;
+        let total_len = chunk.len() * chunks;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            total_len
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        for _ in 0..chunks {
+            stream.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
+
     let body = b"ok";
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -204,10 +255,7 @@ async fn handle_http<S: AsyncReadExt + AsyncWriteExt + Unpin>(stream: &mut S) ->
         .write_all(response.as_bytes())
         .await
         .map_err(|e| e.to_string())?;
-    stream
-        .write_all(body)
-        .await
-        .map_err(|e| e.to_string())?;
+    stream.write_all(body).await.map_err(|e| e.to_string())?;
     let _ = stream.shutdown().await;
     Ok(())
 }
@@ -292,12 +340,16 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
 }
 
 pub async fn http_get(addr: SocketAddr, host: &str) -> Result<String, String> {
-    let mut stream = TcpStream::connect(addr)
-        .await
-        .map_err(|e| format!("http connect failed: {e}"))?;
-    let req = format!(
-        "GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-    );
+    http_get_path(addr, host, "/").await
+}
+
+pub async fn http_get_path(addr: SocketAddr, host: &str, path: &str) -> Result<String, String> {
+    let mut stream =
+        tokio::time::timeout(std::time::Duration::from_secs(3), TcpStream::connect(addr))
+            .await
+            .map_err(|_| "http connect timed out".to_string())?
+            .map_err(|e| format!("http connect failed: {e}"))?;
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     stream
         .write_all(req.as_bytes())
         .await
@@ -311,14 +363,64 @@ pub async fn http_get(addr: SocketAddr, host: &str) -> Result<String, String> {
     Ok(text)
 }
 
+pub async fn http_stream(
+    addr: SocketAddr,
+    host: &str,
+    min_duration: std::time::Duration,
+    max_duration: std::time::Duration,
+) -> Result<usize, String> {
+    let mut stream = tokio::time::timeout(max_duration, TcpStream::connect(addr))
+        .await
+        .map_err(|_| "http stream connect timed out".to_string())?
+        .map_err(|e| format!("http stream connect failed: {e}"))?;
+
+    let req = format!("GET /stream HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(req.as_bytes())
+        .await
+        .map_err(|e| format!("http stream write failed: {e}"))?;
+
+    let start = std::time::Instant::now();
+    let read_result = tokio::time::timeout(max_duration, async {
+        let mut buf = [0u8; 512];
+        let mut total = 0usize;
+        loop {
+            let n = stream.read(&mut buf).await.map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            total += n;
+        }
+        Ok::<usize, String>(total)
+    })
+    .await;
+
+    let total = match read_result {
+        Ok(Ok(total)) => total,
+        Ok(Err(err)) => return Err(format!("http stream read failed: {err}")),
+        Err(_) => return Err("http stream timed out".to_string()),
+    };
+
+    if start.elapsed() < min_duration {
+        return Err(format!(
+            "http stream ended too early after {:?}",
+            start.elapsed()
+        ));
+    }
+
+    Ok(total)
+}
+
 pub async fn https_get(addr: SocketAddr, host: &str) -> Result<String, String> {
+    ensure_rustls_provider();
     let config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(NoVerifier))
         .with_no_client_auth();
     let connector = TlsConnector::from(Arc::new(config));
-    let stream = TcpStream::connect(addr)
+    let stream = tokio::time::timeout(std::time::Duration::from_secs(3), TcpStream::connect(addr))
         .await
+        .map_err(|_| "https connect timed out".to_string())?
         .map_err(|e| format!("https connect failed: {e}"))?;
     let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
         .map_err(|_| "invalid server name".to_string())?;
@@ -326,9 +428,7 @@ pub async fn https_get(addr: SocketAddr, host: &str) -> Result<String, String> {
         .connect(server_name, stream)
         .await
         .map_err(|e| format!("tls connect failed: {e}"))?;
-    let req = format!(
-        "GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-    );
+    let req = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     tls.write_all(req.as_bytes())
         .await
         .map_err(|e| format!("https write failed: {e}"))?;
@@ -337,4 +437,29 @@ pub async fn https_get(addr: SocketAddr, host: &str) -> Result<String, String> {
         .await
         .map_err(|e| format!("https read failed: {e}"))?;
     Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
+pub async fn udp_echo(
+    bind: SocketAddr,
+    server: SocketAddr,
+    payload: &[u8],
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>, String> {
+    let socket = UdpSocket::bind(bind)
+        .await
+        .map_err(|e| format!("udp client bind failed: {e}"))?;
+    socket
+        .send_to(payload, server)
+        .await
+        .map_err(|e| format!("udp client send failed: {e}"))?;
+    let mut buf = vec![0u8; payload.len().max(2048)];
+    let (len, _) = tokio::time::timeout(timeout, socket.recv_from(&mut buf))
+        .await
+        .map_err(|_| "udp client recv timed out".to_string())?
+        .map_err(|e| format!("udp client recv failed: {e}"))?;
+    Ok(buf[..len].to_vec())
+}
+
+fn ensure_rustls_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
 }

@@ -14,7 +14,9 @@ impl Packet {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        Self { buf: bytes.to_vec() }
+        Self {
+            buf: bytes.to_vec(),
+        }
     }
 
     pub fn buffer(&self) -> &[u8] {

@@ -41,6 +41,9 @@
 ## Runtime CLI
 - The binary requires `--management-interface`, `--data-plane-interface`, `--dns-upstream`, and `--dns-listen` flags to start.
 - The software dataplane uses `--data-plane-mode tun|tap` (default `tun`) and attaches to a Linux TUN/TAP device.
+- NAT/flow idle eviction is controlled by `--idle-timeout-secs` (default 300, must be >= 1).
+- Default policy is controlled by `--default-policy allow|deny` (default `deny`).
+- Policy YAML can be loaded at startup via `--policy-config <path>`.
 
 ## Integration Tests
 - `make test.integration` runs the Rust e2e harness which builds Linux netns/veth topology via netlink; it must be run as root.

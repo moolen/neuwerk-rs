@@ -5,7 +5,7 @@ use crate::dataplane::flow::FlowKey;
 
 const PORT_MIN: u16 = 40000;
 const PORT_MAX: u16 = 59999;
-const IDLE_TIMEOUT_SECS: u64 = 300;
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Debug, Clone)]
 pub struct NatEntry {
@@ -26,13 +26,19 @@ pub struct ReverseKey {
 pub struct NatTable {
     map: HashMap<FlowKey, NatEntry>,
     reverse: HashMap<ReverseKey, FlowKey>,
+    idle_timeout_secs: u64,
 }
 
 impl NatTable {
     pub fn new() -> Self {
+        Self::new_with_timeout(DEFAULT_IDLE_TIMEOUT_SECS)
+    }
+
+    pub fn new_with_timeout(idle_timeout_secs: u64) -> Self {
         Self {
             map: HashMap::new(),
             reverse: HashMap::new(),
+            idle_timeout_secs,
         }
     }
 
@@ -40,8 +46,9 @@ impl NatTable {
         self.map.get(key)
     }
 
-    pub fn get_or_create(&mut self, key: &FlowKey) -> u16 {
-        if let Some(entry) = self.map.get(key) {
+    pub fn get_or_create(&mut self, key: &FlowKey, now: u64) -> u16 {
+        if let Some(entry) = self.map.get_mut(key) {
+            entry.last_seen = now;
             return entry.external_port;
         }
 
@@ -49,7 +56,7 @@ impl NatTable {
         let entry = NatEntry {
             internal: *key,
             external_port,
-            last_seen: 0,
+            last_seen: now,
         };
         let reverse_key = ReverseKey {
             external_port,
@@ -68,8 +75,37 @@ impl NatTable {
         self.reverse.get(key).copied()
     }
 
+    pub fn touch(&mut self, key: &FlowKey, now: u64) {
+        if let Some(entry) = self.map.get_mut(key) {
+            entry.last_seen = now;
+        }
+    }
+
+    pub fn evict_expired(&mut self, now: u64) -> usize {
+        let timeout = self.idle_timeout_secs;
+        let mut expired = Vec::new();
+        for (key, entry) in self.map.iter() {
+            if now.saturating_sub(entry.last_seen) > timeout {
+                let reverse_key = ReverseKey {
+                    external_port: entry.external_port,
+                    remote_ip: key.dst_ip,
+                    remote_port: key.dst_port,
+                    proto: key.proto,
+                };
+                expired.push((*key, reverse_key));
+            }
+        }
+
+        for (key, reverse_key) in &expired {
+            self.map.remove(key);
+            self.reverse.remove(reverse_key);
+        }
+
+        expired.len()
+    }
+
     pub fn idle_timeout_secs(&self) -> u64 {
-        IDLE_TIMEOUT_SECS
+        self.idle_timeout_secs
     }
 
     fn allocate_port(&self, key: &FlowKey) -> u16 {

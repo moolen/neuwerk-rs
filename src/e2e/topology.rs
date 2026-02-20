@@ -5,9 +5,8 @@ use std::time::Duration;
 use netns_rs::NetNs;
 
 use crate::e2e::netlink::{
-    add_address, add_gateway_route_v4, add_route_v4, add_rule_iif_v4,
-    create_veth_pair, get_link_index, set_link_namespace, set_link_up,
-    wait_for_link_index, with_handle,
+    add_address, add_gateway_route_v4, add_route_v4, add_rule_iif_v4, create_veth_pair,
+    get_link_index, set_link_namespace, set_link_up, wait_for_link_index, with_handle,
 };
 
 pub struct Topology {
@@ -36,6 +35,7 @@ pub struct TopologyConfig {
     pub fw_dp_ip: Ipv4Addr,
     pub fw_up_ip: Ipv4Addr,
     pub up_dp_ip: Ipv4Addr,
+    pub up_udp_port: u16,
     pub fw_up_mgmt_ip: Ipv4Addr,
     pub up_mgmt_ip: Ipv4Addr,
     pub dp_public_ip: Ipv4Addr,
@@ -62,6 +62,7 @@ impl Default for TopologyConfig {
             fw_dp_ip: Ipv4Addr::new(10, 0, 0, 1),
             fw_up_ip: Ipv4Addr::new(198, 51, 100, 2),
             up_dp_ip: Ipv4Addr::new(198, 51, 100, 10),
+            up_udp_port: 9000,
             fw_up_mgmt_ip: Ipv4Addr::new(172, 16, 0, 1),
             up_mgmt_ip: Ipv4Addr::new(172, 16, 0, 2),
             dp_public_ip: Ipv4Addr::new(203, 0, 113, 1),
@@ -132,23 +133,11 @@ impl Topology {
                         set_link_up(&handle, lo).await?;
 
                         let mgmt = get_link_index(&handle, &cfg.client_mgmt_iface).await?;
-                        add_address(
-                            &handle,
-                            mgmt,
-                            IpAddr::V4(cfg.client_mgmt_ip),
-                            24,
-                        )
-                        .await?;
+                        add_address(&handle, mgmt, IpAddr::V4(cfg.client_mgmt_ip), 24).await?;
                         set_link_up(&handle, mgmt).await?;
 
                         let dp = get_link_index(&handle, &cfg.client_dp_iface).await?;
-                        add_address(
-                            &handle,
-                            dp,
-                            IpAddr::V4(cfg.client_dp_ip),
-                            24,
-                        )
-                        .await?;
+                        add_address(&handle, dp, IpAddr::V4(cfg.client_dp_ip), 24).await?;
                         set_link_up(&handle, dp).await?;
 
                         add_gateway_route_v4(
@@ -191,15 +180,8 @@ impl Topology {
                         add_address(&handle, up, IpAddr::V4(cfg.fw_up_ip), 24).await?;
                         set_link_up(&handle, up).await?;
 
-                        let up_mgmt =
-                            get_link_index(&handle, &cfg.fw_up_mgmt_iface).await?;
-                        add_address(
-                            &handle,
-                            up_mgmt,
-                            IpAddr::V4(cfg.fw_up_mgmt_ip),
-                            24,
-                        )
-                        .await?;
+                        let up_mgmt = get_link_index(&handle, &cfg.fw_up_mgmt_iface).await?;
+                        add_address(&handle, up_mgmt, IpAddr::V4(cfg.fw_up_mgmt_ip), 24).await?;
                         set_link_up(&handle, up_mgmt).await?;
 
                         set_sysctl("net/ipv4/ip_forward", "1")?;
@@ -249,10 +231,7 @@ impl Topology {
             .map_err(|e| format!("{e}"))?
     }
 
-    pub fn configure_fw_dataplane(
-        &self,
-        cfg: &TopologyConfig,
-    ) -> Result<(), String> {
+    pub fn configure_fw_dataplane(&self, cfg: &TopologyConfig) -> Result<(), String> {
         self.fw()
             .run(|_| {
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -261,23 +240,12 @@ impl Topology {
                     .map_err(|e| format!("tokio runtime error: {e}"))?;
                 rt.block_on(async {
                     with_handle(|handle| async move {
-                        let dp0 = wait_for_link_index(
-                            &handle,
-                            &cfg.dp_tun_iface,
-                            Duration::from_secs(3),
-                        )
-                        .await?;
-                        add_address(&handle, dp0, IpAddr::V4(cfg.dp_public_ip), 32).await?;
+                        let dp0 =
+                            wait_for_link_index(&handle, &cfg.dp_tun_iface, Duration::from_secs(3))
+                                .await?;
                         set_link_up(&handle, dp0).await?;
 
-                        add_route_v4(
-                            &handle,
-                            Ipv4Addr::new(0, 0, 0, 0),
-                            0,
-                            dp0,
-                            Some(100),
-                        )
-                        .await?;
+                        add_route_v4(&handle, Ipv4Addr::new(0, 0, 0, 0), 0, dp0, Some(100)).await?;
                         add_rule_iif_v4(&handle, &cfg.fw_dp_iface, 100, Some(100)).await?;
                         add_rule_iif_v4(&handle, &cfg.fw_up_iface, 100, Some(101)).await?;
                         Ok(())

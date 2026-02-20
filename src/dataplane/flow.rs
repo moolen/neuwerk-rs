@@ -18,17 +18,26 @@ pub struct FlowEntry {
 #[derive(Debug, Default)]
 pub struct FlowTable {
     map: HashMap<FlowKey, FlowEntry>,
+    idle_timeout_secs: u64,
 }
 
 impl FlowTable {
     pub fn new() -> Self {
+        Self::new_with_timeout(crate::dataplane::DEFAULT_IDLE_TIMEOUT_SECS)
+    }
+
+    pub fn new_with_timeout(idle_timeout_secs: u64) -> Self {
         Self {
             map: HashMap::new(),
+            idle_timeout_secs,
         }
     }
 
-    pub fn insert(&mut self, key: FlowKey) {
-        self.map.entry(key).or_insert(FlowEntry { last_seen: 0 });
+    pub fn touch(&mut self, key: FlowKey, now: u64) {
+        self.map
+            .entry(key)
+            .and_modify(|entry| entry.last_seen = now)
+            .or_insert(FlowEntry { last_seen: now });
     }
 
     pub fn contains(&self, key: &FlowKey) -> bool {
@@ -37,5 +46,17 @@ impl FlowTable {
 
     pub fn len(&self) -> usize {
         self.map.len()
+    }
+
+    pub fn evict_expired(&mut self, now: u64) -> usize {
+        let timeout = self.idle_timeout_secs;
+        let before = self.map.len();
+        self.map
+            .retain(|_, entry| now.saturating_sub(entry.last_seen) <= timeout);
+        before - self.map.len()
+    }
+
+    pub fn idle_timeout_secs(&self) -> u64 {
+        self.idle_timeout_secs
     }
 }

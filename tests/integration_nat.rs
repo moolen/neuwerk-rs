@@ -1,7 +1,10 @@
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
-use firewall::controlplane::Allowlist;
+use firewall::dataplane::policy::{
+    CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction,
+    RuleMatch, SourceGroup,
+};
 use firewall::dataplane::{handle_packet, Action, EngineState, Packet};
 
 fn build_ipv4_udp(
@@ -37,16 +40,55 @@ fn build_ipv4_udp(
     pkt
 }
 
+fn policy_with_allowlist(
+    internal_net: Ipv4Addr,
+    internal_prefix: u8,
+    default_policy: DefaultPolicy,
+    allowlist: DynamicIpSetV4,
+) -> Arc<RwLock<PolicySnapshot>> {
+    let mut sources = IpSetV4::new();
+    sources.add_cidr(CidrV4::new(internal_net, internal_prefix));
+
+    let rule = Rule {
+        id: "allowlist".to_string(),
+        priority: 0,
+        matcher: RuleMatch {
+            dst_ips: Some(IpSetV4::with_dynamic(allowlist)),
+            proto: Proto::Any,
+            src_ports: Vec::new(),
+            dst_ports: Vec::new(),
+            tls: None,
+        },
+        action: RuleAction::Allow,
+    };
+
+    let group = SourceGroup {
+        id: "internal".to_string(),
+        priority: 0,
+        sources,
+        rules: vec![rule],
+        default_action: None,
+    };
+
+    Arc::new(RwLock::new(PolicySnapshot::new(
+        default_policy,
+        vec![group],
+    )))
+}
+
 #[test]
 fn integration_nat_flow() {
-    let allowlist = Arc::new(RwLock::new(Allowlist::new()));
-    allowlist
-        .write()
-        .unwrap()
-        .add_v4(Ipv4Addr::new(198, 51, 100, 10));
+    let allowlist = DynamicIpSetV4::new();
+    allowlist.insert(Ipv4Addr::new(198, 51, 100, 10));
+    let policy = policy_with_allowlist(
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        DefaultPolicy::Deny,
+        allowlist,
+    );
 
     let mut state = EngineState::new(
-        allowlist,
+        policy,
         Ipv4Addr::new(10, 0, 0, 0),
         24,
         Ipv4Addr::new(203, 0, 113, 1),

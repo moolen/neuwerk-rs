@@ -1,15 +1,13 @@
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, RwLock};
-
 use tokio::net::UdpSocket;
 
-use crate::controlplane::allowlist::Allowlist;
+use crate::dataplane::policy::DynamicIpSetV4;
 
 pub async fn run_dns_proxy(
     bind_addr: SocketAddr,
     upstream_addr: SocketAddr,
-    allowlist: Arc<RwLock<Allowlist>>,
+    allowlist: DynamicIpSetV4,
 ) -> io::Result<()> {
     let listen = UdpSocket::bind(bind_addr).await?;
     let upstream = UdpSocket::bind("0.0.0.0:0").await?;
@@ -26,9 +24,9 @@ pub async fn run_dns_proxy(
 
         let ips = extract_ips_from_dns_response(response);
         if !ips.is_empty() {
-            if let Ok(mut lock) = allowlist.write() {
-                for ip in ips {
-                    lock.add_ip(ip);
+            for ip in ips {
+                if let IpAddr::V4(v4) = ip {
+                    allowlist.insert(v4);
                 }
             }
         }

@@ -1,9 +1,11 @@
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use firewall::controlplane::{self, Allowlist};
-use firewall::dataplane::{EngineState, SoftAdapter, SoftMode};
+use firewall::controlplane::{self, PolicyStore};
+use firewall::dataplane::policy::{DefaultPolicy, PolicySnapshot};
+use firewall::dataplane::{EngineState, SoftAdapter, SoftMode, DEFAULT_IDLE_TIMEOUT_SECS};
 
 #[derive(Debug)]
 struct CliConfig {
@@ -12,11 +14,14 @@ struct CliConfig {
     dns_listen: SocketAddr,
     dns_upstream: SocketAddr,
     data_plane_mode: SoftMode,
+    idle_timeout_secs: u64,
+    default_policy: DefaultPolicy,
+    policy_config: Option<PathBuf>,
 }
 
 fn usage(bin: &str) -> String {
     format!(
-        "Usage:\n  {bin} --management-interface <iface> --data-plane-interface <iface> --dns-upstream <ip:port> --dns-listen <ip:port> [--data-plane-mode tun|tap]\n\nFlags:\n  --management-interface <iface>\n  --data-plane-interface <iface>\n  --dns-upstream <ip:port>\n  --dns-listen <ip:port>\n  --data-plane-mode tun|tap (default: tun)\n  -h, --help\n"
+        "Usage:\n  {bin} --management-interface <iface> --data-plane-interface <iface> --dns-upstream <ip:port> --dns-listen <ip:port> [--data-plane-mode tun|tap] [--idle-timeout-secs <secs>] [--default-policy allow|deny] [--policy-config <path>]\n\nFlags:\n  --management-interface <iface>\n  --data-plane-interface <iface>\n  --dns-upstream <ip:port>\n  --dns-listen <ip:port>\n  --data-plane-mode tun|tap (default: tun)\n  --idle-timeout-secs <secs> (default: 300)\n  --default-policy allow|deny (default: deny)\n  --policy-config <path>\n  -h, --help\n"
     )
 }
 
@@ -32,15 +37,24 @@ fn take_flag_value(
         }
         return Ok(rest.to_string());
     }
-    args.next().ok_or_else(|| format!("{flag} requires a value"))
+    args.next()
+        .ok_or_else(|| format!("{flag} requires a value"))
 }
 
 fn parse_socket(flag: &str, value: &str) -> Result<SocketAddr, String> {
-    value.parse().map_err(|_| {
-        format!(
-            "{flag} must be a socket address in the form ip:port, got {value}"
-        )
-    })
+    value
+        .parse()
+        .map_err(|_| format!("{flag} must be a socket address in the form ip:port, got {value}"))
+}
+
+fn parse_default_policy(value: &str) -> Result<DefaultPolicy, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "allow" => Ok(DefaultPolicy::Allow),
+        "deny" => Ok(DefaultPolicy::Deny),
+        _ => Err(format!(
+            "--default-policy must be allow or deny, got {value}"
+        )),
+    }
 }
 
 fn parse_args(bin: &str) -> Result<CliConfig, String> {
@@ -49,6 +63,9 @@ fn parse_args(bin: &str) -> Result<CliConfig, String> {
     let mut dns_listen = None;
     let mut dns_upstream = None;
     let mut data_plane_mode = SoftMode::Tun;
+    let mut idle_timeout_secs = DEFAULT_IDLE_TIMEOUT_SECS;
+    let mut default_policy = DefaultPolicy::Deny;
+    let mut policy_config = None;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -85,6 +102,27 @@ fn parse_args(bin: &str) -> Result<CliConfig, String> {
             data_plane_mode = SoftMode::parse(&value)?;
             continue;
         }
+        if arg == "--idle-timeout-secs" || arg.starts_with("--idle-timeout-secs=") {
+            let value = take_flag_value("--idle-timeout-secs", &arg, &mut args)?;
+            let parsed = value.parse::<u64>().map_err(|_| {
+                format!("--idle-timeout-secs must be a positive integer, got {value}")
+            })?;
+            if parsed == 0 {
+                return Err("--idle-timeout-secs must be >= 1".to_string());
+            }
+            idle_timeout_secs = parsed;
+            continue;
+        }
+        if arg == "--default-policy" || arg.starts_with("--default-policy=") {
+            let value = take_flag_value("--default-policy", &arg, &mut args)?;
+            default_policy = parse_default_policy(&value)?;
+            continue;
+        }
+        if arg == "--policy-config" || arg.starts_with("--policy-config=") {
+            let value = take_flag_value("--policy-config", &arg, &mut args)?;
+            policy_config = Some(PathBuf::from(value));
+            continue;
+        }
 
         return Err(format!("unknown flag: {arg}"));
     }
@@ -113,21 +151,29 @@ fn parse_args(bin: &str) -> Result<CliConfig, String> {
         dns_listen: dns_listen.unwrap(),
         dns_upstream: dns_upstream.unwrap(),
         data_plane_mode,
+        idle_timeout_secs,
+        default_policy,
+        policy_config,
     })
 }
 
 fn run_dataplane(
     data_plane_iface: String,
     data_plane_mode: SoftMode,
-    allowlist: Arc<RwLock<Allowlist>>,
+    idle_timeout_secs: u64,
+    policy: Arc<RwLock<PolicySnapshot>>,
+    internal_net: Ipv4Addr,
+    internal_prefix: u8,
+    public_ip: Ipv4Addr,
+    data_port: u16,
 ) -> Result<(), String> {
-    // TODO: wire dataplane network parameters via CLI or config.
-    let mut state = EngineState::new(
-        allowlist,
-        Ipv4Addr::new(10, 0, 0, 0),
-        24,
-        Ipv4Addr::new(203, 0, 113, 1),
-        0,
+    let mut state = EngineState::new_with_idle_timeout(
+        policy,
+        internal_net,
+        internal_prefix,
+        public_ip,
+        data_port,
+        idle_timeout_secs,
     );
 
     let mut adapter = SoftAdapter::new(data_plane_iface, data_plane_mode)?;
@@ -153,11 +199,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("management interface: {}", cfg.management_iface);
     println!("data plane interface: {}", cfg.data_plane_iface);
     println!("data plane mode: {:?}", cfg.data_plane_mode);
+    println!("idle timeout (secs): {}", cfg.idle_timeout_secs);
+    println!("default policy: {:?}", cfg.default_policy);
     println!("dns listen: {}", cfg.dns_listen);
     println!("dns upstream: {}", cfg.dns_upstream);
 
-    let allowlist = Arc::new(RwLock::new(Allowlist::new()));
-    let dns_allowlist = allowlist.clone();
+    // TODO: wire dataplane network parameters via CLI or config.
+    let internal_net = Ipv4Addr::new(10, 0, 0, 0);
+    let internal_prefix = 24;
+    let public_ip = Ipv4Addr::new(203, 0, 113, 1);
+    let data_port = 0;
+
+    let policy_store = PolicyStore::new(cfg.default_policy, internal_net, internal_prefix);
+    if let Some(path) = &cfg.policy_config {
+        if let Err(err) = policy_store.rebuild_from_yaml_path(path) {
+            eprintln!("policy config error: {err}");
+            std::process::exit(2);
+        }
+    }
+    let dns_allowlist = policy_store.dns_allowlist();
     let dns_listen = cfg.dns_listen;
     let dns_upstream = cfg.dns_upstream;
 
@@ -167,12 +227,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|err| format!("dns proxy failed: {err}"))
     });
 
-    let dataplane_allowlist = allowlist.clone();
     let data_plane_iface = cfg.data_plane_iface;
     let data_plane_mode = cfg.data_plane_mode;
+    let idle_timeout_secs = cfg.idle_timeout_secs;
+    let policy = policy_store.snapshot();
     let dataplane_task = tokio::task::spawn_blocking(move || {
-        run_dataplane(data_plane_iface, data_plane_mode, dataplane_allowlist)
-            .map_err(|err| format!("dataplane failed: {err}"))
+        run_dataplane(
+            data_plane_iface,
+            data_plane_mode,
+            idle_timeout_secs,
+            policy,
+            internal_net,
+            internal_prefix,
+            public_ip,
+            data_port,
+        )
+        .map_err(|err| format!("dataplane failed: {err}"))
     });
 
     tokio::select! {

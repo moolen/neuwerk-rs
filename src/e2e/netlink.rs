@@ -3,6 +3,7 @@ use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 use futures::stream::TryStreamExt;
+use netlink_packet_route::rule::RuleAction;
 use rtnetlink::{new_connection, Error as NetlinkError, Handle};
 use tokio::time::sleep;
 
@@ -19,11 +20,7 @@ where
     result
 }
 
-pub async fn create_veth_pair(
-    handle: &Handle,
-    left: &str,
-    right: &str,
-) -> Result<(), String> {
+pub async fn create_veth_pair(handle: &Handle, left: &str, right: &str) -> Result<(), String> {
     handle
         .link()
         .add()
@@ -154,6 +151,7 @@ pub async fn add_rule_iif_v4(
         .add()
         .v4()
         .input_interface(ifname.to_string())
+        .action(RuleAction::ToTable)
         .table_id(table);
     if let Some(prio) = priority {
         req = req.priority(prio);

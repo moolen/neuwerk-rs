@@ -27,7 +27,9 @@ impl SoftMode {
         match value {
             "tun" | "TUN" => Ok(SoftMode::Tun),
             "tap" | "TAP" => Ok(SoftMode::Tap),
-            _ => Err(format!("unknown data-plane mode: {value} (expected tun or tap)")),
+            _ => Err(format!(
+                "unknown data-plane mode: {value} (expected tun or tap)"
+            )),
         }
     }
 }

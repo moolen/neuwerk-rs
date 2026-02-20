@@ -6,5 +6,5 @@ build:
 test:
 	cargo test
 
-test.integration:
+test.integration: build
 	cargo run --bin e2e_harness
