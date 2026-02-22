@@ -1,5 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::fd::AsRawFd;
+use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use netns_rs::NetNs;
@@ -30,15 +32,31 @@ pub struct TopologyConfig {
     pub up_mgmt_iface: String,
     pub dp_tun_iface: String,
     pub client_mgmt_ip: Ipv4Addr,
+    pub client_mgmt_ip_alt: Ipv4Addr,
     pub fw_mgmt_ip: Ipv4Addr,
+    pub fw_mgmt_ip_alt: Ipv4Addr,
     pub client_dp_ip: Ipv4Addr,
     pub fw_dp_ip: Ipv4Addr,
     pub fw_up_ip: Ipv4Addr,
     pub up_dp_ip: Ipv4Addr,
+    pub up_dp_ip_alt: Ipv4Addr,
     pub up_udp_port: u16,
     pub fw_up_mgmt_ip: Ipv4Addr,
     pub up_mgmt_ip: Ipv4Addr,
     pub dp_public_ip: Ipv4Addr,
+    pub cluster_bind_port: u16,
+    pub cluster_join_port: u16,
+    pub http_bind_port: u16,
+    pub metrics_port: u16,
+    pub http_tls_sans: Vec<String>,
+    pub idle_timeout_secs: u64,
+    pub dns_allowlist_idle_secs: u64,
+    pub dns_allowlist_gc_interval_secs: u64,
+    pub cluster_data_dir: PathBuf,
+    pub cluster_node_id_path: PathBuf,
+    pub bootstrap_token_path: PathBuf,
+    pub http_tls_dir: PathBuf,
+    pub upstream_tls_ca_path: PathBuf,
 }
 
 impl Default for TopologyConfig {
@@ -57,16 +75,43 @@ impl Default for TopologyConfig {
             up_mgmt_iface: "veth-up-mgmt".to_string(),
             dp_tun_iface: "dp0".to_string(),
             client_mgmt_ip: Ipv4Addr::new(192, 0, 2, 2),
+            client_mgmt_ip_alt: Ipv4Addr::new(192, 0, 2, 3),
             fw_mgmt_ip: Ipv4Addr::new(192, 0, 2, 1),
+            fw_mgmt_ip_alt: Ipv4Addr::new(192, 0, 2, 10),
             client_dp_ip: Ipv4Addr::new(10, 0, 0, 2),
             fw_dp_ip: Ipv4Addr::new(10, 0, 0, 1),
             fw_up_ip: Ipv4Addr::new(198, 51, 100, 2),
             up_dp_ip: Ipv4Addr::new(198, 51, 100, 10),
+            up_dp_ip_alt: Ipv4Addr::new(198, 51, 100, 20),
             up_udp_port: 9000,
             fw_up_mgmt_ip: Ipv4Addr::new(172, 16, 0, 1),
             up_mgmt_ip: Ipv4Addr::new(172, 16, 0, 2),
             dp_public_ip: Ipv4Addr::new(203, 0, 113, 1),
+            cluster_bind_port: 9600,
+            cluster_join_port: 9601,
+            http_bind_port: 8443,
+            metrics_port: 8080,
+            http_tls_sans: vec![Ipv4Addr::new(192, 0, 2, 10).to_string()],
+            idle_timeout_secs: 1,
+            dns_allowlist_idle_secs: 2,
+            dns_allowlist_gc_interval_secs: 1,
+            cluster_data_dir: PathBuf::from("/tmp/neuwerk-e2e-cluster"),
+            cluster_node_id_path: PathBuf::from("/tmp/neuwerk-e2e-cluster/node_id"),
+            bootstrap_token_path: PathBuf::from("/tmp/neuwerk-e2e-cluster/bootstrap.json"),
+            http_tls_dir: PathBuf::from("/tmp/neuwerk-e2e-cluster/http-tls"),
+            upstream_tls_ca_path: PathBuf::from("/tmp/neuwerk-e2e-cluster/upstream-ca.pem"),
         }
+    }
+}
+
+impl TopologyConfig {
+    pub fn allowlist_eviction_delay(&self) -> Duration {
+        let secs = self
+            .idle_timeout_secs
+            .saturating_add(self.dns_allowlist_idle_secs)
+            .saturating_add(self.dns_allowlist_gc_interval_secs)
+            .saturating_add(1);
+        Duration::from_secs(secs.max(1))
     }
 }
 
@@ -134,6 +179,7 @@ impl Topology {
 
                         let mgmt = get_link_index(&handle, &cfg.client_mgmt_iface).await?;
                         add_address(&handle, mgmt, IpAddr::V4(cfg.client_mgmt_ip), 24).await?;
+                        add_address(&handle, mgmt, IpAddr::V4(cfg.client_mgmt_ip_alt), 24).await?;
                         set_link_up(&handle, mgmt).await?;
 
                         let dp = get_link_index(&handle, &cfg.client_dp_iface).await?;
@@ -170,6 +216,7 @@ impl Topology {
 
                         let mgmt = get_link_index(&handle, &cfg.fw_mgmt_iface).await?;
                         add_address(&handle, mgmt, IpAddr::V4(cfg.fw_mgmt_ip), 24).await?;
+                        add_address(&handle, mgmt, IpAddr::V4(cfg.fw_mgmt_ip_alt), 24).await?;
                         set_link_up(&handle, mgmt).await?;
 
                         let dp = get_link_index(&handle, &cfg.fw_dp_iface).await?;
@@ -187,6 +234,18 @@ impl Topology {
                         set_sysctl("net/ipv4/ip_forward", "1")?;
                         set_sysctl("net/ipv4/conf/all/rp_filter", "0")?;
                         set_sysctl("net/ipv4/conf/default/rp_filter", "0")?;
+                        install_mgmt_isolation(
+                            &cfg.fw_dp_iface,
+                            cfg.fw_mgmt_ip,
+                            cfg.client_dp_ip,
+                            24,
+                        )?;
+                        install_mgmt_isolation(
+                            &cfg.fw_dp_iface,
+                            cfg.fw_mgmt_ip_alt,
+                            cfg.client_dp_ip,
+                            24,
+                        )?;
                         Ok(())
                     })
                     .await
@@ -209,6 +268,7 @@ impl Topology {
 
                         let dp = get_link_index(&handle, &cfg.up_dp_iface).await?;
                         add_address(&handle, dp, IpAddr::V4(cfg.up_dp_ip), 24).await?;
+                        add_address(&handle, dp, IpAddr::V4(cfg.up_dp_ip_alt), 24).await?;
                         set_link_up(&handle, dp).await?;
 
                         let mgmt = get_link_index(&handle, &cfg.up_mgmt_iface).await?;
@@ -272,6 +332,57 @@ impl Topology {
 fn set_sysctl(path: &str, value: &str) -> Result<(), String> {
     let full = format!("/proc/sys/{path}");
     std::fs::write(&full, value).map_err(|e| format!("sysctl {full} failed: {e}"))
+}
+
+fn install_mgmt_isolation(
+    iface: &str,
+    dst: Ipv4Addr,
+    src: Ipv4Addr,
+    src_prefix: u8,
+) -> Result<(), String> {
+    let src_cidr = format!("{}/{}", cidr_base(src, src_prefix), src_prefix.min(32));
+    let status = Command::new("iptables")
+        .args([
+            "-w",
+            "-I",
+            "INPUT",
+            "-i",
+            iface,
+            "-d",
+            &dst.to_string(),
+            "-j",
+            "DROP",
+        ])
+        .status()
+        .map_err(|e| format!("iptables invocation failed: {e}"))?;
+    if !status.success() {
+        return Err("iptables rule install failed".to_string());
+    }
+    let status = Command::new("iptables")
+        .args([
+            "-w",
+            "-I",
+            "INPUT",
+            "-s",
+            &src_cidr,
+            "-d",
+            &dst.to_string(),
+            "-j",
+            "DROP",
+        ])
+        .status()
+        .map_err(|e| format!("iptables invocation failed: {e}"))?;
+    if !status.success() {
+        return Err("iptables rule install failed".to_string());
+    }
+    Ok(())
+}
+
+fn cidr_base(ip: Ipv4Addr, prefix: u8) -> Ipv4Addr {
+    let prefix = prefix.min(32);
+    let mask = u32::MAX.checked_shl(32 - prefix as u32).unwrap_or(0);
+    let base = u32::from(ip) & mask;
+    Ipv4Addr::from(base)
 }
 
 impl Drop for Topology {

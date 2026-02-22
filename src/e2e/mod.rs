@@ -1,4 +1,6 @@
 #[cfg(target_os = "linux")]
+pub mod cluster_tests;
+#[cfg(target_os = "linux")]
 pub mod netlink;
 #[cfg(target_os = "linux")]
 pub mod services;

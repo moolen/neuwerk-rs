@@ -1,0 +1,99 @@
+cargo build
+   Compiling firewall v0.1.0 (/home/moritz/dev/neuwerk-rs/firewall)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.72s
+cargo run --bin e2e_harness
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running `target/debug/e2e_harness`
+running cluster case: cluster_mtls_enforced
+running cluster case: http_tls_ca_replication_joiner
+running cluster case: http_tls_ca_persists_restart
+running cluster case: http_api_proxy_to_leader
+running cluster case: http_api_leader_loss
+running cluster case: cluster_replication_put
+running cluster case: cluster_gc_deterministic
+running cluster case: cluster_leader_failover_can_join
+firewall starting
+management interface: veth-fw-mgmt
+data plane interface: dp0
+data plane mode: Soft(Tun)
+idle timeout (secs): 1
+dns allowlist idle (secs): 2
+dns allowlist gc interval (secs): 1
+default policy: Deny
+dns listen: 192.0.2.1:53
+dns upstream: 172.16.0.2:53
+cluster bind: 192.0.2.1:9600
+cluster join bind: 192.0.2.1:9601
+cluster advertise: 192.0.2.1:9600
+http bind: 192.0.2.1:8443
+http advertise: 192.0.2.1:8443
+metrics bind: 192.0.2.1:8080
+dataplane started (software), mode=Tun, data-plane-interface=dp0
+running case: api_bootstrap_tls_material
+running case: api_tls_san_allows_alt_ip
+running case: api_health_ok
+running case: api_auth_required
+running case: api_auth_token_login_whoami
+running case: api_auth_rejects_expired
+running case: api_auth_rotation_keeps_old_tokens
+running case: api_auth_retire_revokes_old_kid
+running case: api_service_accounts_lifecycle
+running case: dpdk_dhcp_l2_hairpin
+running case: dpdk_dhcp_retries_exhausted
+running case: dpdk_dhcp_renewal_updates_config
+running case: api_audit_policy_listed
+running case: api_audit_does_not_override
+running case: api_policy_persisted_local
+running case: api_policy_active_semantics
+running case: api_policy_get_update_delete
+running case: api_policy_list_ordering
+running case: api_dns_cache_grouped
+running case: api_stats_snapshot
+running case: api_metrics_exposed
+running case: api_metrics_unauthenticated
+running case: api_metrics_integrity
+running case: api_metrics_dns_dataplane
+running case: icmp_echo_allowed
+running case: icmp_ttl_exceeded
+running case: ipv4_fragment_drop_metrics
+running case: nat_idle_eviction_metrics
+running case: snat_override_applied
+running case: mgmt_api_unreachable_from_dataplane
+running case: cluster_policy_update_applies
+running case: cluster_policy_update_https_udp
+running case: cluster_policy_update_churn
+running case: http_denied_without_dns
+http denied as expected (no dns), after 3.002411285s: http connect timed out
+running case: udp_denied_without_dns
+udp denied as expected (no dns), after 501.040993ms: udp client recv timed out
+running case: https_denied_without_dns
+https denied as expected (no dns), after 3.002382101s: https connect timed out
+running case: tls_sni_allows_https
+running case: tls_sni_allows_https_tls13
+running case: tls_sni_denies_https
+running case: tls_cert_tls12_allows
+running case: tls_cert_tls12_denies_san_mismatch
+running case: tls_cert_tls13_denied
+running case: tls_cert_tls13_allows
+running case: tls_reassembly_client_hello
+running case: dns_allows_http
+dns response in 680.871µs: [198.51.100.10]
+http request completed in 497.639µs
+https request completed in 3.662329ms
+running case: dns_allows_udp
+running case: dns_allows_https
+running case: dns_regex_allows_example
+running case: dns_regex_blocks_nonmatch
+running case: dns_source_group_allows_secondary
+running case: dns_source_group_blocks_secondary
+running case: dns_case_insensitive_match
+running case: dns_long_name_match
+running case: dns_wildcard_allows_allowed_suffix
+running case: dns_deny_overrides_wildcard
+running case: udp_multi_flow
+running case: udp_reverse_nat_multi_flow
+running case: tcp_reverse_nat_multi_flow
+running case: https_reverse_nat_multi_flow
+running case: stream_keeps_nat_alive
+running case: dns_allowlist_gc_evicts_idle
+running case: dns_allowlist_gc_keeps_active_flow

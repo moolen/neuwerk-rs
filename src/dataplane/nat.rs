@@ -3,9 +3,14 @@ use std::net::Ipv4Addr;
 
 use crate::dataplane::flow::FlowKey;
 
-const PORT_MIN: u16 = 40000;
-const PORT_MAX: u16 = 59999;
+pub const PORT_MIN: u16 = 40000;
+pub const PORT_MAX: u16 = 59999;
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NatError {
+    PortExhausted,
+}
 
 #[derive(Debug, Clone)]
 pub struct NatEntry {
@@ -46,13 +51,13 @@ impl NatTable {
         self.map.get(key)
     }
 
-    pub fn get_or_create(&mut self, key: &FlowKey, now: u64) -> u16 {
+    pub fn get_or_create(&mut self, key: &FlowKey, now: u64) -> Result<u16, NatError> {
         if let Some(entry) = self.map.get_mut(key) {
             entry.last_seen = now;
-            return entry.external_port;
+            return Ok(entry.external_port);
         }
 
-        let external_port = self.allocate_port(key);
+        let external_port = self.allocate_port(key).ok_or(NatError::PortExhausted)?;
         let entry = NatEntry {
             internal: *key,
             external_port,
@@ -68,7 +73,7 @@ impl NatTable {
         self.map.insert(*key, entry);
         self.reverse.insert(reverse_key, *key);
 
-        external_port
+        Ok(external_port)
     }
 
     pub fn reverse_lookup(&self, key: &ReverseKey) -> Option<FlowKey> {
@@ -108,7 +113,15 @@ impl NatTable {
         self.idle_timeout_secs
     }
 
-    fn allocate_port(&self, key: &FlowKey) -> u16 {
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn port_range_len() -> u32 {
+        (PORT_MAX - PORT_MIN + 1) as u32
+    }
+
+    fn allocate_port(&self, key: &FlowKey) -> Option<u16> {
         let range = (PORT_MAX - PORT_MIN + 1) as u32;
         let start = flow_hash(key) % range;
         for i in 0..range {
@@ -121,10 +134,10 @@ impl NatTable {
                 proto: key.proto,
             };
             if !self.reverse.contains_key(&reverse_key) {
-                return port;
+                return Some(port);
             }
         }
-        PORT_MIN
+        None
     }
 }
 

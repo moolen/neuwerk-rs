@@ -10,11 +10,55 @@ rtnetlink = "0.14"
 netns-rs = "0.1"
 nix = { version = "0.27", features = ["sched", "mount"] }
 futures = "0.3"
-rcgen = "0.12"
+rcgen = { version = "0.12", features = ["pem", "x509-parser"] }
 tokio-rustls = "0.26"
 rustls = { version = "0.23", features = ["ring"] }
 netlink-packet-route = "0.19"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+regex = "1"
+serde_json = "1"
+serde_urlencoded = "0.7"
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["parsing", "formatting"] }
+base64 = "0.22"
+hex = "0.4"
+hmac = "0.12"
+sha2 = "0.10"
+zeroize = "1"
+ring = "0.17"
+bincode = "1"
+rand = "0.8"
+openraft = { version = "0.9.21", features = ["serde", "storage-v2"] }
+rocksdb = { version = "0.24", default-features = false, features = ["lz4"] }
+tonic = { version = "0.12", features = ["tls"] }
+prost = "0.13"
+async-trait = "0.1"
+thiserror = "1"
+axum = "0.7"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+prometheus = "0.13"
+x509-parser = { version = "0.15", features = ["verify"] }
+rustls-native-certs = "0.7"
+tokio-stream = { version = "0.1", features = ["sync"] }
+dpdk-sys = { version = "0.1.5", optional = true }
+include_dir = "0.7"
+mime_guess = "2"
 
 [dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+criterion = "0.5"
+tower = "0.4"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[features]
+default = []
+dpdk = ["dpdk-sys"]
+
+[[bench]]
+name = "tls"
+harness = false

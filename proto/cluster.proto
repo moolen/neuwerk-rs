@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package firewall.cluster;
+
+message RaftRequest {
+  bytes payload = 1;
+}
+
+message RaftResponse {
+  bytes payload = 1;
+}
+
+service RaftService {
+  rpc AppendEntries(RaftRequest) returns (RaftResponse);
+  rpc Vote(RaftRequest) returns (RaftResponse);
+  rpc InstallSnapshot(RaftRequest) returns (RaftResponse);
+}
+
+message JoinRequest {
+  string node_id = 1;
+  string endpoint = 2;
+  bytes csr = 3;
+  string kid = 4;
+  bytes nonce = 5;
+  bytes psk_hmac = 6;
+}
+
+message JoinResponse {
+  bytes signed_cert = 1;
+  bytes ca_cert = 2;
+}
+
+service ClusterManagement {
+  rpc Join(JoinRequest) returns (JoinResponse);
+}
+
+message PolicyUpdateRequest {
+  bytes policy_yaml = 1;
+}
+
+message PolicyUpdateResponse {
+  bool ok = 1;
+}
+
+service PolicyManagement {
+  rpc SetActivePolicy(PolicyUpdateRequest) returns (PolicyUpdateResponse);
+}
+
+message AuthKeyEntry {
+  string kid = 1;
+  string status = 2;
+  string created_at = 3;
+  bool signing = 4;
+}
+
+message AuthKeyListRequest {}
+
+message AuthKeyListResponse {
+  string active_kid = 1;
+  repeated AuthKeyEntry keys = 2;
+}
+
+message AuthKeyRotateRequest {}
+
+message AuthKeyRotateResponse {
+  AuthKeyEntry key = 1;
+}
+
+message AuthKeyRetireRequest {
+  string kid = 1;
+}
+
+message AuthKeyRetireResponse {
+  bool ok = 1;
+}
+
+message AuthTokenMintRequest {
+  string sub = 1;
+  int64 ttl_secs = 2;
+  string kid = 3;
+}
+
+message AuthTokenMintResponse {
+  string token = 1;
+  string kid = 2;
+  int64 exp = 3;
+}
+
+service AuthManagement {
+  rpc ListKeys(AuthKeyListRequest) returns (AuthKeyListResponse);
+  rpc RotateKey(AuthKeyRotateRequest) returns (AuthKeyRotateResponse);
+  rpc RetireKey(AuthKeyRetireRequest) returns (AuthKeyRetireResponse);
+  rpc MintToken(AuthTokenMintRequest) returns (AuthTokenMintResponse);
+}
+
+message WiretapSubscribeRequest {
+  repeated string src_cidr = 1;
+  repeated string dst_cidr = 2;
+  repeated string hostname = 3;
+  repeated string proto = 4;
+  repeated string src_port = 5;
+  repeated string dst_port = 6;
+}
+
+message WiretapEvent {
+  string event_type = 1;
+  string flow_id = 2;
+  string src_ip = 3;
+  string dst_ip = 4;
+  uint32 src_port = 5;
+  uint32 dst_port = 6;
+  uint32 proto = 7;
+  uint64 packets_in = 8;
+  uint64 packets_out = 9;
+  uint64 last_seen = 10;
+  string hostname = 11;
+  string node_id = 12;
+}
+
+service Wiretap {
+  rpc Subscribe(WiretapSubscribeRequest) returns (stream WiretapEvent);
+}

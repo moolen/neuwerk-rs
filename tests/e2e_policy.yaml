@@ -1,0 +1,41 @@
+default_policy: deny
+source_groups:
+  - id: "client-primary"
+    priority: 0
+    sources:
+      ips: ["192.0.2.2"]
+    rules:
+      - id: "deny-bar"
+        priority: 0
+        action: deny
+        match:
+          dns_hostname: '^bar\.allowed$'
+      - id: "allow-foo"
+        priority: 1
+        action: allow
+        match:
+          dns_hostname: '^foo\.allowed$'
+      - id: "allow-example"
+        priority: 2
+        action: allow
+        match:
+          dns_hostname: '.*\.example\.com$'
+      - id: "allow-long"
+        priority: 3
+        action: allow
+        match:
+          dns_hostname: '^very\.long\.subdomain\.name\.example\.com$'
+      - id: "allow-wildcard"
+        priority: 4
+        action: allow
+        match:
+          dns_hostname: '.*\.allowed$'
+  - id: "client-secondary"
+    priority: 1
+    sources:
+      ips: ["192.0.2.3"]
+    rules:
+      - id: "allow-bar"
+        action: allow
+        match:
+          dns_hostname: '^bar\.allowed$'

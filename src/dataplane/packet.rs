@@ -78,6 +78,203 @@ impl Packet {
         Some(self.buf[ip_off + 9])
     }
 
+    pub fn icmp_type_code(&self) -> Option<(u8, u8)> {
+        let ip_off = self.ipv4_offset()?;
+        let ihl = self.ipv4_header_len(ip_off)?;
+        if self.buf[ip_off + 9] != 1 {
+            return None;
+        }
+        let icmp_off = ip_off + ihl;
+        if icmp_off + 2 > self.buf.len() {
+            return None;
+        }
+        Some((self.buf[icmp_off], self.buf[icmp_off + 1]))
+    }
+
+    pub fn icmp_identifier(&self) -> Option<u16> {
+        let ip_off = self.ipv4_offset()?;
+        let ihl = self.ipv4_header_len(ip_off)?;
+        if self.buf[ip_off + 9] != 1 {
+            return None;
+        }
+        let icmp_off = ip_off + ihl;
+        if icmp_off + 6 > self.buf.len() {
+            return None;
+        }
+        Some(u16::from_be_bytes([
+            self.buf[icmp_off + 4],
+            self.buf[icmp_off + 5],
+        ]))
+    }
+
+    pub fn set_icmp_identifier(&mut self, id: u16) -> bool {
+        let ip_off = match self.ipv4_offset() {
+            Some(off) => off,
+            None => return false,
+        };
+        let ihl = match self.ipv4_header_len(ip_off) {
+            Some(len) => len,
+            None => return false,
+        };
+        if self.buf[ip_off + 9] != 1 {
+            return false;
+        }
+        let icmp_off = ip_off + ihl;
+        if icmp_off + 6 > self.buf.len() {
+            return false;
+        }
+        self.buf[icmp_off + 4..icmp_off + 6].copy_from_slice(&id.to_be_bytes());
+        true
+    }
+
+    pub fn ipv4_ttl(&self) -> Option<u8> {
+        let ip_off = self.ipv4_offset()?;
+        if ip_off + 9 > self.buf.len() {
+            return None;
+        }
+        Some(self.buf[ip_off + 8])
+    }
+
+    pub fn set_ipv4_ttl(&mut self, ttl: u8) -> bool {
+        let ip_off = match self.ipv4_offset() {
+            Some(off) => off,
+            None => return false,
+        };
+        if ip_off + 9 > self.buf.len() {
+            return false;
+        }
+        self.buf[ip_off + 8] = ttl;
+        true
+    }
+
+    pub fn is_ipv4_fragment(&self) -> Option<bool> {
+        let ip_off = self.ipv4_offset()?;
+        if ip_off + 8 > self.buf.len() {
+            return None;
+        }
+        let flags = u16::from_be_bytes([self.buf[ip_off + 6], self.buf[ip_off + 7]]);
+        let more_fragments = (flags & 0x2000) != 0;
+        let offset = flags & 0x1fff;
+        Some(more_fragments || offset != 0)
+    }
+
+    pub fn icmp_inner_tuple(&self) -> Option<IcmpInnerTuple> {
+        let ip_off = self.ipv4_offset()?;
+        let ihl = self.ipv4_header_len(ip_off)?;
+        if self.buf[ip_off + 9] != 1 {
+            return None;
+        }
+        let icmp_off = ip_off + ihl;
+        let inner_ip_off = icmp_off + 8;
+        if self.buf.len() < inner_ip_off + 20 {
+            return None;
+        }
+        let ver = self.buf[inner_ip_off] >> 4;
+        if ver != 4 {
+            return None;
+        }
+        let inner_ihl = (self.buf[inner_ip_off] & 0x0f) as usize * 4;
+        if inner_ihl < 20 || self.buf.len() < inner_ip_off + inner_ihl {
+            return None;
+        }
+        let proto = self.buf[inner_ip_off + 9];
+        let src_ip = Ipv4Addr::new(
+            self.buf[inner_ip_off + 12],
+            self.buf[inner_ip_off + 13],
+            self.buf[inner_ip_off + 14],
+            self.buf[inner_ip_off + 15],
+        );
+        let dst_ip = Ipv4Addr::new(
+            self.buf[inner_ip_off + 16],
+            self.buf[inner_ip_off + 17],
+            self.buf[inner_ip_off + 18],
+            self.buf[inner_ip_off + 19],
+        );
+        let l4_off = inner_ip_off + inner_ihl;
+        if self.buf.len() < l4_off + 8 {
+            return None;
+        }
+        let (src_port, dst_port, icmp_identifier) = match proto {
+            6 | 17 => {
+                if self.buf.len() < l4_off + 4 {
+                    return None;
+                }
+                let src_port = u16::from_be_bytes([self.buf[l4_off], self.buf[l4_off + 1]]);
+                let dst_port = u16::from_be_bytes([self.buf[l4_off + 2], self.buf[l4_off + 3]]);
+                (src_port, dst_port, None)
+            }
+            1 => {
+                if self.buf.len() < l4_off + 6 {
+                    return None;
+                }
+                let identifier =
+                    u16::from_be_bytes([self.buf[l4_off + 4], self.buf[l4_off + 5]]);
+                (identifier, 0, Some(identifier))
+            }
+            _ => return None,
+        };
+        Some(IcmpInnerTuple {
+            ip_offset: inner_ip_off,
+            ihl: inner_ihl,
+            l4_offset: l4_off,
+            proto,
+            src_ip,
+            dst_ip,
+            src_port,
+            dst_port,
+            icmp_identifier,
+        })
+    }
+
+    pub fn set_icmp_inner_src_ip(&mut self, inner: &IcmpInnerTuple, ip: Ipv4Addr) -> bool {
+        if self.buf.len() < inner.ip_offset + 20 {
+            return false;
+        }
+        self.buf[inner.ip_offset + 12..inner.ip_offset + 16].copy_from_slice(&ip.octets());
+        recalc_ipv4_header_checksum(&mut self.buf, inner.ip_offset, inner.ihl)
+    }
+
+    pub fn set_icmp_inner_src_port(&mut self, inner: &IcmpInnerTuple, port: u16) -> bool {
+        if self.buf.len() < inner.l4_offset + 6 {
+            return false;
+        }
+        match inner.proto {
+            6 | 17 => {
+                self.buf[inner.l4_offset..inner.l4_offset + 2]
+                    .copy_from_slice(&port.to_be_bytes());
+                true
+            }
+            1 => {
+                self.buf[inner.l4_offset + 4..inner.l4_offset + 6]
+                    .copy_from_slice(&port.to_be_bytes());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn set_icmp_inner_dst_ip(&mut self, inner: &IcmpInnerTuple, ip: Ipv4Addr) -> bool {
+        if self.buf.len() < inner.ip_offset + 20 {
+            return false;
+        }
+        self.buf[inner.ip_offset + 16..inner.ip_offset + 20].copy_from_slice(&ip.octets());
+        recalc_ipv4_header_checksum(&mut self.buf, inner.ip_offset, inner.ihl)
+    }
+
+    pub fn set_icmp_inner_dst_port(&mut self, inner: &IcmpInnerTuple, port: u16) -> bool {
+        if self.buf.len() < inner.l4_offset + 4 {
+            return false;
+        }
+        match inner.proto {
+            6 | 17 => {
+                self.buf[inner.l4_offset + 2..inner.l4_offset + 4]
+                    .copy_from_slice(&port.to_be_bytes());
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn src_ip(&self) -> Option<Ipv4Addr> {
         let ip_off = self.ipv4_offset()?;
         if ip_off + 16 > self.buf.len() {
@@ -142,6 +339,57 @@ impl Packet {
         let src = u16::from_be_bytes([self.buf[l4_off], self.buf[l4_off + 1]]);
         let dst = u16::from_be_bytes([self.buf[l4_off + 2], self.buf[l4_off + 3]]);
         Some((src, dst))
+    }
+
+    pub fn tcp_seq(&self) -> Option<u32> {
+        let (l4_off, _) = self.tcp_offsets()?;
+        if l4_off + 8 > self.buf.len() {
+            return None;
+        }
+        Some(u32::from_be_bytes([
+            self.buf[l4_off + 4],
+            self.buf[l4_off + 5],
+            self.buf[l4_off + 6],
+            self.buf[l4_off + 7],
+        ]))
+    }
+
+    pub fn tcp_flags(&self) -> Option<u8> {
+        let (l4_off, _) = self.tcp_offsets()?;
+        if l4_off + 14 > self.buf.len() {
+            return None;
+        }
+        Some(self.buf[l4_off + 13])
+    }
+
+    pub fn tcp_payload(&self) -> Option<&[u8]> {
+        let (l4_off, data_off) = self.tcp_offsets()?;
+        let ip_off = self.ipv4_offset()?;
+        let total_len = self.ipv4_total_len(ip_off)?;
+        let start = l4_off + data_off;
+        let end = ip_off + total_len;
+        if start > end || end > self.buf.len() {
+            return None;
+        }
+        Some(&self.buf[start..end])
+    }
+
+    fn tcp_offsets(&self) -> Option<(usize, usize)> {
+        let ip_off = self.ipv4_offset()?;
+        let ihl = self.ipv4_header_len(ip_off)?;
+        let proto = self.protocol()?;
+        if proto != 6 {
+            return None;
+        }
+        let l4_off = ip_off + ihl;
+        if l4_off + 13 > self.buf.len() {
+            return None;
+        }
+        let data_off = ((self.buf[l4_off + 12] >> 4) as usize) * 4;
+        if data_off < 20 || l4_off + data_off > self.buf.len() {
+            return None;
+        }
+        Some((l4_off, data_off))
     }
 
     pub fn set_src_port(&mut self, port: u16) -> bool {
@@ -216,6 +464,18 @@ impl Packet {
         self.buf[ip_off + 10..ip_off + 12].copy_from_slice(&checksum.to_be_bytes());
 
         let proto = self.buf[ip_off + 9];
+        if proto == 1 {
+            let l4_off = ip_off + ihl;
+            let l4_len = total_len - ihl;
+            if l4_off + l4_len > self.buf.len() || l4_len < 8 {
+                return false;
+            }
+            self.buf[l4_off + 2] = 0;
+            self.buf[l4_off + 3] = 0;
+            let checksum = checksum_finalize(checksum_sum(&self.buf[l4_off..l4_off + l4_len]));
+            self.buf[l4_off + 2..l4_off + 4].copy_from_slice(&checksum.to_be_bytes());
+            return true;
+        }
         if proto != 6 && proto != 17 {
             return true;
         }
@@ -258,6 +518,99 @@ impl Packet {
 
         true
     }
+
+    pub fn rewrite_as_icmp_time_exceeded(&mut self, src_ip: Ipv4Addr) -> bool {
+        let ip_off = match self.ipv4_offset() {
+            Some(off) => off,
+            None => return false,
+        };
+        let ihl = match self.ipv4_header_len(ip_off) {
+            Some(len) => len,
+            None => return false,
+        };
+        if ip_off + ihl + 8 > self.buf.len() {
+            return false;
+        }
+        let dst_ip = match self.src_ip() {
+            Some(ip) => ip,
+            None => return false,
+        };
+
+        let has_eth = ip_off == ETH_HDR_LEN;
+        let mut eth_dst = [0u8; 6];
+        let mut eth_src = [0u8; 6];
+        if has_eth {
+            if self.buf.len() < ETH_HDR_LEN {
+                return false;
+            }
+            eth_dst.copy_from_slice(&self.buf[0..6]);
+            eth_src.copy_from_slice(&self.buf[6..12]);
+        }
+
+        let icmp_payload_len = ihl + 8;
+        let icmp_len = 8 + icmp_payload_len;
+        let total_len = 20 + icmp_len;
+        let eth_len = if has_eth { ETH_HDR_LEN } else { 0 };
+        let mut buf = vec![0u8; eth_len + total_len];
+
+        if has_eth {
+            buf[0..6].copy_from_slice(&eth_src);
+            buf[6..12].copy_from_slice(&eth_dst);
+            buf[12..14].copy_from_slice(&ETH_TYPE_IPV4.to_be_bytes());
+        }
+
+        let ip_out = eth_len;
+        buf[ip_out] = 0x45;
+        buf[ip_out + 1] = 0;
+        buf[ip_out + 2..ip_out + 4].copy_from_slice(&(total_len as u16).to_be_bytes());
+        buf[ip_out + 4..ip_out + 6].copy_from_slice(&0u16.to_be_bytes());
+        buf[ip_out + 6..ip_out + 8].copy_from_slice(&0u16.to_be_bytes());
+        buf[ip_out + 8] = 64;
+        buf[ip_out + 9] = 1;
+        buf[ip_out + 10..ip_out + 12].copy_from_slice(&0u16.to_be_bytes());
+        buf[ip_out + 12..ip_out + 16].copy_from_slice(&src_ip.octets());
+        buf[ip_out + 16..ip_out + 20].copy_from_slice(&dst_ip.octets());
+
+        let icmp_off = ip_out + 20;
+        buf[icmp_off] = 11;
+        buf[icmp_off + 1] = 0;
+        buf[icmp_off + 2..icmp_off + 4].copy_from_slice(&0u16.to_be_bytes());
+        buf[icmp_off + 4..icmp_off + 8].copy_from_slice(&0u32.to_be_bytes());
+        buf[icmp_off + 8..icmp_off + 8 + ihl]
+            .copy_from_slice(&self.buf[ip_off..ip_off + ihl]);
+        buf[icmp_off + 8 + ihl..icmp_off + 8 + ihl + 8]
+            .copy_from_slice(&self.buf[ip_off + ihl..ip_off + ihl + 8]);
+
+        let checksum = checksum_finalize(checksum_sum(&buf[icmp_off..icmp_off + icmp_len]));
+        buf[icmp_off + 2..icmp_off + 4].copy_from_slice(&checksum.to_be_bytes());
+
+        self.buf = buf;
+        self.recalc_checksums()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IcmpInnerTuple {
+    pub ip_offset: usize,
+    pub ihl: usize,
+    pub l4_offset: usize,
+    pub proto: u8,
+    pub src_ip: Ipv4Addr,
+    pub dst_ip: Ipv4Addr,
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub icmp_identifier: Option<u16>,
+}
+
+fn recalc_ipv4_header_checksum(buf: &mut [u8], ip_off: usize, ihl: usize) -> bool {
+    if ip_off + ihl > buf.len() || ihl < 20 {
+        return false;
+    }
+    buf[ip_off + 10] = 0;
+    buf[ip_off + 11] = 0;
+    let checksum = checksum_finalize(checksum_sum(&buf[ip_off..ip_off + ihl]));
+    buf[ip_off + 10..ip_off + 12].copy_from_slice(&checksum.to_be_bytes());
+    true
 }
 
 fn checksum_sum(data: &[u8]) -> u32 {

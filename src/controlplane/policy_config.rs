@@ -1,19 +1,97 @@
 use std::net::Ipv4Addr;
 
-use serde::Deserialize;
+use regex::{Regex, RegexBuilder};
+use serde::{Deserialize, Serialize};
 
 use crate::dataplane::policy::{
     CidrV4, DefaultPolicy, IpSetV4, PortRange, Proto, Rule, RuleAction, RuleMatch, SourceGroup,
-    TlsMatch,
+    Tls13Uninspectable, TlsMatch, TlsNameMatch,
 };
+use x509_parser::pem::parse_x509_pem;
 
 #[derive(Debug)]
 pub struct CompiledPolicy {
     pub default_policy: Option<DefaultPolicy>,
     pub groups: Vec<SourceGroup>,
+    pub dns_policy: DnsPolicy,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PolicyMode {
+    Audit,
+    Enforce,
+}
+
+impl Default for PolicyMode {
+    fn default() -> Self {
+        PolicyMode::Enforce
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DnsPolicy {
+    pub groups: Vec<DnsSourceGroup>,
+}
+
+impl DnsPolicy {
+    pub fn new(mut groups: Vec<DnsSourceGroup>) -> Self {
+        groups.sort_by_key(|group| group.priority);
+        for group in &mut groups {
+            group.rules.sort_by_key(|rule| rule.priority);
+        }
+        Self { groups }
+    }
+
+    pub fn allows(&self, src_ip: Ipv4Addr, hostname: &str) -> bool {
+        self.evaluate_with_source_group(src_ip, hostname).0
+    }
+
+    pub fn evaluate_with_source_group(
+        &self,
+        src_ip: Ipv4Addr,
+        hostname: &str,
+    ) -> (bool, Option<String>) {
+        let hostname = normalize_hostname(hostname);
+        for group in &self.groups {
+            if !group.sources.contains(src_ip) {
+                continue;
+            }
+            for rule in &group.rules {
+                if rule.hostname.is_match(&hostname) {
+                    return (rule.action == RuleAction::Allow, Some(group.id.clone()));
+                }
+            }
+            return (false, Some(group.id.clone()));
+        }
+        (false, None)
+    }
+
+    pub fn source_group_for_ip(&self, src_ip: Ipv4Addr) -> Option<String> {
+        self.groups
+            .iter()
+            .find(|group| group.sources.contains(src_ip))
+            .map(|group| group.id.clone())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DnsSourceGroup {
+    pub id: String,
+    pub priority: u32,
+    pub sources: IpSetV4,
+    pub rules: Vec<DnsRule>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DnsRule {
+    pub id: String,
+    pub priority: u32,
+    pub action: RuleAction,
+    pub hostname: Regex,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyConfig {
     pub default_policy: Option<PolicyValue>,
     #[serde(default)]
@@ -28,18 +106,22 @@ impl PolicyConfig {
         };
 
         let mut groups = Vec::with_capacity(self.source_groups.len());
+        let mut dns_groups = Vec::with_capacity(self.source_groups.len());
         for (idx, group) in self.source_groups.into_iter().enumerate() {
-            groups.push(group.compile(idx as u32)?);
+            let (group, dns_group) = group.compile(idx as u32)?;
+            groups.push(group);
+            dns_groups.push(dns_group);
         }
 
         Ok(CompiledPolicy {
             default_policy,
             groups,
+            dns_policy: DnsPolicy::new(dns_groups),
         })
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceGroupConfig {
     pub id: String,
     pub priority: Option<u32>,
@@ -50,7 +132,7 @@ pub struct SourceGroupConfig {
 }
 
 impl SourceGroupConfig {
-    fn compile(self, fallback_priority: u32) -> Result<SourceGroup, String> {
+    fn compile(self, fallback_priority: u32) -> Result<(SourceGroup, DnsSourceGroup), String> {
         let priority = self.priority.unwrap_or(fallback_priority);
         let sources = self.sources.compile(&self.id)?;
         let default_action = match self.default_action {
@@ -59,21 +141,37 @@ impl SourceGroupConfig {
         };
 
         let mut rules = Vec::with_capacity(self.rules.len());
+        let mut dns_rules = Vec::with_capacity(self.rules.len());
         for (idx, rule) in self.rules.into_iter().enumerate() {
-            rules.push(rule.compile(idx as u32)?);
+            let (rule, dns_rule) = rule.compile(idx as u32)?;
+            if let Some(rule) = rule {
+                rules.push(rule);
+            }
+            if let Some(dns_rule) = dns_rule {
+                dns_rules.push(dns_rule);
+            }
         }
 
-        Ok(SourceGroup {
+        let group = SourceGroup {
+            id: self.id.clone(),
+            priority,
+            sources: sources.clone(),
+            rules,
+            default_action,
+        };
+
+        let dns_group = DnsSourceGroup {
             id: self.id,
             priority,
             sources,
-            rules,
-            default_action,
-        })
+            rules: dns_rules,
+        };
+
+        Ok((group, dns_group))
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourcesConfig {
     #[serde(default)]
     pub cidrs: Vec<String>,
@@ -103,41 +201,61 @@ impl SourcesConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConfig {
     pub id: String,
     pub priority: Option<u32>,
     pub action: PolicyValue,
+    #[serde(default)]
+    pub mode: PolicyMode,
     #[serde(rename = "match")]
     pub matcher: RuleMatchConfig,
 }
 
 impl RuleConfig {
-    fn compile(self, fallback_priority: u32) -> Result<Rule, String> {
+    fn compile(self, fallback_priority: u32) -> Result<(Option<Rule>, Option<DnsRule>), String> {
         let priority = self.priority.unwrap_or(fallback_priority);
         let action = parse_rule_action(self.action)?;
+        let dns_rule = compile_dns_rule(
+            &self.id,
+            priority,
+            action,
+            self.matcher.dns_hostname.as_deref(),
+        )?;
         let matcher = self.matcher.compile(&self.id)?;
 
-        Ok(Rule {
+        if self.mode == PolicyMode::Audit {
+            return Ok((None, None));
+        }
+
+        let rule = Rule {
             id: self.id,
             priority,
             matcher,
             action,
-        })
+        };
+
+        Ok((Some(rule), dns_rule))
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleMatchConfig {
     #[serde(default)]
     pub dst_cidrs: Vec<String>,
     #[serde(default)]
     pub dst_ips: Vec<String>,
+    #[serde(default)]
+    pub dns_hostname: Option<String>,
     pub proto: Option<ProtoValue>,
     #[serde(default)]
     pub src_ports: Vec<PortSpec>,
     #[serde(default)]
     pub dst_ports: Vec<PortSpec>,
+    #[serde(default)]
+    pub icmp_types: Vec<u8>,
+    #[serde(default)]
+    pub icmp_codes: Vec<u8>,
     pub tls: Option<TlsMatchConfig>,
 }
 
@@ -173,44 +291,197 @@ impl RuleMatchConfig {
             dst_ports.push(parse_port_range(spec).map_err(|err| format!("rule {rule_id}: {err}"))?);
         }
 
-        let tls = self.tls.map(|tls| TlsMatch {
-            sni: tls.sni,
-            server_dn: tls.server_dn,
-            server_san: tls.server_san,
-        });
+        let tls = match self.tls {
+            Some(tls) => Some(tls.compile(rule_id)?),
+            None => None,
+        };
+
+        if tls.is_some() && !matches!(proto, Proto::Tcp | Proto::Any) {
+            return Err(format!(
+                "rule {rule_id}: tls matches require proto tcp or any"
+            ));
+        }
+
+        if (!self.icmp_types.is_empty() || !self.icmp_codes.is_empty())
+            && !matches!(proto, Proto::Icmp | Proto::Any)
+        {
+            return Err(format!(
+                "rule {rule_id}: icmp type/code matches require proto icmp or any"
+            ));
+        }
+
+        if matches!(proto, Proto::Icmp) && (!src_ports.is_empty() || !dst_ports.is_empty()) {
+            return Err(format!(
+                "rule {rule_id}: port matches are not valid for icmp rules"
+            ));
+        }
+
+        let mut icmp_types = self.icmp_types;
+        let mut icmp_codes = self.icmp_codes;
+        if matches!(proto, Proto::Icmp) && icmp_types.is_empty() && icmp_codes.is_empty() {
+            icmp_types = vec![0, 3, 11];
+            icmp_codes = vec![0, 4];
+        }
 
         Ok(RuleMatch {
             dst_ips,
             proto,
             src_ports,
             dst_ports,
+            icmp_types,
+            icmp_codes,
             tls,
         })
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsMatchConfig {
-    pub sni: Option<String>,
+    pub sni: Option<TlsNameMatchConfig>,
     pub server_dn: Option<String>,
+    pub server_san: Option<TlsNameMatchConfig>,
+    pub server_cn: Option<TlsNameMatchConfig>,
     #[serde(default)]
-    pub server_san: Vec<String>,
+    pub fingerprint_sha256: Vec<String>,
+    #[serde(default)]
+    pub trust_anchors_pem: Vec<String>,
+    #[serde(default)]
+    pub tls13_uninspectable: Option<Tls13UninspectableValue>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tls13UninspectableValue {
+    Allow,
+    Deny,
+}
+
+impl From<Tls13UninspectableValue> for Tls13Uninspectable {
+    fn from(value: Tls13UninspectableValue) -> Self {
+        match value {
+            Tls13UninspectableValue::Allow => Tls13Uninspectable::Allow,
+            Tls13UninspectableValue::Deny => Tls13Uninspectable::Deny,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TlsNameMatchConfig {
+    String(String),
+    List(Vec<String>),
+    Object {
+        #[serde(default)]
+        exact: Vec<String>,
+        regex: Option<String>,
+    },
+}
+
+impl TlsNameMatchConfig {
+    fn compile(self, rule_id: &str, field: &str) -> Result<TlsNameMatch, String> {
+        let (mut exact, regex) = match self {
+            TlsNameMatchConfig::String(value) => (Vec::new(), Some(value)),
+            TlsNameMatchConfig::List(values) => (values, None),
+            TlsNameMatchConfig::Object { exact, regex } => (exact, regex),
+        };
+
+        for value in &mut exact {
+            *value = normalize_hostname(value);
+        }
+        exact.retain(|value| !value.is_empty());
+
+        let regex = match regex {
+            Some(pattern) => {
+                let pattern = pattern.trim();
+                if pattern.is_empty() {
+                    return Err(format!("rule {rule_id}: {field} regex cannot be empty"));
+                }
+                Some(
+                    RegexBuilder::new(pattern)
+                        .case_insensitive(true)
+                        .build()
+                        .map_err(|err| {
+                            format!("rule {rule_id}: invalid {field} regex: {err}")
+                        })?,
+                )
+            }
+            None => None,
+        };
+
+        let matcher = TlsNameMatch { exact, regex };
+        if matcher.is_empty() {
+            return Err(format!("rule {rule_id}: {field} matcher cannot be empty"));
+        }
+        Ok(matcher)
+    }
+}
+
+impl TlsMatchConfig {
+    fn compile(self, rule_id: &str) -> Result<TlsMatch, String> {
+        let sni = match self.sni {
+            Some(config) => Some(config.compile(rule_id, "tls.sni")?),
+            None => None,
+        };
+
+        let server_cn = match (self.server_cn, self.server_dn) {
+            (Some(config), _) => Some(config.compile(rule_id, "tls.server_cn")?),
+            (None, Some(legacy)) => Some(
+                TlsNameMatchConfig::String(legacy).compile(rule_id, "tls.server_dn")?,
+            ),
+            _ => None,
+        };
+
+        let server_san = match self.server_san {
+            Some(config) => Some(config.compile(rule_id, "tls.server_san")?),
+            None => None,
+        };
+
+        let mut fingerprints_sha256 = Vec::with_capacity(self.fingerprint_sha256.len());
+        for fp in self.fingerprint_sha256 {
+            fingerprints_sha256.push(
+                parse_sha256_fingerprint(&fp)
+                    .map_err(|err| format!("rule {rule_id}: {err}"))?,
+            );
+        }
+
+        let mut trust_anchors = Vec::new();
+        for pem in self.trust_anchors_pem {
+            trust_anchors.extend(
+                parse_pem_cert_chain(&pem)
+                    .map_err(|err| format!("rule {rule_id}: {err}"))?,
+            );
+        }
+
+        let tls13_uninspectable = self
+            .tls13_uninspectable
+            .unwrap_or(Tls13UninspectableValue::Deny)
+            .into();
+
+        Ok(TlsMatch {
+            sni,
+            server_san,
+            server_cn,
+            fingerprints_sha256,
+            trust_anchors,
+            tls13_uninspectable,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PolicyValue {
     String(String),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ProtoValue {
     String(String),
     Number(u8),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PortSpec {
     Number(u16),
@@ -320,6 +591,77 @@ fn parse_ipv4(value: &str) -> Result<Ipv4Addr, String> {
         .map_err(|_| format!("invalid IPv4 address: {value}"))
 }
 
+fn parse_sha256_fingerprint(value: &str) -> Result<[u8; 32], String> {
+    let cleaned: String = value
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace() && *c != ':')
+        .collect();
+    if cleaned.len() != 64 {
+        return Err(format!("invalid sha256 fingerprint length: {value}"));
+    }
+    let bytes = hex::decode(cleaned).map_err(|_| format!("invalid sha256 fingerprint: {value}"))?;
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn parse_pem_cert_chain(value: &str) -> Result<Vec<Vec<u8>>, String> {
+    let mut input = value.as_bytes();
+    let mut certs = Vec::new();
+    loop {
+        while let Some(b) = input.first() {
+            if b.is_ascii_whitespace() {
+                input = &input[1..];
+            } else {
+                break;
+            }
+        }
+        if input.is_empty() {
+            break;
+        }
+        let (rest, pem) =
+            parse_x509_pem(input).map_err(|_| "invalid PEM certificate".to_string())?;
+        if pem.label != "CERTIFICATE" {
+            return Err("unsupported PEM label for trust anchor".to_string());
+        }
+        certs.push(pem.contents.to_vec());
+        input = rest;
+    }
+    if certs.is_empty() {
+        return Err("trust_anchors_pem cannot be empty".to_string());
+    }
+    Ok(certs)
+}
+
+fn compile_dns_rule(
+    rule_id: &str,
+    priority: u32,
+    action: RuleAction,
+    hostname: Option<&str>,
+) -> Result<Option<DnsRule>, String> {
+    let Some(hostname) = hostname else {
+        return Ok(None);
+    };
+    let hostname = hostname.trim();
+    if hostname.is_empty() {
+        return Err(format!("rule {rule_id}: dns_hostname cannot be empty"));
+    }
+    let regex = RegexBuilder::new(hostname)
+        .case_insensitive(true)
+        .build()
+        .map_err(|err| format!("rule {rule_id}: invalid dns_hostname regex: {err}"))?;
+    Ok(Some(DnsRule {
+        id: rule_id.to_string(),
+        priority,
+        action,
+        hostname: regex,
+    }))
+}
+
+fn normalize_hostname(name: &str) -> String {
+    name.trim_end_matches('.').to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,5 +719,193 @@ source_groups:
         let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
         let err = cfg.compile().unwrap_err();
         assert!(err.contains("sources cannot be empty"));
+    }
+
+    #[test]
+    fn dns_hostname_regex_allows_case_insensitive() {
+        let yaml = r#"
+source_groups:
+  - id: "dns"
+    sources:
+      ips: ["192.0.2.2"]
+    rules:
+      - id: "allow"
+        action: allow
+        match:
+          dns_hostname: '^foo\.allowed$'
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let compiled = cfg.compile().unwrap();
+        let policy = compiled.dns_policy;
+        assert!(policy.allows("192.0.2.2".parse().unwrap(), "FoO.AlLoWeD."));
+        assert!(!policy.allows("192.0.2.2".parse().unwrap(), "bar.allowed"));
+    }
+
+    #[test]
+    fn dns_hostname_invalid_regex_rejected() {
+        let yaml = r#"
+source_groups:
+  - id: "dns"
+    sources:
+      ips: ["192.0.2.2"]
+    rules:
+      - id: "bad"
+        action: allow
+        match:
+          dns_hostname: "["
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = cfg.compile().unwrap_err();
+        assert!(err.contains("invalid dns_hostname regex"));
+    }
+
+    #[test]
+    fn dns_hostname_empty_rejected() {
+        let yaml = r#"
+source_groups:
+  - id: "dns"
+    sources:
+      ips: ["192.0.2.2"]
+    rules:
+      - id: "empty"
+        action: allow
+        match:
+          dns_hostname: "   "
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = cfg.compile().unwrap_err();
+        assert!(err.contains("dns_hostname cannot be empty"));
+    }
+
+    #[test]
+    fn dns_hostname_long_name_match() {
+        let yaml = r#"
+source_groups:
+  - id: "dns"
+    sources:
+      ips: ["192.0.2.2"]
+    rules:
+      - id: "allow-long"
+        action: allow
+        match:
+          dns_hostname: '^very\.long\.subdomain\.name\.example\.com$'
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let compiled = cfg.compile().unwrap();
+        let policy = compiled.dns_policy;
+        assert!(policy.allows(
+            "192.0.2.2".parse().unwrap(),
+            "very.long.subdomain.name.example.com"
+        ));
+    }
+
+    #[test]
+    fn dns_hostname_priority_first_match_wins() {
+        let yaml = r#"
+source_groups:
+  - id: "dns"
+    sources:
+      ips: ["192.0.2.2"]
+    rules:
+      - id: "deny-specific"
+        priority: 0
+        action: deny
+        match:
+          dns_hostname: '^bar\.allowed$'
+      - id: "allow-wildcard"
+        priority: 1
+        action: allow
+        match:
+          dns_hostname: '.*\.allowed$'
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let compiled = cfg.compile().unwrap();
+        let policy = compiled.dns_policy;
+        assert!(!policy.allows("192.0.2.2".parse().unwrap(), "bar.allowed"));
+        assert!(policy.allows("192.0.2.2".parse().unwrap(), "baz.allowed"));
+    }
+
+    #[test]
+    fn audit_rules_are_ignored() {
+        let yaml = r#"
+source_groups:
+  - id: "mixed"
+    sources:
+      ips: ["192.0.2.9"]
+    rules:
+      - id: "audit-rule"
+        mode: audit
+        action: allow
+        match:
+          dst_ips: ["203.0.113.10"]
+      - id: "enforce-rule"
+        mode: enforce
+        action: deny
+        match:
+          dst_ips: ["203.0.113.11"]
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let compiled = cfg.compile().unwrap();
+        let group = &compiled.groups[0];
+        assert_eq!(group.rules.len(), 1);
+        assert_eq!(group.rules[0].id, "enforce-rule");
+    }
+
+    #[test]
+    fn icmp_match_requires_icmp_proto() {
+        let yaml = r#"
+source_groups:
+  - id: "icmp"
+    sources:
+      ips: ["192.0.2.9"]
+    rules:
+      - id: "bad"
+        action: allow
+        match:
+          proto: tcp
+          icmp_types: [8]
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = cfg.compile().unwrap_err();
+        assert!(err.contains("icmp type/code matches require proto icmp or any"));
+    }
+
+    #[test]
+    fn icmp_ports_rejected() {
+        let yaml = r#"
+source_groups:
+  - id: "icmp"
+    sources:
+      ips: ["192.0.2.9"]
+    rules:
+      - id: "bad"
+        action: allow
+        match:
+          proto: icmp
+          dst_ports: [80]
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = cfg.compile().unwrap_err();
+        assert!(err.contains("port matches are not valid for icmp rules"));
+    }
+
+    #[test]
+    fn icmp_defaults_apply_when_empty() {
+        let yaml = r#"
+source_groups:
+  - id: "icmp"
+    sources:
+      ips: ["192.0.2.9"]
+    rules:
+      - id: "icmp-default"
+        action: allow
+        match:
+          proto: icmp
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let compiled = cfg.compile().unwrap();
+        let matcher = &compiled.groups[0].rules[0].matcher;
+        assert_eq!(matcher.icmp_types, vec![0, 3, 11]);
+        assert_eq!(matcher.icmp_codes, vec![0, 4]);
     }
 }
