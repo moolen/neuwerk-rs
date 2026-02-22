@@ -22,6 +22,7 @@ pub struct FlowEntry {
     pub last_reported: u64,
     pub tls: Option<TlsFlowState>,
     pub source_group: String,
+    pub policy_generation: u64,
 }
 
 impl FlowEntry {
@@ -34,6 +35,7 @@ impl FlowEntry {
             last_reported: 0,
             tls: None,
             source_group: "default".to_string(),
+            policy_generation: 0,
         }
     }
 
@@ -94,6 +96,10 @@ impl FlowTable {
 
     pub fn get_entry_mut(&mut self, key: &FlowKey) -> Option<&mut FlowEntry> {
         self.map.get_mut(key)
+    }
+
+    pub fn remove(&mut self, key: &FlowKey) -> Option<FlowEntry> {
+        self.map.remove(key)
     }
 
     pub fn contains(&self, key: &FlowKey) -> bool {

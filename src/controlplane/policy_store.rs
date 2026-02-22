@@ -8,6 +8,7 @@ use crate::dataplane::policy::{
     CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction,
     RuleMatch, SourceGroup,
 };
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 struct PolicyStoreState {
@@ -15,6 +16,8 @@ struct PolicyStoreState {
     internal_prefix: u8,
     default_policy: DefaultPolicy,
     extra_groups: Vec<SourceGroup>,
+    generation: u64,
+    active_policy_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +50,7 @@ impl PolicyStore {
             default_policy,
             internal_net,
             internal_prefix,
+            0,
             dns_allowlist.clone(),
             Vec::new(),
         )));
@@ -56,6 +60,8 @@ impl PolicyStore {
             internal_prefix,
             default_policy,
             extra_groups: Vec::new(),
+            generation: 0,
+            active_policy_id: None,
         }));
 
         Self {
@@ -98,16 +104,21 @@ impl PolicyStore {
         dns_policy: DnsPolicy,
         default_policy: Option<DefaultPolicy>,
     ) {
-        let (internal_net, internal_prefix, effective_default) = match self.state.write() {
+        // Clear DNS allowlist entries so policy changes immediately revoke prior DNS grants.
+        self.dns_allowlist.clear();
+        let (internal_net, internal_prefix, effective_default, generation) = match self.state.write()
+        {
             Ok(mut state) => {
                 if let Some(policy) = default_policy {
                     state.default_policy = policy;
                 }
                 state.extra_groups = extra_groups.clone();
+                state.generation = state.generation.wrapping_add(1);
                 (
                     state.internal_net,
                     state.internal_prefix,
                     state.default_policy,
+                    state.generation,
                 )
             }
             Err(_) => return,
@@ -125,6 +136,7 @@ impl PolicyStore {
             effective_default,
             internal_net,
             internal_prefix,
+            generation,
             self.dns_allowlist.clone(),
             groups,
         );
@@ -145,6 +157,9 @@ impl PolicyStore {
     ) -> Result<(), String> {
         let (extra_groups, default_policy) = match self.state.write() {
             Ok(mut state) => {
+                if state.internal_net == internal_net && state.internal_prefix == internal_prefix {
+                    return Ok(());
+                }
                 state.internal_net = internal_net;
                 state.internal_prefix = internal_prefix;
                 (state.extra_groups.clone(), state.default_policy)
@@ -190,10 +205,24 @@ impl PolicyStore {
         Ok(())
     }
 
+    pub fn set_active_policy_id(&self, id: Option<Uuid>) {
+        if let Ok(mut state) = self.state.write() {
+            state.active_policy_id = id;
+        }
+    }
+
+    pub fn active_policy_id(&self) -> Option<Uuid> {
+        match self.state.read() {
+            Ok(state) => state.active_policy_id,
+            Err(_) => None,
+        }
+    }
+
     fn build_snapshot(
         default_policy: DefaultPolicy,
         internal_net: Ipv4Addr,
         internal_prefix: u8,
+        generation: u64,
         dns_allowlist: DynamicIpSetV4,
         mut groups: Vec<SourceGroup>,
     ) -> PolicySnapshot {
@@ -204,7 +233,7 @@ impl PolicyStore {
                 dns_allowlist,
             ));
         }
-        PolicySnapshot::new(default_policy, groups)
+        PolicySnapshot::new_with_generation(default_policy, groups, generation)
     }
 
     fn internal_cidr(&self) -> (Ipv4Addr, u8) {

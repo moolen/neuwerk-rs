@@ -271,18 +271,26 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
 
         let mut is_new = false;
         let mut source_group = "default".to_string();
+        let mut current_generation = match state.policy.read() {
+            Ok(lock) => lock.generation(),
+            Err(_) => 0,
+        };
         if state.flows.get_entry(&flow).is_none() {
-            let (decision, group) = match state.policy.read() {
-                Ok(lock) => lock.evaluate_with_source_group(&meta, None, Some(&state.tls_verifier)),
-                Err(_) => (PolicyDecision::Deny, None),
+            let ((decision, group), generation) = match state.policy.read() {
+                Ok(lock) => (
+                    lock.evaluate_with_source_group(&meta, None, Some(&state.tls_verifier)),
+                    lock.generation(),
+                ),
+                Err(_) => ((PolicyDecision::Deny, None), 0),
             };
+            current_generation = generation;
             source_group = group.unwrap_or_else(|| "default".to_string());
             match decision {
                 PolicyDecision::Allow => {
                     is_new = true;
-                    state
-                        .flows
-                        .insert(flow, FlowEntry::with_source_group(now, source_group.clone()));
+                    let mut entry = FlowEntry::with_source_group(now, source_group.clone());
+                    entry.policy_generation = current_generation;
+                    state.flows.insert(flow, entry);
                 }
                 PolicyDecision::Deny => {
                     if let Some(metrics) = &state.metrics {
@@ -299,6 +307,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                 PolicyDecision::PendingTls => {
                     is_new = true;
                     let mut entry = FlowEntry::with_source_group(now, source_group.clone());
+                    entry.policy_generation = current_generation;
                     entry.tls = Some(TlsFlowState::new());
                     state.flows.insert(flow, entry);
                     if let Some(metrics) = &state.metrics {
@@ -320,38 +329,86 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
         let verifier = &state.tls_verifier;
         let wiretap = state.wiretap.clone();
         let metrics = state.metrics.clone();
+        let mut policy_drop_group: Option<String> = None;
         let (decision_label, entry_source_group) = {
             let entry = match state.flows.get_entry_mut(&flow) {
                 Some(entry) => entry,
                 None => return Action::Drop,
             };
-            entry.last_seen = now;
-            entry.packets_out = entry.packets_out.saturating_add(1);
-            maybe_emit_wiretap(&wiretap, &flow, entry, now);
-            if let Some(tls_state) = &mut entry.tls {
-                if !process_tls_packet(
-                    pkt,
-                    TlsDirection::ClientToServer,
-                    tls_state,
-                    &meta,
-                    policy,
-                    verifier,
-                    metrics.as_ref(),
-                ) {
-                    if let Some(metrics) = &metrics {
-                        metrics.observe_dp_packet(
-                            "outbound",
-                            proto_label(proto),
-                            "deny",
-                            entry.source_group.as_str(),
-                            pkt.len(),
-                        );
+            if entry.policy_generation != current_generation {
+                let (decision, group) = match state.policy.read() {
+                    Ok(lock) => lock.evaluate_with_source_group(
+                        &meta,
+                        entry.tls.as_ref().map(|tls| &tls.observation),
+                        Some(&state.tls_verifier),
+                    ),
+                    Err(_) => (PolicyDecision::Deny, None),
+                };
+                let next_group = group.unwrap_or_else(|| "default".to_string());
+                match decision {
+                    PolicyDecision::Allow => {
+                        entry.policy_generation = current_generation;
+                        entry.source_group = next_group;
                     }
-                    return Action::Drop;
+                    PolicyDecision::PendingTls => {
+                        entry.policy_generation = current_generation;
+                        entry.source_group = next_group;
+                        if let Some(tls_state) = &mut entry.tls {
+                            tls_state.decision = TlsFlowDecision::Pending;
+                        } else {
+                            entry.tls = Some(TlsFlowState::new());
+                        }
+                    }
+                    PolicyDecision::Deny => {
+                        policy_drop_group = Some(next_group);
+                    }
                 }
             }
-            (flow_decision_label(entry), entry.source_group.clone())
+            if policy_drop_group.is_none() {
+                entry.last_seen = now;
+                entry.packets_out = entry.packets_out.saturating_add(1);
+                maybe_emit_wiretap(&wiretap, &flow, entry, now);
+                if let Some(tls_state) = &mut entry.tls {
+                    if !process_tls_packet(
+                        pkt,
+                        TlsDirection::ClientToServer,
+                        tls_state,
+                        &meta,
+                        policy,
+                        verifier,
+                        metrics.as_ref(),
+                    ) {
+                        if let Some(metrics) = &metrics {
+                            metrics.observe_dp_packet(
+                                "outbound",
+                                proto_label(proto),
+                                "deny",
+                                entry.source_group.as_str(),
+                                pkt.len(),
+                            );
+                        }
+                        return Action::Drop;
+                    }
+                }
+                (flow_decision_label(entry), entry.source_group.clone())
+            } else {
+                ("deny", entry.source_group.clone())
+            }
         };
+
+        if let Some(drop_group) = policy_drop_group {
+            remove_flow_state(state, &flow, now);
+            if let Some(metrics) = &metrics {
+                metrics.observe_dp_packet(
+                    "outbound",
+                    proto_label(proto),
+                    "deny",
+                    &drop_group,
+                    pkt.len(),
+                );
+            }
+            return Action::Drop;
+        }
 
         if let Some(action) = handle_ttl(pkt, state) {
             return action;
@@ -404,6 +461,10 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             let verifier = &state.tls_verifier;
             let wiretap = state.wiretap.clone();
             let metrics = state.metrics.clone();
+            let current_generation = match state.policy.read() {
+                Ok(lock) => lock.generation(),
+                Err(_) => 0,
+            };
             let meta = PacketMeta {
                 src_ip: flow.src_ip,
                 dst_ip: flow.dst_ip,
@@ -413,11 +474,42 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                 icmp_type: None,
                 icmp_code: None,
             };
+            let mut policy_drop_group: Option<String> = None;
             let (decision_label, entry_source_group) = {
                 let entry = match state.flows.get_entry_mut(&flow) {
                     Some(entry) => entry,
                     None => return Action::Drop,
                 };
+                if entry.policy_generation != current_generation {
+                    let (decision, group) = match state.policy.read() {
+                        Ok(lock) => lock.evaluate_with_source_group(
+                            &meta,
+                            entry.tls.as_ref().map(|tls| &tls.observation),
+                            Some(&state.tls_verifier),
+                        ),
+                        Err(_) => (PolicyDecision::Deny, None),
+                    };
+                    let next_group = group.unwrap_or_else(|| "default".to_string());
+                    match decision {
+                        PolicyDecision::Allow => {
+                            entry.policy_generation = current_generation;
+                            entry.source_group = next_group;
+                        }
+                        PolicyDecision::PendingTls => {
+                            entry.policy_generation = current_generation;
+                            entry.source_group = next_group;
+                            if let Some(tls_state) = &mut entry.tls {
+                                tls_state.decision = TlsFlowDecision::Pending;
+                            } else {
+                                entry.tls = Some(TlsFlowState::new());
+                            }
+                        }
+                        PolicyDecision::Deny => {
+                            policy_drop_group = Some(next_group);
+                        }
+                    }
+                }
+                if policy_drop_group.is_none() {
                 entry.last_seen = now;
                 entry.packets_in = entry.packets_in.saturating_add(1);
                 maybe_emit_wiretap(&wiretap, &flow, entry, now);
@@ -444,7 +536,24 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                     }
                 }
                 (flow_decision_label(entry), entry.source_group.clone())
+                } else {
+                    ("deny", entry.source_group.clone())
+                }
             };
+
+            if let Some(drop_group) = policy_drop_group {
+                remove_flow_state(state, &flow, now);
+                if let Some(metrics) = &metrics {
+                    metrics.observe_dp_packet(
+                        "inbound",
+                        proto_label(proto),
+                        "deny",
+                        &drop_group,
+                        pkt.len(),
+                    );
+                }
+                return Action::Drop;
+            }
 
             if let Some(action) = handle_ttl(pkt, state) {
                 return action;
@@ -629,18 +738,26 @@ fn handle_outbound_icmp(
 
     let mut is_new = false;
     let mut source_group = "default".to_string();
+    let mut current_generation = match state.policy.read() {
+        Ok(lock) => lock.generation(),
+        Err(_) => 0,
+    };
     if state.flows.get_entry(&flow).is_none() {
-        let (decision, group) = match state.policy.read() {
-            Ok(lock) => lock.evaluate_with_source_group(&meta, None, Some(&state.tls_verifier)),
-            Err(_) => (PolicyDecision::Deny, None),
+        let ((decision, group), generation) = match state.policy.read() {
+            Ok(lock) => (
+                lock.evaluate_with_source_group(&meta, None, Some(&state.tls_verifier)),
+                lock.generation(),
+            ),
+            Err(_) => ((PolicyDecision::Deny, None), 0),
         };
+        current_generation = generation;
         source_group = group.unwrap_or_else(|| "default".to_string());
         match decision {
             PolicyDecision::Allow => {
                 is_new = true;
-                state
-                    .flows
-                    .insert(flow, FlowEntry::with_source_group(now, source_group.clone()));
+                let mut entry = FlowEntry::with_source_group(now, source_group.clone());
+                entry.policy_generation = current_generation;
+                state.flows.insert(flow, entry);
             }
             PolicyDecision::Deny | PolicyDecision::PendingTls => {
                 if let Some(metrics) = &state.metrics {
@@ -674,16 +791,62 @@ fn handle_outbound_icmp(
 
     let wiretap = state.wiretap.clone();
     let metrics = state.metrics.clone();
+    let mut policy_drop_group: Option<String> = None;
     let (decision_label, entry_source_group) = {
         let entry = match state.flows.get_entry_mut(&flow) {
             Some(entry) => entry,
             None => return Action::Drop,
         };
-        entry.last_seen = now;
-        entry.packets_out = entry.packets_out.saturating_add(1);
-        maybe_emit_wiretap(&wiretap, &flow, entry, now);
-        (flow_decision_label(entry), entry.source_group.clone())
+        if entry.policy_generation != current_generation {
+            let (decision, group) = match state.policy.read() {
+                Ok(lock) => lock.evaluate_with_source_group(
+                    &meta,
+                    entry.tls.as_ref().map(|tls| &tls.observation),
+                    Some(&state.tls_verifier),
+                ),
+                Err(_) => (PolicyDecision::Deny, None),
+            };
+            let next_group = group.unwrap_or_else(|| "default".to_string());
+            match decision {
+                PolicyDecision::Allow => {
+                    entry.policy_generation = current_generation;
+                    entry.source_group = next_group;
+                }
+                PolicyDecision::Deny | PolicyDecision::PendingTls => {
+                    policy_drop_group = Some(next_group);
+                }
+            }
+        }
+        if policy_drop_group.is_none() {
+            entry.last_seen = now;
+            entry.packets_out = entry.packets_out.saturating_add(1);
+            maybe_emit_wiretap(&wiretap, &flow, entry, now);
+            (flow_decision_label(entry), entry.source_group.clone())
+        } else {
+            ("deny", entry.source_group.clone())
+        }
     };
+
+    if let Some(drop_group) = policy_drop_group {
+        remove_flow_state(state, &flow, now);
+        if let Some(metrics) = &metrics {
+            metrics.observe_dp_packet(
+                "outbound",
+                proto_label(1),
+                "deny",
+                &drop_group,
+                pkt.len(),
+            );
+            metrics.observe_dp_icmp_decision(
+                "outbound",
+                icmp_type,
+                icmp_code,
+                "deny",
+                &drop_group,
+            );
+        }
+        return Action::Drop;
+    }
 
     if let Some(action) = handle_ttl(pkt, state) {
         return action;
@@ -740,6 +903,10 @@ fn handle_inbound_icmp(
         None => return Action::Drop,
     };
     let metrics = state.metrics.clone();
+    let current_generation = match state.policy.read() {
+        Ok(lock) => lock.generation(),
+        Err(_) => 0,
+    };
 
     if icmp_is_error_type(icmp_type) {
         let inner = match pkt.icmp_inner_tuple() {
@@ -774,16 +941,70 @@ fn handle_inbound_icmp(
 
         state.nat.touch(&flow, now);
         let wiretap = state.wiretap.clone();
+        let mut policy_drop_group: Option<String> = None;
         let (decision_label, entry_source_group) = {
             let entry = match state.flows.get_entry_mut(&flow) {
                 Some(entry) => entry,
                 None => return Action::Drop,
             };
-            entry.last_seen = now;
-            entry.packets_in = entry.packets_in.saturating_add(1);
-            maybe_emit_wiretap(&wiretap, &flow, entry, now);
-            (flow_decision_label(entry), entry.source_group.clone())
+            if entry.policy_generation != current_generation {
+                let (decision, group) = match state.policy.read() {
+                    Ok(lock) => lock.evaluate_with_source_group(
+                        &PacketMeta {
+                            src_ip: flow.src_ip,
+                            dst_ip: flow.dst_ip,
+                            proto: flow.proto,
+                            src_port: flow.src_port,
+                            dst_port: flow.dst_port,
+                            icmp_type: Some(icmp_type),
+                            icmp_code: Some(icmp_code),
+                        },
+                        None,
+                        Some(&state.tls_verifier),
+                    ),
+                    Err(_) => (PolicyDecision::Deny, None),
+                };
+                let next_group = group.unwrap_or_else(|| "default".to_string());
+                match decision {
+                    PolicyDecision::Allow => {
+                        entry.policy_generation = current_generation;
+                        entry.source_group = next_group;
+                    }
+                    PolicyDecision::Deny | PolicyDecision::PendingTls => {
+                        policy_drop_group = Some(next_group);
+                    }
+                }
+            }
+            if policy_drop_group.is_none() {
+                entry.last_seen = now;
+                entry.packets_in = entry.packets_in.saturating_add(1);
+                maybe_emit_wiretap(&wiretap, &flow, entry, now);
+                (flow_decision_label(entry), entry.source_group.clone())
+            } else {
+                ("deny", entry.source_group.clone())
+            }
         };
+
+        if let Some(drop_group) = policy_drop_group {
+            remove_flow_state(state, &flow, now);
+            if let Some(metrics) = &metrics {
+                metrics.observe_dp_packet(
+                    "inbound",
+                    proto_label(1),
+                    "deny",
+                    &drop_group,
+                    pkt.len(),
+                );
+                metrics.observe_dp_icmp_decision(
+                    "inbound",
+                    icmp_type,
+                    icmp_code,
+                    "deny",
+                    &drop_group,
+                );
+            }
+            return Action::Drop;
+        }
 
         if let Some(action) = handle_ttl(pkt, state) {
             return action;
@@ -855,16 +1076,70 @@ fn handle_inbound_icmp(
 
     state.nat.touch(&flow, now);
     let wiretap = state.wiretap.clone();
+    let mut policy_drop_group: Option<String> = None;
     let (decision_label, entry_source_group) = {
         let entry = match state.flows.get_entry_mut(&flow) {
             Some(entry) => entry,
             None => return Action::Drop,
         };
-        entry.last_seen = now;
-        entry.packets_in = entry.packets_in.saturating_add(1);
-        maybe_emit_wiretap(&wiretap, &flow, entry, now);
-        (flow_decision_label(entry), entry.source_group.clone())
+        if entry.policy_generation != current_generation {
+            let (decision, group) = match state.policy.read() {
+                Ok(lock) => lock.evaluate_with_source_group(
+                    &PacketMeta {
+                        src_ip: flow.src_ip,
+                        dst_ip: flow.dst_ip,
+                        proto: flow.proto,
+                        src_port: flow.src_port,
+                        dst_port: flow.dst_port,
+                        icmp_type: Some(icmp_type),
+                        icmp_code: Some(icmp_code),
+                    },
+                    None,
+                    Some(&state.tls_verifier),
+                ),
+                Err(_) => (PolicyDecision::Deny, None),
+            };
+            let next_group = group.unwrap_or_else(|| "default".to_string());
+            match decision {
+                PolicyDecision::Allow => {
+                    entry.policy_generation = current_generation;
+                    entry.source_group = next_group;
+                }
+                PolicyDecision::Deny | PolicyDecision::PendingTls => {
+                    policy_drop_group = Some(next_group);
+                }
+            }
+        }
+        if policy_drop_group.is_none() {
+            entry.last_seen = now;
+            entry.packets_in = entry.packets_in.saturating_add(1);
+            maybe_emit_wiretap(&wiretap, &flow, entry, now);
+            (flow_decision_label(entry), entry.source_group.clone())
+        } else {
+            ("deny", entry.source_group.clone())
+        }
     };
+
+    if let Some(drop_group) = policy_drop_group {
+        remove_flow_state(state, &flow, now);
+        if let Some(metrics) = &metrics {
+            metrics.observe_dp_packet(
+                "inbound",
+                proto_label(1),
+                "deny",
+                &drop_group,
+                pkt.len(),
+            );
+            metrics.observe_dp_icmp_decision(
+                "inbound",
+                icmp_type,
+                icmp_code,
+                "deny",
+                &drop_group,
+            );
+        }
+        return Action::Drop;
+    }
 
     if let Some(action) = handle_ttl(pkt, state) {
         return action;
@@ -1029,6 +1304,19 @@ fn flow_decision_label(entry: &FlowEntry) -> &'static str {
         Some(TlsFlowDecision::Denied) => "deny",
         None => "allow",
     }
+}
+
+fn remove_flow_state(state: &mut EngineState, flow: &FlowKey, now: u64) -> Option<FlowEntry> {
+    let entry = state.flows.remove(flow);
+    if entry.is_some() {
+        if let Some(allowlist) = &state.dns_allowlist {
+            allowlist.flow_close(flow.dst_ip, now);
+        }
+    }
+    state.nat.remove(flow);
+    state.update_flow_metrics();
+    state.update_nat_metrics();
+    entry
 }
 
 fn handle_ttl(pkt: &mut Packet, state: &EngineState) -> Option<Action> {

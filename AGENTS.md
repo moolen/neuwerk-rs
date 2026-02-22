@@ -55,6 +55,16 @@
 - The React UI lives under `ui/` and is served by the control-plane HTTPS server from `ui/dist`.
 - Control-plane HTTP API routes are rooted at `/api/v1` (UI calls `/api/v1/*`).
 
+## Control-Plane Storage Notes
+- Local (non-cluster) policies live in `/var/lib/neuwerk/local-policy-store`.
+- Local (non-cluster) service accounts and token metadata live in `/var/lib/neuwerk/service-accounts`.
+- Local (non-cluster) API auth keyset lives in `/var/lib/neuwerk/http-tls/api-auth.json`.
+- Cluster mode stores policies, service accounts, API auth keyset, and CA material in the Raft-backed RocksDB store under `/var/lib/neuwerk/cluster/raft`.
+- HTTP TLS CA cert and private key should be persisted in local mode (proposed `http-tls/ca.key` alongside `ca.crt`).
+- Policy rebuilds clear the DNS allowlist so deny updates take effect immediately.
+- Policy rebuilds bump a generation counter so the dataplane re-evaluates existing flows on their next packet (soft-cut enforcement).
+- Control-plane tracks the active policy ID to avoid redundant rebuilds during cluster replication.
+
 ## Runtime CLI
 - The binary requires `--management-interface`, `--data-plane-interface`, `--dns-upstream`, and `--dns-listen` flags to start.
 - The software dataplane uses `--data-plane-mode tun|tap` (default `tun`) and attaches to a Linux TUN/TAP device. `dpdk` is accepted for DPDK mode; real DPDK IO requires the `dpdk` cargo feature and a system DPDK install.

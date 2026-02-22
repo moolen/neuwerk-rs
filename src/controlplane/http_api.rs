@@ -421,6 +421,7 @@ async fn create_policy(State(state): State<ApiState>, mut request: Request) -> R
             compiled.dns_policy,
             compiled.default_policy,
         );
+        state.policy_store.set_active_policy_id(Some(record.id));
         if let Err(err) = state.local_store.set_active(Some(record.id)) {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
         }
@@ -493,6 +494,7 @@ async fn update_policy(
             compiled.dns_policy,
             compiled.default_policy,
         );
+        state.policy_store.set_active_policy_id(Some(record.id));
         if let Err(err) = state.local_store.set_active(Some(record.id)) {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
         }
@@ -506,6 +508,7 @@ async fn update_policy(
                 crate::controlplane::policy_config::DnsPolicy::new(Vec::new()),
                 None,
             );
+            state.policy_store.set_active_policy_id(None);
         }
     }
 
@@ -544,6 +547,7 @@ async fn delete_policy(
                 crate::controlplane::policy_config::DnsPolicy::new(Vec::new()),
                 None,
             );
+            state.policy_store.set_active_policy_id(None);
         }
     }
     if let Err(err) = state.local_store.delete_record(record.id) {
@@ -1848,17 +1852,10 @@ fn error_response(status: StatusCode, message: String) -> Response {
 async fn read_body_limited(body: Body) -> Result<Bytes, Response> {
     match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(bytes) => Ok(bytes),
-        Err(err) => {
-            let status = if err.is_body_limit() {
-                StatusCode::PAYLOAD_TOO_LARGE
-            } else {
-                StatusCode::BAD_REQUEST
-            };
-            Err(error_response(
-                status,
-                format!("invalid request body: {err}"),
-            ))
-        }
+        Err(err) => Err(error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("request body too large: {err}"),
+        )),
     }
 }
 

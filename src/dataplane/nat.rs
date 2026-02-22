@@ -86,6 +86,20 @@ impl NatTable {
         }
     }
 
+    pub fn remove(&mut self, key: &FlowKey) -> bool {
+        let Some(entry) = self.map.remove(key) else {
+            return false;
+        };
+        let reverse_key = ReverseKey {
+            external_port: entry.external_port,
+            remote_ip: entry.internal.dst_ip,
+            remote_port: entry.internal.dst_port,
+            proto: entry.internal.proto,
+        };
+        self.reverse.remove(&reverse_key);
+        true
+    }
+
     pub fn evict_expired(&mut self, now: u64) -> usize {
         let timeout = self.idle_timeout_secs;
         let mut expired = Vec::new();

@@ -977,7 +977,6 @@ pub fn http_api_client_with_cookie(tls_dir: &Path) -> Result<Client, String> {
         reqwest::Certificate::from_pem(&ca).map_err(|e| format!("invalid http ca cert: {e}"))?;
     Client::builder()
         .add_root_certificate(ca)
-        .cookie_store(true)
         .build()
         .map_err(|e| format!("http client build failed: {e}"))
 }

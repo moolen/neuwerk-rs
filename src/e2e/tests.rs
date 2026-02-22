@@ -31,7 +31,7 @@ use ::time::Duration as TimeDuration;
 use ::time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, watch};
-use tokio::net::TcpSocket;
+use tokio::net::{TcpSocket, UdpSocket};
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::parse_x509_certificate;
 use x509_parser::pem::parse_x509_pem;
@@ -249,6 +249,10 @@ pub fn cases() -> Vec<TestCase> {
             func: cluster_policy_update_applies,
         },
         TestCase {
+            name: "cluster_policy_update_denies_existing_flow",
+            func: cluster_policy_update_denies_existing_flow,
+        },
+        TestCase {
             name: "cluster_policy_update_https_udp",
             func: cluster_policy_update_https_udp,
         },
@@ -458,6 +462,13 @@ fn api_auth_cookie_login_whoami(cfg: &TopologyConfig) -> Result<(), String> {
         if !resp.status().is_success() {
             return Err(format!("auth token-login status {}", resp.status()));
         }
+        let cookie = resp
+            .headers()
+            .get(reqwest::header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .ok_or_else(|| "missing auth cookie".to_string())?
+            .to_string();
         let user = resp
             .json::<crate::e2e::services::AuthUser>()
             .await
@@ -467,6 +478,7 @@ fn api_auth_cookie_login_whoami(cfg: &TopologyConfig) -> Result<(), String> {
         }
         let whoami = client
             .get(format!("https://{api_addr}/api/v1/auth/whoami"))
+            .header(reqwest::header::COOKIE, cookie)
             .send()
             .await
             .map_err(|e| format!("auth whoami failed: {e}"))?;
@@ -2183,6 +2195,129 @@ fn cluster_policy_update_applies(cfg: &TopologyConfig) -> Result<(), String> {
             )
             .await?;
             return Err("http to foo.allowed succeeded after deny update".to_string());
+        }
+
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            baseline_policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        Ok(())
+    })
+}
+
+fn cluster_policy_update_denies_existing_flow(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let token = api_auth_token(cfg)?;
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let udp_server = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), cfg.up_udp_port);
+
+    let updated_policy = parse_policy(policy_allow_cluster_deny_foo())?;
+    let baseline_policy = parse_policy(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/e2e_policy.yaml"
+    )))?;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            baseline_policy.clone(),
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+
+        let foo = dns_query_response(client_bind, dns_server, "foo.allowed").await?;
+        if foo.rcode != 0 || foo.ips.is_empty() {
+            return Err("foo.allowed DNS did not resolve before policy update".to_string());
+        }
+
+        let dp_bind = SocketAddr::new(IpAddr::V4(cfg.client_dp_ip), 0);
+        let socket = UdpSocket::bind(dp_bind)
+            .await
+            .map_err(|e| format!("udp bind failed: {e}"))?;
+
+        socket
+            .send_to(b"before", udp_server)
+            .await
+            .map_err(|e| format!("udp send before failed: {e}"))?;
+        let mut buf = vec![0u8; 2048];
+        tokio::time::timeout(Duration::from_secs(1), socket.recv_from(&mut buf))
+            .await
+            .map_err(|_| "udp recv before timed out".to_string())?
+            .map_err(|e| format!("udp recv before failed: {e}"))?;
+
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            updated_policy.clone(),
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let foo = dns_query_response(client_bind, dns_server, "foo.allowed").await?;
+            if foo.rcode == 3 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                http_set_policy(
+                    api_addr,
+                    &tls_dir,
+                    baseline_policy.clone(),
+                    PolicyMode::Enforce,
+                    Some(&token),
+                )
+                .await?;
+                return Err("policy update did not apply in time".to_string());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+
+        socket
+            .send_to(b"after", udp_server)
+            .await
+            .map_err(|e| format!("udp send after failed: {e}"))?;
+        match tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await {
+            Ok(Ok((_len, _))) => {
+                http_set_policy(
+                    api_addr,
+                    &tls_dir,
+                    baseline_policy.clone(),
+                    PolicyMode::Enforce,
+                    Some(&token),
+                )
+                .await?;
+                return Err("udp to foo.allowed succeeded after deny update".to_string());
+            }
+            Ok(Err(err)) => {
+                http_set_policy(
+                    api_addr,
+                    &tls_dir,
+                    baseline_policy.clone(),
+                    PolicyMode::Enforce,
+                    Some(&token),
+                )
+                .await?;
+                return Err(format!("udp recv after failed: {err}"));
+            }
+            Err(_) => {}
         }
 
         http_set_policy(

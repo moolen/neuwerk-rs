@@ -64,10 +64,15 @@ pub async fn run_policy_replication(
             eprintln!("policy replication: active policy is not enforce mode");
             continue;
         }
+        if policy_store.active_policy_id() == Some(record.id) {
+            last_record = Some(record_bytes);
+            continue;
+        }
         if let Err(err) = policy_store.rebuild_from_config(record.policy.clone()) {
             eprintln!("policy replication: policy update failed: {err}");
             continue;
         }
+        policy_store.set_active_policy_id(Some(record.id));
         if let Err(err) = local_store.write_record(&record) {
             eprintln!("policy replication: failed to persist policy: {err}");
             continue;

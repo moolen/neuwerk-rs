@@ -188,6 +188,12 @@ impl DynamicIpSetV4 {
             Err(_) => 0,
         }
     }
+
+    pub fn clear(&self) {
+        if let Ok(mut lock) = self.inner.write() {
+            lock.clear();
+        }
+    }
 }
 
 fn now_secs() -> u64 {
@@ -328,6 +334,7 @@ pub struct SourceGroup {
 pub struct PolicySnapshot {
     pub default_policy: DefaultPolicy,
     pub groups: Vec<SourceGroup>,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -342,7 +349,15 @@ pub struct PacketMeta {
 }
 
 impl PolicySnapshot {
-    pub fn new(default_policy: DefaultPolicy, mut groups: Vec<SourceGroup>) -> Self {
+    pub fn new(default_policy: DefaultPolicy, groups: Vec<SourceGroup>) -> Self {
+        Self::new_with_generation(default_policy, groups, 0)
+    }
+
+    pub fn new_with_generation(
+        default_policy: DefaultPolicy,
+        mut groups: Vec<SourceGroup>,
+        generation: u64,
+    ) -> Self {
         groups.sort_by_key(|group| group.priority);
         for group in &mut groups {
             group.rules.sort_by_key(|rule| rule.priority);
@@ -350,7 +365,12 @@ impl PolicySnapshot {
         Self {
             default_policy,
             groups,
+            generation,
         }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn evaluate(
