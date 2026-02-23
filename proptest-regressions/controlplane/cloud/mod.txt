@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3d9d34412e86d4ba8c9b61ea019147ad448c5cb796cbaa97d9543f606f6374d7 # shrinks to instance_zones = [("zone-a", 0)], subnets = [SubnetRef { id: ":", name: ":", zone: "zone-b", cidr: "10.0.0.0/24", route_table_id: "rt", tags: {} }, SubnetRef { id: ":", name: ":", zone: "zone-a", cidr: "10.0.0.0/24", route_table_id: "rt", tags: {} }]

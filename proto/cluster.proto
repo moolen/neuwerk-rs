@@ -46,6 +46,25 @@ service PolicyManagement {
   rpc SetActivePolicy(PolicyUpdateRequest) returns (PolicyUpdateResponse);
 }
 
+message TerminationEventRequest {
+  string instance_id = 1;
+  string event_id = 2;
+  int64 deadline_epoch = 3;
+}
+
+message TerminationEventClearRequest {
+  string instance_id = 1;
+}
+
+message TerminationEventResponse {
+  bool ok = 1;
+}
+
+service IntegrationManagement {
+  rpc PublishTerminationEvent(TerminationEventRequest) returns (TerminationEventResponse);
+  rpc ClearTerminationEvent(TerminationEventClearRequest) returns (TerminationEventResponse);
+}
+
 message AuthKeyEntry {
   string kid = 1;
   string status = 2;

@@ -1,6 +1,7 @@
 pub mod auth_admin;
 pub mod bootstrap;
 pub mod config;
+pub mod integration_admin;
 pub mod policy_admin;
 pub mod rpc;
 pub mod store;

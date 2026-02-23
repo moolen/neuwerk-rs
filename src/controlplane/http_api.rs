@@ -35,6 +35,7 @@ use crate::controlplane::policy_config::PolicyMode;
 use crate::controlplane::service_accounts::{
     parse_rfc3339, parse_ttl_secs, ServiceAccountStatus, ServiceAccountStore, TokenMeta, TokenStatus,
 };
+use crate::controlplane::ready::ReadinessState;
 use crate::controlplane::wiretap::{DnsCacheEntry, DnsMap, WiretapFilter, WiretapHub, WiretapQuery};
 use crate::controlplane::cluster::rpc::{RaftTlsConfig, WiretapClient};
 use crate::controlplane::policy_repository::{
@@ -80,6 +81,7 @@ struct ApiState {
     wiretap_hub: Option<WiretapHub>,
     cluster_tls_dir: Option<PathBuf>,
     dns_map: Option<DnsMap>,
+    readiness: Option<ReadinessState>,
 }
 
 #[derive(Clone)]
@@ -111,6 +113,7 @@ pub async fn run_http_api(
     cluster: Option<HttpApiCluster>,
     wiretap_hub: Option<WiretapHub>,
     dns_map: Option<DnsMap>,
+    readiness: Option<ReadinessState>,
     metrics: Metrics,
 ) -> Result<(), String> {
     let tls = ensure_http_tls(HttpTlsConfig {
@@ -160,6 +163,7 @@ pub async fn run_http_api(
         wiretap_hub,
         cluster_tls_dir: cfg.cluster_tls_dir.clone(),
         dns_map,
+        readiness,
     };
 
     if let Some(cluster) = &state.cluster {
@@ -205,8 +209,10 @@ pub async fn run_http_api(
 
     let app = Router::new()
         .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
         .nest("/api/v1", api)
         .fallback(ui_handler)
+        .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             track_metrics,
@@ -303,6 +309,22 @@ async fn get_policy(
 
 async fn health_handler() -> Response {
     Json(json!({ "status": "ok" })).into_response()
+}
+
+async fn ready_handler(State(state): State<ApiState>) -> Response {
+    let Some(readiness) = state.readiness.clone() else {
+        return Json(json!({ "ready": true })).into_response();
+    };
+    let status = readiness.snapshot();
+    let code = if status.ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    match serde_json::to_value(&status) {
+        Ok(body) => (code, Json(body)).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 async fn ui_handler(method: Method, OriginalUri(uri): OriginalUri) -> Response {
@@ -1504,6 +1526,7 @@ mod tests {
             wiretap_hub: None,
             cluster_tls_dir: None,
             dns_map: None,
+            readiness: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -1550,6 +1573,7 @@ mod tests {
             wiretap_hub: None,
             cluster_tls_dir: None,
             dns_map: None,
+            readiness: None,
         };
 
         let app = Router::new()

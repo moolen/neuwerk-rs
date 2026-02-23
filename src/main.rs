@@ -8,11 +8,16 @@ use firewall::controlplane::policy_config::PolicyMode;
 use firewall::controlplane::policy_repository::PolicyDiskStore;
 use firewall::controlplane::{self, PolicyStore};
 use firewall::controlplane::dhcp::{DhcpClient, DhcpClientConfig};
+use firewall::controlplane::ready::ReadinessState;
+use firewall::controlplane::cloud::{self, IntegrationManager, ReadyChecker, ReadyClient};
+use firewall::controlplane::cloud::provider::CloudProvider;
+use firewall::controlplane::cloud::providers::{azure::AzureProvider, aws::AwsProvider, gcp::GcpProvider};
+use firewall::controlplane::cloud::types::{DiscoveryFilter, IntegrationConfig, IntegrationMode};
 use firewall::controlplane::wiretap::{DnsMap, WiretapHub, load_or_create_node_id};
 use firewall::dataplane::policy::{DefaultPolicy, DynamicIpSetV4, PolicySnapshot};
 use firewall::dataplane::{
-    DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo, EngineState, SoftAdapter, SoftMode,
-    DEFAULT_IDLE_TIMEOUT_SECS, WiretapEmitter,
+    DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo, DrainControl, EngineState,
+    SoftAdapter, SoftMode, DEFAULT_IDLE_TIMEOUT_SECS, WiretapEmitter,
     DEFAULT_WIRETAP_REPORT_INTERVAL_SECS,
 };
 use firewall::controlplane::api_auth::DEFAULT_TTL_SECS;
@@ -29,6 +34,10 @@ const DNS_ALLOWLIST_GC_INTERVAL_SECS: u64 = 30;
 const DHCP_TIMEOUT_SECS: u64 = 5;
 const DHCP_RETRY_MAX: u32 = 5;
 const DHCP_LEASE_MIN_SECS: u64 = 60;
+const INTEGRATION_ROUTE_NAME: &str = "neuwerk-default";
+const INTEGRATION_DRAIN_TIMEOUT_SECS: u64 = 300;
+const INTEGRATION_RECONCILE_INTERVAL_SECS: u64 = 15;
+const INTEGRATION_CLUSTER_NAME: &str = "neuwerk";
 
 #[derive(Debug)]
 struct CliConfig {
@@ -54,6 +63,20 @@ struct CliConfig {
     http_tls_san: Vec<String>,
     metrics_bind: Option<SocketAddr>,
     cluster: controlplane::cluster::config::ClusterConfig,
+    integration_mode: controlplane::cloud::types::IntegrationMode,
+    integration_route_name: String,
+    integration_drain_timeout_secs: u64,
+    integration_reconcile_interval_secs: u64,
+    integration_cluster_name: String,
+    azure_subscription_id: Option<String>,
+    azure_resource_group: Option<String>,
+    azure_vmss_name: Option<String>,
+    aws_region: Option<String>,
+    aws_vpc_id: Option<String>,
+    aws_asg_name: Option<String>,
+    gcp_project: Option<String>,
+    gcp_region: Option<String>,
+    gcp_ig_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -87,7 +110,7 @@ impl DataPlaneMode {
 
 fn usage(bin: &str) -> String {
     format!(
-        "Usage:\n  {bin} --management-interface <iface> --data-plane-interface <iface> --dns-upstream <ip:port> --dns-listen <ip:port> [--data-plane-mode tun|tap|dpdk] [--idle-timeout-secs <secs>] [--dns-allowlist-idle-secs <secs>] [--dns-allowlist-gc-interval-secs <secs>] [--default-policy allow|deny] [--dhcp-timeout-secs <secs>] [--dhcp-retry-max <count>] [--dhcp-lease-min-secs <secs>] [--snat-ip <ipv4>]\n  {bin} [cluster flags]\n  {bin} auth <command>\n\nFlags:\n  --management-interface <iface>\n  --data-plane-interface <iface>\n  --dns-upstream <ip:port>\n  --dns-listen <ip:port>\n  --data-plane-mode tun|tap|dpdk (default: tun)\n  --idle-timeout-secs <secs> (default: 300)\n  --dns-allowlist-idle-secs <secs> (default: idle-timeout + 120)\n  --dns-allowlist-gc-interval-secs <secs> (default: 30)\n  --default-policy allow|deny (default: deny)\n  --dhcp-timeout-secs <secs> (default: 5)\n  --dhcp-retry-max <count> (default: 5)\n  --dhcp-lease-min-secs <secs> (default: 60)\n  --snat-ip <ipv4> (software dataplane only)\n  --http-bind <ip:port> (default: <management-ip>:8443)\n  --http-advertise <ip:port> (default: http-bind)\n  --http-tls-dir <path> (default: /var/lib/neuwerk/http-tls)\n  --http-cert-path <path>\n  --http-key-path <path>\n  --http-ca-path <path>\n  --http-tls-san <comma-separated>\n  --metrics-bind <ip:port> (default: <management-ip>:8080)\n  --cluster-bind <ip:port>\n  --cluster-join-bind <ip:port> (default: cluster-bind + 1)\n  --cluster-advertise <ip:port> (default: cluster-bind)\n  --join <ip:port>\n  --cluster-data-dir <path> (default: /var/lib/neuwerk/cluster)\n  --node-id-path <path> (default: /var/lib/neuwerk/node_id)\n  --bootstrap-token-path <path> (default: /var/lib/neuwerk/bootstrap-token)\n  -h, --help\n\nAuth Commands:\n  {bin} auth key rotate --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key list --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key retire <kid> --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n"
+        "Usage:\n  {bin} --management-interface <iface> --data-plane-interface <iface> --dns-upstream <ip:port> --dns-listen <ip:port> [--data-plane-mode tun|tap|dpdk] [--idle-timeout-secs <secs>] [--dns-allowlist-idle-secs <secs>] [--dns-allowlist-gc-interval-secs <secs>] [--default-policy allow|deny] [--dhcp-timeout-secs <secs>] [--dhcp-retry-max <count>] [--dhcp-lease-min-secs <secs>] [--snat-ip <ipv4>]\n  {bin} [cluster flags]\n  {bin} auth <command>\n\nFlags:\n  --management-interface <iface>\n  --data-plane-interface <iface>\n  --dns-upstream <ip:port>\n  --dns-listen <ip:port>\n  --data-plane-mode tun|tap|dpdk (default: tun)\n  --idle-timeout-secs <secs> (default: 300)\n  --dns-allowlist-idle-secs <secs> (default: idle-timeout + 120)\n  --dns-allowlist-gc-interval-secs <secs> (default: 30)\n  --default-policy allow|deny (default: deny)\n  --dhcp-timeout-secs <secs> (default: 5)\n  --dhcp-retry-max <count> (default: 5)\n  --dhcp-lease-min-secs <secs> (default: 60)\n  --snat-ip <ipv4> (software dataplane only)\n  --http-bind <ip:port> (default: <management-ip>:8443)\n  --http-advertise <ip:port> (default: http-bind)\n  --http-tls-dir <path> (default: /var/lib/neuwerk/http-tls)\n  --http-cert-path <path>\n  --http-key-path <path>\n  --http-ca-path <path>\n  --http-tls-san <comma-separated>\n  --metrics-bind <ip:port> (default: <management-ip>:8080)\n  --integration azure-vmss|aws-asg|gcp-mig|none (default: none)\n  --integration-route-name <name> (default: neuwerk-default)\n  --integration-drain-timeout-secs <secs> (default: 300)\n  --integration-reconcile-interval-secs <secs> (default: 15)\n  --integration-cluster-name <name> (default: neuwerk)\n  --azure-subscription-id <id>\n  --azure-resource-group <name>\n  --azure-vmss-name <name>\n  --aws-region <region>\n  --aws-vpc-id <id>\n  --aws-asg-name <name>\n  --gcp-project <id>\n  --gcp-region <region>\n  --gcp-ig-name <name>\n  --cluster-bind <ip:port>\n  --cluster-join-bind <ip:port> (default: cluster-bind + 1)\n  --cluster-advertise <ip:port> (default: cluster-bind)\n  --join <ip:port>\n  --cluster-data-dir <path> (default: /var/lib/neuwerk/cluster)\n  --node-id-path <path> (default: /var/lib/neuwerk/node_id)\n  --bootstrap-token-path <path> (default: /var/lib/neuwerk/bootstrap-token)\n  -h, --help\n\nAuth Commands:\n  {bin} auth key rotate --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key list --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key retire <kid> --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n"
     )
 }
 
@@ -129,6 +152,89 @@ fn parse_default_policy(value: &str) -> Result<DefaultPolicy, String> {
     }
 }
 
+fn parse_integration_mode(value: &str) -> Result<IntegrationMode, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "none" => Ok(IntegrationMode::None),
+        "azure-vmss" => Ok(IntegrationMode::AzureVmss),
+        "aws-asg" => Ok(IntegrationMode::AwsAsg),
+        "gcp-mig" => Ok(IntegrationMode::GcpMig),
+        _ => Err(format!(
+            "--integration must be azure-vmss, aws-asg, gcp-mig, or none, got {value}"
+        )),
+    }
+}
+
+fn build_integration_provider(cfg: &CliConfig) -> Option<Arc<dyn CloudProvider>> {
+    match cfg.integration_mode {
+        IntegrationMode::AzureVmss => Some(
+            AzureProvider::new(
+                cfg.azure_subscription_id.clone().unwrap_or_default(),
+                cfg.azure_resource_group.clone().unwrap_or_default(),
+                cfg.azure_vmss_name.clone().unwrap_or_default(),
+            )
+            .shared(),
+        ),
+        IntegrationMode::AwsAsg => Some(
+            AwsProvider::new(
+                cfg.aws_region.clone().unwrap_or_default(),
+                cfg.aws_vpc_id.clone().unwrap_or_default(),
+                cfg.aws_asg_name.clone().unwrap_or_default(),
+            )
+            .shared(),
+        ),
+        IntegrationMode::GcpMig => Some(
+            GcpProvider::new(
+                cfg.gcp_project.clone().unwrap_or_default(),
+                cfg.gcp_region.clone().unwrap_or_default(),
+                cfg.gcp_ig_name.clone().unwrap_or_default(),
+            )
+            .shared(),
+        ),
+        IntegrationMode::None => None,
+    }
+}
+
+fn integration_tag_filter(cfg: &CliConfig) -> DiscoveryFilter {
+    let mut tags = std::collections::HashMap::new();
+    tags.insert(
+        "neuwerk.io/cluster".to_string(),
+        cfg.integration_cluster_name.clone(),
+    );
+    tags.insert("neuwerk.io/role".to_string(), "dataplane".to_string());
+    DiscoveryFilter { tags }
+}
+
+async fn select_integration_seed(
+    provider: Arc<dyn CloudProvider>,
+    filter: &DiscoveryFilter,
+    cluster_port: u16,
+) -> Result<Option<SocketAddr>, String> {
+    let instances = provider
+        .discover_instances(filter)
+        .await
+        .map_err(|err| format!("discover instances failed: {err}"))?;
+    let seed = cloud::select_seed_instance(&instances);
+    let Some(seed) = seed else {
+        return Ok(None);
+    };
+    let self_ref = provider
+        .self_identity()
+        .await
+        .map_err(|err| format!("self identity failed: {err}"))?;
+    if seed.id == self_ref.id {
+        return Ok(None);
+    }
+    Ok(Some(SocketAddr::new(seed.mgmt_ip, cluster_port)))
+}
+
+fn load_http_ca(cfg: &CliConfig) -> Option<Vec<u8>> {
+    let path = cfg
+        .http_ca_path
+        .clone()
+        .unwrap_or_else(|| cfg.http_tls_dir.join("ca.crt"));
+    std::fs::read(path).ok()
+}
+
 fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     let mut management_iface = None;
     let mut data_plane_iface = None;
@@ -158,6 +264,20 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     let mut cluster_data_dir = None;
     let mut node_id_path = None;
     let mut bootstrap_token_path = None;
+    let mut integration_mode = IntegrationMode::None;
+    let mut integration_route_name = INTEGRATION_ROUTE_NAME.to_string();
+    let mut integration_drain_timeout_secs = INTEGRATION_DRAIN_TIMEOUT_SECS;
+    let mut integration_reconcile_interval_secs = INTEGRATION_RECONCILE_INTERVAL_SECS;
+    let mut integration_cluster_name = INTEGRATION_CLUSTER_NAME.to_string();
+    let mut azure_subscription_id = None;
+    let mut azure_resource_group = None;
+    let mut azure_vmss_name = None;
+    let mut aws_region = None;
+    let mut aws_vpc_id = None;
+    let mut aws_asg_name = None;
+    let mut gcp_project = None;
+    let mut gcp_region = None;
+    let mut gcp_ig_name = None;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -320,6 +440,104 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
             metrics_bind = Some(parse_socket("--metrics-bind", &value)?);
             continue;
         }
+        if arg == "--integration" || arg.starts_with("--integration=") {
+            let value = take_flag_value("--integration", &arg, &mut args)?;
+            integration_mode = parse_integration_mode(&value)?;
+            continue;
+        }
+        if arg == "--integration-route-name" || arg.starts_with("--integration-route-name=") {
+            let value = take_flag_value("--integration-route-name", &arg, &mut args)?;
+            integration_route_name = value;
+            continue;
+        }
+        if arg == "--integration-drain-timeout-secs"
+            || arg.starts_with("--integration-drain-timeout-secs=")
+        {
+            let value =
+                take_flag_value("--integration-drain-timeout-secs", &arg, &mut args)?;
+            let parsed = value.parse::<u64>().map_err(|_| {
+                format!(
+                    "--integration-drain-timeout-secs must be a positive integer, got {value}"
+                )
+            })?;
+            if parsed == 0 {
+                return Err("--integration-drain-timeout-secs must be >= 1".to_string());
+            }
+            integration_drain_timeout_secs = parsed;
+            continue;
+        }
+        if arg == "--integration-reconcile-interval-secs"
+            || arg.starts_with("--integration-reconcile-interval-secs=")
+        {
+            let value = take_flag_value(
+                "--integration-reconcile-interval-secs",
+                &arg,
+                &mut args,
+            )?;
+            let parsed = value.parse::<u64>().map_err(|_| {
+                format!(
+                    "--integration-reconcile-interval-secs must be a positive integer, got {value}"
+                )
+            })?;
+            if parsed == 0 {
+                return Err("--integration-reconcile-interval-secs must be >= 1".to_string());
+            }
+            integration_reconcile_interval_secs = parsed;
+            continue;
+        }
+        if arg == "--integration-cluster-name" || arg.starts_with("--integration-cluster-name=") {
+            let value = take_flag_value("--integration-cluster-name", &arg, &mut args)?;
+            if value.trim().is_empty() {
+                return Err("--integration-cluster-name must not be empty".to_string());
+            }
+            integration_cluster_name = value;
+            continue;
+        }
+        if arg == "--azure-subscription-id" || arg.starts_with("--azure-subscription-id=") {
+            let value = take_flag_value("--azure-subscription-id", &arg, &mut args)?;
+            azure_subscription_id = Some(value);
+            continue;
+        }
+        if arg == "--azure-resource-group" || arg.starts_with("--azure-resource-group=") {
+            let value = take_flag_value("--azure-resource-group", &arg, &mut args)?;
+            azure_resource_group = Some(value);
+            continue;
+        }
+        if arg == "--azure-vmss-name" || arg.starts_with("--azure-vmss-name=") {
+            let value = take_flag_value("--azure-vmss-name", &arg, &mut args)?;
+            azure_vmss_name = Some(value);
+            continue;
+        }
+        if arg == "--aws-region" || arg.starts_with("--aws-region=") {
+            let value = take_flag_value("--aws-region", &arg, &mut args)?;
+            aws_region = Some(value);
+            continue;
+        }
+        if arg == "--aws-vpc-id" || arg.starts_with("--aws-vpc-id=") {
+            let value = take_flag_value("--aws-vpc-id", &arg, &mut args)?;
+            aws_vpc_id = Some(value);
+            continue;
+        }
+        if arg == "--aws-asg-name" || arg.starts_with("--aws-asg-name=") {
+            let value = take_flag_value("--aws-asg-name", &arg, &mut args)?;
+            aws_asg_name = Some(value);
+            continue;
+        }
+        if arg == "--gcp-project" || arg.starts_with("--gcp-project=") {
+            let value = take_flag_value("--gcp-project", &arg, &mut args)?;
+            gcp_project = Some(value);
+            continue;
+        }
+        if arg == "--gcp-region" || arg.starts_with("--gcp-region=") {
+            let value = take_flag_value("--gcp-region", &arg, &mut args)?;
+            gcp_region = Some(value);
+            continue;
+        }
+        if arg == "--gcp-ig-name" || arg.starts_with("--gcp-ig-name=") {
+            let value = take_flag_value("--gcp-ig-name", &arg, &mut args)?;
+            gcp_ig_name = Some(value);
+            continue;
+        }
         if arg == "--cluster-bind" || arg.starts_with("--cluster-bind=") {
             let value = take_flag_value("--cluster-bind", &arg, &mut args)?;
             cluster_bind = Some(parse_socket("--cluster-bind", &value)?);
@@ -376,6 +594,43 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     if !missing.is_empty() {
         return Err(format!("missing required flags: {}", missing.join(", ")));
     }
+
+    match integration_mode {
+        IntegrationMode::AzureVmss => {
+            if azure_subscription_id.is_none() {
+                return Err("--azure-subscription-id is required for --integration azure-vmss".to_string());
+            }
+            if azure_resource_group.is_none() {
+                return Err("--azure-resource-group is required for --integration azure-vmss".to_string());
+            }
+            if azure_vmss_name.is_none() {
+                return Err("--azure-vmss-name is required for --integration azure-vmss".to_string());
+            }
+        }
+        IntegrationMode::AwsAsg => {
+            if aws_region.is_none() {
+                return Err("--aws-region is required for --integration aws-asg".to_string());
+            }
+            if aws_vpc_id.is_none() {
+                return Err("--aws-vpc-id is required for --integration aws-asg".to_string());
+            }
+            if aws_asg_name.is_none() {
+                return Err("--aws-asg-name is required for --integration aws-asg".to_string());
+            }
+        }
+        IntegrationMode::GcpMig => {
+            if gcp_project.is_none() {
+                return Err("--gcp-project is required for --integration gcp-mig".to_string());
+            }
+            if gcp_region.is_none() {
+                return Err("--gcp-region is required for --integration gcp-mig".to_string());
+            }
+            if gcp_ig_name.is_none() {
+                return Err("--gcp-ig-name is required for --integration gcp-mig".to_string());
+            }
+        }
+        IntegrationMode::None => {}
+    }
     if management_iface == data_plane_iface {
         return Err("--management-interface and --data-plane-interface must be different".to_string());
     }
@@ -416,6 +671,20 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
             node_id_path,
             bootstrap_token_path,
         )?,
+        integration_mode,
+        integration_route_name,
+        integration_drain_timeout_secs,
+        integration_reconcile_interval_secs,
+        integration_cluster_name,
+        azure_subscription_id,
+        azure_resource_group,
+        azure_vmss_name,
+        aws_region,
+        aws_vpc_id,
+        aws_asg_name,
+        gcp_project,
+        gcp_region,
+        gcp_ig_name,
     })
 }
 
@@ -541,6 +810,7 @@ fn parse_auth_args(bin: &str, args: &[String]) -> Result<AuthCommand, String> {
 }
 
 async fn run_auth_command(cmd: AuthCommand) -> Result<(), String> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let (addr, tls_dir) = match &cmd {
         AuthCommand::KeyRotate { addr, tls_dir }
         | AuthCommand::KeyList { addr, tls_dir }
@@ -819,6 +1089,7 @@ fn run_dataplane(
     public_ip: Ipv4Addr,
     data_port: u16,
     dataplane_config: DataplaneConfigStore,
+    drain_control: Option<DrainControl>,
     dhcp_tx: Option<mpsc::Sender<DhcpRx>>,
     dhcp_rx: Option<mpsc::Receiver<DhcpTx>>,
     mac_publisher: Option<watch::Sender<[u8; 6]>>,
@@ -834,6 +1105,9 @@ fn run_dataplane(
     );
     state.set_dns_allowlist(dns_allowlist);
     state.set_dataplane_config(dataplane_config);
+    if let Some(control) = drain_control {
+        state.set_drain_control(control);
+    }
     let metrics_for_state = metrics.clone();
     state.set_metrics(metrics_for_state);
     if let Some(emitter) = wiretap_emitter {
@@ -896,13 +1170,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let cfg = match parse_args(&bin, args) {
+    let mut cfg = match parse_args(&bin, args) {
         Ok(cfg) => cfg,
         Err(err) => {
             eprintln!("{err}\n\n{}", usage(&bin));
             std::process::exit(2);
         }
     };
+
+    let integration_provider = build_integration_provider(&cfg);
+    if cfg.integration_mode != IntegrationMode::None
+        && cfg.cluster.enabled
+        && cfg.cluster.join_seed.is_none()
+    {
+        if let Some(provider) = integration_provider.clone() {
+            let filter = integration_tag_filter(&cfg);
+            match select_integration_seed(provider, &filter, cfg.cluster.bind_addr.port()).await {
+                Ok(seed) => {
+                    if let Some(seed) = seed {
+                        cfg.cluster.join_seed = Some(seed);
+                    }
+                }
+                Err(err) => {
+                    eprintln!("integration seed selection failed: {err}");
+                }
+            }
+        }
+    }
 
     println!("firewall starting");
     println!("management interface: {}", cfg.management_iface);
@@ -924,6 +1218,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(seed) = cfg.cluster.join_seed {
             println!("cluster join seed: {seed}");
         }
+    }
+    println!("integration mode: {:?}", cfg.integration_mode);
+    if cfg.integration_mode != IntegrationMode::None {
+        println!(
+            "integration route name: {}",
+            cfg.integration_route_name
+        );
+        println!(
+            "integration drain timeout (secs): {}",
+            cfg.integration_drain_timeout_secs
+        );
+        println!(
+            "integration reconcile interval (secs): {}",
+            cfg.integration_reconcile_interval_secs
+        );
+        println!("integration cluster name: {}", cfg.integration_cluster_name);
     }
 
     let dpdk_enabled = matches!(cfg.data_plane_mode, DataPlaneMode::Dpdk);
@@ -1096,15 +1406,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    let readiness = ReadinessState::new(
+        dataplane_config.clone(),
+        policy_store.clone(),
+        cluster_runtime.as_ref().map(|runtime| runtime.store.clone()),
+        cluster_runtime.as_ref().map(|runtime| runtime.raft.clone()),
+    );
+    readiness.set_policy_ready(true);
+
     if let Some(runtime) = cluster_runtime.as_ref() {
         let store = runtime.store.clone();
         let policy_store = policy_store.clone();
         let local_policy_store = local_policy_store.clone();
+        let readiness_for_replication = readiness.clone();
         tokio::spawn(async move {
             controlplane::policy_replication::run_policy_replication(
                 store,
                 policy_store,
                 local_policy_store,
+                Some(readiness_for_replication),
                 std::time::Duration::from_secs(1),
             )
             .await;
@@ -1124,6 +1444,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|err| format!("dns proxy failed: {err}"))
     });
+    readiness.set_dns_ready(true);
 
     let dns_allowlist_idle_secs = cfg.dns_allowlist_idle_secs;
     let dns_allowlist_gc_interval_secs = cfg.dns_allowlist_gc_interval_secs;
@@ -1164,6 +1485,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_policy_store = policy_store.clone();
     let http_local_store = local_policy_store.clone();
     let metrics_for_http = metrics.clone();
+    let readiness_for_http = readiness.clone();
     let http_task = tokio::spawn(async move {
         controlplane::http_api::run_http_api(
             http_cfg,
@@ -1172,11 +1494,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             http_cluster,
             Some(wiretap_hub.clone()),
             Some(dns_map_for_http),
+            Some(readiness_for_http),
             metrics_for_http,
         )
         .await
         .map_err(|err| format!("http api failed: {err}"))
     });
+
+    let drain_control = DrainControl::new();
+    let drain_control_for_dp = drain_control.clone();
+    let _integration_task = if cfg.integration_mode != IntegrationMode::None {
+        if let Some(provider) = integration_provider.clone() {
+            let integration_cfg = IntegrationConfig {
+                cluster_name: cfg.integration_cluster_name.clone(),
+                route_name: cfg.integration_route_name.clone(),
+                drain_timeout_secs: cfg.integration_drain_timeout_secs,
+                reconcile_interval_secs: cfg.integration_reconcile_interval_secs,
+                tag_filter: integration_tag_filter(&cfg),
+                http_ready_port: http_advertise.port(),
+                cluster_tls_dir: if cfg.cluster.enabled {
+                    Some(cfg.cluster.data_dir.join("tls"))
+                } else {
+                    None
+                },
+            };
+            let ready_client = match ReadyClient::new(http_advertise.port(), load_http_ca(&cfg)) {
+                Ok(client) => Arc::new(client) as Arc<dyn ReadyChecker>,
+                Err(err) => {
+                    eprintln!("integration ready client error: {err}");
+                    Arc::new(ReadyClient::new(http_advertise.port(), None)
+                        .expect("ready client fallback")) as Arc<dyn ReadyChecker>
+                }
+            };
+            let metrics_for_integration = metrics.clone();
+            let drain_for_integration = drain_control.clone();
+            let store_for_integration =
+                cluster_runtime.as_ref().map(|runtime| runtime.store.clone());
+            let raft_for_integration =
+                cluster_runtime.as_ref().map(|runtime| runtime.raft.clone());
+            Some(tokio::spawn(async move {
+                match IntegrationManager::new(
+                    integration_cfg,
+                    provider,
+                    store_for_integration,
+                    raft_for_integration,
+                    metrics_for_integration,
+                    drain_for_integration,
+                    ready_client,
+                )
+                .await
+                {
+                    Ok(manager) => manager.run(cfg.integration_mode).await,
+                    Err(err) => eprintln!("integration init error: {err}"),
+                }
+            }))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let data_plane_iface = cfg.data_plane_iface;
     let data_plane_mode = cfg.data_plane_mode;
@@ -1229,6 +1606,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    readiness.set_dataplane_running(true);
     let dataplane_task = tokio::task::spawn_blocking(move || {
         run_dataplane(
             data_plane_iface,
@@ -1242,6 +1620,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             public_ip,
             data_port,
             dataplane_config_for_dp,
+            Some(drain_control_for_dp),
             dp_to_cp_tx,
             cp_to_dp_rx,
             mac_tx,

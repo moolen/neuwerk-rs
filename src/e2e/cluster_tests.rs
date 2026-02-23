@@ -1339,7 +1339,7 @@ fn spawn_http_api(
     };
     let metrics = Metrics::new().map_err(|err| format!("metrics init failed: {err}"))?;
     Ok(tokio::spawn(async move {
-        let _ = run_http_api(cfg, policy_store, local_store, cluster, None, None, metrics).await;
+        let _ = run_http_api(cfg, policy_store, local_store, cluster, None, None, None, metrics).await;
     }))
 }
 

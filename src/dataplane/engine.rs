@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::controlplane::metrics::Metrics;
 use crate::dataplane::config::DataplaneConfigStore;
+use crate::dataplane::drain::DrainControl;
 use crate::dataplane::flow::{ExpiredFlow, FlowEntry, FlowKey, FlowTable};
 use crate::dataplane::nat::{NatTable, ReverseKey};
 use crate::dataplane::packet::Packet;
@@ -33,6 +34,7 @@ pub struct EngineState {
     wiretap: Option<WiretapEmitter>,
     now_override_secs: Option<u64>,
     metrics: Option<Metrics>,
+    drain_control: Option<DrainControl>,
 }
 
 impl EngineState {
@@ -75,6 +77,7 @@ impl EngineState {
             wiretap: None,
             now_override_secs: None,
             metrics: None,
+            drain_control: None,
         }
     }
 
@@ -116,6 +119,17 @@ impl EngineState {
 
     pub fn set_dataplane_config(&mut self, config: DataplaneConfigStore) {
         self.dataplane_config = config;
+    }
+
+    pub fn set_drain_control(&mut self, control: DrainControl) {
+        self.drain_control = Some(control);
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.drain_control
+            .as_ref()
+            .map(|control| control.is_draining())
+            .unwrap_or(false)
     }
 
     pub fn set_wiretap_emitter(&mut self, emitter: WiretapEmitter) {
@@ -276,6 +290,18 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             Err(_) => 0,
         };
         if state.flows.get_entry(&flow).is_none() {
+            if state.is_draining() {
+                if let Some(metrics) = &state.metrics {
+                    metrics.observe_dp_packet(
+                        "outbound",
+                        proto_label(proto),
+                        "deny",
+                        "default",
+                        pkt.len(),
+                    );
+                }
+                return Action::Drop;
+            }
             let ((decision, group), generation) = match state.policy.read() {
                 Ok(lock) => (
                     lock.evaluate_with_source_group(&meta, None, Some(&state.tls_verifier)),
@@ -743,6 +769,25 @@ fn handle_outbound_icmp(
         Err(_) => 0,
     };
     if state.flows.get_entry(&flow).is_none() {
+        if state.is_draining() {
+            if let Some(metrics) = &state.metrics {
+                metrics.observe_dp_packet(
+                    "outbound",
+                    proto_label(1),
+                    "deny",
+                    "default",
+                    pkt.len(),
+                );
+                metrics.observe_dp_icmp_decision(
+                    "outbound",
+                    icmp_type,
+                    icmp_code,
+                    "deny",
+                    "default",
+                );
+            }
+            return Action::Drop;
+        }
         let ((decision, group), generation) = match state.policy.read() {
             Ok(lock) => (
                 lock.evaluate_with_source_group(&meta, None, Some(&state.tls_verifier)),

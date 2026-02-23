@@ -13,6 +13,7 @@ pub async fn run_policy_replication(
     store: ClusterStore,
     policy_store: PolicyStore,
     local_store: PolicyDiskStore,
+    readiness: Option<crate::controlplane::ready::ReadinessState>,
     interval: Duration,
 ) {
     let mut ticker = tokio::time::interval(interval);
@@ -66,6 +67,9 @@ pub async fn run_policy_replication(
         }
         if policy_store.active_policy_id() == Some(record.id) {
             last_record = Some(record_bytes);
+            if let Some(readiness) = &readiness {
+                readiness.set_policy_ready(true);
+            }
             continue;
         }
         if let Err(err) = policy_store.rebuild_from_config(record.policy.clone()) {
@@ -82,5 +86,8 @@ pub async fn run_policy_replication(
             continue;
         }
         last_record = Some(record_bytes);
+        if let Some(readiness) = &readiness {
+            readiness.set_policy_ready(true);
+        }
     }
 }

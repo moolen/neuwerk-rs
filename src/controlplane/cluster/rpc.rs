@@ -29,6 +29,7 @@ use crate::controlplane::cluster::types::{
 };
 use crate::controlplane::api_auth::{ApiKeyStatus, ApiKeySummary};
 use crate::controlplane::metrics::Metrics;
+use crate::controlplane::cloud::types::TerminationEvent;
 
 #[derive(Clone)]
 pub struct RaftTlsConfig {
@@ -222,6 +223,101 @@ where
             .await
             .map_err(|err| Status::invalid_argument(err))?;
         Ok(Response::new(proto::PolicyUpdateResponse { ok: true }))
+    }
+}
+
+#[derive(Clone)]
+pub struct IntegrationClient {
+    inner: proto::integration_management_client::IntegrationManagementClient<Channel>,
+}
+
+impl IntegrationClient {
+    pub async fn connect(addr: SocketAddr, tls: RaftTlsConfig) -> Result<Self, String> {
+        let endpoint = Endpoint::from_shared(format!("https://{addr}"))
+            .map_err(|err| format!("invalid integration endpoint: {err}"))?
+            .connect_timeout(Duration::from_secs(3))
+            .tls_config(tls.client_config())
+            .map_err(|err| format!("integration tls config failed: {err}"))?;
+        let channel = endpoint
+            .connect()
+            .await
+            .map_err(|err| format!("integration connect failed: {err}"))?;
+        Ok(Self {
+            inner: proto::integration_management_client::IntegrationManagementClient::new(channel),
+        })
+    }
+
+    pub async fn publish_termination_event(&mut self, event: TerminationEvent) -> Result<(), String> {
+        let req = proto::TerminationEventRequest {
+            instance_id: event.instance_id,
+            event_id: event.id,
+            deadline_epoch: event.deadline_epoch,
+        };
+        self.inner
+            .publish_termination_event(req)
+            .await
+            .map_err(|err| format!("integration publish failed: {err}"))?;
+        Ok(())
+    }
+
+    pub async fn clear_termination_event(&mut self, instance_id: String) -> Result<(), String> {
+        let req = proto::TerminationEventClearRequest { instance_id };
+        self.inner
+            .clear_termination_event(req)
+            .await
+            .map_err(|err| format!("integration clear failed: {err}"))?;
+        Ok(())
+    }
+}
+
+pub struct IntegrationServer<H> {
+    handler: H,
+}
+
+impl<H> IntegrationServer<H> {
+    pub fn new(handler: H) -> Self {
+        Self { handler }
+    }
+}
+
+#[async_trait]
+pub trait IntegrationHandler: Send + Sync + 'static {
+    async fn publish_termination_event(&self, event: TerminationEvent) -> Result<(), String>;
+    async fn clear_termination_event(&self, instance_id: String) -> Result<(), String>;
+}
+
+#[tonic::async_trait]
+impl<H> proto::integration_management_server::IntegrationManagement for IntegrationServer<H>
+where
+    H: IntegrationHandler,
+{
+    async fn publish_termination_event(
+        &self,
+        request: Request<proto::TerminationEventRequest>,
+    ) -> Result<Response<proto::TerminationEventResponse>, Status> {
+        let req = request.into_inner();
+        let event = TerminationEvent {
+            id: req.event_id,
+            instance_id: req.instance_id,
+            deadline_epoch: req.deadline_epoch,
+        };
+        self.handler
+            .publish_termination_event(event)
+            .await
+            .map_err(|err| Status::unavailable(err))?;
+        Ok(Response::new(proto::TerminationEventResponse { ok: true }))
+    }
+
+    async fn clear_termination_event(
+        &self,
+        request: Request<proto::TerminationEventClearRequest>,
+    ) -> Result<Response<proto::TerminationEventResponse>, Status> {
+        let req = request.into_inner();
+        self.handler
+            .clear_termination_event(req.instance_id)
+            .await
+            .map_err(|err| Status::unavailable(err))?;
+        Ok(Response::new(proto::TerminationEventResponse { ok: true }))
     }
 }
 

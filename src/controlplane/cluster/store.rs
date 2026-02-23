@@ -85,6 +85,22 @@ impl ClusterStore {
         self.db.property_int_value(name).ok().flatten()
     }
 
+    pub fn scan_state_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+        let cf = self.cf(CF_STATE);
+        let mut entries = Vec::new();
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(prefix, rocksdb::Direction::Forward));
+        for item in iter {
+            let (key, value) = item.map_err(|err| err.to_string())?;
+            if !key.starts_with(prefix) {
+                break;
+            }
+            entries.push((key.to_vec(), value.to_vec()));
+        }
+        Ok(entries)
+    }
+
     fn cf(&self, name: &str) -> &rocksdb::ColumnFamily {
         self.db
             .cf_handle(name)

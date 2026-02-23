@@ -818,7 +818,7 @@ mod tests {
         .unwrap();
 
         let policy = Arc::new(RwLock::new(PolicySnapshot::new(DefaultPolicy::Deny, Vec::new())));
-        let mut state = EngineState::new(
+        let state = EngineState::new(
             policy,
             Ipv4Addr::UNSPECIFIED,
             0,

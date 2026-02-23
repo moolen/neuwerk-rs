@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use firewall::controlplane::cluster::bootstrap;
 use firewall::controlplane::cluster::config::ClusterConfig;
+use firewall::controlplane::cluster::rpc::{IntegrationClient, RaftTlsConfig};
 use firewall::controlplane::cluster::types::ClusterTypeConfig;
+use firewall::controlplane::cloud::types::TerminationEvent;
 use openraft::error::{ChangeMembershipError, ClientWriteError, RaftError};
 use openraft::RaftMetrics;
 use std::collections::BTreeSet;
@@ -556,4 +558,63 @@ async fn leader_failover_can_sign_and_join() {
         joiner_b.shutdown().await;
     }
     joiner_c.shutdown().await;
+}
+
+#[tokio::test]
+async fn integration_client_publishes_termination_event() {
+    ensure_rustls_provider();
+    let seed_dir = TempDir::new().unwrap();
+    let token_file = seed_dir.path().join("bootstrap.json");
+    write_token_file(&token_file);
+
+    let seed_addr = next_addr();
+    let seed_join_addr = next_addr();
+    let mut seed_cfg = base_config(&seed_dir, &token_file);
+    seed_cfg.bind_addr = seed_addr;
+    seed_cfg.advertise_addr = seed_addr;
+    seed_cfg.join_bind_addr = seed_join_addr;
+
+    let seed = bootstrap::run_cluster(seed_cfg, None, None).await.unwrap();
+    wait_for_leader(&seed.raft, Duration::from_secs(5))
+        .await
+        .unwrap();
+
+    let tls_dir = seed_dir.path().join("tls");
+    let tls = RaftTlsConfig::load(tls_dir).expect("tls config");
+    let mut client = IntegrationClient::connect(seed.bind_addr, tls)
+        .await
+        .expect("integration client");
+
+    let event = TerminationEvent {
+        id: "event-1".to_string(),
+        instance_id: "i-a".to_string(),
+        deadline_epoch: 123,
+    };
+    client
+        .publish_termination_event(event.clone())
+        .await
+        .expect("publish termination event");
+
+    const TERMINATION_PREFIX: &[u8] = b"integration/termination/";
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let entries = seed
+            .store
+            .scan_state_prefix(TERMINATION_PREFIX)
+            .expect("termination scan");
+        if let Some((_, value)) = entries.first() {
+            let stored: TerminationEvent =
+                serde_json::from_slice(value).expect("termination decode");
+            assert_eq!(stored.id, event.id);
+            assert_eq!(stored.instance_id, event.instance_id);
+            assert_eq!(stored.deadline_epoch, event.deadline_epoch);
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for termination event");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    seed.shutdown().await;
 }

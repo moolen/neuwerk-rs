@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use prometheus::{
-    Counter, CounterVec, Encoder, Gauge, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder,
+    Counter, CounterVec, Encoder, Gauge, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
+    TextEncoder,
 };
 use serde::Serialize;
 
@@ -102,6 +103,16 @@ pub struct Metrics {
     dhcp_lease_active: Gauge,
     dhcp_lease_expiry_epoch: Gauge,
     dhcp_lease_changes: Counter,
+    integration_route_changes: Counter,
+    integration_assignment_changes: Counter,
+    integration_termination_events: Counter,
+    integration_termination_complete: Counter,
+    integration_protection_errors: Counter,
+    integration_termination_poll_errors: Counter,
+    integration_termination_publish_errors: Counter,
+    integration_termination_complete_errors: Counter,
+    integration_drain_duration: HistogramVec,
+    integration_termination_drain_start: Histogram,
 }
 
 impl Metrics {
@@ -289,6 +300,61 @@ impl Metrics {
             "DHCP lease changes",
         ))
         .map_err(|err| err.to_string())?;
+        let integration_route_changes = Counter::with_opts(Opts::new(
+            "integration_route_changes_total",
+            "Integration route changes",
+        ))
+        .map_err(|err| err.to_string())?;
+        let integration_assignment_changes = Counter::with_opts(Opts::new(
+            "integration_assignment_changes_total",
+            "Integration assignment changes",
+        ))
+        .map_err(|err| err.to_string())?;
+        let integration_termination_events = Counter::with_opts(Opts::new(
+            "integration_termination_events_total",
+            "Integration termination events",
+        ))
+        .map_err(|err| err.to_string())?;
+        let integration_termination_complete = Counter::with_opts(Opts::new(
+            "integration_termination_complete_total",
+            "Integration termination completion",
+        ))
+        .map_err(|err| err.to_string())?;
+        let integration_protection_errors = Counter::with_opts(Opts::new(
+            "integration_protection_errors_total",
+            "Integration instance protection errors",
+        ))
+        .map_err(|err| err.to_string())?;
+        let integration_termination_poll_errors = Counter::with_opts(Opts::new(
+            "integration_termination_poll_errors_total",
+            "Integration termination poll errors",
+        ))
+        .map_err(|err| err.to_string())?;
+        let integration_termination_publish_errors = Counter::with_opts(Opts::new(
+            "integration_termination_publish_errors_total",
+            "Integration termination publish errors",
+        ))
+        .map_err(|err| err.to_string())?;
+        let integration_termination_complete_errors = Counter::with_opts(Opts::new(
+            "integration_termination_complete_errors_total",
+            "Integration termination completion errors",
+        ))
+        .map_err(|err| err.to_string())?;
+        let integration_drain_duration = HistogramVec::new(
+            HistogramOpts::new(
+                "integration_drain_duration_seconds",
+                "Integration drain durations seconds",
+            ),
+            &["result"],
+        )
+        .map_err(|err| err.to_string())?;
+        let integration_termination_drain_start = Histogram::with_opts(
+            HistogramOpts::new(
+                "integration_termination_drain_start_seconds",
+                "Time from termination notice to drain start seconds",
+            )
+        )
+        .map_err(|err| err.to_string())?;
 
         registry
             .register(Box::new(http_requests.clone()))
@@ -401,6 +467,36 @@ impl Metrics {
         registry
             .register(Box::new(dhcp_lease_changes.clone()))
             .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(integration_route_changes.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(integration_assignment_changes.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(integration_termination_events.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(integration_termination_complete.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(integration_protection_errors.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(integration_termination_poll_errors.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(integration_termination_publish_errors.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(integration_termination_complete_errors.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(integration_drain_duration.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(integration_termination_drain_start.clone()))
+            .map_err(|err| err.to_string())?;
 
         // Prime counters with a minimal, low-cardinality series so the metrics
         // are always visible even before first use.
@@ -460,6 +556,18 @@ impl Metrics {
         dhcp_lease_active.set(0.0);
         dhcp_lease_expiry_epoch.set(0.0);
         dhcp_lease_changes.inc_by(0.0);
+        integration_route_changes.inc_by(0.0);
+        integration_assignment_changes.inc_by(0.0);
+        integration_termination_events.inc_by(0.0);
+        integration_termination_complete.inc_by(0.0);
+        integration_protection_errors.inc_by(0.0);
+        integration_termination_poll_errors.inc_by(0.0);
+        integration_termination_publish_errors.inc_by(0.0);
+        integration_termination_complete_errors.inc_by(0.0);
+        integration_drain_duration
+            .with_label_values(&["complete"])
+            .observe(0.0);
+        integration_termination_drain_start.observe(0.0);
 
         Ok(Self {
             registry,
@@ -500,6 +608,16 @@ impl Metrics {
             dhcp_lease_active,
             dhcp_lease_expiry_epoch,
             dhcp_lease_changes,
+            integration_route_changes,
+            integration_assignment_changes,
+            integration_termination_events,
+            integration_termination_complete,
+            integration_protection_errors,
+            integration_termination_poll_errors,
+            integration_termination_publish_errors,
+            integration_termination_complete_errors,
+            integration_drain_duration,
+            integration_termination_drain_start,
         })
     }
 
@@ -696,6 +814,54 @@ impl Metrics {
 
     pub fn inc_dhcp_lease_change(&self) {
         self.dhcp_lease_changes.inc();
+    }
+
+    pub fn inc_integration_route_change(&self) {
+        self.integration_route_changes.inc();
+    }
+
+    pub fn inc_integration_assignment_change(&self) {
+        self.integration_assignment_changes.inc();
+    }
+
+    pub fn add_integration_assignment_changes(&self, count: u64) {
+        self.integration_assignment_changes.inc_by(count as f64);
+    }
+
+    pub fn inc_integration_termination_event(&self) {
+        self.integration_termination_events.inc();
+    }
+
+    pub fn inc_integration_termination_complete(&self) {
+        self.integration_termination_complete.inc();
+    }
+
+    pub fn inc_integration_protection_error(&self) {
+        self.integration_protection_errors.inc();
+    }
+
+    pub fn inc_integration_termination_poll_error(&self) {
+        self.integration_termination_poll_errors.inc();
+    }
+
+    pub fn inc_integration_termination_publish_error(&self) {
+        self.integration_termination_publish_errors.inc();
+    }
+
+    pub fn inc_integration_termination_complete_error(&self) {
+        self.integration_termination_complete_errors.inc();
+    }
+
+    pub fn observe_integration_drain(&self, duration_secs: i64) {
+        let value = (duration_secs as f64).max(0.0);
+        self.integration_drain_duration
+            .with_label_values(&["complete"])
+            .observe(value);
+    }
+
+    pub fn observe_integration_termination_drain_start(&self, duration_secs: i64) {
+        let value = (duration_secs as f64).max(0.0);
+        self.integration_termination_drain_start.observe(value);
     }
 
     pub fn snapshot(&self) -> StatsSnapshot {

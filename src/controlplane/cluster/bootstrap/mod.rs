@@ -21,9 +21,10 @@ use crate::controlplane::cluster::bootstrap::join::JoinService;
 use crate::controlplane::cluster::config::{ClusterConfig, RetryConfig};
 use crate::controlplane::cluster::policy_admin::PolicyService;
 use crate::controlplane::cluster::rpc::{
-    AuthServer, JoinClient, JoinServer, PolicyServer, RaftGrpcNetworkFactory, RaftServer,
-    RaftTlsConfig, WiretapServer,
+    AuthServer, IntegrationServer, JoinClient, JoinServer, PolicyServer, RaftGrpcNetworkFactory,
+    RaftServer, RaftTlsConfig, WiretapServer,
 };
+use crate::controlplane::cluster::integration_admin::IntegrationService;
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::JoinRequest;
 use crate::controlplane::cluster::types::JoinResponse;
@@ -108,6 +109,7 @@ pub async fn run_cluster(
     let join_service = JoinServer::new(join_handler);
     let policy_service = PolicyServer::new(PolicyService::new(raft.clone()));
     let auth_service = AuthServer::new(AuthService::new(raft.clone(), store.clone()));
+    let integration_service = IntegrationServer::new(IntegrationService::new(raft.clone()));
     let wiretap_service = wiretap_hub
         .map(WiretapGrpcService::new)
         .map(WiretapServer::new);
@@ -122,7 +124,8 @@ pub async fn run_cluster(
             .expect("tls config")
             .add_service(crate::controlplane::cluster::rpc::proto::raft_service_server::RaftServiceServer::new(raft_service))
             .add_service(crate::controlplane::cluster::rpc::proto::policy_management_server::PolicyManagementServer::new(policy_service))
-            .add_service(crate::controlplane::cluster::rpc::proto::auth_management_server::AuthManagementServer::new(auth_service));
+            .add_service(crate::controlplane::cluster::rpc::proto::auth_management_server::AuthManagementServer::new(auth_service))
+            .add_service(crate::controlplane::cluster::rpc::proto::integration_management_server::IntegrationManagementServer::new(integration_service));
         if let Some(wiretap_service) = wiretap_service {
             raft_builder = raft_builder.add_service(
                 crate::controlplane::cluster::rpc::proto::wiretap_server::WiretapServer::new(

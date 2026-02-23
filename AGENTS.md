@@ -11,6 +11,7 @@
 - `mgmt0` is kernel-owned and used exclusively by the control plane.
 - Dataplane must never process management traffic.
 - Control plane must never process forwarded dataplane traffic.
+- Cloud integrations must identify NICs via tags: `neuwerk.io/management` and `neuwerk.io/dataplane` on the cloud NIC resources.
 
 ## Supported Traffic Flows
 - DNS queries targeted at the firewall itself

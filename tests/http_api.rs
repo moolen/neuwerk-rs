@@ -159,7 +159,7 @@ async fn http_api_local_lifecycle() {
     let metrics = Metrics::new().unwrap();
 
     let server = tokio::spawn(async move {
-        http_api::run_http_api(cfg, policy_store, local_store, None, None, None, metrics)
+        http_api::run_http_api(cfg, policy_store, local_store, None, None, None, None, metrics)
             .await
             .map_err(|err| format!("http api error: {err}"))
     });
@@ -364,6 +364,7 @@ async fn http_api_cluster_proxy_lifecycle() {
         }),
         None,
         None,
+        None,
         seed_metrics,
     ));
 
@@ -385,6 +386,7 @@ async fn http_api_cluster_proxy_lifecycle() {
             raft: join_runtime.raft.clone(),
             store: join_runtime.store.clone(),
         }),
+        None,
         None,
         None,
         join_metrics,
@@ -413,6 +415,7 @@ async fn http_api_cluster_proxy_lifecycle() {
         join_runtime.store.clone(),
         join_policy.clone(),
         join_local_store.clone(),
+        None,
         Duration::from_millis(200),
     ));
 
@@ -590,6 +593,7 @@ async fn http_api_wiretap_stream_aggregates_cluster() {
         }),
         Some(seed_wiretap.clone()),
         None,
+        None,
         seed_metrics_registry,
     ));
 
@@ -612,6 +616,7 @@ async fn http_api_wiretap_stream_aggregates_cluster() {
             store: join_runtime.store.clone(),
         }),
         Some(join_wiretap.clone()),
+        None,
         None,
         join_metrics_registry,
     ));
