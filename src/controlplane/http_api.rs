@@ -121,6 +121,7 @@ pub async fn run_http_api(
         cert_path: cfg.cert_path.clone(),
         key_path: cfg.key_path.clone(),
         ca_path: cfg.ca_path.clone(),
+        ca_key_path: None,
         san_entries: cfg.san_entries.clone(),
         advertise_addr: cfg.advertise_addr,
         management_ip: cfg.management_ip,

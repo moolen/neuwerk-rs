@@ -22,6 +22,7 @@ use firewall::dataplane::{
 };
 use firewall::controlplane::api_auth::DEFAULT_TTL_SECS;
 use firewall::controlplane::cluster::rpc::{AuthClient, RaftTlsConfig};
+use firewall::controlplane::cluster::migration;
 use futures::stream::TryStreamExt;
 use tokio::sync::{mpsc, watch};
 use netlink_packet_route::address::AddressAttribute;
@@ -63,6 +64,9 @@ struct CliConfig {
     http_tls_san: Vec<String>,
     metrics_bind: Option<SocketAddr>,
     cluster: controlplane::cluster::config::ClusterConfig,
+    cluster_migrate_from_local: bool,
+    cluster_migrate_force: bool,
+    cluster_migrate_verify: bool,
     integration_mode: controlplane::cloud::types::IntegrationMode,
     integration_route_name: String,
     integration_drain_timeout_secs: u64,
@@ -110,7 +114,7 @@ impl DataPlaneMode {
 
 fn usage(bin: &str) -> String {
     format!(
-        "Usage:\n  {bin} --management-interface <iface> --data-plane-interface <iface> --dns-upstream <ip:port> --dns-listen <ip:port> [--data-plane-mode tun|tap|dpdk] [--idle-timeout-secs <secs>] [--dns-allowlist-idle-secs <secs>] [--dns-allowlist-gc-interval-secs <secs>] [--default-policy allow|deny] [--dhcp-timeout-secs <secs>] [--dhcp-retry-max <count>] [--dhcp-lease-min-secs <secs>] [--snat-ip <ipv4>]\n  {bin} [cluster flags]\n  {bin} auth <command>\n\nFlags:\n  --management-interface <iface>\n  --data-plane-interface <iface>\n  --dns-upstream <ip:port>\n  --dns-listen <ip:port>\n  --data-plane-mode tun|tap|dpdk (default: tun)\n  --idle-timeout-secs <secs> (default: 300)\n  --dns-allowlist-idle-secs <secs> (default: idle-timeout + 120)\n  --dns-allowlist-gc-interval-secs <secs> (default: 30)\n  --default-policy allow|deny (default: deny)\n  --dhcp-timeout-secs <secs> (default: 5)\n  --dhcp-retry-max <count> (default: 5)\n  --dhcp-lease-min-secs <secs> (default: 60)\n  --snat-ip <ipv4> (software dataplane only)\n  --http-bind <ip:port> (default: <management-ip>:8443)\n  --http-advertise <ip:port> (default: http-bind)\n  --http-tls-dir <path> (default: /var/lib/neuwerk/http-tls)\n  --http-cert-path <path>\n  --http-key-path <path>\n  --http-ca-path <path>\n  --http-tls-san <comma-separated>\n  --metrics-bind <ip:port> (default: <management-ip>:8080)\n  --integration azure-vmss|aws-asg|gcp-mig|none (default: none)\n  --integration-route-name <name> (default: neuwerk-default)\n  --integration-drain-timeout-secs <secs> (default: 300)\n  --integration-reconcile-interval-secs <secs> (default: 15)\n  --integration-cluster-name <name> (default: neuwerk)\n  --azure-subscription-id <id>\n  --azure-resource-group <name>\n  --azure-vmss-name <name>\n  --aws-region <region>\n  --aws-vpc-id <id>\n  --aws-asg-name <name>\n  --gcp-project <id>\n  --gcp-region <region>\n  --gcp-ig-name <name>\n  --cluster-bind <ip:port>\n  --cluster-join-bind <ip:port> (default: cluster-bind + 1)\n  --cluster-advertise <ip:port> (default: cluster-bind)\n  --join <ip:port>\n  --cluster-data-dir <path> (default: /var/lib/neuwerk/cluster)\n  --node-id-path <path> (default: /var/lib/neuwerk/node_id)\n  --bootstrap-token-path <path> (default: /var/lib/neuwerk/bootstrap-token)\n  -h, --help\n\nAuth Commands:\n  {bin} auth key rotate --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key list --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key retire <kid> --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n"
+        "Usage:\n  {bin} --management-interface <iface> --data-plane-interface <iface> --dns-upstream <ip:port> --dns-listen <ip:port> [--data-plane-mode tun|tap|dpdk] [--idle-timeout-secs <secs>] [--dns-allowlist-idle-secs <secs>] [--dns-allowlist-gc-interval-secs <secs>] [--default-policy allow|deny] [--dhcp-timeout-secs <secs>] [--dhcp-retry-max <count>] [--dhcp-lease-min-secs <secs>] [--snat-ip <ipv4>]\n  {bin} [cluster flags]\n  {bin} auth <command>\n\nFlags:\n  --management-interface <iface>\n  --data-plane-interface <iface>\n  --dns-upstream <ip:port>\n  --dns-listen <ip:port>\n  --data-plane-mode tun|tap|dpdk (default: tun)\n  --idle-timeout-secs <secs> (default: 300)\n  --dns-allowlist-idle-secs <secs> (default: idle-timeout + 120)\n  --dns-allowlist-gc-interval-secs <secs> (default: 30)\n  --default-policy allow|deny (default: deny)\n  --dhcp-timeout-secs <secs> (default: 5)\n  --dhcp-retry-max <count> (default: 5)\n  --dhcp-lease-min-secs <secs> (default: 60)\n  --snat-ip <ipv4> (software dataplane only)\n  --http-bind <ip:port> (default: <management-ip>:8443)\n  --http-advertise <ip:port> (default: http-bind)\n  --http-tls-dir <path> (default: /var/lib/neuwerk/http-tls)\n  --http-cert-path <path>\n  --http-key-path <path>\n  --http-ca-path <path>\n  --http-tls-san <comma-separated>\n  --metrics-bind <ip:port> (default: <management-ip>:8080)\n  --integration azure-vmss|aws-asg|gcp-mig|none (default: none)\n  --integration-route-name <name> (default: neuwerk-default)\n  --integration-drain-timeout-secs <secs> (default: 300)\n  --integration-reconcile-interval-secs <secs> (default: 15)\n  --integration-cluster-name <name> (default: neuwerk)\n  --azure-subscription-id <id>\n  --azure-resource-group <name>\n  --azure-vmss-name <name>\n  --aws-region <region>\n  --aws-vpc-id <id>\n  --aws-asg-name <name>\n  --gcp-project <id>\n  --gcp-region <region>\n  --gcp-ig-name <name>\n  --cluster-migrate-from-local\n  --cluster-migrate-force\n  --cluster-migrate-verify\n  --cluster-bind <ip:port>\n  --cluster-join-bind <ip:port> (default: cluster-bind + 1)\n  --cluster-advertise <ip:port> (default: cluster-bind)\n  --join <ip:port>\n  --cluster-data-dir <path> (default: /var/lib/neuwerk/cluster)\n  --node-id-path <path> (default: /var/lib/neuwerk/node_id)\n  --bootstrap-token-path <path> (default: /var/lib/neuwerk/bootstrap-token)\n  -h, --help\n\nAuth Commands:\n  {bin} auth key rotate --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key list --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key retire <kid> --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n"
     )
 }
 
@@ -264,6 +268,9 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     let mut cluster_data_dir = None;
     let mut node_id_path = None;
     let mut bootstrap_token_path = None;
+    let mut cluster_migrate_from_local = false;
+    let mut cluster_migrate_force = false;
+    let mut cluster_migrate_verify = false;
     let mut integration_mode = IntegrationMode::None;
     let mut integration_route_name = INTEGRATION_ROUTE_NAME.to_string();
     let mut integration_drain_timeout_secs = INTEGRATION_DRAIN_TIMEOUT_SECS;
@@ -538,6 +545,18 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
             gcp_ig_name = Some(value);
             continue;
         }
+        if arg == "--cluster-migrate-from-local" {
+            cluster_migrate_from_local = true;
+            continue;
+        }
+        if arg == "--cluster-migrate-force" {
+            cluster_migrate_force = true;
+            continue;
+        }
+        if arg == "--cluster-migrate-verify" {
+            cluster_migrate_verify = true;
+            continue;
+        }
         if arg == "--cluster-bind" || arg.starts_with("--cluster-bind=") {
             let value = take_flag_value("--cluster-bind", &arg, &mut args)?;
             cluster_bind = Some(parse_socket("--cluster-bind", &value)?);
@@ -575,6 +594,12 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         }
 
         return Err(format!("unknown flag: {arg}"));
+    }
+
+    if let Ok(value) = env::var("NEUWERK_CLUSTER_MIGRATE") {
+        if matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES") {
+            cluster_migrate_from_local = true;
+        }
     }
 
     let mut missing = Vec::new();
@@ -671,6 +696,9 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
             node_id_path,
             bootstrap_token_path,
         )?,
+        cluster_migrate_from_local,
+        cluster_migrate_force,
+        cluster_migrate_verify,
         integration_mode,
         integration_route_name,
         integration_drain_timeout_secs,
@@ -1329,6 +1357,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let local_policy_store =
         PolicyDiskStore::new(PathBuf::from("/var/lib/neuwerk/local-policy-store"));
+    let local_service_accounts_dir = PathBuf::from("/var/lib/neuwerk/service-accounts");
     if !cfg.cluster.enabled {
         if let Ok(Some(active_id)) = local_policy_store.active_id() {
             match local_policy_store.read_record(active_id) {
@@ -1363,6 +1392,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let node_id = match load_or_create_node_id(&cfg.cluster.node_id_path) {
+        Ok(node_id) => node_id,
+        Err(err) => {
+            eprintln!("node id error: {err}");
+            std::process::exit(2);
+        }
+    };
+    let node_uuid = match uuid::Uuid::parse_str(node_id.trim()) {
         Ok(node_id) => node_id,
         Err(err) => {
             eprintln!("node id error: {err}");
@@ -1405,6 +1441,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+
+    if cfg.cluster_migrate_from_local || cfg.cluster_migrate_verify {
+        if !cfg.cluster.enabled {
+            eprintln!("cluster migration requested but cluster mode is disabled");
+            std::process::exit(2);
+        }
+        if cfg.cluster.join_seed.is_some() {
+            eprintln!("cluster migration requested but --join is set; run migration only on the seed node");
+            std::process::exit(2);
+        }
+        let Some(runtime) = cluster_runtime.as_ref() else {
+            eprintln!("cluster migration requested but cluster runtime is unavailable");
+            std::process::exit(2);
+        };
+        let migrate_cfg = migration::MigrationConfig {
+            enabled: cfg.cluster_migrate_from_local,
+            force: cfg.cluster_migrate_force,
+            verify: cfg.cluster_migrate_verify,
+            http_tls_dir: cfg.http_tls_dir.clone(),
+            local_policy_store: local_policy_store.clone(),
+            local_service_accounts_dir: local_service_accounts_dir.clone(),
+            cluster_data_dir: cfg.cluster.data_dir.clone(),
+            token_path: cfg.cluster.token_path.clone(),
+            node_id: node_uuid,
+        };
+        match migration::run(&runtime.raft, &runtime.store, migrate_cfg).await {
+            Ok(report) => {
+                if report.migrated {
+                    eprintln!(
+                        "cluster migration complete: policies={}, service_accounts={}, tokens={}, api_keyset={}",
+                        report.policies_seeded,
+                        report.service_accounts_seeded,
+                        report.tokens_seeded,
+                        report
+                            .api_keyset_source
+                            .unwrap_or_else(|| "unknown".to_string())
+                    );
+                } else if let Some(reason) = report.skipped_reason {
+                    eprintln!("cluster migration skipped: {reason}");
+                }
+            }
+            Err(err) => {
+                eprintln!("cluster migration failed: {err}");
+                std::process::exit(2);
+            }
+        }
+    }
 
     let readiness = ReadinessState::new(
         dataplane_config.clone(),

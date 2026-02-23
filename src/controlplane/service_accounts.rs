@@ -10,17 +10,17 @@ use uuid::Uuid;
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
 
-const SERVICE_ACCOUNTS_INDEX_KEY: &[u8] = b"auth/service-accounts/index";
+pub(crate) const SERVICE_ACCOUNTS_INDEX_KEY: &[u8] = b"auth/service-accounts/index";
 
-fn account_item_key(id: Uuid) -> Vec<u8> {
+pub(crate) fn account_item_key(id: Uuid) -> Vec<u8> {
     format!("auth/service-accounts/item/{id}").into_bytes()
 }
 
-fn token_index_key(account_id: Uuid) -> Vec<u8> {
+pub(crate) fn token_index_key(account_id: Uuid) -> Vec<u8> {
     format!("auth/service-accounts/tokens/index/{account_id}").into_bytes()
 }
 
-fn token_item_key(token_id: Uuid) -> Vec<u8> {
+pub(crate) fn token_item_key(token_id: Uuid) -> Vec<u8> {
     format!("auth/service-accounts/tokens/item/{token_id}").into_bytes()
 }
 

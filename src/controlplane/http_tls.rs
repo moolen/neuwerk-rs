@@ -20,8 +20,8 @@ use crate::controlplane::cluster::bootstrap::token::TokenStore;
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
 
-const HTTP_CA_CERT_KEY: &[u8] = b"http/ca/cert";
-const HTTP_CA_ENVELOPE_KEY: &[u8] = b"http/ca/envelope";
+pub(crate) const HTTP_CA_CERT_KEY: &[u8] = b"http/ca/cert";
+pub(crate) const HTTP_CA_ENVELOPE_KEY: &[u8] = b"http/ca/envelope";
 
 #[derive(Clone)]
 pub struct HttpTlsConfig {
@@ -29,6 +29,7 @@ pub struct HttpTlsConfig {
     pub cert_path: Option<PathBuf>,
     pub key_path: Option<PathBuf>,
     pub ca_path: Option<PathBuf>,
+    pub ca_key_path: Option<PathBuf>,
     pub san_entries: Vec<String>,
     pub advertise_addr: SocketAddr,
     pub management_ip: IpAddr,
@@ -57,6 +58,11 @@ pub async fn ensure_http_tls(cfg: HttpTlsConfig) -> Result<HttpTlsMaterial, Stri
     if cert_exists {
         let ca_pem = load_or_fetch_ca_cert(&paths, cfg.store.as_ref(), cfg.raft.as_ref()).await?;
         ensure_permissions(&paths.key_path, 0o600)?;
+        if cfg.raft.is_none() && cfg.store.is_none() {
+            if paths.ca_path.exists() && !paths.ca_key_path.exists() {
+                eprintln!("warning: http tls ca.key missing; migration to cluster will require regenerating the HTTP CA");
+            }
+        }
         return Ok(HttpTlsMaterial {
             cert_path: paths.cert_path,
             key_path: paths.key_path,
@@ -71,7 +77,13 @@ pub async fn ensure_http_tls(cfg: HttpTlsConfig) -> Result<HttpTlsMaterial, Stri
             let ca_signer = load_http_ca_signer(&store, &cfg.token_path)?;
             let (csr, key_pem) = build_csr(sans)?;
             let cert_pem = ca_signer.sign_csr(&csr).map_err(|err| err.to_string())?;
-            persist_tls_material(&paths, &key_pem, &cert_pem, ca_signer.cert_pem())?;
+            persist_tls_material(
+                &paths,
+                &key_pem,
+                &cert_pem,
+                ca_signer.cert_pem(),
+                None,
+            )?;
             return Ok(HttpTlsMaterial {
                 cert_path: paths.cert_path,
                 key_path: paths.key_path,
@@ -82,7 +94,13 @@ pub async fn ensure_http_tls(cfg: HttpTlsConfig) -> Result<HttpTlsMaterial, Stri
         let ca_signer = build_ca_signer()?;
         let (csr, key_pem) = build_csr(sans)?;
         let cert_pem = ca_signer.sign_csr(&csr).map_err(|err| err.to_string())?;
-        persist_tls_material(&paths, &key_pem, &cert_pem, ca_signer.cert_pem())?;
+        persist_tls_material(
+            &paths,
+            &key_pem,
+            &cert_pem,
+            ca_signer.cert_pem(),
+            None,
+        )?;
         ensure_http_ca(&raft, &store, &cfg.token_path, ca_signer).await?;
         let ca_pem = fs::read(&paths.ca_path).map_err(|err| err.to_string())?;
         return Ok(HttpTlsMaterial {
@@ -92,10 +110,19 @@ pub async fn ensure_http_tls(cfg: HttpTlsConfig) -> Result<HttpTlsMaterial, Stri
         });
     }
 
-    let ca_signer = build_ca_signer()?;
+    let ca_signer = match load_local_ca_signer(&paths)? {
+        Some(signer) => signer,
+        None => build_ca_signer()?,
+    };
     let (csr, key_pem) = build_csr(sans)?;
     let cert_pem = ca_signer.sign_csr(&csr).map_err(|err| err.to_string())?;
-    persist_tls_material(&paths, &key_pem, &cert_pem, ca_signer.cert_pem())?;
+    persist_tls_material(
+        &paths,
+        &key_pem,
+        &cert_pem,
+        ca_signer.cert_pem(),
+        Some(ca_signer.key_der()),
+    )?;
 
     Ok(HttpTlsMaterial {
         cert_path: paths.cert_path,
@@ -109,6 +136,7 @@ struct HttpTlsPaths {
     cert_path: PathBuf,
     key_path: PathBuf,
     ca_path: PathBuf,
+    ca_key_path: PathBuf,
 }
 
 fn resolve_paths(cfg: &HttpTlsConfig) -> HttpTlsPaths {
@@ -124,11 +152,32 @@ fn resolve_paths(cfg: &HttpTlsConfig) -> HttpTlsPaths {
         .ca_path
         .clone()
         .unwrap_or_else(|| cfg.tls_dir.join("ca.crt"));
+    let ca_key_path = cfg
+        .ca_key_path
+        .clone()
+        .unwrap_or_else(|| cfg.tls_dir.join("ca.key"));
     HttpTlsPaths {
         cert_path,
         key_path,
         ca_path,
+        ca_key_path,
     }
+}
+
+fn load_local_ca_signer(paths: &HttpTlsPaths) -> Result<Option<CaSigner>, String> {
+    let cert_exists = paths.ca_path.exists();
+    let key_exists = paths.ca_key_path.exists();
+    if cert_exists != key_exists {
+        return Err("http tls: ca cert/key mismatch".to_string());
+    }
+    if !cert_exists {
+        return Ok(None);
+    }
+    let ca_cert = fs::read(&paths.ca_path).map_err(|err| err.to_string())?;
+    let ca_key = fs::read(&paths.ca_key_path).map_err(|err| err.to_string())?;
+    CaSigner::from_cert_and_key(&ca_cert, &ca_key)
+        .map(Some)
+        .map_err(|err| err.to_string())
 }
 
 async fn load_or_fetch_ca_cert(
@@ -275,6 +324,7 @@ fn persist_tls_material(
     key_pem: &str,
     cert_pem: &[u8],
     ca_pem: &[u8],
+    ca_key_der: Option<&[u8]>,
 ) -> Result<(), String> {
     if let Some(parent) = paths.cert_path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
@@ -285,9 +335,15 @@ fn persist_tls_material(
     if let Some(parent) = paths.ca_path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
+    if let Some(parent) = paths.ca_key_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
     write_with_mode(&paths.key_path, key_pem.as_bytes(), 0o600)?;
     write_with_mode(&paths.cert_path, cert_pem, 0o644)?;
     write_with_mode(&paths.ca_path, ca_pem, 0o644)?;
+    if let Some(ca_key_der) = ca_key_der {
+        write_with_mode(&paths.ca_key_path, ca_key_der, 0o600)?;
+    }
     Ok(())
 }
 
