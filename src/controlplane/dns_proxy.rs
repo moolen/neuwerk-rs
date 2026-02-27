@@ -1,5 +1,6 @@
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 
@@ -16,11 +17,21 @@ pub async fn run_dns_proxy(
     dns_map: DnsMap,
     metrics: Metrics,
 ) -> io::Result<()> {
-    let listen = UdpSocket::bind(bind_addr).await?;
+    eprintln!("dns proxy: binding udp {}", bind_addr);
+    let listen = match UdpSocket::bind(bind_addr).await {
+        Ok(sock) => sock,
+        Err(err) => {
+            eprintln!("dns proxy: bind {} failed: {err}", bind_addr);
+            return Err(err);
+        }
+    };
     let upstream = UdpSocket::bind("0.0.0.0:0").await?;
+    eprintln!("dns proxy: listening on {}", bind_addr);
 
     let mut buf = vec![0u8; 2048];
     let mut upstream_buf = vec![0u8; 2048];
+
+    static DNS_LOGS: AtomicUsize = AtomicUsize::new(0);
 
     loop {
         let (len, peer) = listen.recv_from(&mut buf).await?;
@@ -58,6 +69,13 @@ pub async fn run_dns_proxy(
             _ => (false, DnsQuestion::empty(), "default".to_string()),
         };
 
+        if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
+            eprintln!(
+                "dns proxy: query from={} name={} allowed={} group={}",
+                peer, question.name, allowed, source_group
+            );
+        }
+
         if !allowed {
             let reason = if matches!(peer.ip(), IpAddr::V4(_)) {
                 "policy_deny"
@@ -84,6 +102,12 @@ pub async fn run_dns_proxy(
                 return Err(err);
             }
         };
+        if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
+            eprintln!(
+                "dns proxy: upstream response from={} bytes={} group={}",
+                resp_peer, resp_len, source_group
+            );
+        }
         let response = &upstream_buf[..resp_len];
         if let Err(reason) = validate_dns_response(&question, response, resp_peer, upstream_addr) {
             metrics.observe_dns_query("deny", "upstream_mismatch", &source_group);
@@ -141,9 +165,7 @@ impl DnsQuestion {
 }
 
 fn normalize_hostname(name: &str) -> String {
-    name.trim()
-        .trim_end_matches('.')
-        .to_ascii_lowercase()
+    name.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
 fn parse_dns_question(msg: &[u8]) -> Option<DnsQuestion> {

@@ -190,7 +190,11 @@ export function subscribeToWiretap(
   onEvent: (event: import('../types').WiretapEvent) => void,
   onError?: (error: Error) => void
 ): () => void {
-  const eventSource = new EventSource(`${API_BASE}/wiretap/stream`);
+  const token = getAuthToken();
+  const streamUrl = token
+    ? `${API_BASE}/wiretap/stream?access_token=${encodeURIComponent(token)}`
+    : `${API_BASE}/wiretap/stream`;
+  const eventSource = new EventSource(streamUrl);
 
   const handler = (e: MessageEvent) => {
     try {

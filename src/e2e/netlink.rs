@@ -96,12 +96,16 @@ pub async fn add_address(
     address: IpAddr,
     prefix: u8,
 ) -> Result<(), String> {
-    handle
-        .address()
-        .add(index, address, prefix)
-        .execute()
-        .await
-        .map_err(|err| format!("addr add failed: {err}"))
+    match handle.address().add(index, address, prefix).execute().await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let err_str = err.to_string();
+            if ignore_nl_exists(&err_str) {
+                return Ok(());
+            }
+            Err(format!("addr add failed: {err}"))
+        }
+    }
 }
 
 pub async fn add_route_v4(
@@ -111,14 +115,26 @@ pub async fn add_route_v4(
     oif: u32,
     table: Option<u32>,
 ) -> Result<(), String> {
-    let mut req = handle.route().add().v4().destination_prefix(dest, prefix);
+    let mut req = handle
+        .route()
+        .add()
+        .v4()
+        .destination_prefix(dest, prefix)
+        .replace();
     req = req.output_interface(oif);
     if let Some(table_id) = table {
         req = req.table_id(table_id);
     }
-    req.execute()
-        .await
-        .map_err(|err| format!("route add failed: {err}"))
+    match req.execute().await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let err_str = err.to_string();
+            if ignore_nl_exists(&err_str) {
+                return Ok(());
+            }
+            Err(format!("route add failed: {err}"))
+        }
+    }
 }
 
 pub async fn add_gateway_route_v4(
@@ -128,7 +144,7 @@ pub async fn add_gateway_route_v4(
     gateway: std::net::Ipv4Addr,
     oif: u32,
 ) -> Result<(), String> {
-    handle
+    match handle
         .route()
         .add()
         .v4()
@@ -137,7 +153,16 @@ pub async fn add_gateway_route_v4(
         .output_interface(oif)
         .execute()
         .await
-        .map_err(|err| format!("route add via failed: {err}"))
+    {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let err_str = err.to_string();
+            if ignore_nl_exists(&err_str) {
+                return Ok(());
+            }
+            Err(format!("route add via failed: {err}"))
+        }
+    }
 }
 
 pub async fn add_rule_iif_v4(
@@ -156,9 +181,16 @@ pub async fn add_rule_iif_v4(
     if let Some(prio) = priority {
         req = req.priority(prio);
     }
-    req.execute()
-        .await
-        .map_err(|err| format!("rule add failed: {err}"))
+    match req.execute().await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let err_str = err.to_string();
+            if ignore_nl_exists(&err_str) {
+                return Ok(());
+            }
+            Err(format!("rule add failed: {err}"))
+        }
+    }
 }
 
 pub fn ignore_nl_exists(err: &str) -> bool {

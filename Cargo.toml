@@ -60,6 +60,11 @@ tonic-build = "0.12"
 default = []
 dpdk = ["dpdk-sys"]
 
+[patch.crates-io]
+libnuma-sys = { path = "third_party/libnuma-sys" }
+rdma-core-sys = { path = "third_party/rdma-core-sys" }
+dpdk-sys = { path = "third_party/dpdk-sys" }
+
 [[bench]]
 name = "tls"
 harness = false

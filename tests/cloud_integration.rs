@@ -5,12 +5,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use firewall::controlplane::cloud::{IntegrationManager, ReadyChecker};
 use firewall::controlplane::cloud::provider::{CloudError, CloudProvider};
 use firewall::controlplane::cloud::types::{
     CapabilityResult, DiscoveryFilter, InstanceRef, IntegrationCapabilities, IntegrationConfig,
     RouteChange, RouteRef, SubnetRef, TerminationEvent,
 };
+use firewall::controlplane::cloud::{IntegrationManager, ReadyChecker};
 use firewall::controlplane::metrics::Metrics;
 use firewall::dataplane::DrainControl;
 
@@ -22,7 +22,12 @@ struct MutableReady {
 #[async_trait]
 impl ReadyChecker for MutableReady {
     async fn is_ready(&self, ip: IpAddr) -> bool {
-        self.readiness.lock().await.get(&ip).copied().unwrap_or(false)
+        self.readiness
+            .lock()
+            .await
+            .get(&ip)
+            .copied()
+            .unwrap_or(false)
     }
 }
 
@@ -62,15 +67,25 @@ impl CloudProvider for MockProvider {
             .ok_or_else(|| CloudError::NotFound("self instance".to_string()))
     }
 
-    async fn discover_instances(&self, _filter: &DiscoveryFilter) -> Result<Vec<InstanceRef>, CloudError> {
+    async fn discover_instances(
+        &self,
+        _filter: &DiscoveryFilter,
+    ) -> Result<Vec<InstanceRef>, CloudError> {
         Ok(self.instances.lock().await.clone())
     }
 
-    async fn discover_subnets(&self, _filter: &DiscoveryFilter) -> Result<Vec<SubnetRef>, CloudError> {
+    async fn discover_subnets(
+        &self,
+        _filter: &DiscoveryFilter,
+    ) -> Result<Vec<SubnetRef>, CloudError> {
         Ok(self.subnets.lock().await.clone())
     }
 
-    async fn get_route(&self, subnet: &SubnetRef, route_name: &str) -> Result<Option<RouteRef>, CloudError> {
+    async fn get_route(
+        &self,
+        subnet: &SubnetRef,
+        route_name: &str,
+    ) -> Result<Option<RouteRef>, CloudError> {
         let routes = self.routes.lock().await;
         let Some(next_hop) = routes.get(&format!("{}:{route_name}", subnet.id)) else {
             return Ok(None);

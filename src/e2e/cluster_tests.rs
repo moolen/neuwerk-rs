@@ -7,16 +7,16 @@ use openraft::RaftMetrics;
 use reqwest::{Certificate as ReqwestCertificate, Client};
 use tonic::transport::{Certificate, ClientTlsConfig, Endpoint, Identity};
 
+use crate::controlplane::api_auth;
 use crate::controlplane::cluster::bootstrap;
-use crate::controlplane::cluster::migration;
 use crate::controlplane::cluster::config::ClusterConfig;
+use crate::controlplane::cluster::migration;
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::ClusterCommand;
 use crate::controlplane::cluster::types::ClusterTypeConfig;
-use crate::controlplane::api_auth;
 use crate::controlplane::http_api::{run_http_api, HttpApiCluster, HttpApiConfig};
-use crate::controlplane::metrics::Metrics;
 use crate::controlplane::http_tls::{ensure_http_tls, HttpTlsConfig};
+use crate::controlplane::metrics::Metrics;
 use crate::controlplane::policy_config::{PolicyConfig, PolicyMode};
 use crate::controlplane::policy_repository::{
     policy_item_key, PolicyCreateRequest, PolicyDiskStore, PolicyRecord, POLICY_ACTIVE_KEY,
@@ -290,8 +290,7 @@ fn http_tls_ca_replication_joiner() -> Result<(), String> {
         };
         ensure_http_tls(joiner_tls).await?;
 
-        let seed_ca =
-            fs::read(seed_tls_dir.join("ca.crt")).map_err(|e| format!("read ca: {e}"))?;
+        let seed_ca = fs::read(seed_tls_dir.join("ca.crt")).map_err(|e| format!("read ca: {e}"))?;
         let joiner_ca =
             fs::read(joiner_tls_dir.join("ca.crt")).map_err(|e| format!("read ca: {e}"))?;
         if seed_ca != joiner_ca {
@@ -345,8 +344,7 @@ fn http_tls_ca_persists_restart() -> Result<(), String> {
         };
 
         ensure_http_tls(tls_cfg.clone()).await?;
-        let ca_first =
-            fs::read(tls_dir.join("ca.crt")).map_err(|e| format!("read ca: {e}"))?;
+        let ca_first = fs::read(tls_dir.join("ca.crt")).map_err(|e| format!("read ca: {e}"))?;
         let stored = seed
             .store
             .get_state_value(b"http/ca/cert")?
@@ -359,8 +357,7 @@ fn http_tls_ca_persists_restart() -> Result<(), String> {
             fs::remove_dir_all(&tls_dir).map_err(|e| format!("remove tls dir failed: {e}"))?;
         }
         ensure_http_tls(tls_cfg).await?;
-        let ca_second =
-            fs::read(tls_dir.join("ca.crt")).map_err(|e| format!("read ca: {e}"))?;
+        let ca_second = fs::read(tls_dir.join("ca.crt")).map_err(|e| format!("read ca: {e}"))?;
         if ca_second != ca_first {
             return Err("CA changed after restart".to_string());
         }
@@ -1150,7 +1147,8 @@ fn http_api_leader_loss() -> Result<(), String> {
             Duration::from_secs(5),
         )
         .await?;
-        let leader_id = wait_for_leader(&seed.as_ref().unwrap().raft, Duration::from_secs(5)).await?;
+        let leader_id =
+            wait_for_leader(&seed.as_ref().unwrap().raft, Duration::from_secs(5)).await?;
         let seed_id = load_node_id(&seed_dir)?;
 
         let seed_api_addr = SocketAddr::new(seed_ip.into(), http_port);
@@ -1239,8 +1237,7 @@ fn http_api_leader_loss() -> Result<(), String> {
         .await?;
         let token = mint_auth_token(&seed.as_ref().unwrap().store)?;
 
-        let (leader_is_seed, follower_addr, follower_tls, follower_raft) = if leader_id == seed_id
-        {
+        let (leader_is_seed, follower_addr, follower_tls, follower_raft) = if leader_id == seed_id {
             (
                 true,
                 joiner_api_addr,
@@ -1271,12 +1268,19 @@ fn http_api_leader_loss() -> Result<(), String> {
             return Err(format!("health status unexpected: {health}"));
         }
 
-        let policies =
-            http_api_status(follower_addr, &follower_tls, "/api/v1/policies", Some(&token)).await?;
+        let policies = http_api_status(
+            follower_addr,
+            &follower_tls,
+            "/api/v1/policies",
+            Some(&token),
+        )
+        .await?;
         if policies != reqwest::StatusCode::SERVICE_UNAVAILABLE
             && policies != reqwest::StatusCode::BAD_GATEWAY
         {
-            return Err(format!("unexpected policy status after leader loss: {policies}"));
+            return Err(format!(
+                "unexpected policy status after leader loss: {policies}"
+            ));
         }
 
         if leader_is_seed {
@@ -1471,7 +1475,11 @@ fn cluster_replication_put() -> Result<(), String> {
         wait_for_voter(&seed.raft, joiner_a_id, Duration::from_secs(5)).await?;
 
         let leader_id = wait_for_leader(&seed.raft, Duration::from_secs(5)).await?;
-        let leader = if leader_id == seed_id { &seed } else { &joiner_a };
+        let leader = if leader_id == seed_id {
+            &seed
+        } else {
+            &joiner_a
+        };
 
         let key = b"rules/active".to_vec();
         let value = b"v1".to_vec();
@@ -1542,7 +1550,11 @@ fn cluster_gc_deterministic() -> Result<(), String> {
         wait_for_voter(&seed.raft, joiner_a_id, Duration::from_secs(5)).await?;
 
         let leader_id = wait_for_leader(&seed.raft, Duration::from_secs(5)).await?;
-        let leader = if leader_id == seed_id { &seed } else { &joiner_a };
+        let leader = if leader_id == seed_id {
+            &seed
+        } else {
+            &joiner_a
+        };
 
         let stale_key = b"dns/last_seen/foo.allowed/203.0.113.10".to_vec();
         let stale_ts =
@@ -2000,11 +2012,7 @@ fn spawn_http_api(
     token_path: PathBuf,
     cluster: Option<HttpApiCluster>,
 ) -> Result<tokio::task::JoinHandle<()>, String> {
-    let policy_store = PolicyStore::new(
-        DefaultPolicy::Deny,
-        Ipv4Addr::new(10, 0, 0, 0),
-        24,
-    );
+    let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
     let local_store = PolicyDiskStore::new(local_policy_dir);
     let cfg = HttpApiConfig {
         bind_addr,
@@ -2021,15 +2029,24 @@ fn spawn_http_api(
     };
     let metrics = Metrics::new().map_err(|err| format!("metrics init failed: {err}"))?;
     Ok(tokio::spawn(async move {
-        let _ = run_http_api(cfg, policy_store, local_store, cluster, None, None, None, metrics).await;
+        let _ = run_http_api(
+            cfg,
+            policy_store,
+            local_store,
+            cluster,
+            None,
+            None,
+            None,
+            metrics,
+        )
+        .await;
     }))
 }
 
 fn http_api_client(tls_dir: &Path) -> Result<Client, String> {
-    let ca = fs::read(tls_dir.join("ca.crt"))
-        .map_err(|e| format!("read http ca cert failed: {e}"))?;
-    let ca = ReqwestCertificate::from_pem(&ca)
-        .map_err(|e| format!("invalid http ca cert: {e}"))?;
+    let ca =
+        fs::read(tls_dir.join("ca.crt")).map_err(|e| format!("read http ca cert failed: {e}"))?;
+    let ca = ReqwestCertificate::from_pem(&ca).map_err(|e| format!("invalid http ca cert: {e}"))?;
     Client::builder()
         .add_root_certificate(ca)
         .build()

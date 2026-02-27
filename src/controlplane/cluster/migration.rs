@@ -18,8 +18,8 @@ use crate::controlplane::policy_repository::{
     POLICY_ACTIVE_KEY, POLICY_INDEX_KEY,
 };
 use crate::controlplane::service_accounts::{
-    account_item_key, token_index_key, token_item_key, ServiceAccountClusterStore,
-    ServiceAccountDiskStore, ServiceAccount, TokenMeta, SERVICE_ACCOUNTS_INDEX_KEY,
+    account_item_key, token_index_key, token_item_key, ServiceAccount, ServiceAccountClusterStore,
+    ServiceAccountDiskStore, TokenMeta, SERVICE_ACCOUNTS_INDEX_KEY,
 };
 
 const MARKER_DIR: &str = "migrations";
@@ -114,8 +114,15 @@ pub async fn run(
     seed_api_keyset(raft, store, &cfg, &mut report).await?;
     seed_policies(raft, store, &cfg, &mut report).await?;
     seed_service_accounts(raft, store, &cfg, &mut report).await?;
-    seed_http_ca(raft, store, &cfg, current_token.kid.as_str(), &current_token.token, &mut report)
-        .await?;
+    seed_http_ca(
+        raft,
+        store,
+        &cfg,
+        current_token.kid.as_str(),
+        &current_token.token,
+        &mut report,
+    )
+    .await?;
 
     if cfg.verify {
         verify_state(store, &cfg)?;
@@ -133,7 +140,10 @@ fn marker_path(cluster_data_dir: &Path) -> PathBuf {
 
 fn ensure_empty_state(store: &ClusterStore) -> Result<(), String> {
     if store.get_state_value(POLICY_INDEX_KEY)?.is_some() {
-        return Err("cluster already contains policies; abort migration or use --cluster-migrate-force".to_string());
+        return Err(
+            "cluster already contains policies; abort migration or use --cluster-migrate-force"
+                .to_string(),
+        );
     }
     if store.get_state_value(SERVICE_ACCOUNTS_INDEX_KEY)?.is_some() {
         return Err(

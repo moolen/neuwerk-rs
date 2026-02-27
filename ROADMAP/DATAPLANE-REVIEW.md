@@ -37,7 +37,7 @@
 - Step 4 complete: IPv4 fragment drops with metrics, TTL decrement, ICMP Time Exceeded generation, and packet-level unit tests for fragment/TTL handling.
 - Step 5 complete: ICMP policy filters (type/code), default ICMP allowlist, ICMP echo NAT using identifier, ICMP error reverse-NAT based on embedded headers, and unit tests for ICMP flows.
 - Step 6 complete: SNAT/reverse-NAT now prefer DHCP-derived dataplane IP, internal detection uses DHCP prefix plus policy source groups, NAT port exhaustion returns an explicit error, and integration coverage updated to validate DHCP SNAT IP.
-- Follow-up: soft-mode e2e uses `--snat-ip` to keep SNAT address off kernel interfaces, ensuring inbound traffic is routed through the tun dataplane.
+- Follow-up: soft-mode e2e uses `--snat` to keep the SNAT address off kernel interfaces, ensuring inbound traffic is routed through the tun dataplane.
 - Step 7 complete: added dataplane metrics for ARP handled, ICMP decisions (type/code), DHCP lease changes, and tests covering the new counters.
 - Step 8 complete: test coverage added for ARP metric and ICMP decision counters; existing fragment/TTL/ICMP/NAT unit tests cover the remaining dataplane behaviors.
 - Step 9 complete: documentation updated for DHCP-driven dataplane config and observability, plus safety checks to ensure management and dataplane interfaces are distinct.

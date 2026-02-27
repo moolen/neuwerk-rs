@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use prometheus::{
-    Counter, CounterVec, Encoder, Gauge, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
-    TextEncoder,
+    Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts,
+    Registry, TextEncoder,
 };
 use serde::Serialize;
 
@@ -91,15 +93,35 @@ pub struct Metrics {
     dp_flow_opens: CounterVec,
     dp_flow_closes: CounterVec,
     dp_active_flows: Gauge,
+    dp_active_flows_shard: GaugeVec,
     dp_active_nat_entries: Gauge,
+    dp_active_nat_entries_shard: GaugeVec,
     dp_nat_port_utilization_ratio: Gauge,
+    dp_state_lock_wait_seconds: Histogram,
+    dp_state_lock_contended: Counter,
     dp_tls_decisions: CounterVec,
     dp_icmp_decisions: CounterVec,
     dp_ipv4_fragments_dropped: Counter,
     dp_ipv4_ttl_exceeded: Counter,
     dp_arp_handled: Counter,
+    overlay_decap_errors: Counter,
+    overlay_encap_errors: Counter,
+    overlay_packets: CounterVec,
+    overlay_mtu_drops: Counter,
     dpdk_init_ok: Gauge,
     dpdk_init_failures: Counter,
+    dpdk_rx_packets: Counter,
+    dpdk_rx_bytes: Counter,
+    dpdk_rx_dropped: Counter,
+    dpdk_tx_packets: Counter,
+    dpdk_tx_bytes: Counter,
+    dpdk_tx_dropped: Counter,
+    dpdk_rx_packets_by_queue: CounterVec,
+    dpdk_rx_bytes_by_queue: CounterVec,
+    dpdk_rx_dropped_by_queue: CounterVec,
+    dpdk_tx_packets_by_queue: CounterVec,
+    dpdk_tx_bytes_by_queue: CounterVec,
+    dpdk_tx_dropped_by_queue: CounterVec,
     dhcp_lease_active: Gauge,
     dhcp_lease_expiry_epoch: Gauge,
     dhcp_lease_changes: Counter,
@@ -113,6 +135,8 @@ pub struct Metrics {
     integration_termination_complete_errors: Counter,
     integration_drain_duration: HistogramVec,
     integration_termination_drain_start: Histogram,
+    dp_active_flows_counts: Arc<Mutex<HashMap<usize, usize>>>,
+    dp_active_nat_counts: Arc<Mutex<HashMap<usize, usize>>>,
 }
 
 impl Metrics {
@@ -162,9 +186,8 @@ impl Metrics {
             &["reason", "source_group"],
         )
         .map_err(|err| err.to_string())?;
-        let raft_is_leader =
-            Gauge::with_opts(Opts::new("raft_is_leader", "Raft leader status"))
-                .map_err(|err| err.to_string())?;
+        let raft_is_leader = Gauge::with_opts(Opts::new("raft_is_leader", "Raft leader status"))
+            .map_err(|err| err.to_string())?;
         let raft_leader_changes = Counter::with_opts(Opts::new(
             "raft_leader_changes_total",
             "Raft leader changes",
@@ -172,11 +195,9 @@ impl Metrics {
         .map_err(|err| err.to_string())?;
         let raft_current_term = Gauge::with_opts(Opts::new("raft_current_term", "Raft term"))
             .map_err(|err| err.to_string())?;
-        let raft_last_log_index = Gauge::with_opts(Opts::new(
-            "raft_last_log_index",
-            "Raft last log index",
-        ))
-        .map_err(|err| err.to_string())?;
+        let raft_last_log_index =
+            Gauge::with_opts(Opts::new("raft_last_log_index", "Raft last log index"))
+                .map_err(|err| err.to_string())?;
         let raft_last_applied = Gauge::with_opts(Opts::new(
             "raft_last_applied",
             "Raft last applied log index",
@@ -248,14 +269,37 @@ impl Metrics {
         let dp_active_flows =
             Gauge::with_opts(Opts::new("dp_active_flows", "Dataplane active flows"))
                 .map_err(|err| err.to_string())?;
+        let dp_active_flows_shard = GaugeVec::new(
+            Opts::new("dp_active_flows_shard", "Dataplane active flows per shard"),
+            &["shard"],
+        )
+        .map_err(|err| err.to_string())?;
         let dp_active_nat_entries = Gauge::with_opts(Opts::new(
             "dp_active_nat_entries",
             "Dataplane active NAT entries",
         ))
         .map_err(|err| err.to_string())?;
+        let dp_active_nat_entries_shard = GaugeVec::new(
+            Opts::new(
+                "dp_active_nat_entries_shard",
+                "Dataplane active NAT entries per shard",
+            ),
+            &["shard"],
+        )
+        .map_err(|err| err.to_string())?;
         let dp_nat_port_utilization_ratio = Gauge::with_opts(Opts::new(
             "dp_nat_port_utilization_ratio",
             "Dataplane NAT port utilization ratio",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_state_lock_wait_seconds = Histogram::with_opts(HistogramOpts::new(
+            "dp_state_lock_wait_seconds",
+            "Dataplane state lock wait time (seconds)",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_state_lock_contended = Counter::with_opts(Opts::new(
+            "dp_state_lock_contended_total",
+            "Dataplane state lock contention events",
         ))
         .map_err(|err| err.to_string())?;
         let dp_tls_decisions = CounterVec::new(
@@ -281,25 +325,96 @@ impl Metrics {
         let dp_arp_handled =
             Counter::with_opts(Opts::new("dp_arp_handled_total", "Dataplane ARP handled"))
                 .map_err(|err| err.to_string())?;
-        let dpdk_init_ok =
-            Gauge::with_opts(Opts::new("dpdk_init_ok", "DPDK init success (0/1)"))
-                .map_err(|err| err.to_string())?;
-        let dpdk_init_failures = Counter::with_opts(Opts::new(
-            "dpdk_init_failures_total",
-            "DPDK init failures",
+        let overlay_decap_errors = Counter::with_opts(Opts::new(
+            "overlay_decap_errors_total",
+            "Overlay decapsulation errors",
         ))
+        .map_err(|err| err.to_string())?;
+        let overlay_encap_errors = Counter::with_opts(Opts::new(
+            "overlay_encap_errors_total",
+            "Overlay encapsulation errors",
+        ))
+        .map_err(|err| err.to_string())?;
+        let overlay_packets = CounterVec::new(
+            Opts::new("overlay_packets_total", "Overlay packets"),
+            &["mode", "direction"],
+        )
+        .map_err(|err| err.to_string())?;
+        let overlay_mtu_drops =
+            Counter::with_opts(Opts::new("overlay_mtu_drops_total", "Overlay MTU drops"))
+                .map_err(|err| err.to_string())?;
+        let dpdk_init_ok = Gauge::with_opts(Opts::new("dpdk_init_ok", "DPDK init success (0/1)"))
+            .map_err(|err| err.to_string())?;
+        let dpdk_init_failures =
+            Counter::with_opts(Opts::new("dpdk_init_failures_total", "DPDK init failures"))
+                .map_err(|err| err.to_string())?;
+        let dpdk_rx_packets =
+            Counter::with_opts(Opts::new("dpdk_rx_packets_total", "DPDK RX packets"))
+                .map_err(|err| err.to_string())?;
+        let dpdk_rx_bytes = Counter::with_opts(Opts::new("dpdk_rx_bytes_total", "DPDK RX bytes"))
+            .map_err(|err| err.to_string())?;
+        let dpdk_rx_dropped = Counter::with_opts(Opts::new(
+            "dpdk_rx_dropped_total",
+            "DPDK RX dropped packets",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_tx_packets =
+            Counter::with_opts(Opts::new("dpdk_tx_packets_total", "DPDK TX packets"))
+                .map_err(|err| err.to_string())?;
+        let dpdk_tx_bytes = Counter::with_opts(Opts::new("dpdk_tx_bytes_total", "DPDK TX bytes"))
+            .map_err(|err| err.to_string())?;
+        let dpdk_tx_dropped = Counter::with_opts(Opts::new(
+            "dpdk_tx_dropped_total",
+            "DPDK TX dropped packets",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_rx_packets_by_queue = CounterVec::new(
+            Opts::new("dpdk_rx_packets_queue_total", "DPDK RX packets per queue"),
+            &["queue"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_rx_bytes_by_queue = CounterVec::new(
+            Opts::new("dpdk_rx_bytes_queue_total", "DPDK RX bytes per queue"),
+            &["queue"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_rx_dropped_by_queue = CounterVec::new(
+            Opts::new(
+                "dpdk_rx_dropped_queue_total",
+                "DPDK RX dropped packets per queue",
+            ),
+            &["queue"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_tx_packets_by_queue = CounterVec::new(
+            Opts::new("dpdk_tx_packets_queue_total", "DPDK TX packets per queue"),
+            &["queue"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_tx_bytes_by_queue = CounterVec::new(
+            Opts::new("dpdk_tx_bytes_queue_total", "DPDK TX bytes per queue"),
+            &["queue"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_tx_dropped_by_queue = CounterVec::new(
+            Opts::new(
+                "dpdk_tx_dropped_queue_total",
+                "DPDK TX dropped packets per queue",
+            ),
+            &["queue"],
+        )
         .map_err(|err| err.to_string())?;
         let dhcp_lease_active =
             Gauge::with_opts(Opts::new("dhcp_lease_active", "DHCP lease active (0/1)"))
                 .map_err(|err| err.to_string())?;
-        let dhcp_lease_expiry_epoch =
-            Gauge::with_opts(Opts::new("dhcp_lease_expiry_epoch", "DHCP lease expiry epoch"))
-                .map_err(|err| err.to_string())?;
-        let dhcp_lease_changes = Counter::with_opts(Opts::new(
-            "dhcp_lease_changes_total",
-            "DHCP lease changes",
+        let dhcp_lease_expiry_epoch = Gauge::with_opts(Opts::new(
+            "dhcp_lease_expiry_epoch",
+            "DHCP lease expiry epoch",
         ))
         .map_err(|err| err.to_string())?;
+        let dhcp_lease_changes =
+            Counter::with_opts(Opts::new("dhcp_lease_changes_total", "DHCP lease changes"))
+                .map_err(|err| err.to_string())?;
         let integration_route_changes = Counter::with_opts(Opts::new(
             "integration_route_changes_total",
             "Integration route changes",
@@ -348,12 +463,10 @@ impl Metrics {
             &["result"],
         )
         .map_err(|err| err.to_string())?;
-        let integration_termination_drain_start = Histogram::with_opts(
-            HistogramOpts::new(
-                "integration_termination_drain_start_seconds",
-                "Time from termination notice to drain start seconds",
-            )
-        )
+        let integration_termination_drain_start = Histogram::with_opts(HistogramOpts::new(
+            "integration_termination_drain_start_seconds",
+            "Time from termination notice to drain start seconds",
+        ))
         .map_err(|err| err.to_string())?;
 
         registry
@@ -432,10 +545,22 @@ impl Metrics {
             .register(Box::new(dp_active_flows.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dp_active_flows_shard.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dp_active_nat_entries.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dp_active_nat_entries_shard.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dp_nat_port_utilization_ratio.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_state_lock_wait_seconds.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_state_lock_contended.clone()))
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dp_tls_decisions.clone()))
@@ -453,10 +578,58 @@ impl Metrics {
             .register(Box::new(dp_arp_handled.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(overlay_decap_errors.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(overlay_encap_errors.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(overlay_packets.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(overlay_mtu_drops.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dpdk_init_ok.clone()))
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dpdk_init_failures.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_rx_packets.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_rx_bytes.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_rx_dropped.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_tx_packets.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_tx_bytes.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_tx_dropped.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_rx_packets_by_queue.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_rx_bytes_by_queue.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_rx_dropped_by_queue.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_tx_packets_by_queue.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_tx_bytes_by_queue.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_tx_dropped_by_queue.clone()))
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dhcp_lease_active.clone()))
@@ -528,15 +701,22 @@ impl Metrics {
         dp_flow_closes
             .with_label_values(&["idle_timeout"])
             .inc_by(0.0);
-        dp_tls_decisions
-            .with_label_values(&["pending"])
-            .inc_by(0.0);
+        dp_tls_decisions.with_label_values(&["pending"]).inc_by(0.0);
         dp_icmp_decisions
             .with_label_values(&["outbound", "0", "0", "deny", "default"])
             .inc_by(0.0);
         dp_ipv4_fragments_dropped.inc_by(0.0);
         dp_ipv4_ttl_exceeded.inc_by(0.0);
         dp_arp_handled.inc_by(0.0);
+        overlay_decap_errors.inc_by(0.0);
+        overlay_encap_errors.inc_by(0.0);
+        overlay_mtu_drops.inc_by(0.0);
+        for mode in ["none", "vxlan", "geneve"] {
+            overlay_packets.with_label_values(&[mode, "in"]).inc_by(0.0);
+            overlay_packets
+                .with_label_values(&[mode, "out"])
+                .inc_by(0.0);
+        }
 
         raft_is_leader.set(0.0);
         raft_current_term.set(0.0);
@@ -549,10 +729,36 @@ impl Metrics {
         rocksdb_num_running_compactions.set(0.0);
         rocksdb_num_immutable_memtables.set(0.0);
         dp_active_flows.set(0.0);
+        dp_active_flows_shard.with_label_values(&["0"]).set(0.0);
         dp_active_nat_entries.set(0.0);
+        dp_active_nat_entries_shard
+            .with_label_values(&["0"])
+            .set(0.0);
         dp_nat_port_utilization_ratio.set(0.0);
+        dp_state_lock_wait_seconds.observe(0.0);
+        dp_state_lock_contended.inc_by(0.0);
         dpdk_init_ok.set(0.0);
         dpdk_init_failures.inc_by(0.0);
+        dpdk_rx_packets.inc_by(0.0);
+        dpdk_rx_bytes.inc_by(0.0);
+        dpdk_rx_dropped.inc_by(0.0);
+        dpdk_tx_packets.inc_by(0.0);
+        dpdk_tx_bytes.inc_by(0.0);
+        dpdk_tx_dropped.inc_by(0.0);
+        dpdk_rx_packets_by_queue
+            .with_label_values(&["0"])
+            .inc_by(0.0);
+        dpdk_rx_bytes_by_queue.with_label_values(&["0"]).inc_by(0.0);
+        dpdk_rx_dropped_by_queue
+            .with_label_values(&["0"])
+            .inc_by(0.0);
+        dpdk_tx_packets_by_queue
+            .with_label_values(&["0"])
+            .inc_by(0.0);
+        dpdk_tx_bytes_by_queue.with_label_values(&["0"]).inc_by(0.0);
+        dpdk_tx_dropped_by_queue
+            .with_label_values(&["0"])
+            .inc_by(0.0);
         dhcp_lease_active.set(0.0);
         dhcp_lease_expiry_epoch.set(0.0);
         dhcp_lease_changes.inc_by(0.0);
@@ -596,15 +802,35 @@ impl Metrics {
             dp_flow_opens,
             dp_flow_closes,
             dp_active_flows,
+            dp_active_flows_shard,
             dp_active_nat_entries,
+            dp_active_nat_entries_shard,
             dp_nat_port_utilization_ratio,
+            dp_state_lock_wait_seconds,
+            dp_state_lock_contended,
             dp_tls_decisions,
             dp_icmp_decisions,
             dp_ipv4_fragments_dropped,
             dp_ipv4_ttl_exceeded,
             dp_arp_handled,
+            overlay_decap_errors,
+            overlay_encap_errors,
+            overlay_packets,
+            overlay_mtu_drops,
             dpdk_init_ok,
             dpdk_init_failures,
+            dpdk_rx_packets,
+            dpdk_rx_bytes,
+            dpdk_rx_dropped,
+            dpdk_tx_packets,
+            dpdk_tx_bytes,
+            dpdk_tx_dropped,
+            dpdk_rx_packets_by_queue,
+            dpdk_rx_bytes_by_queue,
+            dpdk_rx_dropped_by_queue,
+            dpdk_tx_packets_by_queue,
+            dpdk_tx_bytes_by_queue,
+            dpdk_tx_dropped_by_queue,
             dhcp_lease_active,
             dhcp_lease_expiry_epoch,
             dhcp_lease_changes,
@@ -618,6 +844,8 @@ impl Metrics {
             integration_termination_complete_errors,
             integration_drain_duration,
             integration_termination_drain_start,
+            dp_active_flows_counts: Arc::new(Mutex::new(HashMap::new())),
+            dp_active_nat_counts: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -632,9 +860,7 @@ impl Metrics {
     }
 
     pub fn observe_http_auth(&self, outcome: &str, reason: &str) {
-        self.http_auth
-            .with_label_values(&[outcome, reason])
-            .inc();
+        self.http_auth.with_label_values(&[outcome, reason]).inc();
     }
 
     pub fn observe_dns_query(&self, result: &str, reason: &str, source_group: &str) {
@@ -672,13 +898,11 @@ impl Metrics {
     }
 
     pub fn set_raft_last_log_index(&self, index: Option<u64>) {
-        self.raft_last_log_index
-            .set(index.unwrap_or(0) as f64);
+        self.raft_last_log_index.set(index.unwrap_or(0) as f64);
     }
 
     pub fn set_raft_last_applied(&self, index: Option<u64>) {
-        self.raft_last_applied
-            .set(index.unwrap_or(0) as f64);
+        self.raft_last_applied.set(index.unwrap_or(0) as f64);
     }
 
     pub fn observe_raft_peer_rtt(&self, peer_id: &str, rpc: &str, duration: Duration) {
@@ -698,13 +922,11 @@ impl Metrics {
     }
 
     pub fn set_rocksdb_live_sst_files_size_bytes(&self, value: u64) {
-        self.rocksdb_live_sst_files_size_bytes
-            .set(value as f64);
+        self.rocksdb_live_sst_files_size_bytes.set(value as f64);
     }
 
     pub fn set_rocksdb_total_sst_files_size_bytes(&self, value: u64) {
-        self.rocksdb_total_sst_files_size_bytes
-            .set(value as f64);
+        self.rocksdb_total_sst_files_size_bytes.set(value as f64);
     }
 
     pub fn set_rocksdb_memtable_bytes(&self, value: u64) {
@@ -751,18 +973,48 @@ impl Metrics {
         self.dp_active_flows.set(count as f64);
     }
 
+    pub fn set_dp_active_flows_shard(&self, shard: usize, count: usize) {
+        let shard_label = shard.to_string();
+        self.dp_active_flows_shard
+            .with_label_values(&[&shard_label])
+            .set(count as f64);
+        if let Ok(mut lock) = self.dp_active_flows_counts.lock() {
+            lock.insert(shard, count);
+            let total: usize = lock.values().sum();
+            self.dp_active_flows.set(total as f64);
+        }
+    }
+
     pub fn set_dp_active_nat_entries(&self, count: usize) {
         self.dp_active_nat_entries.set(count as f64);
+    }
+
+    pub fn set_dp_active_nat_entries_shard(&self, shard: usize, count: usize) {
+        let shard_label = shard.to_string();
+        self.dp_active_nat_entries_shard
+            .with_label_values(&[&shard_label])
+            .set(count as f64);
+        if let Ok(mut lock) = self.dp_active_nat_counts.lock() {
+            lock.insert(shard, count);
+            let total: usize = lock.values().sum();
+            self.dp_active_nat_entries.set(total as f64);
+        }
     }
 
     pub fn set_dp_nat_port_utilization_ratio(&self, ratio: f64) {
         self.dp_nat_port_utilization_ratio.set(ratio);
     }
 
+    pub fn observe_dp_state_lock_wait(&self, wait: Duration) {
+        self.dp_state_lock_wait_seconds.observe(wait.as_secs_f64());
+    }
+
+    pub fn inc_dp_state_lock_contended(&self) {
+        self.dp_state_lock_contended.inc();
+    }
+
     pub fn inc_dp_tls_decision(&self, outcome: &str) {
-        self.dp_tls_decisions
-            .with_label_values(&[outcome])
-            .inc();
+        self.dp_tls_decisions.with_label_values(&[outcome]).inc();
     }
 
     pub fn observe_dp_icmp_decision(
@@ -796,12 +1048,90 @@ impl Metrics {
         self.dp_arp_handled.inc();
     }
 
+    pub fn inc_overlay_decap_error(&self) {
+        self.overlay_decap_errors.inc();
+    }
+
+    pub fn inc_overlay_encap_error(&self) {
+        self.overlay_encap_errors.inc();
+    }
+
+    pub fn observe_overlay_packet(&self, mode: &str, direction: &str) {
+        self.overlay_packets
+            .with_label_values(&[mode, direction])
+            .inc();
+    }
+
+    pub fn inc_overlay_mtu_drop(&self) {
+        self.overlay_mtu_drops.inc();
+    }
+
     pub fn set_dpdk_init_ok(&self, ok: bool) {
         self.dpdk_init_ok.set(if ok { 1.0 } else { 0.0 });
     }
 
     pub fn inc_dpdk_init_failure(&self) {
         self.dpdk_init_failures.inc();
+    }
+
+    pub fn inc_dpdk_rx_packets(&self, count: u64) {
+        self.dpdk_rx_packets.inc_by(count as f64);
+    }
+
+    pub fn add_dpdk_rx_bytes(&self, bytes: u64) {
+        self.dpdk_rx_bytes.inc_by(bytes as f64);
+    }
+
+    pub fn inc_dpdk_rx_dropped(&self, count: u64) {
+        self.dpdk_rx_dropped.inc_by(count as f64);
+    }
+
+    pub fn inc_dpdk_tx_packets(&self, count: u64) {
+        self.dpdk_tx_packets.inc_by(count as f64);
+    }
+
+    pub fn add_dpdk_tx_bytes(&self, bytes: u64) {
+        self.dpdk_tx_bytes.inc_by(bytes as f64);
+    }
+
+    pub fn inc_dpdk_tx_dropped(&self, count: u64) {
+        self.dpdk_tx_dropped.inc_by(count as f64);
+    }
+
+    pub fn inc_dpdk_rx_packets_queue(&self, queue: &str, count: u64) {
+        self.dpdk_rx_packets_by_queue
+            .with_label_values(&[queue])
+            .inc_by(count as f64);
+    }
+
+    pub fn add_dpdk_rx_bytes_queue(&self, queue: &str, bytes: u64) {
+        self.dpdk_rx_bytes_by_queue
+            .with_label_values(&[queue])
+            .inc_by(bytes as f64);
+    }
+
+    pub fn inc_dpdk_rx_dropped_queue(&self, queue: &str, count: u64) {
+        self.dpdk_rx_dropped_by_queue
+            .with_label_values(&[queue])
+            .inc_by(count as f64);
+    }
+
+    pub fn inc_dpdk_tx_packets_queue(&self, queue: &str, count: u64) {
+        self.dpdk_tx_packets_by_queue
+            .with_label_values(&[queue])
+            .inc_by(count as f64);
+    }
+
+    pub fn add_dpdk_tx_bytes_queue(&self, queue: &str, bytes: u64) {
+        self.dpdk_tx_bytes_by_queue
+            .with_label_values(&[queue])
+            .inc_by(bytes as f64);
+    }
+
+    pub fn inc_dpdk_tx_dropped_queue(&self, queue: &str, count: u64) {
+        self.dpdk_tx_dropped_by_queue
+            .with_label_values(&[queue])
+            .inc_by(count as f64);
     }
 
     pub fn set_dhcp_lease_active(&self, active: bool) {
@@ -868,8 +1198,11 @@ impl Metrics {
         let families = self.registry.gather();
         let packets_allow = sum_metric(&families, "dp_packets_total", &[("decision", "allow")]);
         let packets_deny = sum_metric(&families, "dp_packets_total", &[("decision", "deny")]);
-        let packets_pending =
-            sum_metric(&families, "dp_packets_total", &[("decision", "pending_tls")]);
+        let packets_pending = sum_metric(
+            &families,
+            "dp_packets_total",
+            &[("decision", "pending_tls")],
+        );
         let bytes_allow = sum_metric(&families, "dp_bytes_total", &[("decision", "allow")]);
         let bytes_deny = sum_metric(&families, "dp_bytes_total", &[("decision", "deny")]);
         let bytes_pending = sum_metric(&families, "dp_bytes_total", &[("decision", "pending_tls")]);

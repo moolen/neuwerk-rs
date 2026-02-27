@@ -1,1 +1,7 @@
 /target
+/cloud-tests/runner/target/
+/cloud-tests/.secrets/
+/third_party/dpdk/src/
+/third_party/dpdk/build/
+/third_party/dpdk/install/
+.terraform

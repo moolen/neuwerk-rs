@@ -24,12 +24,12 @@ use tonic::transport::{
 };
 use tonic::{Request, Response, Status};
 
+use crate::controlplane::api_auth::{ApiKeyStatus, ApiKeySummary};
+use crate::controlplane::cloud::types::TerminationEvent;
 use crate::controlplane::cluster::types::{
     ClusterTypeConfig, JoinRequest, JoinResponse, Node, NodeId,
 };
-use crate::controlplane::api_auth::{ApiKeyStatus, ApiKeySummary};
 use crate::controlplane::metrics::Metrics;
-use crate::controlplane::cloud::types::TerminationEvent;
 
 #[derive(Clone)]
 pub struct RaftTlsConfig {
@@ -247,7 +247,10 @@ impl IntegrationClient {
         })
     }
 
-    pub async fn publish_termination_event(&mut self, event: TerminationEvent) -> Result<(), String> {
+    pub async fn publish_termination_event(
+        &mut self,
+        event: TerminationEvent,
+    ) -> Result<(), String> {
         let req = proto::TerminationEventRequest {
             instance_id: event.instance_id,
             event_id: event.id,
@@ -369,7 +372,9 @@ impl AuthClient {
             .await
             .map_err(|err| format!("auth rotate failed: {err}"))?
             .into_inner();
-        let key = resp.key.ok_or_else(|| "missing key in response".to_string())?;
+        let key = resp
+            .key
+            .ok_or_else(|| "missing key in response".to_string())?;
         Ok(ApiKeySummary {
             kid: key.kid,
             status: parse_status(&key.status),
@@ -380,7 +385,9 @@ impl AuthClient {
 
     pub async fn retire_key(&mut self, kid: &str) -> Result<(), String> {
         self.inner
-            .retire_key(proto::AuthKeyRetireRequest { kid: kid.to_string() })
+            .retire_key(proto::AuthKeyRetireRequest {
+                kid: kid.to_string(),
+            })
             .await
             .map_err(|err| format!("auth retire failed: {err}"))?;
         Ok(())
@@ -517,7 +524,11 @@ where
             .mint_token(req.sub, ttl, kid)
             .await
             .map_err(|err| Status::invalid_argument(err))?;
-        Ok(Response::new(proto::AuthTokenMintResponse { token, kid, exp }))
+        Ok(Response::new(proto::AuthTokenMintResponse {
+            token,
+            kid,
+            exp,
+        }))
     }
 }
 
@@ -567,7 +578,8 @@ impl<H> WiretapServer<H> {
 
 #[async_trait]
 pub trait WiretapHandler: Send + Sync + 'static {
-    async fn subscribe(&self, req: proto::WiretapSubscribeRequest) -> Result<WiretapStream, String>;
+    async fn subscribe(&self, req: proto::WiretapSubscribeRequest)
+        -> Result<WiretapStream, String>;
 }
 
 #[tonic::async_trait]
@@ -658,10 +670,9 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
             Err(_) => {
                 self.observe_peer_rtt("append_entries", elapsed);
                 self.observe_peer_error("append_entries", "timeout");
-                Err(RPCError::Unreachable(Unreachable::new(&std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "append_entries timeout",
-                ))))
+                Err(RPCError::Unreachable(Unreachable::new(
+                    &std::io::Error::new(std::io::ErrorKind::TimedOut, "append_entries timeout"),
+                )))
             }
             Ok(resp) => {
                 let resp = resp.map_err(|err| {
@@ -670,9 +681,9 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
                     RPCError::Network(NetworkError::new(&err))
                 })?;
                 let resp = resp.into_inner();
-                let decoded = decode::<AppendEntriesResponse<<ClusterTypeConfig as RaftTypeConfig>::NodeId>>(
-                    &resp.payload,
-                )
+                let decoded = decode::<
+                    AppendEntriesResponse<<ClusterTypeConfig as RaftTypeConfig>::NodeId>,
+                >(&resp.payload)
                 .map_err(|err| {
                     self.observe_peer_rtt("append_entries", elapsed);
                     self.observe_peer_error("append_entries", "other");
@@ -711,10 +722,9 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
             Err(_) => {
                 self.observe_peer_rtt("install_snapshot", elapsed);
                 self.observe_peer_error("install_snapshot", "timeout");
-                Err(RPCError::Unreachable(Unreachable::new(&std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "install_snapshot timeout",
-                ))))
+                Err(RPCError::Unreachable(Unreachable::new(
+                    &std::io::Error::new(std::io::ErrorKind::TimedOut, "install_snapshot timeout"),
+                )))
             }
             Ok(resp) => {
                 let resp = resp.map_err(|err| {
@@ -723,9 +733,9 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
                     RPCError::Network(NetworkError::new(&err))
                 })?;
                 let resp = resp.into_inner();
-                let decoded = decode::<InstallSnapshotResponse<<ClusterTypeConfig as RaftTypeConfig>::NodeId>>(
-                    &resp.payload,
-                )
+                let decoded = decode::<
+                    InstallSnapshotResponse<<ClusterTypeConfig as RaftTypeConfig>::NodeId>,
+                >(&resp.payload)
                 .map_err(|err| {
                     self.observe_peer_rtt("install_snapshot", elapsed);
                     self.observe_peer_error("install_snapshot", "other");
@@ -761,10 +771,9 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
             Err(_) => {
                 self.observe_peer_rtt("vote", elapsed);
                 self.observe_peer_error("vote", "timeout");
-                Err(RPCError::Unreachable(Unreachable::new(&std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "vote timeout",
-                ))))
+                Err(RPCError::Unreachable(Unreachable::new(
+                    &std::io::Error::new(std::io::ErrorKind::TimedOut, "vote timeout"),
+                )))
             }
             Ok(resp) => {
                 let resp = resp.map_err(|err| {
@@ -773,7 +782,10 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
                     RPCError::Network(NetworkError::new(&err))
                 })?;
                 let resp = resp.into_inner();
-                let decoded = decode::<VoteResponse<<ClusterTypeConfig as RaftTypeConfig>::NodeId>>(&resp.payload)
+                let decoded =
+                    decode::<VoteResponse<<ClusterTypeConfig as RaftTypeConfig>::NodeId>>(
+                        &resp.payload,
+                    )
                     .map_err(|err| {
                         self.observe_peer_rtt("vote", elapsed);
                         self.observe_peer_error("vote", "other");

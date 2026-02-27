@@ -1,4 +1,7 @@
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use serde::Serialize;
 
@@ -52,6 +55,10 @@ impl ReadinessState {
 
     pub fn set_dataplane_running(&self, running: bool) {
         self.dataplane_running.store(running, Ordering::Relaxed);
+    }
+
+    pub fn dataplane_running(&self) -> bool {
+        self.dataplane_running.load(Ordering::Relaxed)
     }
 
     pub fn set_policy_ready(&self, ready: bool) {

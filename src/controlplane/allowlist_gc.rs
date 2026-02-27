@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::dataplane::policy::DynamicIpSetV4;
 use crate::controlplane::wiretap::DnsMap;
+use crate::dataplane::policy::DynamicIpSetV4;
 
 pub async fn run_allowlist_gc(
     allowlist: DynamicIpSetV4,

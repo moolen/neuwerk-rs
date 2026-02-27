@@ -3,6 +3,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::{Rfc2822, Rfc3339};
 use time::OffsetDateTime;
@@ -20,8 +21,8 @@ const IMDS_SCHEDULED_EVENTS_VERSION: &str = "2020-07-01";
 const ARM_BASE: &str = "https://management.azure.com";
 const COMPUTE_API_VERSION: &str = "2023-09-01";
 const NETWORK_API_VERSION: &str = "2023-05-01";
-const TAG_NIC_MANAGEMENT: &str = "neuwerk.io/management";
-const TAG_NIC_DATAPLANE: &str = "neuwerk.io/dataplane";
+const TAG_NIC_MANAGEMENT: &[&str] = &["neuwerk.io/management", "neuwerk.io.management"];
+const TAG_NIC_DATAPLANE: &[&str] = &["neuwerk.io/dataplane", "neuwerk.io.dataplane"];
 const TERMINATION_EVENT_TYPES: &[&str] = &[
     "terminate",
     "preempt",
@@ -93,13 +94,22 @@ impl AzureProvider {
             .await
             .map_err(|err| CloudError::RequestFailed(err.to_string()))?;
         let status = response.status();
-        if !status.is_success() {
-            return Err(CloudError::RequestFailed(format!("request failed: {status}")));
-        }
-        response
-            .json::<T>()
+        let body = response
+            .text()
             .await
-            .map_err(|err| CloudError::InvalidResponse(err.to_string()))
+            .map_err(|err| CloudError::RequestFailed(err.to_string()))?;
+        if !status.is_success() {
+            let snippet = body.chars().take(4096).collect::<String>();
+            return Err(CloudError::RequestFailed(format!(
+                "request failed: {status}, body={snippet}"
+            )));
+        }
+        serde_json::from_str::<T>(&body).map_err(|err| {
+            let snippet = body.chars().take(4096).collect::<String>();
+            CloudError::InvalidResponse(format!(
+                "error decoding response body: {err}, body={snippet}"
+            ))
+        })
     }
 
     async fn fetch_nic(&self, nic_id: &str) -> Result<NicResource, CloudError> {
@@ -128,11 +138,10 @@ impl AzureProvider {
         ips
     }
 
-    fn nic_has_tag(nic: &NicResource, tag: &str) -> bool {
+    fn nic_has_tag(nic: &NicResource, tags: &[&str]) -> bool {
         nic.tags
             .as_ref()
-            .map(|tags| tags.contains_key(tag))
-            .unwrap_or(false)
+            .map_or(false, |map| tags.iter().any(|tag| map.contains_key(*tag)))
     }
 
     fn select_tagged_ips(nics: &[NicResource]) -> Result<(Ipv4Addr, Ipv4Addr), CloudError> {
@@ -153,8 +162,74 @@ impl AzureProvider {
         match (mgmt_ip, dataplane_ip) {
             (Some(mgmt_ip), Some(dataplane_ip)) => Ok((mgmt_ip, dataplane_ip)),
             _ => Err(CloudError::InvalidResponse(
-                "missing tagged nic (neuwerk.io/management, neuwerk.io/dataplane)".to_string(),
+                "missing tagged nic (neuwerk.io/management or neuwerk.io.management, neuwerk.io/dataplane or neuwerk.io.dataplane)".to_string(),
             )),
+        }
+    }
+
+    fn select_named_ips(nics: &[NicResource]) -> Result<(Ipv4Addr, Ipv4Addr), CloudError> {
+        let mut mgmt_ip = None;
+        let mut dataplane_ip = None;
+        for nic in nics {
+            let nic_name = nic.name.as_deref().unwrap_or_default();
+            let configs = nic
+                .properties
+                .as_ref()
+                .and_then(|props| props.ip_configurations.as_ref());
+            if let Some(configs) = configs {
+                for cfg in configs {
+                    let cfg_name = cfg.name.as_deref().unwrap_or_default();
+                    let ip = cfg
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.private_ip_address.clone())
+                        .or_else(|| cfg.private_ip_address.clone())
+                        .and_then(|addr| addr.parse::<Ipv4Addr>().ok());
+                    let Some(ip) = ip else { continue };
+                    if mgmt_ip.is_none() && (cfg_name == "mgmt-ipcfg" || nic_name.contains("mgmt0"))
+                    {
+                        mgmt_ip = Some(ip);
+                    }
+                    if dataplane_ip.is_none()
+                        && (cfg_name == "data-ipcfg" || nic_name.contains("data0"))
+                    {
+                        dataplane_ip = Some(ip);
+                    }
+                }
+            }
+        }
+        match (mgmt_ip, dataplane_ip) {
+            (Some(mgmt_ip), Some(dataplane_ip)) => Ok((mgmt_ip, dataplane_ip)),
+            _ => {
+                for nic in nics {
+                    let nic_name = nic.name.as_deref().unwrap_or("<unknown>");
+                    let cfgs = nic
+                        .properties
+                        .as_ref()
+                        .and_then(|props| props.ip_configurations.as_ref())
+                        .map(|cfgs| {
+                            cfgs.iter()
+                                .map(|cfg| cfg.name.as_deref().unwrap_or("<no-name>"))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    eprintln!("azure integration: nic name={nic_name}, ipcfgs={:?}", cfgs);
+                }
+                Err(CloudError::InvalidResponse(
+                    "missing mgmt/data nic by name (mgmt-ipcfg/data-ipcfg or mgmt0/data0)"
+                        .to_string(),
+                ))
+            }
+        }
+    }
+
+    fn select_mgmt_dataplane_ips(nics: &[NicResource]) -> Result<(Ipv4Addr, Ipv4Addr), CloudError> {
+        match AzureProvider::select_tagged_ips(nics) {
+            Ok(pair) => Ok(pair),
+            Err(err) => {
+                eprintln!("azure integration: {err}; falling back to name-based NIC selection");
+                AzureProvider::select_named_ips(nics)
+            }
         }
     }
 
@@ -179,7 +254,104 @@ impl AzureProvider {
         Ok(nics)
     }
 
-    fn parse_tags(tag_string: Option<&str>, tag_map: Option<&HashMap<String, String>>) -> HashMap<String, String> {
+    async fn list_rg_nics(
+        &self,
+        subscription_id: &str,
+        resource_group: &str,
+    ) -> Result<Vec<NicResource>, CloudError> {
+        let url = format!(
+            "{ARM_BASE}/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Network/networkInterfaces?api-version={NETWORK_API_VERSION}",
+        );
+        let list: NicList = self.get_json(url).await?;
+        Ok(list.value)
+    }
+
+    fn resource_id_matches(nic: &NicResource, resource_id: &str) -> bool {
+        let top = nic
+            .virtual_machine
+            .as_ref()
+            .and_then(|vm| vm.id.as_deref())
+            .map(|id| id.eq_ignore_ascii_case(resource_id))
+            .unwrap_or(false);
+        let nested = nic
+            .properties
+            .as_ref()
+            .and_then(|props| props.virtual_machine.as_ref())
+            .and_then(|vm| vm.id.as_deref())
+            .map(|id| id.eq_ignore_ascii_case(resource_id))
+            .unwrap_or(false);
+        top || nested
+    }
+
+    fn vm_name_matches(nic: &NicResource, vm_name: &str) -> bool {
+        let suffix = format!("/virtualMachines/{vm_name}");
+        let top = nic
+            .virtual_machine
+            .as_ref()
+            .and_then(|vm| vm.id.as_deref())
+            .map(|id| id.ends_with(&suffix))
+            .unwrap_or(false);
+        let nested = nic
+            .properties
+            .as_ref()
+            .and_then(|props| props.virtual_machine.as_ref())
+            .and_then(|vm| vm.id.as_deref())
+            .map(|id| id.ends_with(&suffix))
+            .unwrap_or(false);
+        top || nested
+    }
+
+    async fn resolve_instance_id(
+        &self,
+        compute: &ImdsCompute,
+        subscription_id: &str,
+        resource_group: &str,
+        vmss_name: &str,
+    ) -> Result<String, CloudError> {
+        if let Some(instance_id) = compute.instance_id.as_deref() {
+            return Ok(instance_id.to_string());
+        }
+        if let Some(raw) = compute.name.rsplit('_').next() {
+            if raw.chars().all(|ch| ch.is_ascii_digit()) {
+                return Ok(raw.to_string());
+            }
+        }
+        let url = format!(
+            "{ARM_BASE}/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Compute/virtualMachineScaleSets/{vmss_name}/virtualMachines?api-version={COMPUTE_API_VERSION}",
+        );
+        let list: VmssInstanceList = self.get_json(url).await?;
+        for entry in list.value {
+            if entry.name == compute.name {
+                if let Some(instance_id) = entry.instance_id {
+                    return Ok(instance_id);
+                }
+            }
+        }
+        Err(CloudError::InvalidResponse(
+            "missing instanceId; unable to resolve from VMSS list".to_string(),
+        ))
+    }
+
+    fn deserialize_zones<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let zones = Option::<Vec<Option<String>>>::deserialize(deserializer)?;
+        let Some(zones) = zones else {
+            return Ok(None);
+        };
+        let filtered: Vec<String> = zones.into_iter().filter_map(|zone| zone).collect();
+        if filtered.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(filtered))
+        }
+    }
+
+    fn parse_tags(
+        tag_string: Option<&str>,
+        tag_map: Option<&HashMap<String, String>>,
+    ) -> HashMap<String, String> {
         if let Some(tags) = tag_map {
             return tags.clone();
         }
@@ -192,9 +364,7 @@ impl AzureProvider {
             if entry.is_empty() {
                 continue;
             }
-            if let Some((key, value)) = entry.split_once(':')
-                .or_else(|| entry.split_once('='))
-            {
+            if let Some((key, value)) = entry.split_once(':').or_else(|| entry.split_once('=')) {
                 parsed.insert(key.trim().to_string(), value.trim().to_string());
             }
         }
@@ -225,11 +395,7 @@ impl AzureProvider {
             .and_then(|value| value.get("virtualMachineProfile"))
             .and_then(|value| value.get("scheduledEventsProfile"))
             .and_then(|value| value.get("terminateNotificationProfile"))
-            .and_then(|value| {
-                value
-                    .get("enable")
-                    .or_else(|| value.get("enabled"))
-            })
+            .and_then(|value| value.get("enable").or_else(|| value.get("enabled")))
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
         if enabled {
@@ -277,17 +443,36 @@ impl CloudProvider for AzureProvider {
             .vm_scale_set_name
             .as_deref()
             .ok_or_else(|| CloudError::InvalidResponse("missing vmScaleSetName".to_string()))?;
-        let instance_id = compute
-            .instance_id
-            .as_deref()
-            .ok_or_else(|| CloudError::InvalidResponse("missing instanceId".to_string()))?;
         self.ensure_termination_notifications_enabled(subscription_id, resource_group, vmss_name)
             .await?;
-        let nics = self
-            .list_vmss_nics(subscription_id, resource_group, vmss_name, instance_id)
-            .await?;
-        let (mgmt_ip, dataplane_ip) = AzureProvider::select_tagged_ips(&nics)?;
-        let zone = compute.zone.clone().unwrap_or_else(|| compute.location.clone());
+        let nics = if let Some(resource_id) = compute.resource_id.as_deref() {
+            let rg_nics = self
+                .list_rg_nics(subscription_id, resource_group)
+                .await?
+                .into_iter()
+                .filter(|nic| AzureProvider::resource_id_matches(nic, resource_id))
+                .collect::<Vec<_>>();
+            if rg_nics.is_empty() {
+                let instance_id = self
+                    .resolve_instance_id(&compute, subscription_id, resource_group, vmss_name)
+                    .await?;
+                self.list_vmss_nics(subscription_id, resource_group, vmss_name, &instance_id)
+                    .await?
+            } else {
+                rg_nics
+            }
+        } else {
+            let instance_id = self
+                .resolve_instance_id(&compute, subscription_id, resource_group, vmss_name)
+                .await?;
+            self.list_vmss_nics(subscription_id, resource_group, vmss_name, &instance_id)
+                .await?
+        };
+        let (mgmt_ip, dataplane_ip) = AzureProvider::select_mgmt_dataplane_ips(&nics)?;
+        let zone = compute
+            .zone
+            .clone()
+            .unwrap_or_else(|| compute.location.clone());
         let tags = AzureProvider::parse_tags(compute.tags.as_deref(), None);
         Ok(InstanceRef {
             id: compute.vm_id,
@@ -301,15 +486,22 @@ impl CloudProvider for AzureProvider {
         })
     }
 
-    async fn discover_instances(&self, _filter: &DiscoveryFilter) -> Result<Vec<InstanceRef>, CloudError> {
+    async fn discover_instances(
+        &self,
+        _filter: &DiscoveryFilter,
+    ) -> Result<Vec<InstanceRef>, CloudError> {
         let url = format!(
             "{ARM_BASE}/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Compute/virtualMachineScaleSets/{}/virtualMachines?api-version={COMPUTE_API_VERSION}",
             self.subscription_id, self.resource_group, self.vmss_name
         );
         let list: VmssInstanceList = self.get_json(url).await?;
         let mut instances = Vec::new();
+        let mut rg_nics_cache: Option<Vec<NicResource>> = None;
         for entry in list.value {
-            let instance_id = entry.instance_id.unwrap_or_else(|| entry.name.clone());
+            let instance_id = entry
+                .instance_id
+                .clone()
+                .unwrap_or_else(|| entry.name.clone());
             let network_interfaces = entry
                 .properties
                 .and_then(|props| props.network_profile)
@@ -327,12 +519,63 @@ impl CloudProvider for AzureProvider {
                     nic_resources.push(resource);
                 }
             }
-            let (mgmt_ip, dataplane_ip) = AzureProvider::select_tagged_ips(&nic_resources).map_err(|err| {
-                CloudError::InvalidResponse(format!(
-                    "instance {} missing tagged nics: {err}",
-                    entry.name
-                ))
-            })?;
+            if nic_resources.is_empty() {
+                if let Some(instance_id) = entry.instance_id.as_deref() {
+                    if !instance_id.chars().all(|ch| ch.is_ascii_digit()) {
+                        // Flexible VMSS uses non-numeric instance IDs; skip the VMSS NIC list API.
+                        // We'll fall back to resource-group NIC discovery below.
+                    } else {
+                        match self
+                            .list_vmss_nics(
+                                &self.subscription_id,
+                                &self.resource_group,
+                                &self.vmss_name,
+                                instance_id,
+                            )
+                            .await
+                        {
+                            Ok(nics) => nic_resources = nics,
+                            Err(err) => eprintln!(
+                            "azure integration: vmss nic list failed for {} ({instance_id}): {err}",
+                            entry.name
+                        ),
+                        }
+                    }
+                }
+            }
+            if nic_resources.is_empty() {
+                let Some(resource_id) = entry.id.as_deref() else {
+                    eprintln!(
+                        "azure integration: instance {} missing resource id; cannot match rg nics",
+                        entry.name
+                    );
+                    continue;
+                };
+                if rg_nics_cache.is_none() {
+                    rg_nics_cache = Some(
+                        self.list_rg_nics(&self.subscription_id, &self.resource_group)
+                            .await?,
+                    );
+                }
+                if let Some(rg_nics) = rg_nics_cache.as_ref() {
+                    let vm_name = entry.name.clone();
+                    nic_resources = rg_nics
+                        .iter()
+                        .filter(|nic| {
+                            AzureProvider::resource_id_matches(nic, resource_id)
+                                || AzureProvider::vm_name_matches(nic, &vm_name)
+                        })
+                        .cloned()
+                        .collect();
+                }
+            }
+            let (mgmt_ip, dataplane_ip) = AzureProvider::select_mgmt_dataplane_ips(&nic_resources)
+                .map_err(|err| {
+                    CloudError::InvalidResponse(format!(
+                        "instance {} missing tagged or named nics: {err}",
+                        entry.name
+                    ))
+                })?;
             let zone = entry
                 .zones
                 .as_ref()
@@ -353,7 +596,10 @@ impl CloudProvider for AzureProvider {
         Ok(instances)
     }
 
-    async fn discover_subnets(&self, filter: &DiscoveryFilter) -> Result<Vec<SubnetRef>, CloudError> {
+    async fn discover_subnets(
+        &self,
+        filter: &DiscoveryFilter,
+    ) -> Result<Vec<SubnetRef>, CloudError> {
         let url = format!(
             "{ARM_BASE}/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Network/virtualNetworks?api-version={NETWORK_API_VERSION}",
             self.subscription_id, self.resource_group
@@ -406,7 +652,11 @@ impl CloudProvider for AzureProvider {
         Ok(subnets)
     }
 
-    async fn get_route(&self, subnet: &SubnetRef, route_name: &str) -> Result<Option<RouteRef>, CloudError> {
+    async fn get_route(
+        &self,
+        subnet: &SubnetRef,
+        route_name: &str,
+    ) -> Result<Option<RouteRef>, CloudError> {
         if subnet.route_table_id.is_empty() {
             return Ok(None);
         }
@@ -637,6 +887,7 @@ struct ImdsCompute {
     subscription_id: Option<String>,
     resource_group_name: Option<String>,
     vm_scale_set_name: Option<String>,
+    resource_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -647,9 +898,11 @@ struct VmssInstanceList {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VmssInstance {
+    id: Option<String>,
     name: String,
     instance_id: Option<String>,
     location: Option<String>,
+    #[serde(default, deserialize_with = "AzureProvider::deserialize_zones")]
     zones: Option<Vec<String>>,
     time_created: Option<String>,
     tags: Option<HashMap<String, String>>,
@@ -679,29 +932,47 @@ struct VmssNicList {
     value: Vec<NetworkInterfaceRef>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct NicResource {
+    name: Option<String>,
     tags: Option<HashMap<String, String>>,
+    virtual_machine: Option<NicVmRef>,
     properties: Option<NicProperties>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct NicProperties {
     ip_configurations: Option<Vec<NicIpConfiguration>>,
+    virtual_machine: Option<NicVmRef>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct NicIpConfiguration {
+    name: Option<String>,
     properties: Option<NicIpProperties>,
+    #[serde(rename = "privateIPAddress")]
+    private_ip_address: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NicIpProperties {
+    #[serde(rename = "privateIPAddress")]
+    private_ip_address: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NicVmRef {
+    id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NicIpProperties {
-    private_ip_address: Option<String>,
+struct NicList {
+    value: Vec<NicResource>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -721,7 +992,7 @@ struct VnetResource {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VnetProperties {
-    subnets: Option<Vec<SubnetResource>>, 
+    subnets: Option<Vec<SubnetResource>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -836,9 +1107,9 @@ impl ScheduledEvent {
         let Some(resources) = &self.resources else {
             return false;
         };
-        resources.iter().any(|resource| {
-            resource == &instance.name || resource == &instance.id
-        })
+        resources
+            .iter()
+            .any(|resource| resource == &instance.name || resource == &instance.id)
     }
 }
 
@@ -878,15 +1149,15 @@ mod tests {
 
     #[test]
     fn nic_tag_enforcement_requires_both_tags() {
-        let mgmt_only = vec![nic_with_tags(&[TAG_NIC_MANAGEMENT], "10.0.0.1")];
+        let mgmt_only = vec![nic_with_tags(TAG_NIC_MANAGEMENT, "10.0.0.1")];
         assert!(AzureProvider::select_tagged_ips(&mgmt_only).is_err());
 
-        let dataplane_only = vec![nic_with_tags(&[TAG_NIC_DATAPLANE], "10.0.1.1")];
+        let dataplane_only = vec![nic_with_tags(TAG_NIC_DATAPLANE, "10.0.1.1")];
         assert!(AzureProvider::select_tagged_ips(&dataplane_only).is_err());
 
         let both = vec![
-            nic_with_tags(&[TAG_NIC_MANAGEMENT], "10.0.0.1"),
-            nic_with_tags(&[TAG_NIC_DATAPLANE], "10.0.1.1"),
+            nic_with_tags(TAG_NIC_MANAGEMENT, "10.0.0.1"),
+            nic_with_tags(TAG_NIC_DATAPLANE, "10.0.1.1"),
         ];
         let ips = AzureProvider::select_tagged_ips(&both).expect("tagged ips");
         assert_eq!(ips.0, Ipv4Addr::new(10, 0, 0, 1));

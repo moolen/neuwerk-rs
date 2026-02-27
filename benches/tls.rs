@@ -68,7 +68,10 @@ fn certificate_body(certs: &[Vec<u8>]) -> Vec<u8> {
 fn generate_cert_chain() -> Vec<Vec<u8>> {
     let mut ca_params = CertificateParams::default();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
+    ca_params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
     ca_params
         .distinguished_name
         .push(DnType::CommonName, "Bench CA");
@@ -93,13 +96,8 @@ fn bench_tls_client_hello(c: &mut Criterion) {
     c.bench_function("tls_ingest_client_hello", |b| {
         b.iter(|| {
             let mut tls = TlsFlowState::new();
-            tls.ingest(
-                TlsDirection::ClientToServer,
-                0,
-                true,
-                black_box(&record),
-            )
-            .unwrap();
+            tls.ingest(TlsDirection::ClientToServer, 0, true, black_box(&record))
+                .unwrap();
         })
     });
 }
@@ -113,13 +111,8 @@ fn bench_tls_certificate_chain(c: &mut Criterion) {
     c.bench_function("tls_ingest_certificate_chain", |b| {
         b.iter(|| {
             let mut tls = TlsFlowState::new();
-            tls.ingest(
-                TlsDirection::ServerToClient,
-                0,
-                true,
-                black_box(&record),
-            )
-            .unwrap();
+            tls.ingest(TlsDirection::ServerToClient, 0, true, black_box(&record))
+                .unwrap();
         })
     });
 }
@@ -135,21 +128,11 @@ fn bench_tls_reassembly_split(c: &mut Criterion) {
     c.bench_function("tls_ingest_reassembly_split", |b| {
         b.iter(|| {
             let mut tls = TlsFlowState::new();
-            tls.ingest(
-                TlsDirection::ClientToServer,
-                0,
-                true,
-                black_box(&part1),
-            )
-            .unwrap();
+            tls.ingest(TlsDirection::ClientToServer, 0, true, black_box(&part1))
+                .unwrap();
             let seq = 1 + part1.len() as u32;
-            tls.ingest(
-                TlsDirection::ClientToServer,
-                seq,
-                false,
-                black_box(&part2),
-            )
-            .unwrap();
+            tls.ingest(TlsDirection::ClientToServer, seq, false, black_box(&part2))
+                .unwrap();
         })
     });
 }

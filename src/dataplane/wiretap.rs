@@ -1,10 +1,12 @@
 use std::net::Ipv4Addr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::mpsc;
 
 use crate::dataplane::flow::FlowKey;
 
 pub const DEFAULT_WIRETAP_REPORT_INTERVAL_SECS: u64 = 1;
+static WIRETAP_SEND_FAIL_LOGS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WiretapEventType {
@@ -45,7 +47,11 @@ impl WiretapEmitter {
     }
 
     pub fn try_send(&self, event: WiretapEvent) {
-        let _ = self.sender.try_send(event);
+        if let Err(err) = self.sender.try_send(event) {
+            if WIRETAP_SEND_FAIL_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
+                eprintln!("wiretap: failed to enqueue event: {err}");
+            }
+        }
     }
 }
 

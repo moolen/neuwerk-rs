@@ -1,0 +1,34 @@
+--- a/drivers/net/gve/base/gve_osdep.h
++++ b/drivers/net/gve/base/gve_osdep.h
+@@ -36,13 +36,25 @@
+ 
+ typedef rte_be16_t __sum16;
+ 
+-typedef rte_be16_t __be16;
+-typedef rte_be32_t __be32;
+-typedef rte_be64_t __be64;
++#ifndef __be16
++#define __be16 rte_be16_t
++#endif
++#ifndef __be32
++#define __be32 rte_be32_t
++#endif
++#ifndef __be64
++#define __be64 rte_be64_t
++#endif
+ 
+-typedef rte_le16_t __le16;
+-typedef rte_le32_t __le32;
+-typedef rte_le64_t __le64;
++#ifndef __le16
++#define __le16 rte_le16_t
++#endif
++#ifndef __le32
++#define __le32 rte_le32_t
++#endif
++#ifndef __le64
++#define __le64 rte_le64_t
++#endif
+ 
+ typedef rte_iova_t dma_addr_t;
+ 

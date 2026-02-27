@@ -18,13 +18,29 @@ cargo build
 
 The software dataplane uses `--data-plane-mode tun|tap` (default `tun`) and requires a TUN/TAP device on Linux.
 
+### DPDK Build (vendored)
+`make build.dpdk` builds a pinned DPDK release from source and then builds the firewall with the `dpdk` feature.
+
+```bash
+make build.dpdk
+```
+
+Notes:
+- The DPDK version is pinned in `third_party/dpdk/VERSION`.
+- The build installs DPDK into `third_party/dpdk/install/<version>`.
+- To use a custom DPDK install, set `DPDK_DIR=/path/to/dpdk-prefix` before running `make build.dpdk`.
+- To rebuild an existing install, set `DPDK_FORCE_REBUILD=1`.
+- Default build disables `net/ionic` due to GCC 15 type conflicts; override via `DPDK_DISABLE_DRIVERS=...` or `DPDK_MESON_ARGS`.
+- Local patches in `third_party/dpdk/patches/*.patch` are applied during the vendored build.
+- Build dependencies: `meson`, `ninja`, `python3`, `pkg-config`, `libnuma` headers, and `pyelftools` (python module).
+
 ## Runtime
 The binary requires the management interface, dataplane interface, DNS upstream, and DNS listen flags.
 
 Notes:
 - `--management-interface` and `--data-plane-interface` must be different.
 - DPDK mode requires DHCP on the dataplane NIC and the process exits if DHCP fails.
-- Software mode can override SNAT with `--snat-ip <ipv4>` (useful for tests); production SNAT IPs are still expected to come from DHCP in DPDK mode.
+- Software mode can override SNAT with `--snat <ipv4>` (useful for tests); production SNAT IPs are still expected to come from DHCP in DPDK mode.
 
 ## Tests
 All tests run without NIC hardware or hugepages.

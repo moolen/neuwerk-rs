@@ -1,15 +1,19 @@
+use std::collections::HashMap;
 use std::io;
 use std::mem;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::os::fd::AsRawFd;
+use std::process::Command;
+use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
 use crate::controlplane::api_auth;
-use crate::controlplane::dhcp::{DhcpClient, DhcpClientConfig};
-use crate::controlplane::service_accounts::{ServiceAccountStatus, TokenStatus};
 use crate::controlplane::cluster::rpc::{AuthClient, RaftTlsConfig};
 use crate::controlplane::cluster::store::ClusterStore;
+use crate::controlplane::dhcp::{DhcpClient, DhcpClientConfig};
 use crate::controlplane::policy_config::{DnsPolicy, PolicyConfig, PolicyMode, PolicyValue};
 use crate::controlplane::policy_repository::{PolicyActive, PolicyRecord};
+use crate::controlplane::service_accounts::{ServiceAccountStatus, TokenStatus};
 use crate::controlplane::PolicyStore;
 use crate::dataplane::config::DataplaneConfigStore;
 use crate::dataplane::policy::{
@@ -17,21 +21,22 @@ use crate::dataplane::policy::{
 };
 use crate::dataplane::{DpdkAdapter, EngineState};
 use crate::e2e::services::{
-    dns_query, dns_query_response, http_api_health, http_api_status, http_auth_token_login,
-    http_api_client_with_cookie, http_api_post_raw, http_auth_whoami, http_create_service_account, http_create_service_account_token,
-    http_delete_policy, http_delete_service_account, http_get, http_get_dns_cache, http_get_path,
-    http_get_policy, http_get_stats, http_list_policies, http_list_service_account_tokens,
-    http_list_service_accounts, http_revoke_service_account_token, http_set_policy, http_stream,
-    http_stream_path, http_update_policy, http_wait_for_health, https_get, https_get_path,
-    https_get_tls12, https_get_tls13, tls_client_hello_raw, udp_echo,
+    dns_query, dns_query_response, http_api_client_with_cookie, http_api_health, http_api_post_raw,
+    http_api_status, http_auth_token_login, http_auth_whoami, http_create_service_account,
+    http_create_service_account_token, http_delete_policy, http_delete_service_account, http_get,
+    http_get_dns_cache, http_get_path, http_get_policy, http_get_stats, http_list_policies,
+    http_list_service_account_tokens, http_list_service_accounts,
+    http_revoke_service_account_token, http_set_policy, http_stream, http_stream_path,
+    http_update_policy, http_wait_for_health, https_get, https_get_path, https_get_tls12,
+    https_get_tls13, tls_client_hello_raw, udp_echo,
 };
 use crate::e2e::topology::TopologyConfig;
 use ::time::format_description::well_known::Rfc3339;
 use ::time::Duration as TimeDuration;
 use ::time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, watch};
 use tokio::net::{TcpSocket, UdpSocket};
+use tokio::sync::{mpsc, watch};
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::parse_x509_certificate;
 use x509_parser::pem::parse_x509_pem;
@@ -225,16 +230,32 @@ pub fn cases() -> Vec<TestCase> {
             func: icmp_echo_allowed,
         },
         TestCase {
+            name: "icmp_type_filtering",
+            func: icmp_type_filtering,
+        },
+        TestCase {
             name: "icmp_ttl_exceeded",
             func: icmp_ttl_exceeded,
+        },
+        TestCase {
+            name: "udp_ttl_decremented",
+            func: udp_ttl_decremented,
         },
         TestCase {
             name: "ipv4_fragment_drop_metrics",
             func: ipv4_fragment_drop_metrics,
         },
         TestCase {
+            name: "ipv4_fragment_not_forwarded",
+            func: ipv4_fragment_not_forwarded,
+        },
+        TestCase {
             name: "nat_idle_eviction_metrics",
             func: nat_idle_eviction_metrics,
+        },
+        TestCase {
+            name: "nat_port_deterministic",
+            func: nat_port_deterministic,
         },
         TestCase {
             name: "snat_override_applied",
@@ -379,6 +400,48 @@ pub fn cases() -> Vec<TestCase> {
         TestCase {
             name: "dns_allowlist_gc_keeps_active_flow",
             func: dns_allowlist_gc_keeps_active_flow,
+        },
+    ]
+}
+
+pub fn overlay_cases_vxlan() -> Vec<TestCase> {
+    vec![
+        TestCase {
+            name: "overlay_vxlan_round_trip",
+            func: overlay_vxlan_round_trip,
+        },
+        TestCase {
+            name: "overlay_vxlan_wrong_vni_drop",
+            func: overlay_vxlan_wrong_vni_drop,
+        },
+        TestCase {
+            name: "overlay_vxlan_wrong_port_drop",
+            func: overlay_vxlan_wrong_port_drop,
+        },
+        TestCase {
+            name: "overlay_vxlan_mtu_drop",
+            func: overlay_vxlan_mtu_drop,
+        },
+    ]
+}
+
+pub fn overlay_cases_geneve() -> Vec<TestCase> {
+    vec![
+        TestCase {
+            name: "overlay_geneve_round_trip",
+            func: overlay_geneve_round_trip,
+        },
+        TestCase {
+            name: "overlay_geneve_wrong_vni_drop",
+            func: overlay_geneve_wrong_vni_drop,
+        },
+        TestCase {
+            name: "overlay_geneve_wrong_port_drop",
+            func: overlay_geneve_wrong_port_drop,
+        },
+        TestCase {
+            name: "overlay_geneve_mtu_drop",
+            func: overlay_geneve_mtu_drop,
         },
     ]
 }
@@ -679,8 +742,13 @@ fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(), String> {
             return Err("expected ttl token to include expires_at".to_string());
         }
 
-        let status =
-            http_api_status(api_addr, &tls_dir, "/api/v1/policies", Some(&token_resp.token)).await?;
+        let status = http_api_status(
+            api_addr,
+            &tls_dir,
+            "/api/v1/policies",
+            Some(&token_resp.token),
+        )
+        .await?;
         if !status.is_success() {
             return Err(format!("service account token rejected: {status}"));
         }
@@ -694,7 +762,10 @@ fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(), String> {
                 Some(&admin_token),
             )
             .await?;
-            if tokens.iter().any(|item| item.id == token_resp.token_meta.id) {
+            if tokens
+                .iter()
+                .any(|item| item.id == token_resp.token_meta.id)
+            {
                 break;
             }
             if Instant::now() >= deadline {
@@ -724,7 +795,10 @@ fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(), String> {
                 Some(&admin_token),
             )
             .await?;
-            if let Some(token) = tokens.iter().find(|item| item.id == token_resp.token_meta.id) {
+            if let Some(token) = tokens
+                .iter()
+                .find(|item| item.id == token_resp.token_meta.id)
+            {
                 if token.status == TokenStatus::Revoked {
                     break;
                 }
@@ -735,8 +809,13 @@ fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(), String> {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        let status =
-            http_api_status(api_addr, &tls_dir, "/api/v1/policies", Some(&token_resp.token)).await?;
+        let status = http_api_status(
+            api_addr,
+            &tls_dir,
+            "/api/v1/policies",
+            Some(&token_resp.token),
+        )
+        .await?;
         if status != reqwest::StatusCode::UNAUTHORIZED {
             return Err(format!("expected unauthorized after revoke, got {status}"));
         }
@@ -779,7 +858,8 @@ fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(), String> {
 
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            let accounts = http_list_service_accounts(api_addr, &tls_dir, Some(&admin_token)).await?;
+            let accounts =
+                http_list_service_accounts(api_addr, &tls_dir, Some(&admin_token)).await?;
             if let Some(item) = accounts.iter().find(|item| item.id == account.id) {
                 if item.status == ServiceAccountStatus::Disabled {
                     break;
@@ -875,7 +955,13 @@ fn dpdk_dhcp_l2_hairpin(_cfg: &TopologyConfig) -> Result<(), String> {
             default_action: None,
         };
 
-        policy_store.rebuild(vec![group], DnsPolicy::new(Vec::new()), Some(DefaultPolicy::Deny));
+        policy_store
+            .rebuild(
+                vec![group],
+                DnsPolicy::new(Vec::new()),
+                Some(DefaultPolicy::Deny),
+            )
+            .map_err(|e| format!("{e}"))?;
 
         let policy = policy_store.snapshot();
         let mut state = EngineState::new_with_idle_timeout(
@@ -898,6 +984,7 @@ fn dpdk_dhcp_l2_hairpin(_cfg: &TopologyConfig) -> Result<(), String> {
                 retry_max: 5,
                 lease_min_secs: 1,
                 hostname: None,
+                update_internal_cidr: true,
             },
             mac_rx,
             rx: dp_to_cp_rx,
@@ -1009,6 +1096,7 @@ fn dpdk_dhcp_retries_exhausted(_cfg: &TopologyConfig) -> Result<(), String> {
                 retry_max: 2,
                 lease_min_secs: 1,
                 hostname: None,
+                update_internal_cidr: true,
             },
             mac_rx,
             rx: dp_to_cp_rx,
@@ -1021,9 +1109,7 @@ fn dpdk_dhcp_retries_exhausted(_cfg: &TopologyConfig) -> Result<(), String> {
         let dhcp_task = tokio::spawn(async move { dhcp_client.run().await });
         let _ = mac_tx.send([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
 
-        let drain_task = tokio::spawn(async move {
-            while cp_to_dp_rx.recv().await.is_some() {}
-        });
+        let drain_task = tokio::spawn(async move { while cp_to_dp_rx.recv().await.is_some() {} });
 
         let result = tokio::time::timeout(Duration::from_secs(2), dhcp_task).await;
         drain_task.abort();
@@ -1077,6 +1163,7 @@ fn dpdk_dhcp_renewal_updates_config(_cfg: &TopologyConfig) -> Result<(), String>
                 retry_max: 5,
                 lease_min_secs: 1,
                 hostname: None,
+                update_internal_cidr: true,
             },
             mac_rx,
             rx: dp_to_cp_rx,
@@ -1201,7 +1288,14 @@ source_groups:
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, audit_policy, PolicyMode::Audit, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            audit_policy,
+            PolicyMode::Audit,
+            Some(&token),
+        )
+        .await?;
         let resp = dns_query_response(client_bind, dns_server, "baz.blocked").await?;
         if resp.rcode != 3 {
             return Err("audit policy unexpectedly changed enforcement".to_string());
@@ -1226,8 +1320,14 @@ fn api_policy_persisted_local(cfg: &TopologyConfig) -> Result<(), String> {
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let record =
-            http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        let record = http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         let store_dir = std::path::PathBuf::from("/var/lib/neuwerk/local-policy-store");
         let active_path = store_dir.join("active.json");
         wait_for_path(&active_path, Duration::from_secs(5))?;
@@ -1276,9 +1376,14 @@ fn api_policy_active_semantics(cfg: &TopologyConfig) -> Result<(), String> {
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
         let baseline = read_active_id(&active_path)?;
-        let _ =
-            http_set_policy(api_addr, &tls_dir, audit_policy, PolicyMode::Audit, Some(&token))
-                .await?;
+        let _ = http_set_policy(
+            api_addr,
+            &tls_dir,
+            audit_policy,
+            PolicyMode::Audit,
+            Some(&token),
+        )
+        .await?;
         let after_audit = read_active_id(&active_path)?;
         if after_audit != baseline {
             return Err("audit policy changed active id".to_string());
@@ -1325,8 +1430,8 @@ fn api_policy_get_update_delete(cfg: &TopologyConfig) -> Result<(), String> {
         )
         .await?;
 
-        let fetched = http_get_policy(api_addr, &tls_dir, &record.id.to_string(), Some(&token))
-            .await?;
+        let fetched =
+            http_get_policy(api_addr, &tls_dir, &record.id.to_string(), Some(&token)).await?;
         if fetched.id != record.id {
             return Err("policy get returned wrong record".to_string());
         }
@@ -1386,11 +1491,23 @@ fn api_policy_list_ordering(cfg: &TopologyConfig) -> Result<(), String> {
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let _ = http_set_policy(api_addr, &tls_dir, policy_a, PolicyMode::Audit, Some(&token))
-            .await?;
+        let _ = http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy_a,
+            PolicyMode::Audit,
+            Some(&token),
+        )
+        .await?;
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let _ = http_set_policy(api_addr, &tls_dir, policy_b, PolicyMode::Audit, Some(&token))
-            .await?;
+        let _ = http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy_b,
+            PolicyMode::Audit,
+            Some(&token),
+        )
+        .await?;
         let list = http_list_policies(api_addr, &tls_dir, Some(&token)).await?;
         if list.len() < 2 {
             return Err("policy list missing entries".to_string());
@@ -1530,14 +1647,8 @@ fn api_body_limit_rejects_large(cfg: &TopologyConfig) -> Result<(), String> {
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
         let body = vec![b'a'; 3 * 1024 * 1024];
-        let status = http_api_post_raw(
-            api_addr,
-            &tls_dir,
-            "/api/v1/policies",
-            body,
-            Some(&token),
-        )
-        .await?;
+        let status =
+            http_api_post_raw(api_addr, &tls_dir, "/api/v1/policies", body, Some(&token)).await?;
         if status != reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             return Err(format!("expected 413, got {}", status));
         }
@@ -1686,12 +1797,9 @@ fn api_metrics_dns_dataplane(cfg: &TopologyConfig) -> Result<(), String> {
             return Err("dns deny metrics did not increment".to_string());
         }
 
-        let dns_nxdomain = metric_value_with_labels(
-            &body,
-            "dns_nxdomain_total",
-            &[("source", "policy")],
-        )
-        .ok_or_else(|| "missing dns nxdomain metrics".to_string())?;
+        let dns_nxdomain =
+            metric_value_with_labels(&body, "dns_nxdomain_total", &[("source", "policy")])
+                .ok_or_else(|| "missing dns nxdomain metrics".to_string())?;
         if dns_nxdomain < 1.0 {
             return Err("dns nxdomain metrics did not increment".to_string());
         }
@@ -1762,10 +1870,7 @@ fn api_tls_key_permissions(cfg: &TopologyConfig) -> Result<(), String> {
         .mode()
         & 0o777;
     if mode != 0o600 {
-        return Err(format!(
-            "node.key permissions too permissive: {:o}",
-            mode
-        ));
+        return Err(format!("node.key permissions too permissive: {:o}", mode));
     }
     Ok(())
 }
@@ -1795,8 +1900,8 @@ source_groups:
         src_cidr = format!("{}/24", cfg.client_dp_ip),
         dst_ip = cfg.up_dp_ip
     );
-    let policy: PolicyConfig = serde_yaml::from_str(&policy_yaml)
-        .map_err(|e| format!("policy yaml error: {e}"))?;
+    let policy: PolicyConfig =
+        serde_yaml::from_str(&policy_yaml).map_err(|e| format!("policy yaml error: {e}"))?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1804,12 +1909,164 @@ source_groups:
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         Ok::<(), String>(())
     })?;
 
-    icmp_echo(cfg.client_dp_ip, cfg.up_dp_ip, Duration::from_secs(2))?;
-    Ok(())
+    match icmp_echo(cfg.client_dp_ip, cfg.up_dp_ip, Duration::from_secs(3)) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let debug = overlay_debug_snapshot(cfg);
+            Err(format!("{err}\n-- dataplane debug --\n{debug}"))
+        }
+    }
+}
+
+fn icmp_type_filtering(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let token = api_auth_token(cfg)?;
+    let policy_yaml = format!(
+        r#"
+default_policy: deny
+source_groups:
+  - id: "icmp-filter"
+    priority: 0
+    sources:
+      cidrs: ["{src_cidr}"]
+    rules:
+      - id: "allow-udp"
+        priority: 0
+        action: allow
+        match:
+          dst_ips: ["{dst_ip}"]
+          proto: udp
+          dst_ports: [{dst_port}]
+      - id: "allow-icmp-time-exceeded"
+        priority: 1
+        action: allow
+        match:
+          dst_ips: ["{dst_ip}"]
+          proto: icmp
+          icmp_types: [11]
+          icmp_codes: [0]
+"#,
+        src_cidr = format!("{}/24", cfg.client_dp_ip),
+        dst_ip = cfg.up_dp_ip,
+        dst_port = cfg.up_udp_port
+    );
+    let policy: PolicyConfig =
+        serde_yaml::from_str(&policy_yaml).map_err(|e| format!("policy yaml error: {e}"))?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        Ok::<(), String>(())
+    })?;
+
+    match icmp_echo(cfg.client_dp_ip, cfg.up_dp_ip, Duration::from_millis(500)) {
+        Ok(_) => {
+            return Err("icmp echo unexpectedly allowed".to_string());
+        }
+        Err(err) => {
+            if !err.contains("timed out") {
+                return Err(format!("icmp echo unexpected error: {err}"));
+            }
+        }
+    }
+
+    let internal_port = 40123u16;
+    let marker = b"icmp-filter";
+    let upstream_ns = netns_rs::NetNs::get(&cfg.upstream_ns).map_err(|e| format!("{e}"))?;
+    let (ready_tx, ready_rx) = std_mpsc::channel();
+    let (result_tx, result_rx) = std_mpsc::channel();
+    let expected_src = cfg.dp_public_ip;
+    let expected_dst = cfg.up_dp_ip;
+    let expected_dst_port = cfg.up_udp_port;
+    let listen_timeout = Duration::from_secs(2);
+    let handle = std::thread::spawn(move || {
+        let res = upstream_ns.run(|_| {
+            let fd = open_udp_raw_socket(expected_dst, listen_timeout)?;
+            let _ = ready_tx.send(());
+            let packet = wait_for_udp_packet_on_fd(
+                fd,
+                expected_src,
+                expected_dst,
+                expected_dst_port,
+                Some(marker),
+                listen_timeout,
+            )?;
+            unsafe {
+                libc::close(fd);
+            }
+            Ok::<u16, String>(packet.src_port)
+        });
+        let _ = result_tx.send(res);
+    });
+
+    ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|e| format!("upstream listener not ready: {e}"))?;
+    let mut payload = Vec::new();
+    payload.extend_from_slice(marker);
+    payload.extend_from_slice(&internal_port.to_be_bytes());
+    send_udp_with_payload_from_port(
+        cfg.client_dp_ip,
+        internal_port,
+        cfg.up_dp_ip,
+        cfg.up_udp_port,
+        &payload,
+    )?;
+    let ext_port_result = result_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|e| format!("upstream capture timed out: {e}"))?;
+    let ext_port = ext_port_result.map_err(|e| format!("{e}"))??;
+    let _ = handle.join();
+
+    let upstream_ns_sender = netns_rs::NetNs::get(&cfg.upstream_ns).map_err(|e| format!("{e}"))?;
+    upstream_ns_sender
+        .run(|_| {
+            send_icmp_time_exceeded(
+                cfg.up_dp_ip,
+                cfg.dp_public_ip,
+                cfg.dp_public_ip,
+                cfg.up_dp_ip,
+                ext_port,
+                cfg.up_udp_port,
+            )
+        })
+        .map_err(|e| format!("{e}"))??;
+    let icmp_fd = open_icmp_socket(cfg.client_dp_ip, Duration::from_secs(2))?;
+    let icmp_result = wait_for_icmp_time_exceeded_on_fd(
+        icmp_fd,
+        cfg.client_dp_ip,
+        cfg.up_dp_ip,
+        internal_port,
+        cfg.up_udp_port,
+        Some(cfg.up_dp_ip),
+    );
+    unsafe {
+        libc::close(icmp_fd);
+    }
+    icmp_result
 }
 
 fn icmp_ttl_exceeded(cfg: &TopologyConfig) -> Result<(), String> {
@@ -1840,8 +2097,8 @@ source_groups:
         dst_ip = cfg.up_dp_ip,
         dst_port = dst_port
     );
-    let policy: PolicyConfig = serde_yaml::from_str(&policy_yaml)
-        .map_err(|e| format!("policy yaml error: {e}"))?;
+    let policy: PolicyConfig =
+        serde_yaml::from_str(&policy_yaml).map_err(|e| format!("policy yaml error: {e}"))?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1853,33 +2110,242 @@ source_groups:
         let before_body = http_get_path(metrics_addr, "metrics", "/metrics").await?;
         let before = metric_plain_value(&before_body, "dp_ipv4_ttl_exceeded_total").unwrap_or(0.0);
 
-        let src_port =
-            send_udp_with_ttl(cfg.client_dp_ip, cfg.up_dp_ip, dst_port, 2)?;
-
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let ttl_candidates = [1u32, 2u32];
+        let mut last_ttl = ttl_candidates[0];
+        let mut last_icmp_err: Option<String> = None;
+        let mut ttl_idx = 1usize;
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let icmp_fd = open_icmp_socket(cfg.client_dp_ip, Duration::from_millis(400))?;
         loop {
+            let rx_before = dp_iface_rx_packets(cfg).unwrap_or(0);
+            let ttl = last_ttl;
+            let port = send_udp_with_ttl(
+                cfg.client_dp_ip,
+                cfg.up_dp_ip,
+                dst_port,
+                ttl,
+            )?;
+            let mut saw_rx = false;
+            for _ in 0..5 {
+                if dp_iface_rx_packets(cfg).unwrap_or(0) > rx_before {
+                    saw_rx = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let icmp_result = wait_for_icmp_time_exceeded_on_fd(
+                icmp_fd,
+                cfg.client_dp_ip,
+                cfg.up_dp_ip,
+                port,
+                dst_port,
+                Some(cfg.dp_public_ip),
+            );
+            if let Err(err) = &icmp_result {
+                last_icmp_err = Some(err.clone());
+            }
             let after_body = http_get_path(metrics_addr, "metrics", "/metrics").await?;
-            let after = metric_plain_value(&after_body, "dp_ipv4_ttl_exceeded_total").unwrap_or(0.0);
+            let after =
+                metric_plain_value(&after_body, "dp_ipv4_ttl_exceeded_total").unwrap_or(0.0);
             if after >= before + 1.0 {
-                break;
+                if icmp_result.is_ok() {
+                    break;
+                }
+                let debug = overlay_debug_snapshot(cfg);
+                unsafe {
+                    libc::close(icmp_fd);
+                }
+                return Err(format!(
+                    "ttl exceeded metrics incremented but ICMP time exceeded was not observed (ttl_exceeded_total={}, last_ttl={}, icmp_err={})\n-- metrics --\n{after_body}\n-- dataplane debug --\n{debug}",
+                    after,
+                    last_ttl,
+                    icmp_result.unwrap_err()
+                ));
+            } else if icmp_result.is_ok() {
+                let debug = overlay_debug_snapshot(cfg);
+                unsafe {
+                    libc::close(icmp_fd);
+                }
+                return Err(format!(
+                    "ICMP time exceeded observed without ttl metrics increment (ttl_exceeded_total={}, last_ttl={}, expected_src={})\n-- metrics --\n{after_body}\n-- dataplane debug --\n{debug}",
+                    after,
+                    last_ttl,
+                    cfg.dp_public_ip
+                ));
             }
             if Instant::now() >= deadline {
-                return Err("ttl exceeded metrics did not increment".to_string());
+                let dp_packets = metric_value_with_labels(
+                    &after_body,
+                    "dp_packets_total",
+                    &[
+                        ("direction", "outbound"),
+                        ("proto", "udp"),
+                        ("decision", "allow"),
+                        ("source_group", "ttl"),
+                    ],
+                )
+                .unwrap_or(0.0);
+                let flow_opens = metric_value_with_labels(
+                    &after_body,
+                    "dp_flow_opens_total",
+                    &[("proto", "udp"), ("source_group", "ttl")],
+                )
+                .unwrap_or(0.0);
+                let debug = overlay_debug_snapshot(cfg);
+                unsafe {
+                    libc::close(icmp_fd);
+                }
+                return Err(format!(
+                    "ttl exceeded metrics did not increment (ttl_exceeded_total={}, dp_packets_total={}, dp_flow_opens_total={}, dp0_rx_packets={}, last_ttl={}, last_icmp_err={})\n-- metrics --\n{after_body}\n-- dataplane debug --\n{debug}",
+                    after,
+                    dp_packets,
+                    flow_opens,
+                    dp_iface_rx_packets(cfg).unwrap_or(0),
+                    last_ttl,
+                    last_icmp_err.unwrap_or_else(|| "none".to_string())
+                ));
+            }
+            let next_ttl = ttl_candidates[ttl_idx];
+            ttl_idx = (ttl_idx + 1) % ttl_candidates.len();
+            last_ttl = next_ttl;
+            if !saw_rx {
+                continue;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        let _ = wait_for_icmp_time_exceeded(
-            cfg.client_dp_ip,
-            cfg.client_dp_ip,
-            cfg.up_dp_ip,
-            src_port,
-            dst_port,
-            Duration::from_millis(300),
-        );
-
+        unsafe {
+            libc::close(icmp_fd);
+        }
         Ok(())
     })
+}
+
+fn udp_ttl_decremented(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+    let token = api_auth_token(cfg)?;
+    let ttl_port = cfg.up_udp_port.saturating_add(10);
+    let ttl_send = 4u32;
+    let policy_yaml = format!(
+        r#"
+default_policy: deny
+source_groups:
+  - id: "ttl-dec"
+    priority: 0
+    sources:
+      cidrs: ["{src_cidr}"]
+    rules:
+      - id: "allow-udp"
+        priority: 0
+        action: allow
+        match:
+          dst_ips: ["{dst_ip}"]
+          proto: udp
+          dst_ports: [{dst_port}]
+"#,
+        src_cidr = format!("{}/24", cfg.client_dp_ip),
+        dst_ip = cfg.up_dp_ip,
+        dst_port = ttl_port
+    );
+    let policy: PolicyConfig =
+        serde_yaml::from_str(&policy_yaml).map_err(|e| format!("policy yaml error: {e}"))?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        Ok::<(), String>(())
+    })?;
+
+    let marker = b"ttl-decrement";
+    let upstream_ns = netns_rs::NetNs::get(&cfg.upstream_ns).map_err(|e| format!("{e}"))?;
+    let (ready_tx, ready_rx) = std_mpsc::channel();
+    let (result_tx, result_rx) = std_mpsc::channel();
+    let expected_dst = cfg.up_dp_ip;
+    let expected_dst_port = ttl_port;
+    let listen_timeout = Duration::from_secs(2);
+    let handle = std::thread::spawn(move || {
+        let res = upstream_ns.run(|_| {
+            let socket = std::net::UdpSocket::bind((expected_dst, expected_dst_port))
+                .map_err(|e| format!("udp listen bind failed: {e}"))?;
+            let fd = socket.as_raw_fd();
+            enable_ip_recv_ttl(fd)?;
+            set_socket_timeout(fd, listen_timeout)?;
+            let _ = ready_tx.send(());
+            let ttl = recv_udp_ttl(fd, listen_timeout)?;
+            Ok::<u8, String>(ttl)
+        });
+        let _ = result_tx.send(res);
+    });
+
+    ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|e| format!("upstream listener not ready: {e}"))?;
+    let _ = send_udp_with_ttl_payload(cfg.client_dp_ip, cfg.up_dp_ip, ttl_port, ttl_send, marker)?;
+    let ttl_result = result_rx.recv_timeout(Duration::from_secs(3)).map_err(|e| {
+        let debug = overlay_debug_snapshot(cfg);
+        let metrics = overlay_metrics_snapshot(metrics_addr);
+        format!(
+            "upstream capture timed out: {e}\n-- metrics --\n{metrics}\n-- dataplane debug --\n{debug}"
+        )
+    })?;
+    let ttl = match ttl_result {
+        Ok(Ok(ttl)) => ttl,
+        Ok(Err(err)) => {
+            let debug = overlay_debug_snapshot(cfg);
+            let metrics = overlay_metrics_snapshot(metrics_addr);
+            return Err(format!(
+                "udp ttl capture failed: {err}\n-- metrics --\n{metrics}\n-- dataplane debug --\n{debug}"
+            ));
+        }
+        Err(err) => {
+            let debug = overlay_debug_snapshot(cfg);
+            let metrics = overlay_metrics_snapshot(metrics_addr);
+            return Err(format!(
+                "udp ttl capture netns error: {err}\n-- metrics --\n{metrics}\n-- dataplane debug --\n{debug}"
+            ));
+        }
+    };
+    let _ = handle.join();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    let after_body =
+        rt.block_on(async { http_get_path(metrics_addr, "metrics", "/metrics").await })?;
+    let after_packets = metric_value_with_labels(
+        &after_body,
+        "dp_packets_total",
+        &[
+            ("direction", "outbound"),
+            ("proto", "udp"),
+            ("decision", "allow"),
+            ("source_group", "ttl-dec"),
+        ],
+    )
+    .unwrap_or(0.0);
+    if after_packets < 1.0 {
+        return Err("udp ttl test did not record outbound dataplane packets".to_string());
+    }
+    if ttl > 2 {
+        return Err(format!(
+            "ttl not decremented enough (sent={}, observed={ttl})",
+            ttl_send
+        ));
+    }
+    Ok(())
 }
 
 fn ipv4_fragment_drop_metrics(cfg: &TopologyConfig) -> Result<(), String> {
@@ -1916,6 +2382,109 @@ fn ipv4_fragment_drop_metrics(cfg: &TopologyConfig) -> Result<(), String> {
     })
 }
 
+fn ipv4_fragment_not_forwarded(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let token = api_auth_token(cfg)?;
+    let policy_yaml = format!(
+        r#"
+default_policy: deny
+source_groups:
+  - id: "frag"
+    priority: 0
+    sources:
+      cidrs: ["{src_cidr}"]
+    rules:
+      - id: "allow-udp"
+        priority: 0
+        action: allow
+        match:
+          dst_ips: ["{dst_ip}"]
+          proto: udp
+          dst_ports: [{dst_port}]
+"#,
+        src_cidr = format!("{}/24", cfg.client_dp_ip),
+        dst_ip = cfg.up_dp_ip,
+        dst_port = cfg.up_udp_port
+    );
+    let policy: PolicyConfig =
+        serde_yaml::from_str(&policy_yaml).map_err(|e| format!("policy yaml error: {e}"))?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        Ok::<(), String>(())
+    })?;
+
+    let marker = b"frag-block";
+    let upstream_ns = netns_rs::NetNs::get(&cfg.upstream_ns).map_err(|e| format!("{e}"))?;
+    let (ready_tx, ready_rx) = std_mpsc::channel();
+    let (result_tx, result_rx) = std_mpsc::channel();
+    let expected_src = cfg.dp_public_ip;
+    let expected_dst = cfg.up_dp_ip;
+    let expected_dst_port = cfg.up_udp_port;
+    let listen_timeout = Duration::from_millis(400);
+    let handle = std::thread::spawn(move || {
+        let res = upstream_ns.run(|_| {
+            let fd = open_udp_raw_socket(expected_dst, listen_timeout)?;
+            let _ = ready_tx.send(());
+            let result = match wait_for_udp_packet_on_fd(
+                fd,
+                expected_src,
+                expected_dst,
+                expected_dst_port,
+                Some(marker),
+                listen_timeout,
+            ) {
+                Ok(packet) => Err(format!(
+                    "fragment unexpectedly forwarded (src_port={})",
+                    packet.src_port
+                )),
+                Err(err) => {
+                    if err.contains("timed out") {
+                        Ok(())
+                    } else {
+                        Err(err)
+                    }
+                }
+            };
+            unsafe {
+                libc::close(fd);
+            }
+            result
+        });
+        let _ = result_tx.send(res);
+    });
+
+    ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|e| format!("upstream listener not ready: {e}"))?;
+    send_ipv4_udp_fragment(
+        cfg.client_dp_ip,
+        cfg.up_dp_ip,
+        45001,
+        cfg.up_udp_port,
+        marker,
+    )?;
+    let result = result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|e| format!("fragment capture timed out: {e}"))?;
+    let _ = handle.join();
+    result.map_err(|e| format!("{e}"))??;
+    Ok(())
+}
+
 fn nat_idle_eviction_metrics(cfg: &TopologyConfig) -> Result<(), String> {
     let tls_dir = cfg.http_tls_dir.clone();
     wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
@@ -1944,8 +2513,8 @@ source_groups:
         dst_ip_alt = cfg.up_dp_ip_alt,
         dst_port = cfg.up_udp_port
     );
-    let policy: PolicyConfig = serde_yaml::from_str(&policy_yaml)
-        .map_err(|e| format!("policy yaml error: {e}"))?;
+    let policy: PolicyConfig =
+        serde_yaml::from_str(&policy_yaml).map_err(|e| format!("policy yaml error: {e}"))?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1953,7 +2522,14 @@ source_groups:
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
 
         let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_dp_ip), 0);
         let udp_server = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), cfg.up_udp_port);
@@ -1972,15 +2548,18 @@ source_groups:
             &[("proto", "udp"), ("source_group", "udp")],
         )
         .unwrap_or(0.0);
-        let baseline_closes = metric_value_with_labels(
-            &body,
-            "dp_flow_closes_total",
-            &[("reason", "idle_timeout")],
-        )
-        .unwrap_or(0.0);
+        let baseline_closes =
+            metric_value_with_labels(&body, "dp_flow_closes_total", &[("reason", "idle_timeout")])
+                .unwrap_or(0.0);
 
         let udp_server_alt = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip_alt), cfg.up_udp_port);
-        let resp = udp_echo(client_bind, udp_server_alt, payload, Duration::from_millis(500)).await?;
+        let resp = udp_echo(
+            client_bind,
+            udp_server_alt,
+            payload,
+            Duration::from_millis(500),
+        )
+        .await?;
         if resp != payload {
             return Err("udp echo payload mismatch (alt)".to_string());
         }
@@ -2031,6 +2610,169 @@ source_groups:
     })
 }
 
+fn nat_port_deterministic(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let token = api_auth_token(cfg)?;
+    let policy_yaml = format!(
+        r#"
+default_policy: deny
+source_groups:
+  - id: "natdet"
+    priority: 0
+    sources:
+      cidrs: ["{src_cidr}"]
+    rules:
+      - id: "allow-udp"
+        priority: 0
+        action: allow
+        match:
+          dst_ips: ["{dst_ip}"]
+          proto: udp
+          dst_ports: [{dst_port}]
+"#,
+        src_cidr = format!("{}/24", cfg.client_dp_ip),
+        dst_ip = cfg.up_dp_ip,
+        dst_port = cfg.up_udp_port
+    );
+    let policy: PolicyConfig =
+        serde_yaml::from_str(&policy_yaml).map_err(|e| format!("policy yaml error: {e}"))?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        Ok::<(), String>(())
+    })?;
+
+    let ports: Vec<u16> = (42000..42020).collect();
+    let marker = b"natdet";
+    let expected_src = cfg.dp_public_ip;
+    let expected_dst = cfg.up_dp_ip;
+    let expected_dst_port = cfg.up_udp_port;
+    let upstream_ns = netns_rs::NetNs::get(&cfg.upstream_ns).map_err(|e| format!("{e}"))?;
+    let (ready_tx, ready_rx) = std_mpsc::channel();
+    let (result_tx, result_rx) = std_mpsc::channel();
+    let listen_timeout = Duration::from_secs(3);
+    let port_count = ports.len();
+    let handle = std::thread::spawn(move || {
+        let res = upstream_ns.run(|_| {
+            let fd = open_udp_raw_socket(expected_dst, listen_timeout)?;
+            let _ = ready_tx.send(());
+            let mut first: HashMap<u16, u16> = HashMap::new();
+            let mut second: HashMap<u16, u16> = HashMap::new();
+            while first.len() < port_count || second.len() < port_count {
+                let packet = match wait_for_udp_packet_on_fd(
+                    fd,
+                    expected_src,
+                    expected_dst,
+                    expected_dst_port,
+                    Some(marker),
+                    listen_timeout,
+                ) {
+                    Ok(packet) => packet,
+                    Err(err) => {
+                        return Err(format!(
+                            "nat capture timed out (first={}, second={}): {err}",
+                            first.len(),
+                            second.len()
+                        ));
+                    }
+                };
+                let offset = marker.len();
+                if packet.payload.len() < offset + 3 {
+                    continue;
+                }
+                let round = packet.payload[offset];
+                let internal_port =
+                    u16::from_be_bytes([packet.payload[offset + 1], packet.payload[offset + 2]]);
+                match round {
+                    0 => {
+                        first.entry(internal_port).or_insert(packet.src_port);
+                    }
+                    1 => {
+                        second.entry(internal_port).or_insert(packet.src_port);
+                    }
+                    _ => {}
+                }
+            }
+            unsafe {
+                libc::close(fd);
+            }
+            Ok((first, second))
+        });
+        let _ = result_tx.send(res);
+    });
+
+    ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|e| format!("upstream listener not ready: {e}"))?;
+    for &port in &ports {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(marker);
+        payload.push(0);
+        payload.extend_from_slice(&port.to_be_bytes());
+        send_udp_with_payload_from_port(
+            cfg.client_dp_ip,
+            port,
+            cfg.up_dp_ip,
+            cfg.up_udp_port,
+            &payload,
+        )?;
+    }
+    for &port in &ports {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(marker);
+        payload.push(1);
+        payload.extend_from_slice(&port.to_be_bytes());
+        send_udp_with_payload_from_port(
+            cfg.client_dp_ip,
+            port,
+            cfg.up_dp_ip,
+            cfg.up_udp_port,
+            &payload,
+        )?;
+    }
+
+    let result = result_rx
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(|e| format!("nat capture timed out: {e}"))?;
+    let _ = handle.join();
+    let (first, second) = result.map_err(|e| format!("{e}"))??;
+    let mut mismatches = Vec::new();
+    let mut missing = Vec::new();
+    for &port in &ports {
+        match (first.get(&port), second.get(&port)) {
+            (Some(a), Some(b)) => {
+                if a != b {
+                    mismatches.push((port, *a, *b));
+                }
+            }
+            _ => missing.push(port),
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!("missing NAT captures for ports: {:?}", missing));
+    }
+    if !mismatches.is_empty() {
+        return Err(format!(
+            "NAT mapping changed across packets: {:?}",
+            mismatches
+        ));
+    }
+    Ok(())
+}
+
 fn snat_override_applied(cfg: &TopologyConfig) -> Result<(), String> {
     let tls_dir = cfg.http_tls_dir.clone();
     wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
@@ -2056,8 +2798,8 @@ source_groups:
         src_cidr = format!("{}/24", cfg.client_dp_ip),
         dst_ip = cfg.up_dp_ip
     );
-    let policy: PolicyConfig = serde_yaml::from_str(&policy_yaml)
-        .map_err(|e| format!("policy yaml error: {e}"))?;
+    let policy: PolicyConfig =
+        serde_yaml::from_str(&policy_yaml).map_err(|e| format!("policy yaml error: {e}"))?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2065,7 +2807,14 @@ source_groups:
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         let body = http_get_path(
             SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), 80),
             "foo.allowed",
@@ -2076,7 +2825,8 @@ source_groups:
         if whoami.trim() != cfg.dp_public_ip.to_string() {
             return Err(format!(
                 "expected snat ip {}, got {}",
-                cfg.dp_public_ip, whoami.trim()
+                cfg.dp_public_ip,
+                whoami.trim()
             ));
         }
         Ok(())
@@ -2723,11 +3473,7 @@ fn metric_value(body: &str, path: &str, method: &str, status: &str) -> Option<f6
     None
 }
 
-fn metric_value_with_labels(
-    body: &str,
-    metric: &str,
-    labels: &[(&str, &str)],
-) -> Option<f64> {
+fn metric_value_with_labels(body: &str, metric: &str, labels: &[(&str, &str)]) -> Option<f64> {
     for line in body.lines() {
         let line = line.trim();
         if !line.starts_with(metric) {
@@ -2797,10 +3543,7 @@ fn label_matches(labels: &str, key: &str, expected: &str) -> bool {
 }
 
 fn http_body(response: &str) -> &str {
-    response
-        .splitn(2, "\r\n\r\n")
-        .nth(1)
-        .unwrap_or("")
+    response.splitn(2, "\r\n\r\n").nth(1).unwrap_or("")
 }
 
 async fn http_get_path_bound(
@@ -2952,7 +3695,14 @@ fn tls_sni_allows_https(cfg: &TopologyConfig) -> Result<(), String> {
 
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
         let resp = https_get_tls12(https_addr, "foo.allowed").await?;
         if !resp.starts_with("HTTP/1.1 200") {
@@ -2976,7 +3726,14 @@ fn tls_sni_allows_https_tls13(cfg: &TopologyConfig) -> Result<(), String> {
 
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
         let resp = https_get_tls13(https_addr, "foo.allowed").await?;
         if !resp.starts_with("HTTP/1.1 200") {
@@ -3000,7 +3757,14 @@ fn tls_sni_denies_https(cfg: &TopologyConfig) -> Result<(), String> {
 
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
         match https_get_tls12(https_addr, "foo.allowed").await {
             Ok(_) => Err("https unexpectedly succeeded with sni mismatch".to_string()),
@@ -3023,7 +3787,14 @@ fn tls_cert_tls12_allows(cfg: &TopologyConfig) -> Result<(), String> {
 
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
         let resp = https_get_tls12(https_addr, "foo.allowed").await?;
         if !resp.starts_with("HTTP/1.1 200") {
@@ -3047,7 +3818,14 @@ fn tls_cert_tls12_denies_san_mismatch(cfg: &TopologyConfig) -> Result<(), String
 
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
         match https_get_tls12(https_addr, "foo.allowed").await {
             Ok(_) => Err("https unexpectedly succeeded with SAN mismatch".to_string()),
@@ -3070,10 +3848,19 @@ fn tls_cert_tls13_denied(cfg: &TopologyConfig) -> Result<(), String> {
 
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
         match https_get_tls13(https_addr, "foo.allowed").await {
-            Ok(_) => Err("https unexpectedly succeeded on tls1.3 with cert constraints".to_string()),
+            Ok(_) => {
+                Err("https unexpectedly succeeded on tls1.3 with cert constraints".to_string())
+            }
             Err(_) => Ok(()),
         }
     })
@@ -3093,7 +3880,14 @@ fn tls_cert_tls13_allows(cfg: &TopologyConfig) -> Result<(), String> {
 
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
         let resp = https_get_tls13(https_addr, "foo.allowed").await?;
         if !resp.starts_with("HTTP/1.1 200") {
@@ -3117,7 +3911,14 @@ fn tls_reassembly_client_hello(cfg: &TopologyConfig) -> Result<(), String> {
 
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
         let read = tls_client_hello_raw(https_addr, "foo.allowed", 2000).await?;
         if read == 0 {
@@ -3359,7 +4160,15 @@ fn dns_upstream_mismatch_nxdomain(cfg: &TopologyConfig) -> Result<(), String> {
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Enforce, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         let resp = dns_query_response(client_bind, dns_server, "spoof.allowed").await?;
         assert_dns_nxdomain(&resp)?;
@@ -3382,6 +4191,7 @@ fn dns_upstream_mismatch_nxdomain(cfg: &TopologyConfig) -> Result<(), String> {
 fn dns_long_name_match(cfg: &TopologyConfig) -> Result<(), String> {
     let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
     let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -3389,12 +4199,54 @@ fn dns_long_name_match(cfg: &TopologyConfig) -> Result<(), String> {
         .map_err(|e| format!("tokio runtime error: {e}"))?;
 
     rt.block_on(async {
+        tokio::time::sleep(Duration::from_millis(150)).await;
         let resp = dns_query_response(
             client_bind,
             dns_server,
             "very.long.subdomain.name.example.com",
         )
         .await?;
+        if resp.rcode != 0 {
+            let metrics = http_get_path(metrics_addr, "metrics", "/metrics")
+                .await
+                .unwrap_or_else(|err| format!("metrics fetch failed: {err}"));
+            let policy_deny = metric_value_with_labels(
+                &metrics,
+                "dns_queries_total",
+                &[
+                    ("result", "deny"),
+                    ("reason", "policy_deny"),
+                    ("source_group", "client-primary"),
+                ],
+            )
+            .unwrap_or(0.0);
+            let mismatch = metric_value_with_labels(
+                &metrics,
+                "dns_queries_total",
+                &[
+                    ("result", "deny"),
+                    ("reason", "upstream_mismatch"),
+                    ("source_group", "client-primary"),
+                ],
+            )
+            .unwrap_or(0.0);
+            let nxdomain_policy = metric_value_with_labels(
+                &metrics,
+                "dns_nxdomain_total",
+                &[("source", "policy")],
+            )
+            .unwrap_or(0.0);
+            let nxdomain_upstream = metric_value_with_labels(
+                &metrics,
+                "dns_nxdomain_total",
+                &[("source", "upstream")],
+            )
+            .unwrap_or(0.0);
+            return Err(format!(
+                "dns response unexpected rcode: {}; policy_deny={}, upstream_mismatch={}, nxdomain_policy={}, nxdomain_upstream={}",
+                resp.rcode, policy_deny, mismatch, nxdomain_policy, nxdomain_upstream
+            ));
+        }
         assert_dns_allowed(&resp, cfg.up_dp_ip)?;
         Ok(())
     })
@@ -3934,15 +4786,25 @@ fn assert_dns_nxdomain(resp: &crate::e2e::services::DnsResponse) -> Result<(), S
     Ok(())
 }
 
-fn send_udp_once(
-    bind: SocketAddr,
-    dst: SocketAddr,
-    payload: &[u8],
-) -> Result<(), String> {
-    let socket = std::net::UdpSocket::bind(bind)
-        .map_err(|e| format!("udp bind failed: {e}"))?;
+fn send_udp_once(bind: SocketAddr, dst: SocketAddr, payload: &[u8]) -> Result<(), String> {
+    let socket = std::net::UdpSocket::bind(bind).map_err(|e| format!("udp bind failed: {e}"))?;
     socket
         .send_to(payload, dst)
+        .map_err(|e| format!("udp send failed: {e}"))?;
+    Ok(())
+}
+
+fn send_udp_with_payload_from_port(
+    bind_ip: Ipv4Addr,
+    bind_port: u16,
+    dst_ip: Ipv4Addr,
+    dst_port: u16,
+    payload: &[u8],
+) -> Result<(), String> {
+    let socket = std::net::UdpSocket::bind((bind_ip, bind_port))
+        .map_err(|e| format!("udp bind failed: {e}"))?;
+    socket
+        .send_to(payload, (dst_ip, dst_port))
         .map_err(|e| format!("udp send failed: {e}"))?;
     Ok(())
 }
@@ -3953,13 +4815,34 @@ fn send_udp_with_ttl(
     dst_port: u16,
     ttl: u32,
 ) -> Result<u16, String> {
-    let socket = std::net::UdpSocket::bind((bind_ip, 0))
-        .map_err(|e| format!("udp bind failed: {e}"))?;
+    let socket =
+        std::net::UdpSocket::bind((bind_ip, 0)).map_err(|e| format!("udp bind failed: {e}"))?;
     socket
         .set_ttl(ttl)
         .map_err(|e| format!("set ttl failed: {e}"))?;
     socket
         .send_to(b"ttl", (dst_ip, dst_port))
+        .map_err(|e| format!("udp send failed: {e}"))?;
+    Ok(socket
+        .local_addr()
+        .map_err(|e| format!("udp local addr failed: {e}"))?
+        .port())
+}
+
+fn send_udp_with_ttl_payload(
+    bind_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    dst_port: u16,
+    ttl: u32,
+    payload: &[u8],
+) -> Result<u16, String> {
+    let socket =
+        std::net::UdpSocket::bind((bind_ip, 0)).map_err(|e| format!("udp bind failed: {e}"))?;
+    socket
+        .set_ttl(ttl)
+        .map_err(|e| format!("set ttl failed: {e}"))?;
+    socket
+        .send_to(payload, (dst_ip, dst_port))
         .map_err(|e| format!("udp send failed: {e}"))?;
     Ok(socket
         .local_addr()
@@ -4006,9 +4889,7 @@ fn icmp_echo(bind_ip: Ipv4Addr, dst_ip: Ipv4Addr, timeout: Duration) -> Result<(
 
         let mut buf = vec![0u8; 2048];
         loop {
-            let n = unsafe {
-                libc::recv(fd, buf.as_mut_ptr() as *mut _, buf.len(), 0)
-            };
+            let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut _, buf.len(), 0) };
             if n < 0 {
                 let err = io::Error::last_os_error();
                 if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut
@@ -4053,93 +4934,198 @@ fn icmp_echo(bind_ip: Ipv4Addr, dst_ip: Ipv4Addr, timeout: Duration) -> Result<(
     result
 }
 
-fn wait_for_icmp_time_exceeded(
-    bind_ip: Ipv4Addr,
-    src_ip: Ipv4Addr,
-    dst_ip: Ipv4Addr,
-    src_port: u16,
-    dst_port: u16,
-    timeout: Duration,
-) -> Result<(), String> {
+fn open_icmp_socket(bind_ip: Ipv4Addr, timeout: Duration) -> Result<i32, String> {
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_ICMP) };
     if fd < 0 {
         return Err(io::Error::last_os_error().to_string());
     }
-    let result = (|| {
-        bind_raw_socket(fd, bind_ip)?;
-        set_socket_timeout(fd, timeout)?;
-        let mut buf = vec![0u8; 2048];
-        loop {
-            let n = unsafe {
-                libc::recv(fd, buf.as_mut_ptr() as *mut _, buf.len(), 0)
-            };
-            if n < 0 {
-                let err = io::Error::last_os_error();
-                if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut
-                {
-                    return Err("icmp time exceeded timed out".to_string());
-                }
-                return Err(err.to_string());
+    if let Err(err) = bind_raw_socket(fd, bind_ip) {
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(err);
+    }
+    if let Err(err) = set_socket_timeout(fd, timeout) {
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(err);
+    }
+    Ok(fd)
+}
+
+struct UdpPacketInfo {
+    src_port: u16,
+    payload: Vec<u8>,
+}
+
+fn open_udp_raw_socket(bind_ip: Ipv4Addr, timeout: Duration) -> Result<i32, String> {
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_UDP) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    if let Err(err) = bind_raw_socket(fd, bind_ip) {
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(err);
+    }
+    if let Err(err) = set_socket_timeout(fd, timeout) {
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(err);
+    }
+    Ok(fd)
+}
+
+fn wait_for_udp_packet_on_fd(
+    fd: i32,
+    expected_src: Ipv4Addr,
+    expected_dst: Ipv4Addr,
+    expected_dst_port: u16,
+    payload_prefix: Option<&[u8]>,
+    timeout: Duration,
+) -> Result<UdpPacketInfo, String> {
+    let deadline = Instant::now() + timeout;
+    let mut buf = vec![0u8; 4096];
+    loop {
+        if Instant::now() >= deadline {
+            return Err("udp capture timed out".to_string());
+        }
+        let n = unsafe {
+            libc::recv(
+                fd,
+                buf.as_mut_ptr() as *mut _,
+                buf.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
             }
-            let n = n as usize;
-            let (icmp_off, inner_off) = if let Some((ihl, proto, _src, _dst)) =
-                parse_ipv4_header(&buf[..n])
-            {
+            return Err(err.to_string());
+        }
+        let n = n as usize;
+        let (ihl, proto, src, dst) = match parse_ipv4_header(&buf[..n]) {
+            Some(values) => values,
+            None => continue,
+        };
+        if proto != 17 {
+            continue;
+        }
+        if src != expected_src || dst != expected_dst {
+            continue;
+        }
+        if n < 9 {
+            continue;
+        }
+        let udp_off = ihl;
+        if n < udp_off + 8 {
+            continue;
+        }
+        let src_port = u16::from_be_bytes([buf[udp_off], buf[udp_off + 1]]);
+        let dst_port = u16::from_be_bytes([buf[udp_off + 2], buf[udp_off + 3]]);
+        if dst_port != expected_dst_port {
+            continue;
+        }
+        let payload = buf[udp_off + 8..n].to_vec();
+        if let Some(prefix) = payload_prefix {
+            if !payload.starts_with(prefix) {
+                continue;
+            }
+        }
+        return Ok(UdpPacketInfo { src_port, payload });
+    }
+}
+
+fn wait_for_icmp_time_exceeded_on_fd(
+    fd: i32,
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    expected_outer_src: Option<Ipv4Addr>,
+) -> Result<(), String> {
+    let mut buf = vec![0u8; 2048];
+    let mut last_unexpected: Option<(Ipv4Addr, Ipv4Addr)> = None;
+    loop {
+        let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut _, buf.len(), 0) };
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut {
+                return Err(match last_unexpected {
+                    Some((src, dst)) => format!(
+                        "icmp time exceeded timed out (last outer src={}, dst={})",
+                        src, dst
+                    ),
+                    None => "icmp time exceeded timed out".to_string(),
+                });
+            }
+            return Err(err.to_string());
+        }
+        let n = n as usize;
+        let (icmp_off, inner_off, outer_src, outer_dst) =
+            if let Some((ihl, proto, src, dst)) = parse_ipv4_header(&buf[..n]) {
                 if proto != 1 || n < ihl + 8 {
                     continue;
                 }
-                (ihl, ihl + 8)
+                (ihl, ihl + 8, Some(src), Some(dst))
             } else {
                 if n < 8 {
                     continue;
                 }
-                (0usize, 8usize)
+                (0usize, 8usize, None, None)
             };
-            let icmp_type = buf[icmp_off];
-            let icmp_code = buf[icmp_off + 1];
-            if icmp_type != 11 || icmp_code != 0 {
-                continue;
-            }
-            if n < inner_off + 20 {
-                continue;
-            }
-            let inner_ihl = ((buf[inner_off] & 0x0f) as usize) * 4;
-            if inner_ihl < 20 || n < inner_off + inner_ihl + 8 {
-                continue;
-            }
-            let inner_proto = buf[inner_off + 9];
-            if inner_proto != 17 {
-                continue;
-            }
-            let inner_src = Ipv4Addr::new(
-                buf[inner_off + 12],
-                buf[inner_off + 13],
-                buf[inner_off + 14],
-                buf[inner_off + 15],
-            );
-            let inner_dst = Ipv4Addr::new(
-                buf[inner_off + 16],
-                buf[inner_off + 17],
-                buf[inner_off + 18],
-                buf[inner_off + 19],
-            );
-            if inner_src != src_ip || inner_dst != dst_ip {
-                continue;
-            }
-            let udp_off = inner_off + inner_ihl;
-            let inner_src_port =
-                u16::from_be_bytes([buf[udp_off], buf[udp_off + 1]]);
-            let inner_dst_port =
-                u16::from_be_bytes([buf[udp_off + 2], buf[udp_off + 3]]);
-            if inner_src_port == src_port && inner_dst_port == dst_port {
-                return Ok(());
-            }
+        let icmp_type = buf[icmp_off];
+        let icmp_code = buf[icmp_off + 1];
+        if icmp_type != 11 || icmp_code != 0 {
+            continue;
         }
-    })();
-    unsafe {
-        libc::close(fd);
+        if n < inner_off + 20 {
+            continue;
+        }
+        let inner_ihl = ((buf[inner_off] & 0x0f) as usize) * 4;
+        if inner_ihl < 20 || n < inner_off + inner_ihl + 8 {
+            continue;
+        }
+        let inner_proto = buf[inner_off + 9];
+        if inner_proto != 17 {
+            continue;
+        }
+        let inner_src = Ipv4Addr::new(
+            buf[inner_off + 12],
+            buf[inner_off + 13],
+            buf[inner_off + 14],
+            buf[inner_off + 15],
+        );
+        let inner_dst = Ipv4Addr::new(
+            buf[inner_off + 16],
+            buf[inner_off + 17],
+            buf[inner_off + 18],
+            buf[inner_off + 19],
+        );
+        if inner_src != src_ip || inner_dst != dst_ip {
+            continue;
+        }
+        let udp_off = inner_off + inner_ihl;
+        let inner_src_port = u16::from_be_bytes([buf[udp_off], buf[udp_off + 1]]);
+        let inner_dst_port = u16::from_be_bytes([buf[udp_off + 2], buf[udp_off + 3]]);
+        if inner_src_port == src_port && inner_dst_port == dst_port {
+            if let (Some(expected), Some(actual_src), Some(actual_dst)) =
+                (expected_outer_src, outer_src, outer_dst)
+            {
+                if actual_src != expected {
+                    last_unexpected = Some((actual_src, actual_dst));
+                    continue;
+                }
+            }
+            return Ok(());
+        }
     }
-    result
 }
 
 fn send_ipv4_udp_fragment(
@@ -4197,6 +5183,79 @@ fn send_ipv4_udp_fragment(
                 fd,
                 buf.as_ptr() as *const _,
                 buf.len(),
+                0,
+                &dst as *const _ as *const libc::sockaddr,
+                mem::size_of::<libc::sockaddr_in>() as u32,
+            )
+        };
+        if sent < 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    })();
+    unsafe {
+        libc::close(fd);
+    }
+    result
+}
+
+fn build_icmp_time_exceeded(
+    inner_src: Ipv4Addr,
+    inner_dst: Ipv4Addr,
+    inner_src_port: u16,
+    inner_dst_port: u16,
+) -> Vec<u8> {
+    let inner_len = 20 + 8;
+    let mut buf = vec![0u8; 8 + inner_len];
+    buf[0] = 11;
+    buf[1] = 0;
+    buf[2..4].copy_from_slice(&0u16.to_be_bytes());
+    buf[4..8].copy_from_slice(&0u32.to_be_bytes());
+
+    let ip_off = 8;
+    buf[ip_off] = 0x45;
+    buf[ip_off + 1] = 0;
+    buf[ip_off + 2..ip_off + 4].copy_from_slice(&(inner_len as u16).to_be_bytes());
+    buf[ip_off + 4..ip_off + 6].copy_from_slice(&0u16.to_be_bytes());
+    buf[ip_off + 6..ip_off + 8].copy_from_slice(&0u16.to_be_bytes());
+    buf[ip_off + 8] = 1;
+    buf[ip_off + 9] = 17;
+    buf[ip_off + 10..ip_off + 12].copy_from_slice(&0u16.to_be_bytes());
+    buf[ip_off + 12..ip_off + 16].copy_from_slice(&inner_src.octets());
+    buf[ip_off + 16..ip_off + 20].copy_from_slice(&inner_dst.octets());
+
+    let udp_off = ip_off + 20;
+    buf[udp_off..udp_off + 2].copy_from_slice(&inner_src_port.to_be_bytes());
+    buf[udp_off + 2..udp_off + 4].copy_from_slice(&inner_dst_port.to_be_bytes());
+    buf[udp_off + 4..udp_off + 6].copy_from_slice(&8u16.to_be_bytes());
+    buf[udp_off + 6..udp_off + 8].copy_from_slice(&0u16.to_be_bytes());
+
+    let checksum = checksum16(&buf);
+    buf[2..4].copy_from_slice(&checksum.to_be_bytes());
+    buf
+}
+
+fn send_icmp_time_exceeded(
+    bind_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    inner_src: Ipv4Addr,
+    inner_dst: Ipv4Addr,
+    inner_src_port: u16,
+    inner_dst_port: u16,
+) -> Result<(), String> {
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_ICMP) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    let result = (|| {
+        bind_raw_socket(fd, bind_ip)?;
+        let pkt = build_icmp_time_exceeded(inner_src, inner_dst, inner_src_port, inner_dst_port);
+        let dst = sockaddr_in(dst_ip, 0);
+        let sent = unsafe {
+            libc::sendto(
+                fd,
+                pkt.as_ptr() as *const _,
+                pkt.len(),
                 0,
                 &dst as *const _ as *const libc::sockaddr,
                 mem::size_of::<libc::sockaddr_in>() as u32,
@@ -4290,6 +5349,63 @@ fn set_socket_timeout(fd: i32, timeout: Duration) -> Result<(), String> {
         return Err(io::Error::last_os_error().to_string());
     }
     Ok(())
+}
+
+fn enable_ip_recv_ttl(fd: i32) -> Result<(), String> {
+    let opt: libc::c_int = 1;
+    let res = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::IPPROTO_IP,
+            libc::IP_RECVTTL,
+            &opt as *const _ as *const _,
+            mem::size_of::<libc::c_int>() as u32,
+        )
+    };
+    if res < 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+fn recv_udp_ttl(fd: i32, timeout: Duration) -> Result<u8, String> {
+    let deadline = Instant::now() + timeout;
+    let mut buf = [0u8; 2048];
+    let mut cmsg_buf = [0u8; 64];
+    loop {
+        if Instant::now() >= deadline {
+            return Err("udp ttl timed out".to_string());
+        }
+        let mut iov = libc::iovec {
+            iov_base: buf.as_mut_ptr() as *mut _,
+            iov_len: buf.len(),
+        };
+        let mut msg: libc::msghdr = unsafe { mem::zeroed() };
+        msg.msg_iov = &mut iov as *mut _;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cmsg_buf.as_mut_ptr() as *mut _;
+        msg.msg_controllen = cmsg_buf.len();
+        let n = unsafe { libc::recvmsg(fd, &mut msg, libc::MSG_DONTWAIT) };
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            return Err(err.to_string());
+        }
+        let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+        while !cmsg.is_null() {
+            let cmsg_ref = unsafe { &*cmsg };
+            if cmsg_ref.cmsg_level == libc::IPPROTO_IP && cmsg_ref.cmsg_type == libc::IP_TTL {
+                let data = unsafe { libc::CMSG_DATA(cmsg) as *const u8 };
+                let ttl = unsafe { *data };
+                return Ok(ttl);
+            }
+            cmsg = unsafe { libc::CMSG_NXTHDR(&msg, cmsg) };
+        }
+        return Err("udp ttl missing".to_string());
+    }
 }
 
 struct DhcpTestServer {
@@ -4503,11 +5619,7 @@ fn parse_ipv4_udp(frame: &[u8]) -> Result<(Ipv4Addr, Ipv4Addr, u16, u16), String
     Ok((src, dst, src_port, dst_port))
 }
 
-fn build_arp_request(
-    sender_mac: [u8; 6],
-    sender_ip: Ipv4Addr,
-    target_ip: Ipv4Addr,
-) -> Vec<u8> {
+fn build_arp_request(sender_mac: [u8; 6], sender_ip: Ipv4Addr, target_ip: Ipv4Addr) -> Vec<u8> {
     let mut buf = vec![0u8; 42];
     buf[0..6].copy_from_slice(&[0xff; 6]);
     buf[6..12].copy_from_slice(&sender_mac);
@@ -4553,4 +5665,781 @@ fn assert_arp_reply(
         return Err("arp reply target ip mismatch".to_string());
     }
     Ok(())
+}
+
+fn overlay_policy_allow_udp(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let token = api_auth_token(cfg)?;
+    let policy_yaml = format!(
+        r#"
+default_policy: deny
+source_groups:
+  - id: "overlay"
+    priority: 0
+    sources:
+      cidrs: ["{src_cidr}"]
+    rules:
+      - id: "allow-udp"
+        priority: 0
+        action: allow
+        match:
+          dst_ips: ["{dst_ip}"]
+          proto: udp
+          dst_ports: [{dst_port}]
+"#,
+        src_cidr = format!("{}/24", cfg.client_dp_ip),
+        dst_ip = cfg.up_dp_ip,
+        dst_port = cfg.up_udp_port
+    );
+    let policy: PolicyConfig =
+        serde_yaml::from_str(&policy_yaml).map_err(|e| format!("policy yaml error: {e}"))?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Ok::<(), String>(())
+    })?;
+    Ok(())
+}
+
+fn overlay_metrics_snapshot(metrics_addr: SocketAddr) -> String {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build();
+    match runtime {
+        Ok(rt) => rt
+            .block_on(async { http_get_path(metrics_addr, "metrics", "/metrics").await })
+            .unwrap_or_else(|e| format!("metrics fetch failed: {e}")),
+        Err(e) => format!("metrics runtime error: {e}"),
+    }
+}
+
+fn overlay_debug_snapshot(cfg: &TopologyConfig) -> String {
+    fn run_cmd(cmd: &str, args: &[&str]) -> String {
+        let display = if args.is_empty() {
+            cmd.to_string()
+        } else {
+            format!("{cmd} {}", args.join(" "))
+        };
+        match Command::new(cmd).args(args).output() {
+            Ok(output) => format!(
+                "$ {display}\nstatus: {}\nstdout:\n{}\nstderr:\n{}\n",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+            Err(err) => format!("$ {display}\nerror: {err}\n"),
+        }
+    }
+
+    let mut out = String::new();
+    let fw_ns = "fw-node";
+    let dp0 = cfg.dp_tun_iface.as_str();
+    let fw_dp = cfg.fw_dp_iface.as_str();
+    let outer_dst = cfg.dp_public_ip.to_string();
+    let inner_src = cfg.client_dp_ip.to_string();
+
+    let cmds: Vec<(&str, Vec<&str>)> = vec![
+        ("ip", vec!["netns", "exec", fw_ns, "ip", "-4", "rule"]),
+        (
+            "ip",
+            vec![
+                "netns", "exec", fw_ns, "ip", "-4", "route", "show", "table", "100",
+            ],
+        ),
+        (
+            "ip",
+            vec!["netns", "exec", fw_ns, "ip", "-4", "route", "show"],
+        ),
+        (
+            "ip",
+            vec!["netns", "exec", fw_ns, "ip", "-s", "link", "show", dp0],
+        ),
+        (
+            "ip",
+            vec!["netns", "exec", fw_ns, "ip", "-s", "link", "show", fw_dp],
+        ),
+        (
+            "ip",
+            vec![
+                "netns", "exec", fw_ns, "ip", "-4", "addr", "show", "dev", dp0,
+            ],
+        ),
+        (
+            "ip",
+            vec!["netns", "exec", fw_ns, "sysctl", "net.ipv4.ip_forward"],
+        ),
+        (
+            "ip",
+            vec![
+                "netns", "exec", fw_ns, "ip", "-4", "route", "get", &outer_dst, "iif", fw_dp,
+            ],
+        ),
+        (
+            "ip",
+            vec![
+                "netns", "exec", fw_ns, "ip", "-4", "route", "get", &inner_src, "iif", dp0,
+            ],
+        ),
+    ];
+
+    for (cmd, args) in cmds {
+        out.push_str(&run_cmd(cmd, &args));
+    }
+    out
+}
+
+fn netns_read_u64(ns: &str, path: &str) -> Option<u64> {
+    let output = Command::new("ip")
+        .args(["netns", "exec", ns, "cat", path])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout);
+    value.trim().parse::<u64>().ok()
+}
+
+fn dp_iface_rx_packets(cfg: &TopologyConfig) -> Option<u64> {
+    let path = format!("/sys/class/net/{}/statistics/rx_packets", cfg.dp_tun_iface);
+    netns_read_u64("fw-node", &path)
+}
+
+fn overlay_vxlan_round_trip(cfg: &TopologyConfig) -> Result<(), String> {
+    overlay_policy_allow_udp(cfg)?;
+    let inner_payload = b"overlay-vxlan";
+    let inner = build_ipv4_udp_frame(
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x02],
+        cfg.client_dp_ip,
+        cfg.up_dp_ip,
+        40000,
+        cfg.up_udp_port,
+        inner_payload,
+    );
+    let payload = build_vxlan_payload(&inner, cfg.overlay_vxlan_vni);
+
+    let recv_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, cfg.overlay_vxlan_port))
+        .map_err(|e| format!("overlay recv bind failed: {e}"))?;
+    recv_socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| format!("overlay recv timeout failed: {e}"))?;
+
+    let send_port = 5555u16;
+    let outer_dst_ip = cfg.dp_public_ip;
+    let send_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, send_port))
+        .map_err(|e| format!("overlay send bind failed: {e}"))?;
+    send_socket
+        .send_to(&payload, (outer_dst_ip, cfg.overlay_vxlan_port))
+        .map_err(|e| format!("overlay send failed: {e}"))?;
+
+    let mut buf = vec![0u8; 2048];
+    let (n, src) = match recv_socket.recv_from(&mut buf) {
+        Ok(value) => value,
+        Err(err) => {
+            if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut
+            {
+                let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+                let metrics = overlay_metrics_snapshot(metrics_addr);
+                let in_count = metric_value_with_labels(
+                    &metrics,
+                    "overlay_packets_total",
+                    &[("mode", "vxlan"), ("direction", "in")],
+                )
+                .unwrap_or(0.0);
+                let out_count = metric_value_with_labels(
+                    &metrics,
+                    "overlay_packets_total",
+                    &[("mode", "vxlan"), ("direction", "out")],
+                )
+                .unwrap_or(0.0);
+                let decap_err =
+                    metric_plain_value(&metrics, "overlay_decap_errors_total").unwrap_or(0.0);
+                let encap_err =
+                    metric_plain_value(&metrics, "overlay_encap_errors_total").unwrap_or(0.0);
+                let debug = overlay_debug_snapshot(cfg);
+                return Err(format!(
+                    "overlay recv failed: {err} (overlay_packets in={}, out={}, decap_errors={}, encap_errors={})\n-- overlay debug --\n{debug}",
+                    in_count, out_count, decap_err, encap_err
+                ));
+            }
+            return Err(format!("overlay recv failed: {err}"));
+        }
+    };
+    if src.ip() != IpAddr::V4(outer_dst_ip) {
+        return Err(format!("unexpected overlay src ip: {}", src.ip()));
+    }
+    if src.port() != send_port {
+        return Err(format!("unexpected overlay src port: {}", src.port()));
+    }
+    let (vni, inner_buf) = parse_vxlan_payload(&buf[..n])?;
+    if vni != cfg.overlay_vxlan_vni {
+        return Err(format!("vxlan vni mismatch: {vni}"));
+    }
+    let (src_ip, dst_ip, src_port, dst_port, payload) = parse_inner_ipv4_udp(inner_buf)?;
+    if src_ip != cfg.client_dp_ip || dst_ip != cfg.up_dp_ip {
+        return Err("inner ip mismatch".to_string());
+    }
+    if src_port != 40000 || dst_port != cfg.up_udp_port {
+        return Err("inner port mismatch".to_string());
+    }
+    if payload != inner_payload {
+        return Err("inner payload mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn overlay_vxlan_wrong_vni_drop(cfg: &TopologyConfig) -> Result<(), String> {
+    overlay_policy_allow_udp(cfg)?;
+    let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+    let before = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_decap_errors_total",
+    )
+    .unwrap_or(0.0);
+
+    let inner_payload = b"overlay-vxlan-bad-vni";
+    let inner = build_ipv4_udp_frame(
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x03],
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x04],
+        cfg.client_dp_ip,
+        cfg.up_dp_ip,
+        40100,
+        cfg.up_udp_port,
+        inner_payload,
+    );
+    let bad_vni = cfg.overlay_vxlan_vni.wrapping_add(1);
+    let payload = build_vxlan_payload(&inner, bad_vni);
+
+    let recv_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, cfg.overlay_vxlan_port))
+        .map_err(|e| format!("overlay recv bind failed: {e}"))?;
+    recv_socket
+        .set_read_timeout(Some(Duration::from_millis(400)))
+        .map_err(|e| format!("overlay recv timeout failed: {e}"))?;
+    let send_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, 5601))
+        .map_err(|e| format!("overlay send bind failed: {e}"))?;
+    send_socket
+        .send_to(&payload, (cfg.dp_public_ip, cfg.overlay_vxlan_port))
+        .map_err(|e| format!("overlay send failed: {e}"))?;
+
+    let mut buf = vec![0u8; 2048];
+    match recv_socket.recv_from(&mut buf) {
+        Ok(_) => return Err("unexpected vxlan response for wrong vni".to_string()),
+        Err(err)
+            if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut => {}
+        Err(err) => return Err(format!("overlay recv failed: {err}")),
+    }
+
+    std::thread::sleep(Duration::from_millis(100));
+    let after = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_decap_errors_total",
+    )
+    .unwrap_or(0.0);
+    if after < before + 1.0 {
+        return Err(format!(
+            "overlay decap errors did not increment (before={}, after={})",
+            before, after
+        ));
+    }
+    Ok(())
+}
+
+fn overlay_vxlan_wrong_port_drop(cfg: &TopologyConfig) -> Result<(), String> {
+    overlay_policy_allow_udp(cfg)?;
+    let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+    let before = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_decap_errors_total",
+    )
+    .unwrap_or(0.0);
+
+    let inner_payload = b"overlay-vxlan-bad-port";
+    let inner = build_ipv4_udp_frame(
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x05],
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x06],
+        cfg.client_dp_ip,
+        cfg.up_dp_ip,
+        40101,
+        cfg.up_udp_port,
+        inner_payload,
+    );
+    let payload = build_vxlan_payload(&inner, cfg.overlay_vxlan_vni);
+    let wrong_port = cfg.overlay_vxlan_port.wrapping_add(1);
+
+    let recv_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, cfg.overlay_vxlan_port))
+        .map_err(|e| format!("overlay recv bind failed: {e}"))?;
+    recv_socket
+        .set_read_timeout(Some(Duration::from_millis(400)))
+        .map_err(|e| format!("overlay recv timeout failed: {e}"))?;
+    let send_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, 5602))
+        .map_err(|e| format!("overlay send bind failed: {e}"))?;
+    send_socket
+        .send_to(&payload, (cfg.dp_public_ip, wrong_port))
+        .map_err(|e| format!("overlay send failed: {e}"))?;
+
+    let mut buf = vec![0u8; 2048];
+    match recv_socket.recv_from(&mut buf) {
+        Ok(_) => return Err("unexpected vxlan response for wrong port".to_string()),
+        Err(err)
+            if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut => {}
+        Err(err) => return Err(format!("overlay recv failed: {err}")),
+    }
+
+    std::thread::sleep(Duration::from_millis(100));
+    let after = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_decap_errors_total",
+    )
+    .unwrap_or(0.0);
+    if after < before + 1.0 {
+        return Err(format!(
+            "overlay decap errors did not increment (before={}, after={})",
+            before, after
+        ));
+    }
+    Ok(())
+}
+
+fn overlay_vxlan_mtu_drop(cfg: &TopologyConfig) -> Result<(), String> {
+    overlay_policy_allow_udp(cfg)?;
+    let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+    let before = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_mtu_drops_total",
+    )
+    .unwrap_or(0.0);
+
+    let payload_len = 1250usize;
+    let inner_payload = vec![0xa5u8; payload_len];
+    let inner = build_ipv4_udp_frame(
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x07],
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x08],
+        cfg.client_dp_ip,
+        cfg.up_dp_ip,
+        40102,
+        cfg.up_udp_port,
+        &inner_payload,
+    );
+    let payload = build_vxlan_payload(&inner, cfg.overlay_vxlan_vni);
+
+    let recv_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, cfg.overlay_vxlan_port))
+        .map_err(|e| format!("overlay recv bind failed: {e}"))?;
+    recv_socket
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .map_err(|e| format!("overlay recv timeout failed: {e}"))?;
+    let send_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, 5603))
+        .map_err(|e| format!("overlay send bind failed: {e}"))?;
+    send_socket
+        .send_to(&payload, (cfg.dp_public_ip, cfg.overlay_vxlan_port))
+        .map_err(|e| format!("overlay send failed: {e}"))?;
+
+    let mut buf = vec![0u8; 2048];
+    match recv_socket.recv_from(&mut buf) {
+        Ok(_) => return Err("unexpected vxlan response for mtu drop".to_string()),
+        Err(err)
+            if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut => {}
+        Err(err) => return Err(format!("overlay recv failed: {err}")),
+    }
+
+    std::thread::sleep(Duration::from_millis(150));
+    let after = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_mtu_drops_total",
+    )
+    .unwrap_or(0.0);
+    if after < before + 1.0 {
+        return Err(format!(
+            "overlay mtu drops did not increment (before={}, after={})",
+            before, after
+        ));
+    }
+    Ok(())
+}
+
+fn overlay_geneve_round_trip(cfg: &TopologyConfig) -> Result<(), String> {
+    overlay_policy_allow_udp(cfg)?;
+    let inner_payload = b"overlay-geneve";
+    let inner = build_ipv4_udp_frame(
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x11],
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x22],
+        cfg.client_dp_ip,
+        cfg.up_dp_ip,
+        40001,
+        cfg.up_udp_port,
+        inner_payload,
+    );
+    let options = vec![0xaa, 0xbb, 0xcc, 0xdd, 0x01, 0x02, 0x03, 0x04];
+    let payload = build_geneve_payload(&inner, cfg.overlay_geneve_vni, &options)?;
+
+    let recv_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, cfg.overlay_geneve_port))
+        .map_err(|e| format!("overlay recv bind failed: {e}"))?;
+    recv_socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| format!("overlay recv timeout failed: {e}"))?;
+
+    let send_port = 5556u16;
+    let outer_dst_ip = cfg.dp_public_ip;
+    let send_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, send_port))
+        .map_err(|e| format!("overlay send bind failed: {e}"))?;
+    send_socket
+        .send_to(&payload, (outer_dst_ip, cfg.overlay_geneve_port))
+        .map_err(|e| format!("overlay send failed: {e}"))?;
+
+    let mut buf = vec![0u8; 2048];
+    let (n, src) = match recv_socket.recv_from(&mut buf) {
+        Ok(value) => value,
+        Err(err) => {
+            if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut
+            {
+                let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+                let metrics = overlay_metrics_snapshot(metrics_addr);
+                let in_count = metric_value_with_labels(
+                    &metrics,
+                    "overlay_packets_total",
+                    &[("mode", "geneve"), ("direction", "in")],
+                )
+                .unwrap_or(0.0);
+                let out_count = metric_value_with_labels(
+                    &metrics,
+                    "overlay_packets_total",
+                    &[("mode", "geneve"), ("direction", "out")],
+                )
+                .unwrap_or(0.0);
+                let decap_err =
+                    metric_plain_value(&metrics, "overlay_decap_errors_total").unwrap_or(0.0);
+                let encap_err =
+                    metric_plain_value(&metrics, "overlay_encap_errors_total").unwrap_or(0.0);
+                let debug = overlay_debug_snapshot(cfg);
+                return Err(format!(
+                    "overlay recv failed: {err} (overlay_packets in={}, out={}, decap_errors={}, encap_errors={})\n-- overlay debug --\n{debug}",
+                    in_count, out_count, decap_err, encap_err
+                ));
+            }
+            return Err(format!("overlay recv failed: {err}"));
+        }
+    };
+    if src.ip() != IpAddr::V4(outer_dst_ip) {
+        return Err(format!("unexpected overlay src ip: {}", src.ip()));
+    }
+    if src.port() != send_port {
+        return Err(format!("unexpected overlay src port: {}", src.port()));
+    }
+    let (vni, opts, inner_buf) = parse_geneve_payload(&buf[..n])?;
+    if vni != cfg.overlay_geneve_vni {
+        return Err(format!("geneve vni mismatch: {vni}"));
+    }
+    if opts != options {
+        return Err("geneve options mismatch".to_string());
+    }
+    let (src_ip, dst_ip, src_port, dst_port, payload) = parse_inner_ipv4_udp(inner_buf)?;
+    if src_ip != cfg.client_dp_ip || dst_ip != cfg.up_dp_ip {
+        return Err("inner ip mismatch".to_string());
+    }
+    if src_port != 40001 || dst_port != cfg.up_udp_port {
+        return Err("inner port mismatch".to_string());
+    }
+    if payload != inner_payload {
+        return Err("inner payload mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn overlay_geneve_wrong_vni_drop(cfg: &TopologyConfig) -> Result<(), String> {
+    overlay_policy_allow_udp(cfg)?;
+    let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+    let before = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_decap_errors_total",
+    )
+    .unwrap_or(0.0);
+
+    let inner_payload = b"overlay-geneve-bad-vni";
+    let inner = build_ipv4_udp_frame(
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x13],
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x14],
+        cfg.client_dp_ip,
+        cfg.up_dp_ip,
+        40110,
+        cfg.up_udp_port,
+        inner_payload,
+    );
+    let bad_vni = cfg.overlay_geneve_vni.wrapping_add(1);
+    let payload = build_geneve_payload(&inner, bad_vni, &[])?;
+
+    let recv_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, cfg.overlay_geneve_port))
+        .map_err(|e| format!("overlay recv bind failed: {e}"))?;
+    recv_socket
+        .set_read_timeout(Some(Duration::from_millis(400)))
+        .map_err(|e| format!("overlay recv timeout failed: {e}"))?;
+    let send_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, 5604))
+        .map_err(|e| format!("overlay send bind failed: {e}"))?;
+    send_socket
+        .send_to(&payload, (cfg.dp_public_ip, cfg.overlay_geneve_port))
+        .map_err(|e| format!("overlay send failed: {e}"))?;
+
+    let mut buf = vec![0u8; 2048];
+    match recv_socket.recv_from(&mut buf) {
+        Ok(_) => return Err("unexpected geneve response for wrong vni".to_string()),
+        Err(err)
+            if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut => {}
+        Err(err) => return Err(format!("overlay recv failed: {err}")),
+    }
+
+    std::thread::sleep(Duration::from_millis(100));
+    let after = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_decap_errors_total",
+    )
+    .unwrap_or(0.0);
+    if after < before + 1.0 {
+        return Err(format!(
+            "overlay decap errors did not increment (before={}, after={})",
+            before, after
+        ));
+    }
+    Ok(())
+}
+
+fn overlay_geneve_wrong_port_drop(cfg: &TopologyConfig) -> Result<(), String> {
+    overlay_policy_allow_udp(cfg)?;
+    let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+    let before = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_decap_errors_total",
+    )
+    .unwrap_or(0.0);
+
+    let inner_payload = b"overlay-geneve-bad-port";
+    let inner = build_ipv4_udp_frame(
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x15],
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x16],
+        cfg.client_dp_ip,
+        cfg.up_dp_ip,
+        40111,
+        cfg.up_udp_port,
+        inner_payload,
+    );
+    let payload = build_geneve_payload(&inner, cfg.overlay_geneve_vni, &[])?;
+    let wrong_port = cfg.overlay_geneve_port.wrapping_add(1);
+
+    let recv_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, cfg.overlay_geneve_port))
+        .map_err(|e| format!("overlay recv bind failed: {e}"))?;
+    recv_socket
+        .set_read_timeout(Some(Duration::from_millis(400)))
+        .map_err(|e| format!("overlay recv timeout failed: {e}"))?;
+    let send_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, 5605))
+        .map_err(|e| format!("overlay send bind failed: {e}"))?;
+    send_socket
+        .send_to(&payload, (cfg.dp_public_ip, wrong_port))
+        .map_err(|e| format!("overlay send failed: {e}"))?;
+
+    let mut buf = vec![0u8; 2048];
+    match recv_socket.recv_from(&mut buf) {
+        Ok(_) => return Err("unexpected geneve response for wrong port".to_string()),
+        Err(err)
+            if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut => {}
+        Err(err) => return Err(format!("overlay recv failed: {err}")),
+    }
+
+    std::thread::sleep(Duration::from_millis(100));
+    let after = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_decap_errors_total",
+    )
+    .unwrap_or(0.0);
+    if after < before + 1.0 {
+        return Err(format!(
+            "overlay decap errors did not increment (before={}, after={})",
+            before, after
+        ));
+    }
+    Ok(())
+}
+
+fn overlay_geneve_mtu_drop(cfg: &TopologyConfig) -> Result<(), String> {
+    overlay_policy_allow_udp(cfg)?;
+    let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+    let before = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_mtu_drops_total",
+    )
+    .unwrap_or(0.0);
+
+    let payload_len = 1250usize;
+    let inner_payload = vec![0x5au8; payload_len];
+    let inner = build_ipv4_udp_frame(
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x17],
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x18],
+        cfg.client_dp_ip,
+        cfg.up_dp_ip,
+        40112,
+        cfg.up_udp_port,
+        &inner_payload,
+    );
+    let payload = build_geneve_payload(&inner, cfg.overlay_geneve_vni, &[])?;
+
+    let recv_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, cfg.overlay_geneve_port))
+        .map_err(|e| format!("overlay recv bind failed: {e}"))?;
+    recv_socket
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .map_err(|e| format!("overlay recv timeout failed: {e}"))?;
+    let send_socket = std::net::UdpSocket::bind((cfg.client_dp_ip, 5606))
+        .map_err(|e| format!("overlay send bind failed: {e}"))?;
+    send_socket
+        .send_to(&payload, (cfg.dp_public_ip, cfg.overlay_geneve_port))
+        .map_err(|e| format!("overlay send failed: {e}"))?;
+
+    let mut buf = vec![0u8; 2048];
+    match recv_socket.recv_from(&mut buf) {
+        Ok(_) => return Err("unexpected geneve response for mtu drop".to_string()),
+        Err(err)
+            if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut => {}
+        Err(err) => return Err(format!("overlay recv failed: {err}")),
+    }
+
+    std::thread::sleep(Duration::from_millis(150));
+    let after = metric_plain_value(
+        &overlay_metrics_snapshot(metrics_addr),
+        "overlay_mtu_drops_total",
+    )
+    .unwrap_or(0.0);
+    if after < before + 1.0 {
+        return Err(format!(
+            "overlay mtu drops did not increment (before={}, after={})",
+            before, after
+        ));
+    }
+    Ok(())
+}
+
+fn build_vxlan_payload(inner: &[u8], vni: u32) -> Vec<u8> {
+    let mut buf = vec![0u8; 8 + inner.len()];
+    buf[0] = 0x08;
+    buf[4] = ((vni >> 16) & 0xff) as u8;
+    buf[5] = ((vni >> 8) & 0xff) as u8;
+    buf[6] = (vni & 0xff) as u8;
+    buf[8..].copy_from_slice(inner);
+    buf
+}
+
+fn build_geneve_payload(inner: &[u8], vni: u32, options: &[u8]) -> Result<Vec<u8>, String> {
+    if options.len() % 4 != 0 {
+        return Err("geneve options must be a multiple of 4 bytes".to_string());
+    }
+    let opt_len_words = (options.len() / 4) as u8;
+    let header_len = 8 + options.len();
+    let mut buf = vec![0u8; header_len + inner.len()];
+    buf[0] = opt_len_words & 0x3f;
+    buf[1] = 0;
+    buf[2..4].copy_from_slice(&0x6558u16.to_be_bytes());
+    buf[4] = ((vni >> 16) & 0xff) as u8;
+    buf[5] = ((vni >> 8) & 0xff) as u8;
+    buf[6] = (vni & 0xff) as u8;
+    buf[7] = 0;
+    buf[8..header_len].copy_from_slice(options);
+    buf[header_len..].copy_from_slice(inner);
+    Ok(buf)
+}
+
+fn parse_vxlan_payload(buf: &[u8]) -> Result<(u32, &[u8]), String> {
+    if buf.len() < 8 {
+        return Err("vxlan payload too short".to_string());
+    }
+    if buf[0] & 0x08 == 0 {
+        return Err("vxlan invalid flags".to_string());
+    }
+    let vni = ((buf[4] as u32) << 16) | ((buf[5] as u32) << 8) | (buf[6] as u32);
+    Ok((vni, &buf[8..]))
+}
+
+fn parse_geneve_payload(buf: &[u8]) -> Result<(u32, Vec<u8>, &[u8]), String> {
+    if buf.len() < 8 {
+        return Err("geneve payload too short".to_string());
+    }
+    let ver = buf[0] >> 6;
+    if ver != 0 {
+        return Err("geneve version mismatch".to_string());
+    }
+    let opt_len = (buf[0] & 0x3f) as usize * 4;
+    let header_len = 8 + opt_len;
+    if buf.len() < header_len {
+        return Err("geneve options truncated".to_string());
+    }
+    let proto = u16::from_be_bytes([buf[2], buf[3]]);
+    if proto != 0x6558 {
+        return Err("geneve proto mismatch".to_string());
+    }
+    let vni = ((buf[4] as u32) << 16) | ((buf[5] as u32) << 8) | (buf[6] as u32);
+    let options = buf[8..header_len].to_vec();
+    Ok((vni, options, &buf[header_len..]))
+}
+
+fn parse_inner_ipv4_udp(frame: &[u8]) -> Result<(Ipv4Addr, Ipv4Addr, u16, u16, Vec<u8>), String> {
+    let ip_off = if frame.len() >= 14 {
+        let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+        if ethertype == 0x0800 {
+            14
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    if frame.len() < ip_off + 20 {
+        return Err("inner ipv4 too short".to_string());
+    }
+    if (frame[ip_off] >> 4) != 4 {
+        return Err("inner not ipv4".to_string());
+    }
+    let ihl = (frame[ip_off] & 0x0f) as usize * 4;
+    if ihl < 20 || frame.len() < ip_off + ihl + 8 {
+        return Err("inner ipv4 header invalid".to_string());
+    }
+    if frame[ip_off + 9] != 17 {
+        return Err("inner not udp".to_string());
+    }
+    let src = Ipv4Addr::new(
+        frame[ip_off + 12],
+        frame[ip_off + 13],
+        frame[ip_off + 14],
+        frame[ip_off + 15],
+    );
+    let dst = Ipv4Addr::new(
+        frame[ip_off + 16],
+        frame[ip_off + 17],
+        frame[ip_off + 18],
+        frame[ip_off + 19],
+    );
+    let udp_off = ip_off + ihl;
+    let src_port = u16::from_be_bytes([frame[udp_off], frame[udp_off + 1]]);
+    let dst_port = u16::from_be_bytes([frame[udp_off + 2], frame[udp_off + 3]]);
+    let len = u16::from_be_bytes([frame[udp_off + 4], frame[udp_off + 5]]) as usize;
+    if len < 8 || frame.len() < udp_off + len {
+        return Err("inner udp length invalid".to_string());
+    }
+    let payload = frame[udp_off + 8..udp_off + len].to_vec();
+    Ok((src, dst, src_port, dst_port, payload))
 }

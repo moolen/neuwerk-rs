@@ -1,0 +1,29 @@
+// This file is part of rdma-core. It is subject to the license terms in the COPYRIGHT file found in the top-level directory of this distribution and at https://raw.githubusercontent.com/lemonrock/rdma-core/master/COPYRIGHT. No part of rdma-core, including this file, may be copied, modified, propagated, or distributed except according to the terms contained in the COPYRIGHT file.
+// Copyright © 2016 The developers of rdma-core. See the COPYRIGHT file in the top-level directory of this distribution and at https://raw.githubusercontent.com/lemonrock/rdma-core/master/COPYRIGHT.
+
+
+#[repr(C, packed)]
+pub struct epoll_event
+{
+	pub events: u32,
+	pub data: epoll_data_t,
+}
+
+impl Default for epoll_event
+{
+	#[inline(always)]
+	fn default() -> Self
+	{
+		unsafe { zeroed() }
+	}
+}
+
+impl Debug for epoll_event
+{
+	#[inline(always)]
+	fn fmt(&self, f: &mut Formatter) -> Result
+	{
+		let data = unsafe { ::std::ptr::read_unaligned(::std::ptr::addr_of!(self.data)) };
+		write!(f, "epoll_event {{ data: {:?} }}", data)
+	}
+}

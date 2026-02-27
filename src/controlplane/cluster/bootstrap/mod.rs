@@ -16,23 +16,23 @@ use uuid::Uuid;
 
 use tokio::sync::Mutex;
 
+use crate::controlplane::api_auth;
+use crate::controlplane::cluster::auth_admin::AuthService;
 use crate::controlplane::cluster::bootstrap::ca::CaSigner;
 use crate::controlplane::cluster::bootstrap::join::JoinService;
 use crate::controlplane::cluster::config::{ClusterConfig, RetryConfig};
+use crate::controlplane::cluster::integration_admin::IntegrationService;
 use crate::controlplane::cluster::policy_admin::PolicyService;
 use crate::controlplane::cluster::rpc::{
     AuthServer, IntegrationServer, JoinClient, JoinServer, PolicyServer, RaftGrpcNetworkFactory,
     RaftServer, RaftTlsConfig, WiretapServer,
 };
-use crate::controlplane::cluster::integration_admin::IntegrationService;
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::JoinRequest;
 use crate::controlplane::cluster::types::JoinResponse;
 use crate::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig, Node};
-use crate::controlplane::api_auth;
-use crate::controlplane::cluster::auth_admin::AuthService;
-use crate::controlplane::wiretap::{WiretapGrpcService, WiretapHub};
 use crate::controlplane::metrics::Metrics;
+use crate::controlplane::wiretap::{WiretapGrpcService, WiretapHub};
 
 use std::sync::Arc;
 use tonic::transport::Server;
@@ -162,16 +162,18 @@ pub async fn run_cluster(
             raft.initialize(nodes)
                 .await
                 .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
-            ensure_ca(
-                raft.clone(),
-                store.clone(),
-                &cfg.token_path,
-                raft_node_id,
-                signer,
-            )
+            retry_forward_to_leader(|| {
+                ensure_ca(
+                    raft.clone(),
+                    store.clone(),
+                    &cfg.token_path,
+                    raft_node_id,
+                    signer.clone(),
+                )
+            })
             .await
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-            api_auth::ensure_cluster_keyset(&raft, &store)
+            retry_forward_to_leader(|| api_auth::ensure_cluster_keyset(&raft, &store))
                 .await
                 .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         }
@@ -360,6 +362,29 @@ async fn ensure_ca(
     let mut guard = signer.lock().await;
     *guard = Some(ca_signer);
     Ok(())
+}
+
+async fn retry_forward_to_leader<F, Fut, T>(mut op: F) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    const MAX_ATTEMPTS: usize = 20;
+    for attempt in 0..MAX_ATTEMPTS {
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                let is_forward = err.contains("has to forward request")
+                    || err.contains("ForwardToLeader")
+                    || err.contains("forward request");
+                if !is_forward || attempt + 1 == MAX_ATTEMPTS {
+                    return Err(err);
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    Err("cluster operation retry exhausted".to_string())
 }
 
 fn build_ca_signer() -> Result<CaSigner, String> {

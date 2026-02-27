@@ -5,8 +5,8 @@ use rand::RngCore;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
-use crate::controlplane::PolicyStore;
 use crate::controlplane::metrics::Metrics;
+use crate::controlplane::PolicyStore;
 use crate::dataplane::config::{DataplaneConfig, DataplaneConfigStore};
 use crate::dataplane::dhcp::{DhcpRx, DhcpTx};
 
@@ -18,6 +18,7 @@ pub struct DhcpClientConfig {
     pub retry_max: u32,
     pub lease_min_secs: u64,
     pub hostname: Option<String>,
+    pub update_internal_cidr: bool,
 }
 
 #[derive(Debug)]
@@ -75,6 +76,7 @@ pub struct DhcpLease {
 
 impl DhcpClient {
     pub async fn run(mut self) -> Result<(), String> {
+        eprintln!("dhcp: client starting");
         loop {
             let mac = self.await_mac().await?;
             if let Some(metrics) = &self.metrics {
@@ -103,15 +105,22 @@ impl DhcpClient {
             if attempt > self.config.retry_max.max(1) {
                 return Err("dhcp discovery retries exceeded".to_string());
             }
+            eprintln!(
+                "dhcp: discover attempt {}/{}",
+                attempt,
+                self.config.retry_max.max(1)
+            );
 
             let xid = rand_xid();
             let discover = build_discover(xid, mac, self.config.hostname.as_deref());
-            self.send(DhcpTx::Broadcast { payload: discover })
-                .await?;
+            self.send(DhcpTx::Broadcast { payload: discover }).await?;
 
             let offer = match self.await_message(xid, DhcpMessageType::Offer, mac).await {
                 Ok(pkt) => pkt,
-                Err(_) => continue,
+                Err(err) => {
+                    eprintln!("dhcp: offer wait failed: {err}");
+                    continue;
+                }
             };
             let server_id = match offer.options.server_id {
                 Some(value) => value,
@@ -125,27 +134,29 @@ impl DhcpClient {
                 server_id,
                 self.config.hostname.as_deref(),
             );
-            self.send(DhcpTx::Broadcast { payload: request })
-                .await?;
+            self.send(DhcpTx::Broadcast { payload: request }).await?;
 
             let ack = match self.await_message(xid, DhcpMessageType::Ack, mac).await {
                 Ok(pkt) => pkt,
-                Err(_) => continue,
+                Err(err) => {
+                    eprintln!("dhcp: ack wait failed: {err}");
+                    continue;
+                }
             };
             if ack.yiaddr != requested_ip {
                 continue;
             }
             let lease = lease_from_packet(&ack, &self.config, mac)?;
+            eprintln!(
+                "dhcp: lease acquired ip={}, prefix={}, gateway={}, lease_secs={}",
+                lease.ip, lease.prefix, lease.gateway, lease.lease_time_secs
+            );
             self.apply_lease(&lease, mac)?;
             return Ok(lease);
         }
     }
 
-    async fn renew_lease(
-        &mut self,
-        lease: &DhcpLease,
-        mac: [u8; 6],
-    ) -> Result<DhcpLease, String> {
+    async fn renew_lease(&mut self, lease: &DhcpLease, mac: [u8; 6]) -> Result<DhcpLease, String> {
         let xid = rand_xid();
         let request = build_request(
             xid,
@@ -204,7 +215,9 @@ impl DhcpClient {
 
     fn apply_lease(&self, lease: &DhcpLease, mac: [u8; 6]) -> Result<(), String> {
         let net = network_addr(lease.ip, lease.prefix);
-        self.policy_store.update_internal_cidr(net, lease.prefix)?;
+        if self.config.update_internal_cidr {
+            self.policy_store.update_internal_cidr(net, lease.prefix)?;
+        }
         self.dataplane_config.set(DataplaneConfig {
             ip: lease.ip,
             prefix: lease.prefix,
@@ -221,10 +234,15 @@ impl DhcpClient {
     }
 
     async fn await_mac(&mut self) -> Result<[u8; 6], String> {
+        let mut logged = false;
         loop {
             let mac = *self.mac_rx.borrow();
             if mac != [0; 6] {
                 return Ok(mac);
+            }
+            if !logged {
+                eprintln!("dhcp: waiting for dataplane mac");
+                logged = true;
             }
             self.mac_rx
                 .changed()
@@ -265,10 +283,7 @@ fn lease_from_packet(
     if (lease_time as u64) < cfg.lease_min_secs {
         return Err("dhcp lease below minimum".to_string());
     }
-    let renew_time = pkt
-        .options
-        .renew_time
-        .unwrap_or_else(|| lease_time / 2);
+    let renew_time = pkt.options.renew_time.unwrap_or_else(|| lease_time / 2);
     let rebind_time = pkt
         .options
         .rebind_time
@@ -365,7 +380,8 @@ fn parse_options(buf: &[u8]) -> Result<DhcpOptions, String> {
                 options.renew_time = Some(u32::from_be_bytes([data[0], data[1], data[2], data[3]]));
             }
             59 if len == 4 => {
-                options.rebind_time = Some(u32::from_be_bytes([data[0], data[1], data[2], data[3]]));
+                options.rebind_time =
+                    Some(u32::from_be_bytes([data[0], data[1], data[2], data[3]]));
             }
             _ => {}
         }
@@ -387,7 +403,14 @@ impl DhcpOptions {
 }
 
 fn build_discover(xid: u32, mac: [u8; 6], hostname: Option<&str>) -> Vec<u8> {
-    let mut buf = build_base(1, xid, mac, true, Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED);
+    let mut buf = build_base(
+        1,
+        xid,
+        mac,
+        true,
+        Ipv4Addr::UNSPECIFIED,
+        Ipv4Addr::UNSPECIFIED,
+    );
     push_option(&mut buf, 53, &[DhcpMessageType::Discover as u8]);
     push_option(&mut buf, 55, &[1, 3, 51, 54, 58, 59]);
     push_client_id(&mut buf, mac);
@@ -405,7 +428,14 @@ fn build_request(
     server_id: Ipv4Addr,
     hostname: Option<&str>,
 ) -> Vec<u8> {
-    let mut buf = build_base(1, xid, mac, true, Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED);
+    let mut buf = build_base(
+        1,
+        xid,
+        mac,
+        true,
+        Ipv4Addr::UNSPECIFIED,
+        Ipv4Addr::UNSPECIFIED,
+    );
     push_option(&mut buf, 53, &[DhcpMessageType::Request as u8]);
     push_option(&mut buf, 50, &requested_ip.octets());
     push_option(&mut buf, 54, &server_id.octets());
@@ -549,6 +579,7 @@ mod tests {
             retry_max: 3,
             lease_min_secs: 60,
             hostname: None,
+            update_internal_cidr: true,
         };
         let lease = lease_from_packet(&pkt, &cfg, mac).expect("lease");
         assert_eq!(lease.ip, yiaddr);
@@ -574,8 +605,7 @@ mod tests {
     #[test]
     fn apply_lease_updates_metrics() {
         let metrics = Metrics::new().unwrap();
-        let policy_store =
-            PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+        let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
         let dataplane_config = DataplaneConfigStore::new();
         let (_mac_tx, mac_rx) = watch::channel([0u8; 6]);
         let (_tx, rx) = mpsc::channel(1);
@@ -587,6 +617,7 @@ mod tests {
                 retry_max: 1,
                 lease_min_secs: 1,
                 hostname: None,
+                update_internal_cidr: true,
             },
             mac_rx,
             rx,

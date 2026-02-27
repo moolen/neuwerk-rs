@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
 
 use crate::dataplane::engine::{Action, EngineState};
+use crate::dataplane::overlay::{self, EncapMode};
 use crate::dataplane::packet::Packet;
 
 const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
@@ -72,12 +73,40 @@ impl SoftAdapter {
                 continue;
             }
 
-            let mut pkt = Packet::from_bytes(&buf[..n]);
-            match crate::dataplane::engine::handle_packet(&mut pkt, state) {
+            if state.overlay.mode == EncapMode::None {
+                let mut pkt = Packet::from_bytes(&buf[..n]);
+                match crate::dataplane::engine::handle_packet(&mut pkt, state) {
+                    Action::Drop => {}
+                    Action::Forward { .. } | Action::ToHost => {
+                        self.file
+                            .write_all(pkt.buffer())
+                            .map_err(|err| format!("dataplane write failed: {err}"))?;
+                    }
+                }
+                continue;
+            }
+
+            let metrics = state.metrics().cloned();
+            let overlay_pkt = match overlay::decap(&buf[..n], &state.overlay, metrics.as_ref()) {
+                Ok(pkt) => pkt,
+                Err(_) => continue,
+            };
+            let mut inner = overlay_pkt.inner;
+            overlay::maybe_clamp_mss(&mut inner, &state.overlay, &overlay_pkt.meta);
+            match crate::dataplane::engine::handle_packet(&mut inner, state) {
                 Action::Drop => {}
                 Action::Forward { .. } | Action::ToHost => {
+                    let out = match overlay::encap(
+                        &inner,
+                        &overlay_pkt.meta,
+                        &state.overlay,
+                        metrics.as_ref(),
+                    ) {
+                        Ok(frame) => frame,
+                        Err(_) => continue,
+                    };
                     self.file
-                        .write_all(pkt.buffer())
+                        .write_all(&out)
                         .map_err(|err| format!("dataplane write failed: {err}"))?;
                 }
             }

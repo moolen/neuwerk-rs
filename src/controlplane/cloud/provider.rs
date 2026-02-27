@@ -21,9 +21,19 @@ pub enum CloudError {
 #[async_trait]
 pub trait CloudProvider: Send + Sync {
     async fn self_identity(&self) -> Result<InstanceRef, CloudError>;
-    async fn discover_instances(&self, filter: &DiscoveryFilter) -> Result<Vec<InstanceRef>, CloudError>;
-    async fn discover_subnets(&self, filter: &DiscoveryFilter) -> Result<Vec<SubnetRef>, CloudError>;
-    async fn get_route(&self, subnet: &SubnetRef, route_name: &str) -> Result<Option<RouteRef>, CloudError>;
+    async fn discover_instances(
+        &self,
+        filter: &DiscoveryFilter,
+    ) -> Result<Vec<InstanceRef>, CloudError>;
+    async fn discover_subnets(
+        &self,
+        filter: &DiscoveryFilter,
+    ) -> Result<Vec<SubnetRef>, CloudError>;
+    async fn get_route(
+        &self,
+        subnet: &SubnetRef,
+        route_name: &str,
+    ) -> Result<Option<RouteRef>, CloudError>;
     async fn ensure_default_route(
         &self,
         subnet: &SubnetRef,

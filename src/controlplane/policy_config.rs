@@ -400,9 +400,7 @@ impl TlsNameMatchConfig {
                     RegexBuilder::new(pattern)
                         .case_insensitive(true)
                         .build()
-                        .map_err(|err| {
-                            format!("rule {rule_id}: invalid {field} regex: {err}")
-                        })?,
+                        .map_err(|err| format!("rule {rule_id}: invalid {field} regex: {err}"))?,
                 )
             }
             None => None,
@@ -425,9 +423,9 @@ impl TlsMatchConfig {
 
         let server_cn = match (self.server_cn, self.server_dn) {
             (Some(config), _) => Some(config.compile(rule_id, "tls.server_cn")?),
-            (None, Some(legacy)) => Some(
-                TlsNameMatchConfig::String(legacy).compile(rule_id, "tls.server_dn")?,
-            ),
+            (None, Some(legacy)) => {
+                Some(TlsNameMatchConfig::String(legacy).compile(rule_id, "tls.server_dn")?)
+            }
             _ => None,
         };
 
@@ -439,16 +437,14 @@ impl TlsMatchConfig {
         let mut fingerprints_sha256 = Vec::with_capacity(self.fingerprint_sha256.len());
         for fp in self.fingerprint_sha256 {
             fingerprints_sha256.push(
-                parse_sha256_fingerprint(&fp)
-                    .map_err(|err| format!("rule {rule_id}: {err}"))?,
+                parse_sha256_fingerprint(&fp).map_err(|err| format!("rule {rule_id}: {err}"))?,
             );
         }
 
         let mut trust_anchors = Vec::new();
         for pem in self.trust_anchors_pem {
             trust_anchors.extend(
-                parse_pem_cert_chain(&pem)
-                    .map_err(|err| format!("rule {rule_id}: {err}"))?,
+                parse_pem_cert_chain(&pem).map_err(|err| format!("rule {rule_id}: {err}"))?,
             );
         }
 

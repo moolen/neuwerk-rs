@@ -1,12 +1,12 @@
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
+use firewall::dataplane::config::DataplaneConfig;
 use firewall::dataplane::policy::{
     CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction,
     RuleMatch, SourceGroup,
 };
 use firewall::dataplane::{handle_packet, Action, EngineState, Packet};
-use firewall::dataplane::config::DataplaneConfig;
 
 fn build_ipv4_udp(
     src_ip: Ipv4Addr,

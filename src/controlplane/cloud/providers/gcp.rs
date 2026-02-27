@@ -39,15 +39,25 @@ impl CloudProvider for GcpProvider {
         Err(CloudError::Unsupported)
     }
 
-    async fn discover_instances(&self, _filter: &DiscoveryFilter) -> Result<Vec<InstanceRef>, CloudError> {
+    async fn discover_instances(
+        &self,
+        _filter: &DiscoveryFilter,
+    ) -> Result<Vec<InstanceRef>, CloudError> {
         Err(CloudError::Unsupported)
     }
 
-    async fn discover_subnets(&self, _filter: &DiscoveryFilter) -> Result<Vec<SubnetRef>, CloudError> {
+    async fn discover_subnets(
+        &self,
+        _filter: &DiscoveryFilter,
+    ) -> Result<Vec<SubnetRef>, CloudError> {
         Err(CloudError::Unsupported)
     }
 
-    async fn get_route(&self, _subnet: &SubnetRef, _route_name: &str) -> Result<Option<RouteRef>, CloudError> {
+    async fn get_route(
+        &self,
+        _subnet: &SubnetRef,
+        _route_name: &str,
+    ) -> Result<Option<RouteRef>, CloudError> {
         Err(CloudError::Unsupported)
     }
 

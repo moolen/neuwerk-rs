@@ -1,16 +1,16 @@
-use std::net::{IpAddr, SocketAddr};
-use std::pin::Pin;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
 use std::convert::Infallible;
+use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Extension, OriginalUri, Path, Query, Request, State};
-use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, SET_COOKIE};
+use axum::http::HeaderMap;
 use axum::http::{Method, StatusCode};
-use axum::response::{IntoResponse, Response};
 use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use axum_server::Server;
@@ -26,26 +26,31 @@ use uuid::Uuid;
 use include_dir::{include_dir, Dir};
 use mime_guess::MimeGuess;
 
+use crate::controlplane::api_auth::{self, ApiKeySet};
+use crate::controlplane::cluster::rpc::{RaftTlsConfig, WiretapClient};
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
 use crate::controlplane::http_tls::{ensure_http_tls, HttpTlsConfig};
 use crate::controlplane::metrics::{Metrics, StatsSnapshot};
-use crate::controlplane::api_auth::{self, ApiKeySet};
 use crate::controlplane::policy_config::PolicyMode;
-use crate::controlplane::service_accounts::{
-    parse_rfc3339, parse_ttl_secs, ServiceAccountStatus, ServiceAccountStore, TokenMeta, TokenStatus,
-};
-use crate::controlplane::ready::ReadinessState;
-use crate::controlplane::wiretap::{DnsCacheEntry, DnsMap, WiretapFilter, WiretapHub, WiretapQuery};
-use crate::controlplane::cluster::rpc::{RaftTlsConfig, WiretapClient};
 use crate::controlplane::policy_repository::{
     policy_item_key, PolicyActive, PolicyCreateRequest, PolicyDiskStore, PolicyIndex, PolicyMeta,
     PolicyRecord, POLICY_ACTIVE_KEY, POLICY_INDEX_KEY,
+};
+use crate::controlplane::ready::ReadinessState;
+use crate::controlplane::service_accounts::{
+    parse_rfc3339, parse_ttl_secs, ServiceAccountStatus, ServiceAccountStore, TokenMeta,
+    TokenStatus,
+};
+use crate::controlplane::wiretap::{
+    DnsCacheEntry, DnsMap, WiretapFilter, WiretapHub, WiretapQuery,
 };
 use crate::controlplane::PolicyStore;
 static UI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const AUTH_COOKIE_NAME: &str = "neuwerk_auth";
+const POLICY_ACTIVATION_TIMEOUT: Duration = Duration::from_secs(2);
+const POLICY_ACTIVATION_POLL: Duration = Duration::from_millis(10);
 
 #[derive(Clone)]
 pub struct HttpApiCluster {
@@ -106,6 +111,36 @@ impl ApiAuthSource {
     }
 }
 
+async fn wait_for_policy_activation(
+    policy_store: &PolicyStore,
+    readiness: Option<&ReadinessState>,
+    generation: u64,
+) -> Result<(), String> {
+    if readiness.is_none() {
+        return Ok(());
+    }
+    if let Some(state) = readiness {
+        if !state.dataplane_running() {
+            return Ok(());
+        }
+    }
+    if policy_store.policy_applied_generation() >= generation {
+        return Ok(());
+    }
+    let deadline = Instant::now() + POLICY_ACTIVATION_TIMEOUT;
+    loop {
+        if policy_store.policy_applied_generation() >= generation {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "policy activation timed out waiting for generation {generation}"
+            ));
+        }
+        tokio::time::sleep(POLICY_ACTIVATION_POLL).await;
+    }
+}
+
 pub async fn run_http_api(
     cfg: HttpApiConfig,
     policy_store: PolicyStore,
@@ -116,6 +151,12 @@ pub async fn run_http_api(
     readiness: Option<ReadinessState>,
     metrics: Metrics,
 ) -> Result<(), String> {
+    eprintln!(
+        "http api: starting (bind={}, metrics={}, tls_dir={})",
+        cfg.bind_addr,
+        cfg.metrics_bind,
+        cfg.tls_dir.display()
+    );
     let tls = ensure_http_tls(HttpTlsConfig {
         tls_dir: cfg.tls_dir.clone(),
         cert_path: cfg.cert_path.clone(),
@@ -223,10 +264,19 @@ pub async fn run_http_api(
         .route("/metrics", get(metrics_handler))
         .with_state(metrics.clone());
 
+    let metrics_bind = cfg.metrics_bind;
     tokio::spawn(async move {
-        let _ = Server::bind(cfg.metrics_bind)
+        match Server::bind(metrics_bind)
             .serve(metrics_app.into_make_service())
-            .await;
+            .await
+        {
+            Ok(()) => {
+                eprintln!("metrics server exited on {metrics_bind}");
+            }
+            Err(err) => {
+                eprintln!("metrics server failed on {metrics_bind}: {err}");
+            }
+        }
     });
 
     let tls_config =
@@ -234,10 +284,17 @@ pub async fn run_http_api(
             .await
             .map_err(|err| format!("http tls config: {err}"))?;
 
-    axum_server::bind_rustls(cfg.bind_addr, tls_config)
+    eprintln!("http api: serving https on {}", cfg.bind_addr);
+    match axum_server::bind_rustls(cfg.bind_addr, tls_config)
         .serve(app.into_make_service())
         .await
-        .map_err(|err| format!("http api serve: {err}"))
+    {
+        Ok(()) => {
+            eprintln!("http api: server exited on {}", cfg.bind_addr);
+            Ok(())
+        }
+        Err(err) => Err(format!("http api serve: {err}")),
+    }
 }
 
 fn build_auth_source(
@@ -386,6 +443,12 @@ struct TokenLoginRequest {
     token: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct WiretapStreamAuthQuery {
+    #[serde(default)]
+    access_token: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ServiceAccountCreateRequest {
     name: String,
@@ -439,14 +502,23 @@ async fn create_policy(State(state): State<ApiState>, mut request: Request) -> R
     }
 
     if record.mode == PolicyMode::Enforce {
-        state.policy_store.rebuild(
+        let generation = match state.policy_store.rebuild(
             compiled.groups,
             compiled.dns_policy,
             compiled.default_policy,
-        );
+        ) {
+            Ok(generation) => generation,
+            Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+        };
         state.policy_store.set_active_policy_id(Some(record.id));
         if let Err(err) = state.local_store.set_active(Some(record.id)) {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+        }
+        if let Err(err) =
+            wait_for_policy_activation(&state.policy_store, state.readiness.as_ref(), generation)
+                .await
+        {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, err);
         }
     }
 
@@ -461,10 +533,7 @@ async fn create_policy(State(state): State<ApiState>, mut request: Request) -> R
                         key: POLICY_ACTIVE_KEY.to_vec(),
                     };
                     if let Err(err) = cluster.raft.client_write(cmd).await {
-                        return error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            err.to_string(),
-                        );
+                        return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
                     }
                 }
             }
@@ -512,26 +581,47 @@ async fn update_policy(
     }
 
     if record.mode == PolicyMode::Enforce {
-        state.policy_store.rebuild(
+        let generation = match state.policy_store.rebuild(
             compiled.groups,
             compiled.dns_policy,
             compiled.default_policy,
-        );
+        ) {
+            Ok(generation) => generation,
+            Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+        };
         state.policy_store.set_active_policy_id(Some(record.id));
         if let Err(err) = state.local_store.set_active(Some(record.id)) {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+        }
+        if let Err(err) =
+            wait_for_policy_activation(&state.policy_store, state.readiness.as_ref(), generation)
+                .await
+        {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, err);
         }
     } else if let Ok(active_id) = state.local_store.active_id() {
         if active_id == Some(record.id) {
             if let Err(err) = state.local_store.set_active(None) {
                 return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
             }
-            state.policy_store.rebuild(
+            let generation = match state.policy_store.rebuild(
                 Vec::new(),
                 crate::controlplane::policy_config::DnsPolicy::new(Vec::new()),
                 None,
-            );
+            ) {
+                Ok(generation) => generation,
+                Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+            };
             state.policy_store.set_active_policy_id(None);
+            if let Err(err) = wait_for_policy_activation(
+                &state.policy_store,
+                state.readiness.as_ref(),
+                generation,
+            )
+            .await
+            {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, err);
+            }
         }
     }
 
@@ -565,12 +655,24 @@ async fn delete_policy(
     if let Ok(active_id) = state.local_store.active_id() {
         if active_id == Some(record.id) {
             let _ = state.local_store.set_active(None);
-            state.policy_store.rebuild(
+            let generation = match state.policy_store.rebuild(
                 Vec::new(),
                 crate::controlplane::policy_config::DnsPolicy::new(Vec::new()),
                 None,
-            );
+            ) {
+                Ok(generation) => generation,
+                Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+            };
             state.policy_store.set_active_policy_id(None);
+            if let Err(err) = wait_for_policy_activation(
+                &state.policy_store,
+                state.readiness.as_ref(),
+                generation,
+            )
+            .await
+            {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, err);
+            }
         }
     }
     if let Err(err) = state.local_store.delete_record(record.id) {
@@ -722,7 +824,12 @@ async fn delete_service_account(
     };
     let mut account = match state.service_accounts.get_account(account_id).await {
         Ok(Some(account)) => account,
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "service account not found".to_string()),
+        Ok(None) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "service account not found".to_string(),
+            )
+        }
         Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
     };
     if account.status != ServiceAccountStatus::Disabled {
@@ -787,11 +894,19 @@ async fn create_service_account_token(
     };
     let account = match state.service_accounts.get_account(account_id).await {
         Ok(Some(account)) => account,
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "service account not found".to_string()),
+        Ok(None) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "service account not found".to_string(),
+            )
+        }
         Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
     };
     if account.status != ServiceAccountStatus::Active {
-        return error_response(StatusCode::BAD_REQUEST, "service account disabled".to_string());
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "service account disabled".to_string(),
+        );
     }
     let body = match read_body_limited(request.into_body()).await {
         Ok(body) => body,
@@ -810,7 +925,10 @@ async fn create_service_account_token(
         _ => None,
     };
     if eternal && ttl_secs.is_some() {
-        return error_response(StatusCode::BAD_REQUEST, "ttl and eternal are mutually exclusive".to_string());
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "ttl and eternal are mutually exclusive".to_string(),
+        );
     }
     let keyset = match state.auth_source.load_keyset() {
         Ok(keyset) => keyset,
@@ -830,14 +948,16 @@ async fn create_service_account_token(
     };
     let token_id = match Uuid::parse_str(&minted.jti) {
         Ok(id) => id,
-        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "invalid token id".to_string()),
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid token id".to_string(),
+            )
+        }
     };
     let expires_at = match minted.exp {
         Some(exp) => match OffsetDateTime::from_unix_timestamp(exp) {
-            Ok(dt) => Some(
-                dt.format(&Rfc3339)
-                    .unwrap_or_else(|_| exp.to_string()),
-            ),
+            Ok(dt) => Some(dt.format(&Rfc3339).unwrap_or_else(|_| exp.to_string())),
             Err(_) => None,
         },
         None => None,
@@ -893,7 +1013,10 @@ async fn revoke_service_account_token(
         Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
     };
     if token.service_account_id != account_id {
-        return error_response(StatusCode::BAD_REQUEST, "token does not belong to account".to_string());
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "token does not belong to account".to_string(),
+        );
     }
     if token.status != TokenStatus::Revoked {
         let now = OffsetDateTime::now_utc();
@@ -1000,8 +1123,14 @@ async fn wiretap_leader_stream(state: &ApiState, query: WiretapQuery) -> Respons
     };
 
     let metrics = cluster.raft.metrics().borrow().clone();
-    let mut streams: SelectAll<Pin<Box<dyn futures::Stream<Item = crate::controlplane::cluster::rpc::proto::WiretapEvent> + Send>>> =
-        SelectAll::new();
+    let mut streams: SelectAll<
+        Pin<
+            Box<
+                dyn futures::Stream<Item = crate::controlplane::cluster::rpc::proto::WiretapEvent>
+                    + Send,
+            >,
+        >,
+    > = SelectAll::new();
     let mut stream_count = 0usize;
     for (_, node) in metrics.membership_config.membership().nodes() {
         let Ok(addr) = node.addr.parse::<SocketAddr>() else {
@@ -1031,7 +1160,9 @@ async fn wiretap_leader_stream(state: &ApiState, query: WiretapQuery) -> Respons
     Sse::new(stream).into_response()
 }
 
-fn wiretap_event_from_proto(event: crate::controlplane::cluster::rpc::proto::WiretapEvent) -> Event {
+fn wiretap_event_from_proto(
+    event: crate::controlplane::cluster::rpc::proto::WiretapEvent,
+) -> Event {
     let crate::controlplane::cluster::rpc::proto::WiretapEvent {
         event_type,
         flow_id,
@@ -1105,6 +1236,8 @@ async fn auth_middleware(
         Err(reason) => {
             if let Some(token) = extract_cookie_token(request.headers()) {
                 token
+            } else if let Some(token) = extract_wiretap_query_token(&request) {
+                token
             } else {
                 state.metrics.observe_http_auth("deny", reason.as_label());
                 return error_response(StatusCode::UNAUTHORIZED, reason.message());
@@ -1150,14 +1283,30 @@ async fn auth_middleware(
     }
 
     let mut request = request;
-    request
-        .extensions_mut()
-        .insert(AuthContext { claims: claims.clone() });
+    request.extensions_mut().insert(AuthContext {
+        claims: claims.clone(),
+    });
 
     state
         .metrics
         .observe_http_auth("allow", AuthFailureReason::ValidToken.as_label());
     next.run(request).await
+}
+
+fn extract_wiretap_query_token(request: &Request) -> Option<String> {
+    let path = request.uri().path();
+    if path != "/wiretap/stream" && path != "/api/v1/wiretap/stream" {
+        return None;
+    }
+    let query = request.uri().query()?;
+    let parsed: WiretapStreamAuthQuery = serde_urlencoded::from_str(query).ok()?;
+    let token = parsed.access_token?;
+    let token = token.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
 }
 
 async fn validate_service_account_claims(
@@ -1166,7 +1315,8 @@ async fn validate_service_account_claims(
     sa_id: &str,
     now: OffsetDateTime,
 ) -> Result<(), String> {
-    let account_id = Uuid::parse_str(sa_id).map_err(|_| "invalid service account id".to_string())?;
+    let account_id =
+        Uuid::parse_str(sa_id).map_err(|_| "invalid service account id".to_string())?;
     if claims.sub != sa_id {
         return Err("jwt sub does not match service account".to_string());
     }
@@ -1256,7 +1406,9 @@ fn extract_bearer_token(
         Some(value) => value,
         None => return Err(AuthFailureReason::MissingToken),
     };
-    let value = value.to_str().map_err(|_| AuthFailureReason::InvalidScheme)?;
+    let value = value
+        .to_str()
+        .map_err(|_| AuthFailureReason::InvalidScheme)?;
     let mut parts = value.split_whitespace();
     let scheme = parts.next().ok_or(AuthFailureReason::InvalidScheme)?;
     let token = parts.next().ok_or(AuthFailureReason::MissingToken)?;
@@ -1403,7 +1555,10 @@ async fn proxy_stream_request(
     let status = resp.status();
     let headers = resp.headers().clone();
     let stream = resp.bytes_stream().map_err(|err| {
-        std::io::Error::new(std::io::ErrorKind::Other, format!("proxy stream error: {err}"))
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("proxy stream error: {err}"),
+        )
     });
 
     let mut response = Response::builder().status(status);
@@ -1429,15 +1584,15 @@ fn should_proxy_header(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    use std::net::TcpListener;
     use std::net::Ipv4Addr;
+    use std::net::TcpListener;
     use std::time::Duration;
 
-    use axum::http::{header::AUTHORIZATION, HeaderValue};
-    use tower::ServiceExt;
     use crate::dataplane::policy::DefaultPolicy;
+    use axum::http::{header::AUTHORIZATION, HeaderValue};
     use rcgen::{BasicConstraints, Certificate, CertificateParams, IsCa, SanType};
     use tempfile::TempDir;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn proxy_stream_forwards_auth_header() {
@@ -1462,8 +1617,8 @@ mod tests {
         std::fs::write(&cert_path, leaf_pem).unwrap();
         std::fs::write(&key_path, leaf_key).unwrap();
 
-        let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-            .unwrap();
+        let listener =
+            TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
 
@@ -1471,12 +1626,10 @@ mod tests {
             "/api/v1/wiretap/stream",
             get(|headers: HeaderMap| async move {
                 match headers.get(AUTHORIZATION) {
-                    Some(value) if value == "Bearer testtoken" => {
-                        Response::builder()
-                            .status(StatusCode::OK)
-                            .body(Body::from("ok"))
-                            .unwrap()
-                    }
+                    Some(value) if value == "Bearer testtoken" => Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Body::from("ok"))
+                        .unwrap(),
                     _ => Response::builder()
                         .status(StatusCode::UNAUTHORIZED)
                         .body(Body::from("unauthorized"))
@@ -1485,10 +1638,9 @@ mod tests {
             }),
         );
 
-        let tls_config =
-            axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
-                .await
-                .unwrap();
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
+            .await
+            .unwrap();
         let server = tokio::spawn(async move {
             axum_server::bind_rustls(addr, tls_config)
                 .serve(app.into_make_service())
@@ -1510,8 +1662,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let policy_store =
-            PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+        let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
         let local_store = PolicyDiskStore::new(dir.path().join("policies"));
         let service_accounts = ServiceAccountStore::local(dir.path().join("service-accounts"));
         let metrics = Metrics::new().unwrap();
@@ -1557,8 +1708,7 @@ mod tests {
             .expect("missing keyset");
         let token = api_auth::mint_token(&keyset, "auth-test", None, None).unwrap();
 
-        let policy_store =
-            PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+        let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
         let local_store = PolicyDiskStore::new(dir.path().join("policies"));
         let service_accounts = ServiceAccountStore::local(dir.path().join("service-accounts"));
         let metrics = Metrics::new().unwrap();
@@ -1587,7 +1737,12 @@ mod tests {
 
         let resp = app
             .clone()
-            .oneshot(Request::builder().uri("/api/v1/policies").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/policies")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -1690,10 +1845,7 @@ async fn metrics_handler(State(metrics): State<Metrics>) -> Response {
     }
 }
 
-fn spawn_raft_metrics_sampler(
-    metrics: Metrics,
-    raft: openraft::Raft<ClusterTypeConfig>,
-) {
+fn spawn_raft_metrics_sampler(metrics: Metrics, raft: openraft::Raft<ClusterTypeConfig>) {
     tokio::spawn(async move {
         let mut watch = raft.metrics();
         let mut initialized = false;
@@ -1859,7 +2011,9 @@ fn read_cluster_index(store: &ClusterStore) -> Result<PolicyIndex, String> {
 fn read_cluster_active(store: &ClusterStore) -> Result<Option<PolicyActive>, String> {
     let raw = store.get_state_value(POLICY_ACTIVE_KEY)?;
     match raw {
-        Some(raw) => serde_json::from_slice(&raw).map(Some).map_err(|err| err.to_string()),
+        Some(raw) => serde_json::from_slice(&raw)
+            .map(Some)
+            .map_err(|err| err.to_string()),
         None => Ok(None),
     }
 }
@@ -1885,17 +2039,12 @@ async fn read_body_limited(body: Body) -> Result<Bytes, Response> {
 }
 
 fn build_auth_cookie(token: &str) -> Result<axum::http::HeaderValue, String> {
-    let cookie = format!(
-        "{AUTH_COOKIE_NAME}={token}; HttpOnly; Secure; SameSite=Strict; Path=/"
-    );
-    axum::http::HeaderValue::from_str(&cookie)
-        .map_err(|_| "invalid auth cookie".to_string())
+    let cookie = format!("{AUTH_COOKIE_NAME}={token}; HttpOnly; Secure; SameSite=Strict; Path=/");
+    axum::http::HeaderValue::from_str(&cookie).map_err(|_| "invalid auth cookie".to_string())
 }
 
 fn clear_auth_cookie() -> Result<axum::http::HeaderValue, String> {
-    let cookie = format!(
-        "{AUTH_COOKIE_NAME}=; Max-Age=0; HttpOnly; Secure; SameSite=Strict; Path=/"
-    );
-    axum::http::HeaderValue::from_str(&cookie)
-        .map_err(|_| "invalid auth cookie".to_string())
+    let cookie =
+        format!("{AUTH_COOKIE_NAME}=; Max-Age=0; HttpOnly; Secure; SameSite=Strict; Path=/");
+    axum::http::HeaderValue::from_str(&cookie).map_err(|_| "invalid auth cookie".to_string())
 }

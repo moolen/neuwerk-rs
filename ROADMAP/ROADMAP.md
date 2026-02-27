@@ -1,23 +1,6 @@
-Logical Next Steps
-
-  4. Control plane APIs + replication: implement the cluster stub, distributed rule storage, and an API surface as outlined in ROADMAP/ROADMAP.md and src/controlplane/cluster.rs.
-
-  5. DPDK dataplane: replace the no-op loop with actual RX/TX pipeline in src/dataplane/dpdk_adapter.rs while keeping unsafe isolated.
-
-
-- per-node DNS cache with respect to TTL
-- UI
-
-## Single node to cluster migration path
-
-I want to have a migration path from a single node cluster which stores the data locally to a multi-node ha cluster which stores the data in a distributed fashion. This is needed for users who upgrade their environment or want to do maintenance on a instance.
-
-Use-Case: User runs a single node in a environment. Then he wants a proper HA setup with 3 nodes.
-He needs to add two more nodes, let them form a cluster and then distribute the traffic among the nodes.
-
-This should help for availability (less impact on AZ failure) and resilience.
-
-Let's explore this topic. ask me questions for clarification and once everything is clear please write a implementation plan to ROADMAP/single-node-ha-migration-path.md.
+## TODOs
+- per-node DNS cache with respect to TTL, figure out how this interacts with the distributed storage.
+- "audit" mode DNS hostname / traffic capturing and aggregation
 
 ## Azure Cloud integration
 
@@ -35,3 +18,26 @@ I want to use the cloud provider APIs for authentication, discovery and lifecycl
 Lets further explore this topic and write a implementation plan to ROADMAP/AZURE-INTEGRATION.md.
 Ask me questions for clarification. Once everything is clear write the implementation plan.
 
+## Azure VMSS Integration TODOs (Instance Protection + Termination Handling)
+- **Instance protection API**:
+  - Research the exact Azure ARM API for VMSS instance protection (protect from scale-in / scale set actions).
+  - Implement provider methods to `set_instance_protection(instance, enabled)` using the VMSS VM update endpoint.
+  - Ensure protection is idempotent and applied only to assigned instances; remove when draining or unassigned.
+  - Decide on failure behavior (log + continue vs. fail reconcile) and add metrics for protection errors.
+- **Scheduled Events (termination / maintenance)**:
+  - Implement polling of the Azure IMDS scheduled events endpoint to detect scale-in/eviction, reboot, redeploy, or other termination-related events.
+  - Map event types to drain behavior: start drain on any event that can terminate or move the VM.
+  - Add best-effort completion/ack once drain finishes (research required: scheduled events accept/ack semantics).
+  - Add metrics for event detection, drain start time, and completion/ack outcomes.
+- **Readiness gating & route cutover**:
+  - Ensure route changes only occur after readiness checks succeed.
+  - When a termination event is detected, force reassignment of subnet routes away from the instance before completing termination.
+- **NIC tagging enforcement**:
+  - Require NIC tags `neuwerk.io/management` and `neuwerk.io/dataplane` and fail fast when missing.
+  - Document tag requirements and add clear error logging if tags are not present.
+- **Testing**:
+  - Add unit tests for protection toggling logic and scheduled events flow with a mock Azure provider.
+  - Add integration tests in the local harness using a mock provider for event-driven drain.
+- **Documentation**:
+  - Document required Azure role permissions for VMSS updates, subnet route table updates, and scheduled events access.
+  - Provide a minimal Azure VMSS deployment example (tags, routes, permissions).

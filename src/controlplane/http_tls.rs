@@ -3,11 +3,11 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::net::{IpAddr, SocketAddr};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::net::{IpAddr, SocketAddr};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use rcgen::{BasicConstraints, Certificate, CertificateParams, IsCa, SanType};
@@ -49,8 +49,19 @@ pub async fn ensure_http_tls(cfg: HttpTlsConfig) -> Result<HttpTlsMaterial, Stri
     ensure_rustls_provider();
     let paths = resolve_paths(&cfg);
 
-    let cert_exists = paths.cert_path.exists();
-    let key_exists = paths.key_path.exists();
+    let mut cert_exists = paths.cert_path.exists();
+    let mut key_exists = paths.key_path.exists();
+    if cert_exists != key_exists {
+        eprintln!("warning: http tls cert/key mismatch; removing and regenerating");
+        if cert_exists {
+            fs::remove_file(&paths.cert_path).map_err(|err| err.to_string())?;
+        }
+        if key_exists {
+            fs::remove_file(&paths.key_path).map_err(|err| err.to_string())?;
+        }
+        cert_exists = paths.cert_path.exists();
+        key_exists = paths.key_path.exists();
+    }
     if cert_exists != key_exists {
         return Err("http tls: cert/key mismatch".to_string());
     }
@@ -77,13 +88,7 @@ pub async fn ensure_http_tls(cfg: HttpTlsConfig) -> Result<HttpTlsMaterial, Stri
             let ca_signer = load_http_ca_signer(&store, &cfg.token_path)?;
             let (csr, key_pem) = build_csr(sans)?;
             let cert_pem = ca_signer.sign_csr(&csr).map_err(|err| err.to_string())?;
-            persist_tls_material(
-                &paths,
-                &key_pem,
-                &cert_pem,
-                ca_signer.cert_pem(),
-                None,
-            )?;
+            persist_tls_material(&paths, &key_pem, &cert_pem, ca_signer.cert_pem(), None)?;
             return Ok(HttpTlsMaterial {
                 cert_path: paths.cert_path,
                 key_path: paths.key_path,
@@ -94,13 +99,7 @@ pub async fn ensure_http_tls(cfg: HttpTlsConfig) -> Result<HttpTlsMaterial, Stri
         let ca_signer = build_ca_signer()?;
         let (csr, key_pem) = build_csr(sans)?;
         let cert_pem = ca_signer.sign_csr(&csr).map_err(|err| err.to_string())?;
-        persist_tls_material(
-            &paths,
-            &key_pem,
-            &cert_pem,
-            ca_signer.cert_pem(),
-            None,
-        )?;
+        persist_tls_material(&paths, &key_pem, &cert_pem, ca_signer.cert_pem(), None)?;
         ensure_http_ca(&raft, &store, &cfg.token_path, ca_signer).await?;
         let ca_pem = fs::read(&paths.ca_path).map_err(|err| err.to_string())?;
         return Ok(HttpTlsMaterial {

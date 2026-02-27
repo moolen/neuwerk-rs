@@ -1,5 +1,6 @@
 use std::net::Ipv4Addr;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::controlplane::policy_config::{DnsPolicy, PolicyConfig};
@@ -27,6 +28,7 @@ pub struct PolicyStore {
     dns_allowlist: DynamicIpSetV4,
     dataplane_config: DataplaneConfigStore,
     state: Arc<RwLock<PolicyStoreState>>,
+    policy_applied_generation: Arc<AtomicU64>,
 }
 
 impl PolicyStore {
@@ -55,6 +57,7 @@ impl PolicyStore {
             Vec::new(),
         )));
         let dns_policy = Arc::new(RwLock::new(DnsPolicy::new(Vec::new())));
+        let policy_applied_generation = Arc::new(AtomicU64::new(0));
         let state = Arc::new(RwLock::new(PolicyStoreState {
             internal_net,
             internal_prefix,
@@ -70,6 +73,7 @@ impl PolicyStore {
             dns_allowlist,
             dataplane_config,
             state,
+            policy_applied_generation,
         }
     }
 
@@ -89,13 +93,24 @@ impl PolicyStore {
         self.dataplane_config.clone()
     }
 
+    pub fn policy_generation(&self) -> u64 {
+        match self.state.read() {
+            Ok(state) => state.generation,
+            Err(_) => 0,
+        }
+    }
+
+    pub fn policy_applied_generation(&self) -> u64 {
+        self.policy_applied_generation.load(Ordering::Acquire)
+    }
+
+    pub fn policy_applied_tracker(&self) -> Arc<AtomicU64> {
+        self.policy_applied_generation.clone()
+    }
+
     pub fn base_group(&self) -> SourceGroup {
         let (internal_net, internal_prefix) = self.internal_cidr();
-        Self::build_base_group(
-            internal_net,
-            internal_prefix,
-            self.dns_allowlist.clone(),
-        )
+        Self::build_base_group(internal_net, internal_prefix, self.dns_allowlist.clone())
     }
 
     pub fn rebuild(
@@ -103,26 +118,26 @@ impl PolicyStore {
         mut extra_groups: Vec<SourceGroup>,
         dns_policy: DnsPolicy,
         default_policy: Option<DefaultPolicy>,
-    ) {
+    ) -> Result<u64, String> {
         // Clear DNS allowlist entries so policy changes immediately revoke prior DNS grants.
         self.dns_allowlist.clear();
-        let (internal_net, internal_prefix, effective_default, generation) = match self.state.write()
-        {
-            Ok(mut state) => {
-                if let Some(policy) = default_policy {
-                    state.default_policy = policy;
+        let (internal_net, internal_prefix, effective_default, generation) =
+            match self.state.write() {
+                Ok(mut state) => {
+                    if let Some(policy) = default_policy {
+                        state.default_policy = policy;
+                    }
+                    state.extra_groups = extra_groups.clone();
+                    state.generation = state.generation.wrapping_add(1);
+                    (
+                        state.internal_net,
+                        state.internal_prefix,
+                        state.default_policy,
+                        state.generation,
+                    )
                 }
-                state.extra_groups = extra_groups.clone();
-                state.generation = state.generation.wrapping_add(1);
-                (
-                    state.internal_net,
-                    state.internal_prefix,
-                    state.default_policy,
-                    state.generation,
-                )
-            }
-            Err(_) => return,
-        };
+                Err(_) => return Err("policy store internal state unavailable".to_string()),
+            };
 
         let mut groups = Vec::with_capacity(1 + extra_groups.len());
         groups.push(Self::build_base_group(
@@ -143,11 +158,17 @@ impl PolicyStore {
 
         if let Ok(mut lock) = self.snapshot.write() {
             *lock = policy;
+        } else {
+            return Err("policy snapshot unavailable".to_string());
         }
 
         if let Ok(mut lock) = self.dns_policy.write() {
             *lock = dns_policy;
+        } else {
+            return Err("dns policy unavailable".to_string());
         }
+
+        Ok(generation)
     }
 
     pub fn update_internal_cidr(
@@ -172,37 +193,39 @@ impl PolicyStore {
             Err(_) => return Err("dns policy unavailable".to_string()),
         };
 
-        self.rebuild(extra_groups, dns_policy, Some(default_policy));
+        self.rebuild(extra_groups, dns_policy, Some(default_policy))?;
         Ok(())
     }
 
     pub fn rebuild_from_yaml(&self, yaml: &str) -> Result<(), String> {
         let config: PolicyConfig =
             serde_yaml::from_str(yaml).map_err(|err| format!("policy yaml error: {err}"))?;
-        self.rebuild_from_config(config)
+        self.rebuild_from_config(config)?;
+        Ok(())
     }
 
     pub fn rebuild_from_yaml_path(&self, path: impl AsRef<Path>) -> Result<(), String> {
         let path = path.as_ref();
         let contents = std::fs::read_to_string(path)
             .map_err(|err| format!("failed to read policy config {}: {err}", path.display()))?;
-        self.rebuild_from_yaml(&contents)
+        self.rebuild_from_yaml(&contents)?;
+        Ok(())
     }
 
     pub fn rebuild_from_json(&self, json: &str) -> Result<(), String> {
         let config: PolicyConfig =
             serde_json::from_str(json).map_err(|err| format!("policy json error: {err}"))?;
-        self.rebuild_from_config(config)
+        self.rebuild_from_config(config)?;
+        Ok(())
     }
 
-    pub fn rebuild_from_config(&self, config: PolicyConfig) -> Result<(), String> {
+    pub fn rebuild_from_config(&self, config: PolicyConfig) -> Result<u64, String> {
         let compiled = config.compile()?;
         self.rebuild(
             compiled.groups,
             compiled.dns_policy,
             compiled.default_policy,
-        );
-        Ok(())
+        )
     }
 
     pub fn set_active_policy_id(&self, id: Option<Uuid>) {
@@ -294,7 +317,9 @@ mod tests {
             default_action: None,
         };
 
-        store.rebuild(vec![group], DnsPolicy::new(Vec::new()), None);
+        store
+            .rebuild(vec![group], DnsPolicy::new(Vec::new()), None)
+            .expect("initial policy rebuild");
         store
             .update_internal_cidr(Ipv4Addr::new(172, 16, 0, 0), 16)
             .expect("update internal cidr");

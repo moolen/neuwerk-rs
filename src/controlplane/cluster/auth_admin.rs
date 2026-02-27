@@ -25,10 +25,7 @@ impl AuthService {
     }
 
     fn ensure_active(keyset: &ApiKeySet) -> Result<(), String> {
-        let signing = keyset
-            .keys
-            .iter()
-            .find(|key| key.kid == keyset.active_kid);
+        let signing = keyset.keys.iter().find(|key| key.kid == keyset.active_kid);
         match signing {
             Some(key) if key.status == ApiKeyStatus::Active => Ok(()),
             Some(_) => Err("active signing key is retired".to_string()),

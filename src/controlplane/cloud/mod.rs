@@ -1,6 +1,6 @@
 pub mod provider;
-pub mod types;
 pub mod providers;
+pub mod types;
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
@@ -10,16 +10,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use tokio::time::MissedTickBehavior;
 
+use crate::controlplane::cluster::rpc::{IntegrationClient, RaftTlsConfig};
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
-use crate::controlplane::cluster::rpc::{IntegrationClient, RaftTlsConfig};
 use crate::controlplane::metrics::Metrics;
 use crate::dataplane::DrainControl;
 
 use provider::CloudProvider;
 use types::{
-    DrainState, DrainStatus, InstanceObservation, InstanceRef, IntegrationConfig,
-    IntegrationMode, RouteChange, SubnetRef, TerminationEvent,
+    DrainState, DrainStatus, InstanceObservation, InstanceRef, IntegrationConfig, IntegrationMode,
+    RouteChange, SubnetRef, TerminationEvent,
 };
 
 const ASSIGNMENT_PREFIX: &[u8] = b"integration/assignments/";
@@ -35,8 +35,7 @@ pub struct ReadyClient {
 
 impl ReadyClient {
     pub fn new(port: u16, ca_pem: Option<Vec<u8>>) -> Result<Self, String> {
-        let mut builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2));
+        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(2));
         if let Some(pem) = ca_pem {
             let cert = reqwest::Certificate::from_pem(&pem)
                 .map_err(|err| format!("ready client invalid ca pem: {err}"))?;
@@ -44,7 +43,9 @@ impl ReadyClient {
         } else {
             builder = builder.danger_accept_invalid_certs(true);
         }
-        let client = builder.build().map_err(|err| format!("ready client: {err}"))?;
+        let client = builder
+            .build()
+            .map_err(|err| format!("ready client: {err}"))?;
         Ok(Self { client, port })
     }
 
@@ -127,7 +128,8 @@ impl IntegrationManager {
         if mode == IntegrationMode::None {
             return;
         }
-        let mut ticker = tokio::time::interval(Duration::from_secs(self.cfg.reconcile_interval_secs));
+        let mut ticker =
+            tokio::time::interval(Duration::from_secs(self.cfg.reconcile_interval_secs));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
@@ -169,7 +171,11 @@ impl IntegrationManager {
         if !self.provider.capabilities().termination_notice {
             return;
         }
-        let event = match self.provider.poll_termination_notice(&self.local_instance).await {
+        let event = match self
+            .provider
+            .poll_termination_notice(&self.local_instance)
+            .await
+        {
             Ok(event) => event,
             Err(err) => {
                 self.metrics.inc_integration_termination_poll_error();
@@ -245,7 +251,11 @@ impl IntegrationManager {
     }
 
     async fn refresh_local_drain_control(&mut self, now: i64) -> Result<(), String> {
-        let prev = self.local_cache.drains.get(&self.local_instance_id).cloned();
+        let prev = self
+            .local_cache
+            .drains
+            .get(&self.local_instance_id)
+            .cloned();
         let drains = self.load_drains().await?;
         let next = drains.get(&self.local_instance_id).cloned();
         if let (Some(prev), Some(next)) = (prev, next.clone()) {
@@ -333,10 +343,12 @@ impl IntegrationManager {
             })
             .collect();
 
-        let assignments = compute_assignments_with_fallback(&subnets, &eligible_instances, &fallback_instances);
+        let assignments =
+            compute_assignments_with_fallback(&subnets, &eligible_instances, &fallback_instances);
         let assignment_changes = assignment_change_count(&previous_assignments, &assignments);
         if assignment_changes > 0 {
-            self.metrics.add_integration_assignment_changes(assignment_changes as u64);
+            self.metrics
+                .add_integration_assignment_changes(assignment_changes as u64);
         }
         self.persist_assignments(&assignments).await?;
 
@@ -382,7 +394,8 @@ impl IntegrationManager {
         if !fallback_instances.is_empty() {
             self.update_instance_protection(&fallback_instances, &assigned_instances)
                 .await;
-            self.update_drains(&instances, &assigned_instances, now).await?;
+            self.update_drains(&instances, &assigned_instances, now)
+                .await?;
         }
 
         Ok(())
@@ -409,7 +422,11 @@ impl IntegrationManager {
         }
         for instance in instances {
             let enabled = assigned.contains(&instance.id);
-            if let Err(err) = self.provider.set_instance_protection(instance, enabled).await {
+            if let Err(err) = self
+                .provider
+                .set_instance_protection(instance, enabled)
+                .await
+            {
                 self.metrics.inc_integration_protection_error();
                 eprintln!("integration protection error: {err}");
             }
@@ -456,14 +473,18 @@ impl IntegrationManager {
         for (instance_id, state) in updates {
             self.persist_drain(&instance_id, &state).await?;
             if state.state == DrainStatus::Drained {
-                self.metrics.observe_integration_drain(now - state.since_epoch);
+                self.metrics
+                    .observe_integration_drain(now - state.since_epoch);
             }
         }
 
         Ok(())
     }
 
-    async fn persist_assignments(&mut self, assignments: &HashMap<String, String>) -> Result<(), String> {
+    async fn persist_assignments(
+        &mut self,
+        assignments: &HashMap<String, String>,
+    ) -> Result<(), String> {
         if let Some(raft) = &self.raft {
             for (subnet_id, instance_id) in assignments {
                 let key = assignment_key(subnet_id);
@@ -485,7 +506,8 @@ impl IntegrationManager {
                 .map_err(|err| format!("assignment scan: {err}"))?;
             let mut map = HashMap::new();
             for (key, value) in entries {
-                let subnet_id = String::from_utf8_lossy(&key[ASSIGNMENT_PREFIX.len()..]).to_string();
+                let subnet_id =
+                    String::from_utf8_lossy(&key[ASSIGNMENT_PREFIX.len()..]).to_string();
                 let instance_id: String = serde_json::from_slice(&value)
                     .map_err(|err| format!("assignment decode: {err}"))?;
                 map.insert(subnet_id, instance_id);
@@ -504,8 +526,8 @@ impl IntegrationManager {
             let mut map = HashMap::new();
             for (key, value) in entries {
                 let instance_id = String::from_utf8_lossy(&key[DRAIN_PREFIX.len()..]).to_string();
-                let state: DrainState = serde_json::from_slice(&value)
-                    .map_err(|err| format!("drain decode: {err}"))?;
+                let state: DrainState =
+                    serde_json::from_slice(&value).map_err(|err| format!("drain decode: {err}"))?;
                 map.insert(instance_id, state);
             }
             self.local_cache.drains = map.clone();
@@ -514,7 +536,9 @@ impl IntegrationManager {
         Ok(self.local_cache.drains.clone())
     }
 
-    async fn load_termination_events(&mut self) -> Result<HashMap<String, TerminationEvent>, String> {
+    async fn load_termination_events(
+        &mut self,
+    ) -> Result<HashMap<String, TerminationEvent>, String> {
         if let Some(store) = &self.store {
             let entries = store
                 .scan_state_prefix(TERMINATION_PREFIX)
@@ -540,7 +564,9 @@ impl IntegrationManager {
             let cmd = ClusterCommand::Put { key, value };
             let _ = raft.client_write(cmd).await;
         } else if self.store.is_none() {
-            self.local_cache.drains.insert(instance_id.to_string(), state.clone());
+            self.local_cache
+                .drains
+                .insert(instance_id.to_string(), state.clone());
         }
         Ok(())
     }
@@ -596,18 +622,16 @@ impl IntegrationManager {
                 .ok_or_else(|| "cluster tls dir missing".to_string())?;
             let tls = RaftTlsConfig::load(tls_dir)?;
             let mut client = IntegrationClient::connect(addr, tls).await?;
-            client.clear_termination_event(instance_id.to_string()).await?;
+            client
+                .clear_termination_event(instance_id.to_string())
+                .await?;
             return Ok(());
         }
         self.local_cache.terminations.remove(instance_id);
         Ok(())
     }
 
-    async fn persist_observation(
-        &self,
-        instance: &InstanceRef,
-        observation: &InstanceObservation,
-    ) {
+    async fn persist_observation(&self, instance: &InstanceRef, observation: &InstanceObservation) {
         if let Some(raft) = &self.raft {
             let key = observed_key(&instance.id);
             let value = match serde_json::to_vec(observation) {
@@ -796,9 +820,9 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
     use async_trait::async_trait;
     use proptest::prelude::*;
+    use std::net::{IpAddr, Ipv4Addr};
     use tokio::sync::Mutex;
 
     use crate::controlplane::cloud::provider::{CloudError, CloudProvider};
@@ -1121,7 +1145,8 @@ mod tests {
         let instance_b = instance("b", "1");
         let preferred = vec![instance_b.clone()];
         let fallback = vec![instance_a.clone(), instance_b.clone()];
-        let assignments = compute_assignments_with_fallback(&[subnet.clone()], &preferred, &fallback);
+        let assignments =
+            compute_assignments_with_fallback(&[subnet.clone()], &preferred, &fallback);
         assert_eq!(assignments.get("s1"), Some(&"b".to_string()));
 
         let empty: Vec<InstanceRef> = Vec::new();
@@ -1135,7 +1160,11 @@ mod tests {
         let subnet_b = subnet("s2", "zone-b");
         let preferred = vec![instance("i1", "zone-a")];
         let fallback = vec![instance("i2", "zone-b")];
-        let assignments = compute_assignments_with_fallback(&[subnet_a.clone(), subnet_b.clone()], &preferred, &fallback);
+        let assignments = compute_assignments_with_fallback(
+            &[subnet_a.clone(), subnet_b.clone()],
+            &preferred,
+            &fallback,
+        );
         assert_eq!(assignments.get("s1"), Some(&"i1".to_string()));
         assert_eq!(assignments.get("s2"), Some(&"i2".to_string()));
     }
@@ -1197,7 +1226,8 @@ mod tests {
             tags.clone(),
         );
         let subnet = tagged_subnet("subnet-1", "zone-1", tags.clone());
-        let expected_assignments = compute_assignments(&[subnet.clone()], &[instance_a.clone(), instance_b.clone()]);
+        let expected_assignments =
+            compute_assignments(&[subnet.clone()], &[instance_a.clone(), instance_b.clone()]);
         let local_id = expected_assignments.values().next().cloned().unwrap();
 
         let provider = MockProvider::new(
@@ -1575,10 +1605,7 @@ mod tests {
         .expect("manager");
 
         manager.reconcile_once().await.unwrap();
-        assert!(manager
-            .local_cache
-            .terminations
-            .contains_key("i-a"));
+        assert!(manager.local_cache.terminations.contains_key("i-a"));
 
         manager.local_cache.drains.insert(
             "i-a".to_string(),
@@ -1728,7 +1755,10 @@ mod tests {
         manager.reconcile_once().await.unwrap();
         manager.reconcile_once().await.unwrap();
 
-        assert_eq!(manager.local_termination_published_id.as_deref(), Some("event-1"));
+        assert_eq!(
+            manager.local_termination_published_id.as_deref(),
+            Some("event-1")
+        );
         assert_eq!(manager.local_cache.terminations.len(), 1);
         assert!(manager.local_cache.terminations.get("i-a").is_some());
         assert_eq!(provider.completed_count().await, 0);
@@ -1964,24 +1994,25 @@ mod tests {
     }
 
     fn subnet_strategy() -> impl Strategy<Value = Vec<SubnetRef>> {
-        prop::collection::hash_set(".{1,8}", 1..8).prop_flat_map(|ids| {
-            let ids: Vec<String> = ids.into_iter().collect();
-            let len = ids.len();
-            (Just(ids), prop::collection::vec(zone_strategy(), len))
-        })
-        .prop_map(|(ids, zones)| {
-            ids.into_iter()
-                .zip(zones)
-                .map(|(id, zone)| SubnetRef {
-                    id: id.clone(),
-                    name: id,
-                    zone,
-                    cidr: "10.0.0.0/24".to_string(),
-                    route_table_id: "rt".to_string(),
-                    tags: HashMap::new(),
-                })
-                .collect()
-        })
+        prop::collection::hash_set(".{1,8}", 1..8)
+            .prop_flat_map(|ids| {
+                let ids: Vec<String> = ids.into_iter().collect();
+                let len = ids.len();
+                (Just(ids), prop::collection::vec(zone_strategy(), len))
+            })
+            .prop_map(|(ids, zones)| {
+                ids.into_iter()
+                    .zip(zones)
+                    .map(|(id, zone)| SubnetRef {
+                        id: id.clone(),
+                        name: id,
+                        zone,
+                        cidr: "10.0.0.0/24".to_string(),
+                        route_table_id: "rt".to_string(),
+                        tags: HashMap::new(),
+                    })
+                    .collect()
+            })
     }
 
     proptest! {

@@ -1,7 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
-import 'monaco-editor/esm/vs/editor/editor.main.css';
+import 'monaco-editor/min/vs/editor/editor.main.css';
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import YamlWorker from 'monaco-yaml/yaml.worker?worker';
 import App from './App';

@@ -1,14 +1,50 @@
 cargo build
-   Compiling firewall v0.1.0 (/home/moritz/dev/neuwerk-rs/firewall)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.72s
+warning: patch `libnuma-sys v0.0.9 (/home/moritz/dev/neuwerk-rs/firewall/third_party/libnuma-sys)` was not used in the crate graph
+warning: patch `rdma-core-sys v0.1.10 (/home/moritz/dev/neuwerk-rs/firewall/third_party/rdma-core-sys)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+warning: field `address` is never read
+   --> src/main.rs:228:5
+    |
+227 | struct ImdsSubnet {
+    |        ---------- field in this struct
+228 |     address: String,
+    |     ^^^^^^^
+    |
+    = note: `ImdsSubnet` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `firewall` (bin "firewall") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.22s
 cargo run --bin e2e_harness
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+warning: patch `libnuma-sys v0.0.9 (/home/moritz/dev/neuwerk-rs/firewall/third_party/libnuma-sys)` was not used in the crate graph
+warning: patch `rdma-core-sys v0.1.10 (/home/moritz/dev/neuwerk-rs/firewall/third_party/rdma-core-sys)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
      Running `target/debug/e2e_harness`
 running cluster case: cluster_mtls_enforced
 running cluster case: http_tls_ca_replication_joiner
 running cluster case: http_tls_ca_persists_restart
+running cluster case: cluster_migrate_from_local_enforce
+running cluster case: cluster_migrate_from_local_audit
+running cluster case: cluster_migrate_requires_http_ca_key
+running cluster case: cluster_migrate_force_overwrites
+running cluster case: cluster_migrate_verify_detects_drift
 running cluster case: http_api_proxy_to_leader
+http api: starting (bind=127.0.0.1:39775, metrics=127.0.0.1:34005, tls_dir=/tmp/neuwerk-e2e-http-api-proxy-aea1bd3a-a505-4e7a-a9d3-a6fd7f8ea167/seed/http-tls)
+http api: starting (bind=127.0.0.2:39775, metrics=127.0.0.2:34005, tls_dir=/tmp/neuwerk-e2e-http-api-proxy-aea1bd3a-a505-4e7a-a9d3-a6fd7f8ea167/joiner/http-tls)
+http api: serving https on 127.0.0.1:39775
+http api: serving https on 127.0.0.2:39775
 running cluster case: http_api_leader_loss
+http api: starting (bind=127.0.0.1:40035, metrics=127.0.0.1:40335, tls_dir=/tmp/neuwerk-e2e-http-api-leader-loss-2adf445f-b896-4a98-944e-1fb1984f2de9/seed/http-tls)
+http api: starting (bind=127.0.0.2:40035, metrics=127.0.0.2:40335, tls_dir=/tmp/neuwerk-e2e-http-api-leader-loss-2adf445f-b896-4a98-944e-1fb1984f2de9/joiner/http-tls)
+http api: serving https on 127.0.0.1:40035
+http api: serving https on 127.0.0.2:40035
 running cluster case: cluster_replication_put
 running cluster case: cluster_gc_deterministic
 running cluster case: cluster_leader_failover_can_join
@@ -25,22 +61,50 @@ dns upstream: 172.16.0.2:53
 cluster bind: 192.0.2.1:9600
 cluster join bind: 192.0.2.1:9601
 cluster advertise: 192.0.2.1:9600
+integration mode: None
+snat mode: Static(203.0.113.1)
 http bind: 192.0.2.1:8443
 http advertise: 192.0.2.1:8443
 metrics bind: 192.0.2.1:8080
+http api: starting (bind=192.0.2.1:8443, metrics=192.0.2.1:8080, tls_dir=/tmp/neuwerk-e2e-cluster-023e71e8-e24f-423c-8475-95f8f24ad99a/http-tls)
+dns proxy: binding udp 192.0.2.1:53
+dns proxy: listening on 192.0.2.1:53
+http api: serving https on 192.0.2.1:8443
 dataplane started (software), mode=Tun, data-plane-interface=dp0
 running case: api_bootstrap_tls_material
 running case: api_tls_san_allows_alt_ip
 running case: api_health_ok
 running case: api_auth_required
 running case: api_auth_token_login_whoami
+running case: api_auth_cookie_login_whoami
 running case: api_auth_rejects_expired
 running case: api_auth_rotation_keeps_old_tokens
 running case: api_auth_retire_revokes_old_kid
 running case: api_service_accounts_lifecycle
 running case: dpdk_dhcp_l2_hairpin
+dhcp: client starting
+dhcp: discover attempt 1/5
+dpdk: sending dhcp frame len=303
+dpdk: received dhcp frame from 10.0.0.254
+dpdk: sending dhcp frame len=315
+dpdk: received dhcp frame from 10.0.0.254
+dhcp: lease acquired ip=10.0.0.1, prefix=24, gateway=10.0.0.254, lease_secs=120
 running case: dpdk_dhcp_retries_exhausted
+dhcp: client starting
+dhcp: discover attempt 1/2
+dhcp: offer wait failed: dhcp timeout
+dhcp: discover attempt 2/2
+dhcp: offer wait failed: dhcp timeout
 running case: dpdk_dhcp_renewal_updates_config
+dhcp: client starting
+dhcp: discover attempt 1/5
+dpdk: sending dhcp frame len=303
+dpdk: received dhcp frame from 10.0.0.254
+dpdk: sending dhcp frame len=315
+dpdk: received dhcp frame from 10.0.0.254
+dhcp: lease acquired ip=10.0.0.1, prefix=24, gateway=10.0.0.254, lease_secs=2
+dpdk: sending dhcp frame len=315
+dpdk: received dhcp frame from 10.0.0.254
 running case: api_audit_policy_listed
 running case: api_audit_does_not_override
 running case: api_policy_persisted_local
@@ -50,24 +114,31 @@ running case: api_policy_list_ordering
 running case: api_dns_cache_grouped
 running case: api_stats_snapshot
 running case: api_metrics_exposed
+running case: api_body_limit_rejects_large
 running case: api_metrics_unauthenticated
 running case: api_metrics_integrity
 running case: api_metrics_dns_dataplane
+running case: api_tls_key_permissions
 running case: icmp_echo_allowed
+running case: icmp_type_filtering
 running case: icmp_ttl_exceeded
+running case: udp_ttl_decremented
 running case: ipv4_fragment_drop_metrics
+running case: ipv4_fragment_not_forwarded
 running case: nat_idle_eviction_metrics
+running case: nat_port_deterministic
 running case: snat_override_applied
 running case: mgmt_api_unreachable_from_dataplane
 running case: cluster_policy_update_applies
+running case: cluster_policy_update_denies_existing_flow
 running case: cluster_policy_update_https_udp
 running case: cluster_policy_update_churn
 running case: http_denied_without_dns
-http denied as expected (no dns), after 3.002411285s: http connect timed out
+http denied as expected (no dns), after 3.001998951s: http connect timed out
 running case: udp_denied_without_dns
-udp denied as expected (no dns), after 501.040993ms: udp client recv timed out
+udp denied as expected (no dns), after 500.907085ms: udp client recv timed out
 running case: https_denied_without_dns
-https denied as expected (no dns), after 3.002382101s: https connect timed out
+https denied as expected (no dns), after 3.001384047s: https connect timed out
 running case: tls_sni_allows_https
 running case: tls_sni_allows_https_tls13
 running case: tls_sni_denies_https
@@ -77,9 +148,9 @@ running case: tls_cert_tls13_denied
 running case: tls_cert_tls13_allows
 running case: tls_reassembly_client_hello
 running case: dns_allows_http
-dns response in 680.871µs: [198.51.100.10]
-http request completed in 497.639µs
-https request completed in 3.662329ms
+dns response in 1.202846ms: [198.51.100.10]
+http request completed in 598.808µs
+https request completed in 2.209968ms
 running case: dns_allows_udp
 running case: dns_allows_https
 running case: dns_regex_allows_example
@@ -87,6 +158,7 @@ running case: dns_regex_blocks_nonmatch
 running case: dns_source_group_allows_secondary
 running case: dns_source_group_blocks_secondary
 running case: dns_case_insensitive_match
+running case: dns_upstream_mismatch_nxdomain
 running case: dns_long_name_match
 running case: dns_wildcard_allows_allowed_suffix
 running case: dns_deny_overrides_wildcard
@@ -97,3 +169,65 @@ running case: https_reverse_nat_multi_flow
 running case: stream_keeps_nat_alive
 running case: dns_allowlist_gc_evicts_idle
 running case: dns_allowlist_gc_keeps_active_flow
+firewall starting
+management interface: veth-fw-mgmt
+data plane interface: dp0
+data plane mode: Soft(Tun)
+idle timeout (secs): 1
+dns allowlist idle (secs): 2
+dns allowlist gc interval (secs): 1
+default policy: Deny
+dns listen: 192.0.2.1:53
+dns upstream: 172.16.0.2:53
+cluster bind: 192.0.2.1:9600
+cluster join bind: 192.0.2.1:9601
+cluster advertise: 192.0.2.1:9600
+integration mode: None
+snat mode: None
+encap mode: Vxlan
+encap vni: 800
+encap udp port: 10800
+encap mtu: 1200
+http bind: 192.0.2.1:8443
+http advertise: 192.0.2.1:8443
+metrics bind: 192.0.2.1:8080
+dns proxy: binding udp 192.0.2.1:53
+dns proxy: listening on 192.0.2.1:53
+http api: starting (bind=192.0.2.1:8443, metrics=192.0.2.1:8080, tls_dir=/tmp/neuwerk-e2e-cluster-023e71e8-e24f-423c-8475-95f8f24ad99a/http-tls)
+http api: serving https on 192.0.2.1:8443
+dataplane started (software), mode=Tun, data-plane-interface=dp0
+running case: overlay_vxlan_round_trip
+running case: overlay_vxlan_wrong_vni_drop
+running case: overlay_vxlan_wrong_port_drop
+running case: overlay_vxlan_mtu_drop
+firewall starting
+management interface: veth-fw-mgmt
+data plane interface: dp0
+data plane mode: Soft(Tun)
+idle timeout (secs): 1
+dns allowlist idle (secs): 2
+dns allowlist gc interval (secs): 1
+default policy: Deny
+dns listen: 192.0.2.1:53
+dns upstream: 172.16.0.2:53
+cluster bind: 192.0.2.1:9600
+cluster join bind: 192.0.2.1:9601
+cluster advertise: 192.0.2.1:9600
+integration mode: None
+snat mode: None
+encap mode: Geneve
+encap vni: 100
+encap udp port: 6081
+encap mtu: 1200
+http bind: 192.0.2.1:8443
+http advertise: 192.0.2.1:8443
+metrics bind: 192.0.2.1:8080
+dns proxy: binding udp 192.0.2.1:53
+dns proxy: listening on 192.0.2.1:53
+http api: starting (bind=192.0.2.1:8443, metrics=192.0.2.1:8080, tls_dir=/tmp/neuwerk-e2e-cluster-023e71e8-e24f-423c-8475-95f8f24ad99a/http-tls)
+http api: serving https on 192.0.2.1:8443
+dataplane started (software), mode=Tun, data-plane-interface=dp0
+running case: overlay_geneve_round_trip
+running case: overlay_geneve_wrong_vni_drop
+running case: overlay_geneve_wrong_port_drop
+running case: overlay_geneve_mtu_drop

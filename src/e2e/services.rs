@@ -60,7 +60,10 @@ pub struct UpstreamTlsMaterial {
 pub fn generate_upstream_tls_material() -> Result<UpstreamTlsMaterial, String> {
     let mut ca_params = CertificateParams::default();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
+    ca_params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
     ca_params
         .distinguished_name
         .push(DnType::CommonName, "Upstream Test CA");
@@ -1124,10 +1127,11 @@ pub async fn tls_client_hello_raw(
     padding_len: usize,
 ) -> Result<usize, String> {
     ensure_rustls_provider();
-    let mut stream = tokio::time::timeout(std::time::Duration::from_secs(3), TcpStream::connect(addr))
-        .await
-        .map_err(|_| "tls raw connect timed out".to_string())?
-        .map_err(|e| format!("tls raw connect failed: {e}"))?;
+    let mut stream =
+        tokio::time::timeout(std::time::Duration::from_secs(3), TcpStream::connect(addr))
+            .await
+            .map_err(|_| "tls raw connect timed out".to_string())?
+            .map_err(|e| format!("tls raw connect failed: {e}"))?;
     let _ = stream.set_nodelay(true);
     let record = build_client_hello_record(sni, padding_len)?;
 
@@ -1165,11 +1169,11 @@ pub async fn udp_echo(
         .await
         .map_err(|e| format!("udp client send failed: {e}"))?;
     let mut buf = vec![0u8; payload.len().max(2048)];
-    let (len, _) = tokio::time::timeout(timeout, socket.recv_from(&mut buf))
-        .await
-        .map_err(|_| "udp client recv timed out".to_string())?
-        .map_err(|e| format!("udp client recv failed: {e}"))?;
-    Ok(buf[..len].to_vec())
+    match tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await {
+        Ok(Ok((len, _))) => Ok(buf[..len].to_vec()),
+        Ok(Err(err)) => Err(format!("udp client recv failed: {err}")),
+        Err(_) => Err("udp client recv timed out".to_string()),
+    }
 }
 
 fn ensure_rustls_provider() {

@@ -28,17 +28,17 @@ FW1_NS="fw1"
 FW2_NS="fw2"
 FW3_NS="fw3"
 
-FW1_MGMT_IF="nw-veth-fw1-m"
-FW2_MGMT_IF="nw-veth-fw2-m"
-FW3_MGMT_IF="nw-veth-fw3-m"
-HOST_FW1_MGMT_IF="nw-veth-host-fw1-m"
-HOST_FW2_MGMT_IF="nw-veth-host-fw2-m"
-HOST_FW3_MGMT_IF="nw-veth-host-fw3-m"
+FW1_MGMT_IF="nw-f1m"
+FW2_MGMT_IF="nw-f2m"
+FW3_MGMT_IF="nw-f3m"
+HOST_FW1_MGMT_IF="nw-h1m"
+HOST_FW2_MGMT_IF="nw-h2m"
+HOST_FW3_MGMT_IF="nw-h3m"
 
-FW1_IN_IF="nw-veth-fw1-in"
-HOST_IN_IF="nw-veth-host-in"
-FW1_UP_IF="nw-veth-fw1-up"
-HOST_UP_IF="nw-veth-host-up"
+FW1_IN_IF="nw-f1i"
+HOST_IN_IF="nw-hi"
+FW1_UP_IF="nw-f1u"
+HOST_UP_IF="nw-hu"
 
 die() {
   echo "error: $*" >&2
@@ -100,12 +100,17 @@ JSON
 
 create_netns() {
   local ns="$1"
+  if ip netns list | awk '{print $1}' | grep -qx "$ns"; then
+    ip netns del "$ns" >/dev/null 2>&1 || true
+  fi
   ip netns add "$ns"
   ip netns exec "$ns" ip link set lo up
 }
 
 create_veth_pair() {
   local ns="$1" ns_if="$2" host_if="$3"
+  ip link del "$host_if" >/dev/null 2>&1 || true
+  ip netns exec "$ns" ip link del "$ns_if" >/dev/null 2>&1 || true
   ip link add "$ns_if" type veth peer name "$host_if"
   ip link set "$ns_if" netns "$ns"
 }
@@ -130,7 +135,7 @@ start_fw1() {
     --default-policy "$DEFAULT_POLICY" \
     --dns-upstream "8.8.8.8:53" \
     --dns-listen "${FW1_MGMT_IP}:53" \
-    --snat-ip "${FW1_UP_IP}" \
+    --snat "${FW1_UP_IP}" \
     --http-bind "${FW1_MGMT_IP}:8443" \
     --metrics-bind "${FW1_MGMT_IP}:8080" \
     --cluster-bind "${FW1_MGMT_IP}:9600" \
@@ -158,7 +163,7 @@ start_fw2() {
     --cluster-bind "${FW2_MGMT_IP}:9600" \
     --cluster-join-bind "${FW2_MGMT_IP}:9601" \
     --cluster-advertise "${FW2_MGMT_IP}:9600" \
-    --join "${FW1_MGMT_IP}:9600" \
+    --join "${FW1_MGMT_IP}:9601" \
     --cluster-data-dir "${STATE_DIR}/node2/cluster" \
     --node-id-path "${STATE_DIR}/node2/node_id" \
     --bootstrap-token-path "${STATE_DIR}/bootstrap.json" \
@@ -181,7 +186,7 @@ start_fw3() {
     --cluster-bind "${FW3_MGMT_IP}:9600" \
     --cluster-join-bind "${FW3_MGMT_IP}:9601" \
     --cluster-advertise "${FW3_MGMT_IP}:9600" \
-    --join "${FW1_MGMT_IP}:9600" \
+    --join "${FW1_MGMT_IP}:9601" \
     --cluster-data-dir "${STATE_DIR}/node3/cluster" \
     --node-id-path "${STATE_DIR}/node3/node_id" \
     --bootstrap-token-path "${STATE_DIR}/bootstrap.json" \
@@ -199,6 +204,17 @@ up() {
   if [[ -f "${STATE_DIR}/active" ]]; then
     die "state exists at ${STATE_DIR} (run ./scripts/ha_local.sh down first)"
   fi
+
+  # Clean up stale namespaces or links from previous failed runs.
+  ip netns del "$FW1_NS" 2>/dev/null || true
+  ip netns del "$FW2_NS" 2>/dev/null || true
+  ip netns del "$FW3_NS" 2>/dev/null || true
+  ip link del "$HOST_IN_IF" 2>/dev/null || true
+  ip link del "$HOST_UP_IF" 2>/dev/null || true
+  ip link del "$HOST_FW1_MGMT_IF" 2>/dev/null || true
+  ip link del "$HOST_FW2_MGMT_IF" 2>/dev/null || true
+  ip link del "$HOST_FW3_MGMT_IF" 2>/dev/null || true
+  ip link del "$MGMT_BR" 2>/dev/null || true
 
   ensure_dirs
   save_default_route

@@ -110,6 +110,10 @@ impl FlowTable {
         self.map.len()
     }
 
+    pub fn idle_timeout_secs(&self) -> u64 {
+        self.idle_timeout_secs
+    }
+
     pub fn evict_expired(&mut self, now: u64) -> Vec<ExpiredFlow> {
         let timeout = self.idle_timeout_secs;
         let mut expired = Vec::new();
@@ -129,9 +133,5 @@ impl FlowTable {
         }
 
         expired
-    }
-
-    pub fn idle_timeout_secs(&self) -> u64 {
-        self.idle_timeout_secs
     }
 }

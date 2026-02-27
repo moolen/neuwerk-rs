@@ -787,13 +787,9 @@ dependencies = [
 [[package]]
 name = "dpdk-sys"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cff6114505172bc87c748bda91a69ace2d9ad254422c0cde45f459d29a6a3a82"
 dependencies = [
  "cc",
  "libc",
- "libnuma-sys",
- "rdma-core-sys",
 ]
 
 [[package]]
@@ -1565,15 +1561,6 @@ name = "libc"
 version = "0.2.182"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
-
-[[package]]
-name = "libnuma-sys"
-version = "0.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "511079bc1a3e373165edddb73f7ab08b3fbfce1402bf5f6d8ae9b61c4383cb10"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "librocksdb-sys"
@@ -2386,16 +2373,6 @@ dependencies = [
  "time",
  "x509-parser",
  "yasna",
-]
-
-[[package]]
-name = "rdma-core-sys"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ae49b8ac3315a0be444aee9ce7a06c3839f39b041582332a2a177850394bfde"
-dependencies = [
- "cc",
- "libc",
 ]
 
 [[package]]
@@ -4182,3 +4159,11 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[patch.unused]]
+name = "libnuma-sys"
+version = "0.0.9"
+
+[[patch.unused]]
+name = "rdma-core-sys"
+version = "0.1.10"

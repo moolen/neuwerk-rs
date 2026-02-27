@@ -1,11 +1,11 @@
-use std::path::{Path, PathBuf};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
@@ -102,7 +102,9 @@ pub fn local_keyset_path(tls_dir: &Path) -> PathBuf {
 pub fn load_keyset_from_store(store: &ClusterStore) -> Result<Option<ApiKeySet>, String> {
     let raw = store.get_state_value(API_KEYS_KEY)?;
     match raw {
-        Some(raw) => serde_json::from_slice(&raw).map(Some).map_err(|err| err.to_string()),
+        Some(raw) => serde_json::from_slice(&raw)
+            .map(Some)
+            .map_err(|err| err.to_string()),
         None => Ok(None),
     }
 }
@@ -230,13 +232,7 @@ pub fn mint_token(
     ttl_secs: Option<i64>,
     kid: Option<&str>,
 ) -> Result<MintedToken, String> {
-    mint_token_at(
-        keyset,
-        sub,
-        ttl_secs,
-        kid,
-        OffsetDateTime::now_utc(),
-    )
+    mint_token_at(keyset, sub, ttl_secs, kid, OffsetDateTime::now_utc())
 }
 
 pub fn mint_token_at(
@@ -251,10 +247,7 @@ pub fn mint_token_at(
     }
     let key = match kid {
         Some(kid) => keyset.keys.iter().find(|key| key.kid == kid),
-        None => keyset
-            .keys
-            .iter()
-            .find(|key| key.kid == keyset.active_kid),
+        None => keyset.keys.iter().find(|key| key.kid == keyset.active_kid),
     }
     .ok_or_else(|| "signing key not found".to_string())?;
     if key.status != ApiKeyStatus::Active {
@@ -350,10 +343,7 @@ pub fn mint_service_account_token(
     }
     let key = match kid {
         Some(kid) => keyset.keys.iter().find(|key| key.kid == kid),
-        None => keyset
-            .keys
-            .iter()
-            .find(|key| key.kid == keyset.active_kid),
+        None => keyset.keys.iter().find(|key| key.kid == keyset.active_kid),
     }
     .ok_or_else(|| "signing key not found".to_string())?;
     if key.status != ApiKeyStatus::Active {
@@ -442,9 +432,7 @@ fn sign_jwt(kid: &str, private_key_b64: &str, claims: &JwtClaims) -> Result<Stri
     Ok(format!("{signing_input}.{signature_b64}"))
 }
 
-fn parse_jwt(
-    token: &str,
-) -> Result<(JwtHeader, JwtClaims, String, Vec<u8>), String> {
+fn parse_jwt(token: &str) -> Result<(JwtHeader, JwtClaims, String, Vec<u8>), String> {
     let mut parts = token.split('.');
     let header_b64 = parts
         .next()
@@ -479,7 +467,11 @@ fn parse_jwt(
     ))
 }
 
-fn verify_signature(public_key_b64: &str, signing_input: &str, signature: &[u8]) -> Result<(), String> {
+fn verify_signature(
+    public_key_b64: &str,
+    signing_input: &str,
+    signature: &[u8],
+) -> Result<(), String> {
     let public_key = STANDARD
         .decode(public_key_b64)
         .map_err(|_| "invalid public key encoding".to_string())?;
@@ -553,7 +545,12 @@ mod tests {
         let mut token = mint_token_at(&keyset, "tester", Some(60), None, now).unwrap();
         let mut claims = parse_jwt(&token.token).unwrap().1;
         claims.iss = "bad-issuer".to_string();
-        token.token = sign_jwt(&keyset.active_kid, keyset.keys[0].private_key.as_ref().unwrap(), &claims).unwrap();
+        token.token = sign_jwt(
+            &keyset.active_kid,
+            keyset.keys[0].private_key.as_ref().unwrap(),
+            &claims,
+        )
+        .unwrap();
         assert!(validate_token_at(&token.token, &keyset, now).is_err());
     }
 
@@ -561,15 +558,8 @@ mod tests {
     fn jwt_allows_missing_exp_for_service_accounts() {
         let keyset = new_keyset().unwrap();
         let now = OffsetDateTime::now_utc();
-        let minted = mint_service_account_token(
-            &keyset,
-            "service-account",
-            None,
-            true,
-            None,
-            now,
-        )
-        .unwrap();
+        let minted =
+            mint_service_account_token(&keyset, "service-account", None, true, None, now).unwrap();
         assert!(validate_token_allow_missing_exp(&minted.token, &keyset, now).is_ok());
         assert!(validate_token_at(&minted.token, &keyset, now).is_err());
     }

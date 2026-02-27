@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use sha2::{Digest, Sha256};
 use x509_parser::extensions::GeneralName;
 use x509_parser::extensions::ParsedExtension;
-use x509_parser::prelude::X509Certificate;
 use x509_parser::parse_x509_certificate;
+use x509_parser::prelude::X509Certificate;
 
 #[derive(Debug, Clone, Default)]
 pub struct TlsObservation {
@@ -318,10 +318,8 @@ fn parse_client_hello(body: &[u8]) -> Result<Option<String>, TlsParseError> {
                     return Err(TlsParseError::InvalidHandshake);
                 }
                 if name_type == 0 {
-                    let name =
-                        std::str::from_utf8(&body[pos..pos + name_len]).map_err(|_| {
-                            TlsParseError::InvalidHandshake
-                        })?;
+                    let name = std::str::from_utf8(&body[pos..pos + name_len])
+                        .map_err(|_| TlsParseError::InvalidHandshake)?;
                     return Ok(Some(name.to_string()));
                 }
                 pos += name_len;
@@ -580,7 +578,5 @@ impl TcpReassembly {
 }
 
 pub fn normalize_hostname(name: &str) -> String {
-    name.trim()
-        .trim_end_matches('.')
-        .to_ascii_lowercase()
+    name.trim().trim_end_matches('.').to_ascii_lowercase()
 }

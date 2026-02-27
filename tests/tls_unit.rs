@@ -114,7 +114,10 @@ fn tls_server_hello_tls13_detected() {
 fn tls_certificate_chain_parsed_and_verified() {
     let mut ca_params = CertificateParams::default();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
+    ca_params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
     ca_params
         .distinguished_name
         .push(DnType::CommonName, "Test CA");
@@ -196,7 +199,10 @@ fn tls_client_hello_reassembles_out_of_order_after_syn() {
 fn tls_certificate_reassembles_across_segments() {
     let mut ca_params = CertificateParams::default();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
+    ca_params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
     ca_params
         .distinguished_name
         .push(DnType::CommonName, "Reassembly CA");

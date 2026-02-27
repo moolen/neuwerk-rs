@@ -2,11 +2,11 @@ use std::fs;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 
+use firewall::controlplane::cloud::types::TerminationEvent;
 use firewall::controlplane::cluster::bootstrap;
 use firewall::controlplane::cluster::config::ClusterConfig;
 use firewall::controlplane::cluster::rpc::{IntegrationClient, RaftTlsConfig};
 use firewall::controlplane::cluster::types::ClusterTypeConfig;
-use firewall::controlplane::cloud::types::TerminationEvent;
 use openraft::error::{ChangeMembershipError, ClientWriteError, RaftError};
 use openraft::RaftMetrics;
 use std::collections::BTreeSet;
@@ -207,7 +207,9 @@ async fn join_flow_promotes_and_restarts() {
     seed_cfg.advertise_addr = seed_addr;
     seed_cfg.join_bind_addr = seed_join_addr;
 
-    let seed = bootstrap::run_cluster(seed_cfg.clone(), None, None).await.unwrap();
+    let seed = bootstrap::run_cluster(seed_cfg.clone(), None, None)
+        .await
+        .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let mut joiner_cfg = base_config(&joiner_dir, &token_file);
@@ -216,7 +218,9 @@ async fn join_flow_promotes_and_restarts() {
     joiner_cfg.join_bind_addr = joiner_join_addr;
     joiner_cfg.join_seed = Some(seed_cfg.join_bind_addr);
 
-    let joiner = bootstrap::run_cluster(joiner_cfg.clone(), None, None).await.unwrap();
+    let joiner = bootstrap::run_cluster(joiner_cfg.clone(), None, None)
+        .await
+        .unwrap();
 
     let tls_dir = joiner_dir.path().join("tls");
     assert!(tls_dir.join("node.key").exists());
@@ -235,7 +239,9 @@ async fn join_flow_promotes_and_restarts() {
     joiner.shutdown().await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let _joiner_restart = bootstrap::run_cluster(joiner_cfg, None, None).await.unwrap();
+    let _joiner_restart = bootstrap::run_cluster(joiner_cfg, None, None)
+        .await
+        .unwrap();
     wait_for_voter(&seed.raft, joiner_id, Duration::from_secs(5))
         .await
         .unwrap();
@@ -268,14 +274,18 @@ async fn membership_change_removes_node() {
     joiner_cfg.advertise_addr = joiner_a_addr;
     joiner_cfg.join_bind_addr = joiner_a_join_addr;
     joiner_cfg.join_seed = Some(seed.join_bind_addr);
-    let joiner_a = bootstrap::run_cluster(joiner_cfg, None, None).await.unwrap();
+    let joiner_a = bootstrap::run_cluster(joiner_cfg, None, None)
+        .await
+        .unwrap();
 
     let mut joiner_cfg = base_config(&joiner_b_dir, &token_file);
     joiner_cfg.bind_addr = joiner_b_addr;
     joiner_cfg.advertise_addr = joiner_b_addr;
     joiner_cfg.join_bind_addr = joiner_b_join_addr;
     joiner_cfg.join_seed = Some(seed.join_bind_addr);
-    let _joiner_b = bootstrap::run_cluster(joiner_cfg, None, None).await.unwrap();
+    let _joiner_b = bootstrap::run_cluster(joiner_cfg, None, None)
+        .await
+        .unwrap();
 
     let joiner_a_id = uuid::Uuid::parse_str(
         fs::read_to_string(joiner_a_dir.path().join("node_id"))
@@ -432,21 +442,33 @@ async fn leader_failover_can_sign_and_join() {
     seed_cfg.bind_addr = seed_addr;
     seed_cfg.advertise_addr = seed_addr;
     seed_cfg.join_bind_addr = seed_join_addr;
-    let mut seed = Some(bootstrap::run_cluster(seed_cfg.clone(), None, None).await.unwrap());
+    let mut seed = Some(
+        bootstrap::run_cluster(seed_cfg.clone(), None, None)
+            .await
+            .unwrap(),
+    );
 
     let mut joiner_cfg = base_config(&joiner_a_dir, &token_file);
     joiner_cfg.bind_addr = joiner_a_addr;
     joiner_cfg.advertise_addr = joiner_a_addr;
     joiner_cfg.join_bind_addr = joiner_a_join_addr;
     joiner_cfg.join_seed = Some(seed_cfg.join_bind_addr);
-    let mut joiner_a = Some(bootstrap::run_cluster(joiner_cfg.clone(), None, None).await.unwrap());
+    let mut joiner_a = Some(
+        bootstrap::run_cluster(joiner_cfg.clone(), None, None)
+            .await
+            .unwrap(),
+    );
 
     let mut joiner_cfg = base_config(&joiner_b_dir, &token_file);
     joiner_cfg.bind_addr = joiner_b_addr;
     joiner_cfg.advertise_addr = joiner_b_addr;
     joiner_cfg.join_bind_addr = joiner_b_join_addr;
     joiner_cfg.join_seed = Some(seed_cfg.join_bind_addr);
-    let mut joiner_b = Some(bootstrap::run_cluster(joiner_cfg.clone(), None, None).await.unwrap());
+    let mut joiner_b = Some(
+        bootstrap::run_cluster(joiner_cfg.clone(), None, None)
+            .await
+            .unwrap(),
+    );
 
     let seed_id = uuid::Uuid::parse_str(
         fs::read_to_string(seed_dir.path().join("node_id"))
@@ -535,7 +557,9 @@ async fn leader_failover_can_sign_and_join() {
     joiner_cfg.advertise_addr = joiner_c_addr;
     joiner_cfg.join_bind_addr = joiner_c_join_addr;
     joiner_cfg.join_seed = Some(new_leader_join_addr);
-    let joiner_c = bootstrap::run_cluster(joiner_cfg, None, None).await.unwrap();
+    let joiner_c = bootstrap::run_cluster(joiner_cfg, None, None)
+        .await
+        .unwrap();
 
     let joiner_c_id = uuid::Uuid::parse_str(
         fs::read_to_string(joiner_c_dir.path().join("node_id"))

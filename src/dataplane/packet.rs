@@ -19,6 +19,20 @@ impl Packet {
         }
     }
 
+    pub fn truncate(&mut self, len: usize) {
+        self.buf.truncate(len);
+    }
+
+    pub fn prepare_for_rx(&mut self, len: usize) {
+        if self.buf.capacity() < len {
+            self.buf.reserve(len - self.buf.capacity());
+        }
+        // Safety: the caller will immediately fill the buffer before reading.
+        unsafe {
+            self.buf.set_len(len);
+        }
+    }
+
     pub fn buffer(&self) -> &[u8] {
         &self.buf
     }
@@ -207,8 +221,7 @@ impl Packet {
                 if self.buf.len() < l4_off + 6 {
                     return None;
                 }
-                let identifier =
-                    u16::from_be_bytes([self.buf[l4_off + 4], self.buf[l4_off + 5]]);
+                let identifier = u16::from_be_bytes([self.buf[l4_off + 4], self.buf[l4_off + 5]]);
                 (identifier, 0, Some(identifier))
             }
             _ => return None,
@@ -240,8 +253,7 @@ impl Packet {
         }
         match inner.proto {
             6 | 17 => {
-                self.buf[inner.l4_offset..inner.l4_offset + 2]
-                    .copy_from_slice(&port.to_be_bytes());
+                self.buf[inner.l4_offset..inner.l4_offset + 2].copy_from_slice(&port.to_be_bytes());
                 true
             }
             1 => {
@@ -576,8 +588,7 @@ impl Packet {
         buf[icmp_off + 1] = 0;
         buf[icmp_off + 2..icmp_off + 4].copy_from_slice(&0u16.to_be_bytes());
         buf[icmp_off + 4..icmp_off + 8].copy_from_slice(&0u32.to_be_bytes());
-        buf[icmp_off + 8..icmp_off + 8 + ihl]
-            .copy_from_slice(&self.buf[ip_off..ip_off + ihl]);
+        buf[icmp_off + 8..icmp_off + 8 + ihl].copy_from_slice(&self.buf[ip_off..ip_off + ihl]);
         buf[icmp_off + 8 + ihl..icmp_off + 8 + ihl + 8]
             .copy_from_slice(&self.buf[ip_off + ihl..ip_off + ihl + 8]);
 
@@ -586,6 +597,50 @@ impl Packet {
 
         self.buf = buf;
         self.recalc_checksums()
+    }
+
+    pub fn clamp_tcp_mss(&mut self, max_mss: u16) -> bool {
+        let (l4_off, data_off) = match self.tcp_offsets() {
+            Some(offsets) => offsets,
+            None => return false,
+        };
+        if self.buf.len() < l4_off + data_off {
+            return false;
+        }
+        let flags = self.buf[l4_off + 13];
+        if flags & 0x02 == 0 {
+            return false;
+        }
+        let mut idx = l4_off + 20;
+        let end = l4_off + data_off;
+        let mut changed = false;
+        while idx + 2 <= end {
+            let kind = self.buf[idx];
+            if kind == 0 {
+                break;
+            }
+            if kind == 1 {
+                idx += 1;
+                continue;
+            }
+            if idx + 2 > end {
+                break;
+            }
+            let len = self.buf[idx + 1] as usize;
+            if len < 2 || idx + len > end {
+                break;
+            }
+            if kind == 2 && len == 4 {
+                let current = u16::from_be_bytes([self.buf[idx + 2], self.buf[idx + 3]]);
+                if current > max_mss {
+                    self.buf[idx + 2..idx + 4].copy_from_slice(&max_mss.to_be_bytes());
+                    changed = true;
+                }
+                break;
+            }
+            idx += len;
+        }
+        changed
     }
 }
 

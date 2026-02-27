@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use nix::sched::{setns, CloneFlags};
 use rustls;
@@ -12,7 +13,7 @@ use firewall::e2e::cluster_tests;
 use firewall::e2e::services::{
     generate_upstream_tls_material, http_set_policy, http_wait_for_health, UpstreamServices,
 };
-use firewall::e2e::tests::{cases, TestCase};
+use firewall::e2e::tests::{cases, overlay_cases_geneve, overlay_cases_vxlan, TestCase};
 use firewall::e2e::topology::{Topology, TopologyConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let mut cfg = TopologyConfig::default();
+    cleanup_stale_netns(&cfg)?;
     let cluster_dir = create_temp_dir("e2e-cluster")?;
     let token_path = cluster_dir.join("bootstrap.json");
     write_token_file(&token_path)?;
@@ -50,16 +52,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tls_material,
     )?;
 
-    let mut firewall = spawn_firewall(&topology, &cfg)?;
+    let mut firewall = FirewallProcess::new(spawn_firewall(&topology, &cfg, &[])?);
     topology.configure_fw_dataplane(&cfg)?;
 
-    let result = run_cases(&cfg, &topology, &upstream_services);
+    let mut result = run_cases(&cfg, &topology, &upstream_services);
 
-    let _ = firewall.kill();
+    firewall.kill();
+
+    if result.is_ok() {
+        result = run_overlay_suites(&cfg, &topology);
+    }
+
     drop(upstream_services);
     drop(topology);
 
     result.map_err(|e| e.into())
+}
+
+fn cleanup_stale_netns(cfg: &TopologyConfig) -> Result<(), String> {
+    let names = [&cfg.client_ns, &cfg.fw_ns, &cfg.upstream_ns];
+    for name in names {
+        let output = Command::new("ip")
+            .args(["netns", "del", name])
+            .output()
+            .map_err(|e| format!("ip netns del {name} failed: {e}"))?;
+        if output.status.success() {
+            continue;
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No such file") || stderr.contains("Cannot find") {
+            continue;
+        }
+        return Err(format!("failed to delete netns {name}: {}", stderr.trim()));
+    }
+    Ok(())
 }
 
 fn run_cases(
@@ -71,6 +97,59 @@ fn run_cases(
         provision_baseline_policy(cfg, topology)?;
         run_case(cfg, topology, &case)?;
     }
+    Ok(())
+}
+
+fn run_overlay_suites(cfg: &TopologyConfig, topology: &Topology) -> Result<(), String> {
+    run_overlay_suite(
+        cfg,
+        topology,
+        overlay_cases_vxlan(),
+        vec![
+            "--snat".to_string(),
+            "none".to_string(),
+            "--encap".to_string(),
+            "vxlan".to_string(),
+            "--encap-vni".to_string(),
+            cfg.overlay_vxlan_vni.to_string(),
+            "--encap-udp-port".to_string(),
+            cfg.overlay_vxlan_port.to_string(),
+            "--encap-mtu".to_string(),
+            "1200".to_string(),
+        ],
+    )?;
+    run_overlay_suite(
+        cfg,
+        topology,
+        overlay_cases_geneve(),
+        vec![
+            "--snat".to_string(),
+            "none".to_string(),
+            "--encap".to_string(),
+            "geneve".to_string(),
+            "--encap-vni".to_string(),
+            cfg.overlay_geneve_vni.to_string(),
+            "--encap-udp-port".to_string(),
+            cfg.overlay_geneve_port.to_string(),
+            "--encap-mtu".to_string(),
+            "1200".to_string(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn run_overlay_suite(
+    cfg: &TopologyConfig,
+    topology: &Topology,
+    cases: Vec<TestCase>,
+    extra_args: Vec<String>,
+) -> Result<(), String> {
+    let mut firewall = FirewallProcess::new(spawn_firewall(topology, cfg, &extra_args)?);
+    topology.configure_fw_dataplane(cfg)?;
+    for case in cases {
+        run_case(cfg, topology, &case)?;
+    }
+    firewall.kill();
     Ok(())
 }
 
@@ -111,6 +190,7 @@ fn provision_baseline_policy(cfg: &TopologyConfig, topology: &Topology) -> Resul
                     Some(&token),
                 )
                 .await?;
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                 Ok(())
             })
         })
@@ -145,7 +225,11 @@ fn auth_token(cfg: &TopologyConfig) -> Result<String, String> {
     }
 }
 
-fn spawn_firewall(topology: &Topology, cfg: &TopologyConfig) -> Result<Child, String> {
+fn spawn_firewall(
+    topology: &Topology,
+    cfg: &TopologyConfig,
+    extra_args: &[String],
+) -> Result<Child, String> {
     let bin = firewall_binary_path().map_err(|e| format!("{e}"))?;
     let ns_file = topology
         .fw()
@@ -170,7 +254,7 @@ fn spawn_firewall(topology: &Topology, cfg: &TopologyConfig) -> Result<Child, St
         .arg(format!("{}:53", cfg.up_mgmt_ip))
         .arg("--dns-listen")
         .arg(format!("{}:53", cfg.fw_mgmt_ip))
-        .arg("--snat-ip")
+        .arg("--snat")
         .arg(cfg.dp_public_ip.to_string())
         .arg("--http-tls-dir")
         .arg(&cfg.http_tls_dir)
@@ -189,9 +273,12 @@ fn spawn_firewall(topology: &Topology, cfg: &TopologyConfig) -> Result<Child, St
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+
     if !cfg.http_tls_sans.is_empty() {
-        cmd.arg("--http-tls-san")
-            .arg(cfg.http_tls_sans.join(","));
+        cmd.arg("--http-tls-san").arg(cfg.http_tls_sans.join(","));
     }
 
     unsafe {
@@ -204,6 +291,40 @@ fn spawn_firewall(topology: &Topology, cfg: &TopologyConfig) -> Result<Child, St
 
     cmd.spawn()
         .map_err(|e| format!("failed to spawn firewall: {e}"))
+}
+
+struct FirewallProcess {
+    child: Child,
+}
+
+impl FirewallProcess {
+    fn new(child: Child) -> Self {
+        Self { child }
+    }
+
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = self.child.wait();
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+impl Drop for FirewallProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
 }
 
 fn firewall_binary_path() -> Result<std::path::PathBuf, std::io::Error> {

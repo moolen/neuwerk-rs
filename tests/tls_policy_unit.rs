@@ -10,7 +10,10 @@ use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyU
 fn build_chain(san: &str, cn: &str) -> (Vec<u8>, TlsCertChain) {
     let mut ca_params = CertificateParams::default();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
+    ca_params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
     ca_params
         .distinguished_name
         .push(DnType::CommonName, "Policy Test CA");
@@ -18,9 +21,7 @@ fn build_chain(san: &str, cn: &str) -> (Vec<u8>, TlsCertChain) {
     let ca_der = ca_cert.serialize_der().unwrap();
 
     let mut leaf_params = CertificateParams::new(vec![san.to_string()]);
-    leaf_params
-        .distinguished_name
-        .push(DnType::CommonName, cn);
+    leaf_params.distinguished_name.push(DnType::CommonName, cn);
     let leaf_cert = Certificate::from_params(leaf_params).unwrap();
     let leaf_der = leaf_cert.serialize_der_with_signer(&ca_cert).unwrap();
 
@@ -38,7 +39,10 @@ fn policy_with_tls_match(tls: TlsMatch) -> PolicySnapshot {
             dst_ips: None,
             proto: Proto::Tcp,
             src_ports: Vec::new(),
-            dst_ports: vec![PortRange { start: 443, end: 443 }],
+            dst_ports: vec![PortRange {
+                start: 443,
+                end: 443,
+            }],
             icmp_types: Vec::new(),
             icmp_codes: Vec::new(),
             tls: Some(tls),
@@ -147,8 +151,10 @@ fn tls_policy_trust_anchor_mismatch_denies() {
 
     let mut wrong_ca_params = CertificateParams::default();
     wrong_ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    wrong_ca_params.key_usages =
-        vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
+    wrong_ca_params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
     wrong_ca_params
         .distinguished_name
         .push(DnType::CommonName, "Wrong CA");

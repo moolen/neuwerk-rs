@@ -1,0 +1,1181 @@
+#!/usr/bin/env sh
+# This file is part of bindgen-wrapper. It is subject to the license terms in the COPYRIGHT file found in the top-level directory of this distribution and at https://raw.githubusercontent.com/lemonrock/bindgen-wrapper/master/COPYRIGHT. No part of bindgen-wrapper, including this file, may be copied, modified, propagated, or distributed except according to the terms contained in the COPYRIGHT file.
+# Copyright © 2016 The developers of bindgen-wrapper. See the COPYRIGHT file in the top-level directory of this distribution and at https://raw.githubusercontent.com/lemonrock/bindgen-wrapper/master/COPYRIGHT.
+
+
+set -e
+set -u
+set -f
+
+_program_path_find()
+{
+    if [ "${_program_fattening_program_path+set}" = 'set' ]; then
+        printf '%s\n' "$_program_fattening_program_path"
+
+    elif [ "${0%/*}" = "$0" ]; then
+
+        # We've been invoked by the interpreter as, say, bash program
+        if [ -r "$0" ]; then
+            pwd -P
+        # Clutching at straws; probably run via a download, anonymous script, etc, weird execve, etc
+        else
+            printf '\n'
+        fi
+
+    else
+
+        # We've been invoked with a relative or absolute path (also when invoked via PATH in a shell)
+
+        _program_path_find_parentPath()
+        {
+            parentPath="${scriptPath%/*}"
+            if [ -z "$parentPath" ]; then
+                parentPath='/'
+            fi
+            cd "$parentPath" 1>/dev/null
+        }
+
+        # pdksh / mksh have problems with unsetting a variable that was never set...
+        if [ "${CDPATH+set}" = 'set' ]; then
+            unset CDPATH
+        fi
+
+        if command -v realpath 1>/dev/null 2>/dev/null; then
+            (
+                scriptPath="$(realpath "$0")"
+
+                _program_path_find_parentPath
+                pwd -P
+            )
+        elif command -v readlink 1>/dev/null 2>/dev/null; then
+            (
+                scriptPath="$0"
+
+                while [ -L "$scriptPath" ]
+                do
+                    _program_path_find_parentPath
+                    scriptPath="$(readlink "$scriptPath")"
+                done
+
+                _program_path_find_parentPath
+                pwd -P
+            )
+        else
+            # This approach will fail in corner cases where the script itself is a symlink in a path not parallel with the concrete script
+            (
+                scriptPath="$0"
+
+                _program_path_find_parentPath
+                pwd -P
+            )
+        fi
+
+    fi
+}
+
+bindgen_wrapper_fail()
+{
+	local failureMessage="$1"
+
+	printf '%s\n' "$failureMessage" 1>&2
+	exit 1
+}
+
+bindgen_wrapper_isAlpineLinuxIfIsLinux()
+{
+	command -v apk 1>/dev/null 2>/dev/null
+}
+
+bindgen_wrapper_ensureRequiredBinariesArePresent()
+{
+	local reason="$1"
+	shift 1
+
+	local binary
+	local missing=false
+	for binary in "$@"
+	do
+		if ! command -v "$binary" 1>/dev/null 2>/dev/null; then
+			printf '%s\n' "The binary '$binary' needs to be in the path" 1>&2
+			missing=true
+		fi
+	done
+
+	if $missing; then
+		bindgen_wrapper_fail "Please make sure that the missing binaries are installed because '$reason'"
+	fi
+}
+
+bindgen_wrapper_cargoBinaryInstall()
+{
+	local crate="$1"
+	shift 1
+
+	if [ ! -x ~/.cargo/bin/"$crate" ]; then
+		return 0
+	fi
+
+	bindgen_wrapper_ensureRequiredBinariesArePresent "To check for, and, if necessary, install the cargo binary '$crate'" cargo grep awk
+
+	if cargo install --list | grep -v '^ ' | awk '{ print $1 }' | grep -q '^'"$crate"'$'; then
+		return 0
+	fi
+
+	cargo install "$@" "$crate"
+}
+
+_bindgen_wrapper_macosxHomebrewOrAlipineLinuxPackageManagerYetToBeUpdated=true
+
+bindgen_wrapper_macosxHomebrewInstall()
+{
+	local package="$1"
+	shift 1
+
+	bindgen_wrapper_ensureRequiredBinariesArePresent "To check for and, if necessary, install the brew package '$package'" brew grep
+
+	# Sadly, this can not check --with-shared-libs
+	if brew list | grep -q "$package"; then
+		return 0
+	fi
+
+	if $_bindgen_wrapper_macosxHomebrewOrAlipineLinuxPackageManagerYetToBeUpdated; then
+		brew update 1>&2
+		brew upgrade 1>&2
+		_bindgen_wrapper_macosxHomebrewOrAlipineLinuxPackageManagerYetToBeUpdated=false
+	fi
+
+	brew install "$package" "$@" 1>&2
+}
+
+bindgen_wrapper_alpineLinuxInstall()
+{
+	local package="$1"
+	shift 1
+
+	bindgen_wrapper_ensureRequiredBinariesArePresent "To check for the apk package '$package'" apk
+
+	if ! apk info --installed "$package" 1>/dev/null 2>/dev/null; then
+		bindgen_wrapper_ensureRequiredBinariesArePresent "To check for and, if necessary, install the apk package '$package' as root" sudo
+
+		if $_bindgen_wrapper_macosxHomebrewOrAlipineLinuxPackageManagerYetToBeUpdated; then
+			sudo -p "Enter your password to call apk update before installing package '$package': " apk update
+			sudo -p "Enter your password to call apk upgrade before installing package '$package': "  apk upgrade
+			_bindgen_wrapper_macosxHomebrewOrAlipineLinuxPackageManagerYetToBeUpdated=false
+		fi
+
+		sudo -p "Enter your password to call apk add to install package '$package' (you may need to enable edge and testing repositories in /etc/apk/repositories): " apk add "$package"
+	fi
+}
+
+bindgen_wrapper_installPrerequisites()
+{
+	# Platform specific installation of dependencies
+	local packagesToInstall
+	local packageInstallFunction
+	case "$platform" in
+
+		Darwin)
+			bindgen_wrapper_macosxHomebrewInstall musl-cross
+			bindgen_wrapper_macosxHomebrewInstall gnu-sed
+			bindgen_wrapper_macosxHomebrewInstall coreutils
+			#bindgen_wrapper_macosxHomebrewInstall homebrew/versions/llvm38 --with-shared-libs --with-all-targets
+
+			packageInstallFunction=bindgen_wrapper_macosxHomebrewInstall
+			packagesToInstall="$macosXHomebrewPackageNames"
+
+			export PATH="$(brew --prefix gnu-sed)"/libexec/gnubin:"$(brew --prefix coreutils)"/libexec/gnubin:"$PATH"
+		;;
+
+		Linux)
+			if [ -d ~/.cargo/bin ]; then
+				export PATH=~/.cargo/bin:"$PATH"
+			fi
+
+			if bindgen_wrapper_isAlpineLinuxIfIsLinux; then
+
+				# Provides C library headers
+				# ? hmmm ?
+				# bindgen_wrapper_alpineLinuxInstall musl-dev
+
+				packageInstallFunction=bindgen_wrapper_alpineLinuxInstall
+				packagesToInstall="$alpineLinuxPackageNames"
+			else
+				local hasRustC
+				if command -v rustc 1>/dev/null 2>/dev/null; then
+					hasRustC=true
+				else
+					hasRustC=false
+				fi
+
+				local hasCargo
+				if command -v cargo 1>/dev/null 2>/dev/null; then
+					hasCargo=true
+				else
+					hasCargo=false
+				fi
+
+				if $hasRustC; then
+					if $hasCargo; then
+						:
+					else
+						bindgen_wrapper_fail "rustc is in the PATH but not cargo; this is an unsupported combination"
+					fi
+				else
+					if $hasCargo; then
+						bindgen_wrapper_fail "cargo is in the PATH but not rustc; this is an unsupported combination"
+					else
+						bindgen_wrapper_ensureRequiredBinariesArePresent "Required to install rust and cargo using rustup" curl sh
+						curl https://sh.rustup.rs -sSf | sh
+					fi
+				fi
+			fi
+		;;
+
+	esac
+
+	local IFS=' '
+	local localPackageManagerPackage
+	# quotes deliberately ommitted
+	for localPackageManagerPackage in $packagesToInstall
+	do
+		$packageInstallFunction "$localPackageManagerPackage"
+	done
+
+	#bindgen_wrapper_cargoBinaryInstall rustfmt-nightly
+	bindgen_wrapper_cargoBinaryInstall bindgen
+}
+
+bindgen_wrapper_installHeadersAndCopyOverrides()
+{
+	mkdir -m 0700 -p "$temporaryIncludeFolder"
+
+	mkdir -m 0700 -p "$temporaryIncludeFolder"/header-overrides
+	printf '' >"$temporaryIncludeFolder"/header-overrides/.gitignore
+
+	if [ -d "$bindgenWrapperConfDFolderPath"/header-overrides ]; then
+		rsync --quiet --archive --copy-links "$bindgenWrapperConfDFolderPath"/header-overrides/ "$headersFolderPath"/ "$temporaryIncludeFolder"/
+	fi
+}
+
+bindgen_wrapper_createOutputFolder()
+{
+	mkdir -m 0700 -p "$outputFolderPath"
+}
+
+bindgen_wrapper_bindgen()
+{
+	local inputFilePath="$1"
+	local outputFilePath="$2"
+
+	set -- \
+		--verbose \
+		--disable-name-namespacing --no-doc-comments --no-layout-tests --no-recursive-whitelist --objc-extern-crate \
+		--rustfmt-configuration-file "$_program_path"/rustfmt.toml \
+		--rust-target nightly \
+		--impl-debug --impl-partialeq \
+		--with-derive-default --with-derive-eq --with-derive-hash --with-derive-ord \
+		--ctypes-prefix ::libc --output "$outputFilePath"
+
+	local regexOptionName
+	for regexOptionName in 'bitfield-enum' 'rustified-enum' 'whitelist-function' 'whitelist-type' 'whitelist-var'
+	do
+		local regexFilePath="$bindgenWrapperConfDFolderPath"/"$regexOptionName".regex
+		if [ -s "$regexFilePath" ]; then
+			local regexValue
+			local remaining
+			while IFS=' ' read -r regexValue remaining
+			do
+				set -- "$@" --"$regexOptionName" "$regexValue"
+			done <"$regexFilePath"
+		fi
+	done
+
+	local typeOptionName
+	for typeOptionName in 'blacklist-type' 'opaque-type'
+	do
+		local typeFilePath="$bindgenWrapperConfDFolderPath"/"$typeOptionName".type
+		if [ -s "$typeFilePath" ]; then
+			local typeValue
+			local remaining
+			while IFS=' ' read -r typeValue remaining
+			do
+				set -- "$@" --"$typeOptionName" "$typeValue"
+			done <"$typeFilePath"
+		fi
+	done
+
+	if [ -n "$bindgenAdditionalArguments" ]; then
+		set -- "$@" $bindgenAdditionalArguments
+	fi
+
+	set -- "$@" \
+		"$inputFilePath" \
+		-- -I"$temporaryIncludeFolder" $clangAdditionalArguments
+
+	case "$platform" in
+
+		Darwin)
+			local prefix="$(brew --prefix lemonrock/musl-cross/musl-cross)"
+			~/.cargo/bin/bindgen "$@" -U__BLOCKS__ --sysroot="$prefix"/does-not-exist -isystem"$prefix"/libexec/x86_64-linux-musl/include -D__linux__
+		;;
+
+		*)
+			~/.cargo/bin/bindgen "$@" --sysroot="$prefix"/does-not-exist -isystem"$prefix"/MUSL-HEADERS-TODO -D__linux__
+		;;
+
+	esac
+}
+
+bindgen_wrapper_generateIncludes()
+{
+	local inputFilePath="$1"
+
+	{
+		if grep -q '::libc::' "$inputFilePath"; then
+			printf 'extern crate libc;\n\n\n'
+		fi
+
+		for pattern in \
+			'clone::Clone' \
+			'default::Default' \
+			'fmt::Debug' \
+			'fmt::Formatter' \
+			'fmt::Result' \
+			'marker::Copy' \
+			'marker::PhantomData' \
+			'mem::transmute' \
+			'mem::zeroed' \
+			'option::Option' \
+			'ops::BitOr' \
+			'ops::BitOrAssign' \
+			'ops::BitAnd' \
+			'ops::BitAndAssign' \
+			'hash::Hash' \
+			'hash::Hasher' \
+			'cmp::PartialEq' \
+			'cmp::Eq' \
+			'slice::from_raw_parts' \
+			'slice::from_raw_parts_mut'
+		do
+			local pattern_present=false
+			if grep -q '::core::'"$pattern" "$inputFilePath"; then
+				pattern_present=true
+			elif grep -q '::std::'"$pattern" "$inputFilePath"; then
+				pattern_present=true
+			fi
+			if $pattern_present; then
+				printf "use ::std::${pattern};\n"
+			fi
+		done
+
+		grep '::libc::' "$inputFilePath" \
+			| sed -e 's/;/ /g' -e 's/$/ /g' -e 's/,/ /g' -e 's/>/ /g' -e 's/)/ /g' -e 's/\]/ /g' -e 's/\[/ /g' -e 's/</ /g' -e 's/^.* \(::libc::[a-zA-Z0-9_]*\) .*$/\1/g' \
+			| sort -u \
+			| grep -v -e '^$' \
+			| awk '{print "use " $1 ";"}'
+
+	} >"$temporaryFolderPath"/includes.rs
+}
+
+bindgen_wrapper_cleanedGeneration()
+{
+	local inputFilePath="$1"
+	local outputFilePath="$2"
+
+	# Explanations
+	# Line 1: Remove comment
+	# Line 3: Remove any blank lines (so normalizing the file; we'll reinsert blank lines later)
+	# Line 2: Remove any '\t' on its own line
+	# Line 4: Remove any ::libc:: prefixes
+	# Lines 5+: Remove any ::core::X:: prefixes
+	# Lines 5+: Remove any ::std::X:: prefixes
+	# Final Line 10: Remove #[inline] statements
+	sed \
+		-e '/automatically generated by rust-bindgen/d' \
+		-e '/^$/d' \
+		-e '/^\t$/d' \
+		-e 's/::libc:://g' \
+		-e 's/::core::clone:://g' \
+		-e 's/::core::default:://g' \
+		-e 's/::core::fmt:://g' \
+		-e 's/::core::marker:://g' \
+		-e 's/::core::mem:://g' \
+		-e 's/::core::option:://g' \
+		-e 's/::core::slice:://g' \
+		-e 's/::core::ops:://g' \
+		-e 's/::ops::hash:://g' \
+		-e 's/::ops::cmp:://g' \
+		-e 's/::std::clone:://g' \
+		-e 's/::std::default:://g' \
+		-e 's/::std::fmt:://g' \
+		-e 's/::std::marker:://g' \
+		-e 's/::std::mem:://g' \
+		-e 's/::std::option:://g' \
+		-e 's/::std::slice:://g' \
+		-e 's/::std::ops:://g' \
+		-e 's/::std::hash:://g' \
+		-e 's/::std::cmp:://g' \
+		-e 's/#\[inline\]//g' \
+		"$inputFilePath" >"$outputFilePath"
+}
+
+bindgen_wrapper_rustfmt_tidy()
+{
+	local inputFilePath="$1"
+	local outputFilePath="$2"
+
+	# sed line explanations-
+	# 1 - add newline before '{' in an extern block (rustfmt can't)
+	# 2 - add newline before '{' in an empty enum (rustfmt can't)
+	# 3 - add newline before '{' in an union (rustfmt can't)
+	# 4 - strip blank lines to make further processing easier
+    sed \
+		-e 's/^extern "C" {/extern "C"\n{/g' \
+		-e 's/^pub enum \(.*\) {/pub enum \1\n{/g' \
+		-e 's/^pub union \(.*\) {/pub union \1\n{/g' \
+		-e '/^$/d' \
+		"$inputFilePath" >"$outputFilePath"
+}
+
+bindgen_wrapper_remapConstantTypes()
+{
+	local inputFilePath="$1"
+
+	if [ ! -s "$bindgenWrapperConfDFolderPath"/constant.types ]; then
+		cat "$inputFilePath"
+		return 0
+	fi
+
+	set --
+	local constant
+	local constantRemappedType
+	while IFS=' ' read -r constant constantRemappedType
+	do
+		# eg -e 's/pub const RTE_ETH_NAME_MAX_LEN: c_int /pub const RTE_ETH_NAME_MAX_LEN: size_t /g'
+		set -- "$@" -e 's/pub const '"$constant"': [A-Za-z_][A-Za-z0-9_]* /pub const '"$constant"': '"$constantRemappedType"' /g'
+	done <"$bindgenWrapperConfDFolderPath"/constant.types
+
+	sed "$@" "$inputFilePath"
+}
+
+bindgen_wrapper_splitMonolithicOutputFromBindgenAndRustfmtIntoSeparateFiles()
+{
+	mkdir -m 0700 -p \
+		"$outputFolderPath"/constants \
+		"$outputFolderPath"/enums \
+		"$outputFolderPath"/functions \
+		"$outputFolderPath"/statics \
+		"$outputFolderPath"/structs \
+		"$outputFolderPath"/types \
+		"$outputFolderPath"/uses \
+		"$outputFolderPath"/unions \
+		"$temporaryFolderPath"/constants \
+		"$temporaryFolderPath"/functions \
+		"$temporaryFolderPath"/statics
+
+	local namedFile=''
+	local implFile=''
+	local name=''
+	local attributes=''
+	local mode='next'
+	while IFS='' read -r line
+	do
+		case "$mode" in
+
+			next)
+
+				case "$line" in
+
+					# Process Attribute
+					'#'*)
+						if [ -z "$attributes" ]; then
+							attributes="$line"
+						else
+							attributes="${attributes}
+${line}"
+						fi
+					;;
+
+					# Process single line constant (due to rustfmt, all constants are single line)
+					'pub const '*)
+						local stripPrefix="${line#pub const }"
+						local constantName="${stripPrefix%:*}"
+
+						local chosenFileBaseName='miscellany'
+						local prefix
+						local fileBaseName
+						while IFS=' ' read -r prefix fileBaseName
+						do
+							if [ -z "$fileBaseName" ]; then
+								bindgen_wrapper_fail "constant.mapping prefix '$prefix' has no fileBaseName"
+							fi
+
+							case "$constantName" in
+
+								"$prefix"*)
+									chosenFileBaseName="$fileBaseName"
+									break
+								;;
+
+							esac
+
+						done <"$bindgenWrapperConfDFolderPath"/constant.mapping
+
+						printf '%s\n' "$line" >>"$temporaryFolderPath"/constants/"$chosenFileBaseName"
+					;;
+
+					# Process an use declaration
+					'pub use '*)
+						local withSemicolonSuffix="${line##* as }"
+						name="${withSemicolonSuffix%*;}"
+
+						printf 'include!("uses/%s");\n' "$name".rs >>"$temporaryFolderPath"/uses
+						namedFile="$outputFolderPath"/uses/"$name".rs
+						{
+							cat "$bindgenWrapperConfDFolderPath"/preamble.rs
+							printf '%s\n' "$line"
+						} >"$namedFile"
+					;;
+
+					# Process single line type (due to rustfmt, all types are single line)
+					'pub type '*)
+						local stripPrefix="${line#pub type }"
+						name="${stripPrefix% =*}"
+						printf 'include!("types/%s");\n' "$name".rs >>"$temporaryFolderPath"/types
+						namedFile="$outputFolderPath"/types/"$name".rs
+						{
+							cat "$bindgenWrapperConfDFolderPath"/preamble.rs
+							printf '%s\n' "$line"
+						} >"$namedFile"
+					;;
+
+					# Process single line struct
+					'pub struct '*';')
+						name="$(printf "$line" | tr '<(' '  ' | awk '{print $3}')"
+						printf 'include!("structs/%s");\n' "$name".rs >>"$temporaryFolderPath"/structs
+						namedFile="$outputFolderPath"/structs/"$name".rs
+						{
+							cat "$bindgenWrapperConfDFolderPath"/preamble.rs
+							printf '%s\n' "$attributes"
+							printf '%s\n' "$line"
+						} >"$namedFile"
+						attributes=''
+					;;
+
+					# Process multi line enum
+					'pub enum '*)
+						name="${line#pub enum }"
+						printf 'include!("enums/%s");\n' "$name".rs >>"$temporaryFolderPath"/enums
+						namedFile="$outputFolderPath"/enums/"$name".rs
+						{
+							cat "$bindgenWrapperConfDFolderPath"/preamble.rs
+							printf '%s\n' "$attributes"
+							printf '%s\n' "$line"
+						} >"$namedFile"
+						attributes=''
+						mode=enumOrStructOrUnionExpectingOpenBrace
+					;;
+
+					# Process multi line struct
+					'pub struct '*)
+						name="${line#pub struct }"
+						printf 'include!("structs/%s");\n' "$name".rs >>"$temporaryFolderPath"/structs
+						namedFile="$outputFolderPath"/structs/"$name".rs
+						{
+							cat "$bindgenWrapperConfDFolderPath"/preamble.rs
+							printf '%s\n' "$attributes"
+							printf '%s\n' "$line"
+						} >"$namedFile"
+						attributes=''
+						mode=enumOrStructOrUnionExpectingOpenBrace
+					;;
+
+					# Process multi line union
+					'pub union '*)
+						name="${line#pub union }"
+						printf 'include!("unions/%s");\n' "$name".rs >>"$temporaryFolderPath"/unions
+						namedFile="$outputFolderPath"/unions/"$name".rs
+						{
+							cat "$bindgenWrapperConfDFolderPath"/preamble.rs
+							printf '%s\n' "$attributes"
+							printf '%s\n' "$line"
+						} >"$namedFile"
+						attributes=''
+						mode=enumOrStructOrUnionExpectingOpenBrace
+					;;
+
+					# Process enum, struct or union impl
+					'impl'*)
+						name="${line##* }"
+
+						# For names like `__BindgenUnionField<T>'`
+						name="${name%%<*}"
+
+						if [ -e "$outputFolderPath"/enums/"$name".rs ]; then
+							implFile="$outputFolderPath"/enums/"$name".rs
+						elif [ -e "$outputFolderPath"/structs/"$name".rs ]; then
+							implFile="$outputFolderPath"/structs/"$name".rs
+						elif [ -e "$outputFolderPath"/unions/"$name".rs ]; then
+							implFile="$outputFolderPath"/unions/"$name".rs
+						else
+							# For reasons best known to bindgen, it outputs bitfield operation impls (eg BitOr, BitOrAssign, BitAnd, BitAndAssign) BEFORE the struct definition.
+							implFile="$temporaryFolderPath"/"$name".impl.rs
+						fi
+
+						printf '\n%s\n' "$line" >>"$implFile"
+						mode=implExpectingOpenBrace
+					;;
+
+					# Process pub fn, pub static or pub static mut
+					'extern "C"')
+						if [ -n "$attributes" ]; then
+							printf 'WARN:%s\n' 'Attributes on extern "C" blocks are not supported' 1>&2
+						fi
+						attributes=''
+						mode=externCExpectingOpenBrace
+					;;
+
+					*)
+						bindgen_wrapper_fail "Did not expect line '$line' when in mode '$mode'"
+					;;
+
+				esac
+			;;
+
+			implExpectingOpenBrace)
+				if [ "$line" != '{' ]; then
+					bindgen_wrapper_fail "Did not expect line '$line' when in mode '$mode'"
+				fi
+				printf '%s\n' "$line" >>"$implFile"
+				mode=implReadUntilCloseBrace
+			;;
+
+			implReadUntilCloseBrace)
+				if [ "$line" = '}' ]; then
+					mode=next
+				fi
+				printf '%s\n' "$line" >>"$implFile"
+			;;
+
+			enumOrStructOrUnionExpectingOpenBrace)
+				if [ "$line" != '{' ]; then
+					bindgen_wrapper_fail "Did not expect line '$line' when in mode '$mode'"
+				fi
+				printf '%s\n' "$line" >>"$namedFile"
+				mode=enumOrStructOrUnionReadUntilCloseBrace
+			;;
+
+			enumOrStructOrUnionReadUntilCloseBrace)
+				if [ "$line" = '}' ]; then
+					printf '%s\n' "$line" >>"$namedFile"
+					mode=next
+				else
+					printf '%s\n' "$line" >>"$namedFile"
+				fi
+			;;
+
+			externCExpectingOpenBrace)
+				if [ "$line" != '{' ]; then
+					bindgen_wrapper_fail "Did not expect line '$line' when in mode '$mode'"
+				fi
+				mode=externCExpectingReadUntilCloseBrace
+			;;
+
+			externCExpectingReadUntilCloseBrace)
+
+				# Strip leading space (sed expression assumes non-Mac OS X sed)
+				line="$(printf '%s' "$line" | sed -e 's/^[ \t]*//g')"
+
+				case "$line" in
+
+					# Attribute, either #[link_name = "XXXX"] or #[linkage = "XXX"]
+					'#'*)
+						if [ -z "$attributes" ]; then
+							attributes="$line"
+						else
+							attributes="${attributes} ${line}"
+						fi
+					;;
+
+					'pub fn '*)
+
+						local field_pub
+						local field_fn
+						local functionName
+						local remaining
+						IFS=$'\t'" (" read -r field_pub field_fn functionName remaining <<-EOF
+							${line}
+						EOF
+
+						local chosenFileBaseName='miscellany'
+						local prefix
+						local fileBaseName
+						while IFS=' ' read -r prefix fileBaseName
+						do
+							if [ -z "$fileBaseName" ]; then
+								bindgen_wrapper_fail "function.mapping prefix '$prefix' has no fileBaseName"
+							fi
+
+							case "$functionName" in
+
+								"$prefix"*)
+									chosenFileBaseName="$fileBaseName"
+									break
+								;;
+
+							esac
+
+						done <"$bindgenWrapperConfDFolderPath"/function.mapping
+
+						{
+							printf '\t'
+							if [ -n "$attributes" ]; then
+								printf '%s ' "$attributes"
+							fi
+							printf '%s\n' "$line"
+							attributes=''
+						} >>"$temporaryFolderPath"/functions/"$chosenFileBaseName"
+					;;
+
+					'pub static '*)
+
+						local field_pub
+						local field_static
+						local field_mutOrStaticName
+						local staticNameOrRemaining
+						IFS=$'\t'" (" read -r field_pub field_static field_mutOrStaticName staticNameOrRemaining <<-EOF
+							${line}
+						EOF
+
+						local staticName
+						if [ "$field_mutOrStaticName" = 'mut' ]; then
+							staticName="$staticNameOrRemaining"
+						else
+							staticName="$field_mutOrStaticName"
+						fi
+
+						local chosenFileBaseName='miscellany'
+						local prefix
+						local fileBaseName
+						while IFS=' ' read -r prefix fileBaseName
+						do
+							if [ -z "$fileBaseName" ]; then
+								bindgen_wrapper_fail "static.mapping prefix '$prefix' has no fileBaseName"
+							fi
+
+							case "$staticName" in
+
+								"$prefix"*)
+									chosenFileBaseName="$fileBaseName"
+									break
+								;;
+
+							esac
+
+						done <"$bindgenWrapperConfDFolderPath"/static.mapping
+
+						{
+							printf '\t'
+							if [ -n "$attributes" ]; then
+								printf '%s ' "$attributes"
+							fi
+							printf '%s\n' "$line"
+							attributes=''
+						} >>"$temporaryFolderPath"/statics/"$chosenFileBaseName"
+					;;
+
+					'}')
+						mode=next
+					;;
+
+					*)
+						bindgen_wrapper_fail "Invalid line '${line}' in extern C block"
+					;;
+
+				esac
+			;;
+
+		esac
+	done <"$temporaryFolderPath"/afterRustfmt.rs
+
+	# Assign impl files to enum, structs and unions
+	set +f
+	local implFile
+	for implFile in "$temporaryFolderPath"/*.impl.rs
+	do
+		set -f
+
+		if [ ! -e "$implFile" ]; then
+			continue
+		fi
+
+		local file_name="${implFile##*/}"
+		local name="${file_name%%.impl.rs}"
+
+		local append_to_file
+		if [ -e "$outputFolderPath"/enums/"$name".rs ]; then
+			append_to_file="$outputFolderPath"/enums/"$name".rs
+		elif [ -e "$outputFolderPath"/structs/"$name".rs ]; then
+			append_to_file="$outputFolderPath"/structs/"$name".rs
+		elif [ -e "$outputFolderPath"/unions/"$name".rs ]; then
+			append_to_file="$outputFolderPath"/unions/"$name".rs
+		else
+			printf '%s\n' "WOAH: '$implFile'"
+			exit 99
+		fi
+
+		cat "$implFile" >>"$append_to_file"
+		rm "$implFile"
+	done
+	set -f
+}
+
+bindgen_wrapper_generateLibDotRs()
+{
+	_bindgen_wrapper_generateLibDotRs_prepend()
+	{
+		local fileToPrepend
+		for fileToPrepend in "$bindgenWrapperConfDFolderPath"/preamble.rs "$bindgenWrapperConfDFolderPath"/pre-includes.rs "$temporaryFolderPath"/includes.rs "$bindgenWrapperConfDFolderPath"/post-includes.rs
+		do
+			if [ -s "$fileToPrepend" ]; then
+				cat "$fileToPrepend"
+				printf '\n'
+			fi
+		done
+
+		local IFS=' '
+		local linkValue
+		local hasLinks=false
+		# quotes deliberately ommitted
+		for linkValue in $link
+		do
+			hasLinks=true
+			if [ "$link_kind" = 'dynamic' ]; then
+				printf '#[link(name = "%s")]\n' "$linkValue"
+			else
+				printf '#[link(name = "%s", kind = "%s")]\n' "$linkValue" "$link_kind"
+			fi
+		done
+		if $hasLinks; then
+			cat <<-EOF
+				extern "C"
+				{
+				}
+			EOF
+		fi
+
+		printf '\n'
+	}
+
+	_bindgen_wrapper_generateLibDotRs_sets()
+	{
+		local plural="$1"
+		local isExternC="$2"
+
+		cat "$bindgenWrapperConfDFolderPath"/preamble.rs >>"$outputFolderPath"/"$plural".rs
+		cd "$temporaryFolderPath"/"$plural" 1>/dev/null 2>/dev/null
+
+			set +f
+			local setFile
+			for setFile in *
+			do
+				set -f
+
+				if [ ! -f "$setFile" ]; then
+					continue
+				fi
+
+				printf 'include!("%s/%s.rs");\n' "$plural" "$setFile" >>"$temporaryFolderPath"/"$plural"-sets
+
+				{
+					cat "$bindgenWrapperConfDFolderPath"/preamble.rs
+					if $isExternC; then
+						printf 'extern "C"\n{\n'
+					fi
+					sort "$setFile"
+					if $isExternC; then
+						printf '}\n'
+					fi
+				} >"$outputFolderPath"/"$plural"/"$setFile".rs
+			done
+			set -f
+
+		cd - 1>/dev/null 2>/dev/null
+
+		if [ -f "$temporaryFolderPath"/"$plural"-sets ]; then
+			sort "$temporaryFolderPath"/"$plural"-sets >>"$outputFolderPath"/"$plural".rs
+
+			printf 'include!("%s.rs");\n' "$plural"
+
+			rm -rf "$temporaryFolderPath"/"$plural"-sets
+		else
+			return 0
+		fi
+
+		rm -rf "$temporaryFolderPath"/"$plural"
+	}
+
+	_bindgen_wrapper_generateLibDotRs_nonSets()
+	{
+		local plural="$1"
+
+		local temporaryFilePath="$temporaryFolderPath"/"$plural"
+
+		if [ -f "$temporaryFilePath" ]; then
+			{
+				cat "$bindgenWrapperConfDFolderPath"/preamble.rs
+				sort "$temporaryFilePath"
+			} >"$outputFolderPath"/"$plural".rs
+
+			printf 'include!("%s.rs");\n' "$plural"
+
+			rm -rf "$temporaryFilePath"
+		fi
+	}
+
+	{
+		_bindgen_wrapper_generateLibDotRs_prepend
+
+		_bindgen_wrapper_generateLibDotRs_sets 'constants' false
+
+		_bindgen_wrapper_generateLibDotRs_nonSets 'enums'
+
+		_bindgen_wrapper_generateLibDotRs_sets 'functions' true
+
+		_bindgen_wrapper_generateLibDotRs_sets 'statics' true
+
+		_bindgen_wrapper_generateLibDotRs_nonSets 'structs'
+
+		_bindgen_wrapper_generateLibDotRs_nonSets 'types'
+
+		_bindgen_wrapper_generateLibDotRs_nonSets 'unions'
+
+		_bindgen_wrapper_generateLibDotRs_nonSets 'uses'
+
+	} >"$outputFolderPath"/lib.rs
+}
+
+bindgen_wrapper_addInlineAnnotations()
+{
+	local structFile
+	set +f
+	for structFile in "$outputFolderPath"/structs/*.rs
+	do
+		set -f
+
+		if [ ! -f "$structFile" ]; then
+			continue
+		fi
+
+		sed -i \
+			-e 's/\tfn /\t#[inline(always)]\n\tfn /g' \
+			-e 's/\tpub fn /\t#[inline(always)]\n\tpub fn /g' \
+			-e 's/\tpub unsafe fn /\t#[inline(always)]\n\tpub unsafe fn /g' \
+			"$structFile"
+	done
+	set -f
+}
+
+bindgen_wrapper_extract_opaque_pointers_from_enums()
+{
+	local opaqueStructName
+	cd "$outputFolderPath"/enums 1>/dev/null 2>/dev/null
+
+		set +f
+			set -- *.rs
+		set -f
+
+		if [ $# -eq 1 ]; then
+			if [ "$1" = '*.rs' ]; then
+				cd - 1>/dev/null 2>/dev/null
+				return 0
+			fi
+		fi
+
+		mkdir -m 0700 -p "$outputFolderPath"/opaques
+
+		{
+			cat "$bindgenWrapperConfDFolderPath"/preamble.rs
+			grep '^#\[allow(missing_copy_implementations)\]' "$@" | awk -F. '{print $1}' | LC_ALL=C sort -u | while IFS= read -r opaqueStructName
+			do
+				sed -i -e 's;include!("enums/'"$opaqueStructName"'.rs");DELETEME;g' -e '/DELETEME/d' "$outputFolderPath"/enums.rs
+
+				printf 'include!("opaques/%s.rs");\n' "$opaqueStructName"
+
+				mv "$outputFolderPath"/enums/"$opaqueStructName".rs "$outputFolderPath"/opaques
+			done
+		} >"$outputFolderPath"/opaques.rs
+
+		printf 'include!("opaques.rs");\n' >>"$outputFolderPath"/lib.rs
+
+	cd - 1>/dev/null 2>/dev/null
+}
+
+bindgen_wrapper_removeEmptyFolders()
+{
+	local folder
+	for folder in constants enums functions opaques statics structs types unions uses
+	do
+		rmdir "$outputFolderPath"/"$folder" 1>/dev/null 2>/dev/null || true
+	done
+}
+
+bindgen_wrapper_generate()
+{
+	bindgen_wrapper_installHeadersAndCopyOverrides
+
+	bindgen_wrapper_createOutputFolder
+
+	bindgen_wrapper_bindgen "$temporaryIncludeFolder"/"$rootIncludeFileName" "$temporaryFolderPath"/rawGeneration.rs
+
+	bindgen_wrapper_generateIncludes "$temporaryFolderPath"/rawGeneration.rs
+
+	bindgen_wrapper_cleanedGeneration "$temporaryFolderPath"/rawGeneration.rs "$temporaryFolderPath"/cleanedGeneration.rs
+
+	postprocess_after_generation "$temporaryFolderPath"/cleanedGeneration.rs "$temporaryFolderPath"/afterGeneration.rs
+
+	bindgen_wrapper_rustfmt_tidy "$temporaryFolderPath"/afterGeneration.rs "$temporaryFolderPath"/rustfmt-tidy.rs
+
+	bindgen_wrapper_remapConstantTypes "$temporaryFolderPath"/rustfmt-tidy.rs >"$temporaryFolderPath"/remapped-constant-types.rs
+
+	postprocess_after_rustfmt "$temporaryFolderPath"/remapped-constant-types.rs "$temporaryFolderPath"/afterRustfmt.rs
+
+	bindgen_wrapper_splitMonolithicOutputFromBindgenAndRustfmtIntoSeparateFiles
+
+	bindgen_wrapper_generateLibDotRs
+
+	bindgen_wrapper_addInlineAnnotations
+
+	bindgen_wrapper_extract_opaque_pointers_from_enums
+
+	final_chance_to_tweak
+
+	bindgen_wrapper_removeEmptyFolders
+}
+
+bindgen_wrapper_execute()
+{
+	export LC_ALL=en_US.UTF-8
+
+	bindgen_wrapper_installPrerequisites
+
+	preprocess_before_headersFolderPath
+
+	bindgen_wrapper_generate
+}
+
+bindgen_wrapper_setAbsoluteProgramPathAndHomeFolder()
+{
+	_program_path="$(_program_path_find)"
+	cd "$_program_path"/../.. 1>/dev/null 2>/dev/null
+		homeFolder="$(pwd -P)"
+	cd - 1>/dev/null 2>/dev/null
+}
+
+bindgen_wrapper_sourceConfigurationThenExecute()
+{
+	local functionToExecute="$1"
+	shift 1
+
+	local configurationFilePath="$bindgenWrapperConfDFolderPath"/configuration.sh
+	if [ ! -s "$configurationFilePath" ]; then
+		bindgen_wrapper_fail "Configuration file '$configurationFilePath' is not present, not readable or empty"
+	fi
+
+	# Source configuration; set up defaults first
+	local bindingsName
+	local rootIncludeFileName
+	local link
+	local link_kind='dynamic'
+	local macosXHomebrewPackageNames
+	local alpineLinuxPackageNames
+	local headersFolderPath=''
+	local bindgenAdditionalArguments=''
+	local clangAdditionalArguments=''
+	preprocess_before_headersFolderPath()
+	{
+		:
+	}
+	postprocess_after_generation()
+	{
+		local inputFilePath="$1"
+		local outputFilePath="$2"
+
+		cat "$inputFilePath" >"$outputFilePath"
+	}
+	postprocess_after_rustfmt()
+	{
+		local inputFilePath="$1"
+		local outputFilePath="$2"
+
+		cat "$inputFilePath" >"$outputFilePath"
+	}
+	final_chance_to_tweak()
+	{
+		:
+	}
+	. "$bindgenWrapperConfDFolderPath"/configuration.sh
+
+	if [ -z "$headersFolderPath" ]; then
+		headersFolderPath='usr/include'
+	fi
+
+	headersFolderPath="$rootOutputFolderPath"/"$headersFolderPath"
+
+	$functionToExecute "$@"
+}
+
+bindgen_wrapper_main()
+{
+	bindgen_wrapper_ensureRequiredBinariesArePresent "Required for basic operation" uname rm mkdir cat sed sort grep
+
+	bindgen_wrapper_setAbsoluteProgramPathAndHomeFolder
+
+	if [ -z "${CARGO_MANIFEST_DIR+is_unset}" ]; then
+		export CARGO_MANIFEST_DIR="$homeFolder"
+		printf 'build-under-cargo:%s\n' "Whilst this script (bindgen-wrapper) is designed to be run under cargo, it can run independently. We're setting CARGO_MANIFEST_DIR to '$CARGO_MANIFEST_DIR'" 1>&2
+	fi
+
+	local outputFolderPath="$CARGO_MANIFEST_DIR"/src/bindgen
+	rm -rf "$outputFolderPath"
+
+	local bindgenWrapperConfDFolderPath="$CARGO_MANIFEST_DIR"/bindgen-wrapper.conf.d
+
+	if [ -z "${OUT_DIR+is_unset}" ]; then
+		export OUT_DIR="$bindgenWrapperConfDFolderPath"/temporary
+		printf 'build-under-cargo:%s\n' "Whilst this script (compile) is designed to be run under cargo, it can run independently. We're setting OUT_DIR to '$OUT_DIR'" 1>&2
+		local temporaryFolderPath="$_program_path"/temporary
+	fi
+
+	local temporaryFolderPath="$OUT_DIR"/bindgen-wrapper-temporary
+	local temporaryIncludeFolder="$temporaryFolderPath"/includes
+	local rootOutputFolderPath="$OUT_DIR"/root
+	
+	rm -rf "$temporaryFolderPath"
+	mkdir -m 0750 -p "$temporaryFolderPath"
+
+	# Platform variations that can be overridden by configuration
+	local platform="$(uname)"
+	case "$platform" in
+
+		Darwin)
+			bindgen_wrapper_ensureRequiredBinariesArePresent "Required for basic operation on Mac OS X" brew
+			local prefix="$(brew --prefix)"
+			local llvmPrefix="$(brew --prefix llvm)"
+		;;
+
+		Linux)
+			local prefix='/usr'
+			local llvmPrefix="$prefix"
+		;;
+
+		*)
+			bindgen_wrapper_fail "Unsupported platform '$platform'"
+		;;
+
+	esac
+
+	bindgen_wrapper_sourceConfigurationThenExecute bindgen_wrapper_execute
+}
+
+bindgen_wrapper_main "$@"

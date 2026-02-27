@@ -42,7 +42,11 @@ pub struct ServiceAccount {
 }
 
 impl ServiceAccount {
-    pub fn new(name: String, description: Option<String>, created_by: String) -> Result<Self, String> {
+    pub fn new(
+        name: String,
+        description: Option<String>,
+        created_by: String,
+    ) -> Result<Self, String> {
         let created_at = OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .map_err(|err| format!("failed to format created_at: {err}"))?;
@@ -151,7 +155,9 @@ impl ServiceAccountDiskStore {
     }
 
     fn token_path(&self, token_id: Uuid) -> PathBuf {
-        self.base_dir.join("tokens").join(format!("{token_id}.json"))
+        self.base_dir
+            .join("tokens")
+            .join(format!("{token_id}.json"))
     }
 
     fn read_index(&self) -> io::Result<ServiceAccountIndex> {
@@ -281,7 +287,9 @@ impl ServiceAccountClusterStore {
     pub fn read_account(&self, id: Uuid) -> Result<Option<ServiceAccount>, String> {
         let raw = self.store.get_state_value(&account_item_key(id))?;
         match raw {
-            Some(raw) => serde_json::from_slice(&raw).map(Some).map_err(|err| err.to_string()),
+            Some(raw) => serde_json::from_slice(&raw)
+                .map(Some)
+                .map_err(|err| err.to_string()),
             None => Ok(None),
         }
     }
@@ -300,7 +308,8 @@ impl ServiceAccountClusterStore {
 
     pub async fn write_account(&self, account: &ServiceAccount) -> Result<(), String> {
         let payload = serde_json::to_vec(account).map_err(|err| err.to_string())?;
-        self.put_state(account_item_key(account.id), payload).await?;
+        self.put_state(account_item_key(account.id), payload)
+            .await?;
         let mut index = self.read_index()?;
         if !index.accounts.contains(&account.id) {
             index.accounts.push(account.id);
@@ -312,7 +321,9 @@ impl ServiceAccountClusterStore {
     pub fn read_token(&self, token_id: Uuid) -> Result<Option<TokenMeta>, String> {
         let raw = self.store.get_state_value(&token_item_key(token_id))?;
         match raw {
-            Some(raw) => serde_json::from_slice(&raw).map(Some).map_err(|err| err.to_string()),
+            Some(raw) => serde_json::from_slice(&raw)
+                .map(Some)
+                .map_err(|err| err.to_string()),
             None => Ok(None),
         }
     }
@@ -336,7 +347,8 @@ impl ServiceAccountClusterStore {
         if !index.tokens.contains(&token.id) {
             index.tokens.push(token.id);
         }
-        self.write_token_index(token.service_account_id, &index).await?;
+        self.write_token_index(token.service_account_id, &index)
+            .await?;
         Ok(())
     }
 }
@@ -379,46 +391,54 @@ impl ServiceAccountStore {
     pub async fn list_accounts(&self) -> Result<Vec<ServiceAccount>, String> {
         match self {
             ServiceAccountStore::Cluster(store) => store.list_accounts(),
-            ServiceAccountStore::Local(store) => store.list_accounts().map_err(|err| err.to_string()),
+            ServiceAccountStore::Local(store) => {
+                store.list_accounts().map_err(|err| err.to_string())
+            }
         }
     }
 
     pub async fn get_account(&self, id: Uuid) -> Result<Option<ServiceAccount>, String> {
         match self {
             ServiceAccountStore::Cluster(store) => store.read_account(id),
-            ServiceAccountStore::Local(store) => store.read_account(id).map_err(|err| err.to_string()),
+            ServiceAccountStore::Local(store) => {
+                store.read_account(id).map_err(|err| err.to_string())
+            }
         }
     }
 
     pub async fn update_account(&self, account: &ServiceAccount) -> Result<(), String> {
         match self {
             ServiceAccountStore::Cluster(store) => store.write_account(account).await,
-            ServiceAccountStore::Local(store) => store
-                .write_account(account)
-                .map_err(|err| err.to_string()),
+            ServiceAccountStore::Local(store) => {
+                store.write_account(account).map_err(|err| err.to_string())
+            }
         }
     }
 
     pub async fn list_tokens(&self, account_id: Uuid) -> Result<Vec<TokenMeta>, String> {
         match self {
             ServiceAccountStore::Cluster(store) => store.list_tokens(account_id),
-            ServiceAccountStore::Local(store) => store.list_tokens(account_id).map_err(|err| err.to_string()),
+            ServiceAccountStore::Local(store) => {
+                store.list_tokens(account_id).map_err(|err| err.to_string())
+            }
         }
     }
 
     pub async fn get_token(&self, token_id: Uuid) -> Result<Option<TokenMeta>, String> {
         match self {
             ServiceAccountStore::Cluster(store) => store.read_token(token_id),
-            ServiceAccountStore::Local(store) => store.read_token(token_id).map_err(|err| err.to_string()),
+            ServiceAccountStore::Local(store) => {
+                store.read_token(token_id).map_err(|err| err.to_string())
+            }
         }
     }
 
     pub async fn write_token(&self, token: &TokenMeta) -> Result<(), String> {
         match self {
             ServiceAccountStore::Cluster(store) => store.write_token(token).await,
-            ServiceAccountStore::Local(store) => store
-                .write_token(token)
-                .map_err(|err| err.to_string()),
+            ServiceAccountStore::Local(store) => {
+                store.write_token(token).map_err(|err| err.to_string())
+            }
         }
     }
 }

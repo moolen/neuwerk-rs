@@ -1,16 +1,17 @@
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
-use firewall::dataplane::policy::{
-    CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction,
-    PortRange, RuleMatch, SourceGroup, Tls13Uninspectable, TlsMatch, TlsNameMatch,
-};
 use firewall::controlplane::metrics::Metrics;
+use firewall::dataplane::config::DataplaneConfig;
+use firewall::dataplane::policy::{
+    CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4, PolicySnapshot, PortRange, Proto, Rule,
+    RuleAction, RuleMatch, SourceGroup, Tls13Uninspectable, TlsMatch, TlsNameMatch,
+};
 use firewall::dataplane::{
     handle_packet, Action, EngineState, FlowKey, FlowTable, NatTable, Packet, WiretapEmitter,
     WiretapEventType,
 };
-use firewall::dataplane::config::DataplaneConfig;
+use firewall::dataplane::{EncapMode, OverlayConfig, SnatMode};
 
 fn build_ipv4_udp(
     src_ip: Ipv4Addr,
@@ -197,6 +198,68 @@ fn tls_application_data_record(payload: &[u8]) -> Vec<u8> {
     record
 }
 
+fn build_vxlan_payload(inner: &[u8], vni: u32) -> Vec<u8> {
+    let mut buf = vec![0u8; 8 + inner.len()];
+    buf[0] = 0x08;
+    buf[4] = ((vni >> 16) & 0xff) as u8;
+    buf[5] = ((vni >> 8) & 0xff) as u8;
+    buf[6] = (vni & 0xff) as u8;
+    buf[8..].copy_from_slice(inner);
+    buf
+}
+
+#[test]
+fn overlay_vxlan_policy_applies_to_inner() {
+    let allowlist = DynamicIpSetV4::new();
+    allowlist.insert(Ipv4Addr::new(198, 51, 100, 10));
+    let policy = policy_with_allowlist(
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        DefaultPolicy::Deny,
+        allowlist,
+    );
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::UNSPECIFIED,
+        0,
+    );
+    state.set_snat_mode(SnatMode::None);
+    state.set_overlay_config(OverlayConfig {
+        mode: EncapMode::Vxlan,
+        udp_port: 10800,
+        udp_port_internal: None,
+        udp_port_external: None,
+        vni: Some(800),
+        vni_internal: None,
+        vni_external: None,
+        mtu: 1500,
+    });
+
+    let inner = build_ipv4_udp(
+        Ipv4Addr::new(10, 0, 0, 42),
+        Ipv4Addr::new(198, 51, 100, 10),
+        50000,
+        8080,
+        b"hello",
+    );
+    let payload = build_vxlan_payload(inner.buffer(), 800);
+    let outer = build_ipv4_udp(
+        Ipv4Addr::new(192, 0, 2, 10),
+        Ipv4Addr::new(192, 0, 2, 11),
+        5555,
+        10800,
+        &payload,
+    );
+
+    let overlay =
+        firewall::dataplane::overlay::decap(outer.buffer(), &state.overlay, None).expect("decap");
+    let mut pkt = overlay.inner;
+    let action = handle_packet(&mut pkt, &mut state);
+    assert!(matches!(action, Action::Forward { .. }));
+}
+
 fn policy_with_allowlist(
     internal_net: Ipv4Addr,
     internal_prefix: u8,
@@ -349,27 +412,14 @@ fn dataplane_metrics_track_allow_and_deny() {
     )));
 
     let metrics = Metrics::new().unwrap();
-    let mut state =
-        EngineState::new(policy, internal_net, internal_prefix, public_ip, 0);
+    let mut state = EngineState::new(policy, internal_net, internal_prefix, public_ip, 0);
     state.set_metrics(metrics.clone());
 
-    let mut allow_pkt = build_ipv4_udp(
-        Ipv4Addr::new(10, 0, 0, 10),
-        allow_dst,
-        1234,
-        53,
-        b"ok",
-    );
+    let mut allow_pkt = build_ipv4_udp(Ipv4Addr::new(10, 0, 0, 10), allow_dst, 1234, 53, b"ok");
     let allow_action = handle_packet(&mut allow_pkt, &mut state);
     assert!(matches!(allow_action, Action::Forward { .. }));
 
-    let mut deny_pkt = build_ipv4_udp(
-        Ipv4Addr::new(10, 0, 0, 11),
-        deny_dst,
-        1234,
-        53,
-        b"nope",
-    );
+    let mut deny_pkt = build_ipv4_udp(Ipv4Addr::new(10, 0, 0, 11), deny_dst, 1234, 53, b"nope");
     let deny_action = handle_packet(&mut deny_pkt, &mut state);
     assert!(matches!(deny_action, Action::Drop));
 
@@ -577,13 +627,7 @@ fn test_ttl_expired_sends_icmp_time_exceeded() {
 
     let orig_src = Ipv4Addr::new(10, 0, 0, 2);
     let orig_dst = Ipv4Addr::new(93, 184, 216, 34);
-    let mut pkt = build_ipv4_udp(
-        orig_src,
-        orig_dst,
-        40000,
-        80,
-        b"ttl-expired",
-    );
+    let mut pkt = build_ipv4_udp(orig_src, orig_dst, 40000, 80, b"ttl-expired");
     {
         let buf = pkt.buffer_mut();
         buf[8] = 1;
@@ -629,30 +673,14 @@ fn test_icmp_echo_nat_round_trip() {
 
     let internal_ip = Ipv4Addr::new(10, 0, 0, 2);
     let remote_ip = Ipv4Addr::new(198, 51, 100, 10);
-    let mut echo = build_ipv4_icmp_echo(
-        internal_ip,
-        remote_ip,
-        8,
-        0,
-        0x1234,
-        1,
-        b"ping",
-    );
+    let mut echo = build_ipv4_icmp_echo(internal_ip, remote_ip, 8, 0, 0x1234, 1, b"ping");
     let action = handle_packet(&mut echo, &mut state);
     assert_eq!(action, Action::Forward { out_port: 0 });
     assert_eq!(echo.src_ip(), Some(dp_ip));
     let external_id = echo.icmp_identifier().unwrap();
     assert_ne!(external_id, 0x1234);
 
-    let mut reply = build_ipv4_icmp_echo(
-        remote_ip,
-        dp_ip,
-        0,
-        0,
-        external_id,
-        1,
-        b"pong",
-    );
+    let mut reply = build_ipv4_icmp_echo(remote_ip, dp_ip, 0, 0, external_id, 1, b"pong");
     let action = handle_packet(&mut reply, &mut state);
     assert_eq!(action, Action::Forward { out_port: 0 });
     assert_eq!(reply.dst_ip(), Some(internal_ip));
@@ -782,13 +810,7 @@ fn test_icmp_error_outbound_rewrites_embedded_dst() {
     );
     let embedded_len = 20 + 8;
     let embedded_slice = embedded.buffer()[..embedded_len].to_vec();
-    let mut icmp_err = build_ipv4_icmp_error(
-        internal_ip,
-        remote_ip,
-        3,
-        3,
-        &embedded_slice,
-    );
+    let mut icmp_err = build_ipv4_icmp_error(internal_ip, remote_ip, 3, 3, &embedded_slice);
 
     let action = handle_packet(&mut icmp_err, &mut state);
     assert_eq!(action, Action::Forward { out_port: 0 });
@@ -821,33 +843,15 @@ fn test_icmp_error_reverse_nat() {
 
     let internal_ip = Ipv4Addr::new(10, 0, 0, 2);
     let remote_ip = Ipv4Addr::new(198, 51, 100, 10);
-    let mut outbound = build_ipv4_udp(
-        internal_ip,
-        remote_ip,
-        40000,
-        8080,
-        b"payload",
-    );
+    let mut outbound = build_ipv4_udp(internal_ip, remote_ip, 40000, 8080, b"payload");
     let action = handle_packet(&mut outbound, &mut state);
     assert_eq!(action, Action::Forward { out_port: 0 });
     let external_port = outbound.ports().unwrap().0;
 
-    let embedded = build_ipv4_udp(
-        dp_ip,
-        remote_ip,
-        external_port,
-        8080,
-        b"payload",
-    );
+    let embedded = build_ipv4_udp(dp_ip, remote_ip, external_port, 8080, b"payload");
     let embedded_len = 20 + 8;
     let embedded_slice = embedded.buffer()[..embedded_len].to_vec();
-    let mut icmp_err = build_ipv4_icmp_error(
-        remote_ip,
-        dp_ip,
-        3,
-        4,
-        &embedded_slice,
-    );
+    let mut icmp_err = build_ipv4_icmp_error(remote_ip, dp_ip, 3, 4, &embedded_slice);
     let action = handle_packet(&mut icmp_err, &mut state);
     assert_eq!(action, Action::Forward { out_port: 0 });
     assert_eq!(icmp_err.dst_ip(), Some(internal_ip));
@@ -1161,7 +1165,10 @@ fn test_tls_sni_allows_flow() {
             dst_ips: None,
             proto: Proto::Tcp,
             src_ports: Vec::new(),
-            dst_ports: vec![PortRange { start: 443, end: 443 }],
+            dst_ports: vec![PortRange {
+                start: 443,
+                end: 443,
+            }],
             icmp_types: Vec::new(),
             icmp_codes: Vec::new(),
             tls: Some(tls),
@@ -1227,7 +1234,10 @@ fn test_tls_application_data_before_handshake_denies() {
             dst_ips: None,
             proto: Proto::Tcp,
             src_ports: Vec::new(),
-            dst_ports: vec![PortRange { start: 443, end: 443 }],
+            dst_ports: vec![PortRange {
+                start: 443,
+                end: 443,
+            }],
             icmp_types: Vec::new(),
             icmp_codes: Vec::new(),
             tls: Some(tls),

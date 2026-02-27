@@ -1,44 +1,118 @@
+use std::collections::hash_map::DefaultHasher;
 use std::env;
+use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use firewall::controlplane::api_auth::DEFAULT_TTL_SECS;
+use firewall::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
+use firewall::controlplane::cloud::providers::{
+    aws::AwsProvider, azure::AzureProvider, gcp::GcpProvider,
+};
+use firewall::controlplane::cloud::types::{DiscoveryFilter, IntegrationConfig, IntegrationMode};
+use firewall::controlplane::cloud::{self, IntegrationManager, ReadyChecker, ReadyClient};
+use firewall::controlplane::cluster::migration;
+use firewall::controlplane::cluster::rpc::{AuthClient, RaftTlsConfig};
+use firewall::controlplane::dhcp::{DhcpClient, DhcpClientConfig};
 use firewall::controlplane::policy_config::PolicyMode;
 use firewall::controlplane::policy_repository::PolicyDiskStore;
-use firewall::controlplane::{self, PolicyStore};
-use firewall::controlplane::dhcp::{DhcpClient, DhcpClientConfig};
 use firewall::controlplane::ready::ReadinessState;
-use firewall::controlplane::cloud::{self, IntegrationManager, ReadyChecker, ReadyClient};
-use firewall::controlplane::cloud::provider::CloudProvider;
-use firewall::controlplane::cloud::providers::{azure::AzureProvider, aws::AwsProvider, gcp::GcpProvider};
-use firewall::controlplane::cloud::types::{DiscoveryFilter, IntegrationConfig, IntegrationMode};
-use firewall::controlplane::wiretap::{DnsMap, WiretapHub, load_or_create_node_id};
+use firewall::controlplane::wiretap::{load_or_create_node_id, DnsMap, WiretapHub};
+use firewall::controlplane::{self, PolicyStore};
 use firewall::dataplane::policy::{DefaultPolicy, DynamicIpSetV4, PolicySnapshot};
 use firewall::dataplane::{
-    DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo, DrainControl, EngineState,
-    SoftAdapter, SoftMode, DEFAULT_IDLE_TIMEOUT_SECS, WiretapEmitter,
-    DEFAULT_WIRETAP_REPORT_INTERVAL_SECS,
+    DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo, DrainControl, EncapMode,
+    EngineState, FrameIo, FrameOut, OverlayConfig, Packet, SharedArpState, SnatMode, SoftAdapter,
+    SoftMode, WiretapEmitter, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_WIRETAP_REPORT_INTERVAL_SECS,
 };
-use firewall::controlplane::api_auth::DEFAULT_TTL_SECS;
-use firewall::controlplane::cluster::rpc::{AuthClient, RaftTlsConfig};
-use firewall::controlplane::cluster::migration;
 use futures::stream::TryStreamExt;
-use tokio::sync::{mpsc, watch};
 use netlink_packet_route::address::AddressAttribute;
 use netlink_packet_route::link::LinkAttribute;
 use rtnetlink::new_connection;
+use serde::Deserialize;
 use std::collections::HashMap;
+use tokio::sync::{mpsc, oneshot, watch};
 
 const DNS_ALLOWLIST_IDLE_SLACK_SECS: u64 = 120;
 const DNS_ALLOWLIST_GC_INTERVAL_SECS: u64 = 30;
 const DHCP_TIMEOUT_SECS: u64 = 5;
 const DHCP_RETRY_MAX: u32 = 5;
 const DHCP_LEASE_MIN_SECS: u64 = 60;
+
+#[cfg(target_os = "linux")]
+fn cpu_core_count() -> usize {
+    let count = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
+    if count > 0 {
+        return count as usize;
+    }
+    std::thread::available_parallelism()
+        .map(|c| c.get())
+        .unwrap_or(1)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn cpu_core_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|c| c.get())
+        .unwrap_or(1)
+}
+
+fn shard_index_for_packet(pkt: &Packet, shard_count: usize) -> usize {
+    if shard_count <= 1 {
+        return 0;
+    }
+    let src_ip = match pkt.src_ip() {
+        Some(ip) => ip,
+        None => return 0,
+    };
+    let dst_ip = match pkt.dst_ip() {
+        Some(ip) => ip,
+        None => return 0,
+    };
+    let proto = pkt.protocol().unwrap_or(0);
+    let (src_port, dst_port) = pkt.ports().unwrap_or((0, 0));
+    let src_u = u32::from(src_ip);
+    let dst_u = u32::from(dst_ip);
+    let forward = (src_u, dst_u, src_port, dst_port);
+    let reverse = (dst_u, src_u, dst_port, src_port);
+    let key = if forward <= reverse { forward } else { reverse };
+    let mut hasher = DefaultHasher::new();
+    proto.hash(&mut hasher);
+    key.hash(&mut hasher);
+    (hasher.finish() as usize) % shard_count
+}
+
+#[cfg(target_os = "linux")]
+fn pin_thread_to_core(core_id: usize) -> Result<(), String> {
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut set);
+        libc::CPU_SET(core_id, &mut set);
+        let rc = libc::pthread_setaffinity_np(
+            libc::pthread_self(),
+            std::mem::size_of::<libc::cpu_set_t>(),
+            &set,
+        );
+        if rc != 0 {
+            return Err(format!("pthread_setaffinity_np failed: {rc}"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pin_thread_to_core(_core_id: usize) -> Result<(), String> {
+    Ok(())
+}
 const INTEGRATION_ROUTE_NAME: &str = "neuwerk-default";
 const INTEGRATION_DRAIN_TIMEOUT_SECS: u64 = 300;
 const INTEGRATION_RECONCILE_INTERVAL_SECS: u64 = 15;
 const INTEGRATION_CLUSTER_NAME: &str = "neuwerk";
+const IMDS_NETWORK_URL: &str =
+    "http://169.254.169.254/metadata/instance/network/interface?api-version=2021-02-01";
 
 #[derive(Debug)]
 struct CliConfig {
@@ -54,7 +128,16 @@ struct CliConfig {
     dhcp_timeout_secs: u64,
     dhcp_retry_max: u32,
     dhcp_lease_min_secs: u64,
-    snat_ip: Option<Ipv4Addr>,
+    internal_cidr: Option<(Ipv4Addr, u8)>,
+    snat_mode: SnatMode,
+    encap_mode: EncapMode,
+    encap_vni: Option<u32>,
+    encap_vni_internal: Option<u32>,
+    encap_vni_external: Option<u32>,
+    encap_udp_port: Option<u16>,
+    encap_udp_port_internal: Option<u16>,
+    encap_udp_port_external: Option<u16>,
+    encap_mtu: u16,
     http_bind: Option<SocketAddr>,
     http_advertise: Option<SocketAddr>,
     http_tls_dir: PathBuf,
@@ -63,6 +146,7 @@ struct CliConfig {
     http_ca_path: Option<PathBuf>,
     http_tls_san: Vec<String>,
     metrics_bind: Option<SocketAddr>,
+    cloud_provider: CloudProviderKind,
     cluster: controlplane::cluster::config::ClusterConfig,
     cluster_migrate_from_local: bool,
     cluster_migrate_force: bool,
@@ -85,9 +169,19 @@ struct CliConfig {
 
 #[derive(Debug)]
 enum AuthCommand {
-    KeyRotate { addr: SocketAddr, tls_dir: PathBuf },
-    KeyList { addr: SocketAddr, tls_dir: PathBuf },
-    KeyRetire { addr: SocketAddr, tls_dir: PathBuf, kid: String },
+    KeyRotate {
+        addr: SocketAddr,
+        tls_dir: PathBuf,
+    },
+    KeyList {
+        addr: SocketAddr,
+        tls_dir: PathBuf,
+    },
+    KeyRetire {
+        addr: SocketAddr,
+        tls_dir: PathBuf,
+        kid: String,
+    },
     TokenMint {
         addr: SocketAddr,
         tls_dir: PathBuf,
@@ -103,6 +197,37 @@ enum DataPlaneMode {
     Dpdk,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloudProviderKind {
+    None,
+    Azure,
+    Aws,
+    Gcp,
+}
+
+impl CloudProviderKind {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "none" | "NONE" => Ok(CloudProviderKind::None),
+            "azure" | "AZURE" => Ok(CloudProviderKind::Azure),
+            "aws" | "AWS" => Ok(CloudProviderKind::Aws),
+            "gcp" | "GCP" => Ok(CloudProviderKind::Gcp),
+            _ => Err(format!(
+                "--cloud-provider must be azure, aws, gcp, or none, got {value}"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            CloudProviderKind::None => "none",
+            CloudProviderKind::Azure => "azure",
+            CloudProviderKind::Aws => "aws",
+            CloudProviderKind::Gcp => "gcp",
+        }
+    }
+}
+
 impl DataPlaneMode {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
@@ -114,7 +239,7 @@ impl DataPlaneMode {
 
 fn usage(bin: &str) -> String {
     format!(
-        "Usage:\n  {bin} --management-interface <iface> --data-plane-interface <iface> --dns-upstream <ip:port> --dns-listen <ip:port> [--data-plane-mode tun|tap|dpdk] [--idle-timeout-secs <secs>] [--dns-allowlist-idle-secs <secs>] [--dns-allowlist-gc-interval-secs <secs>] [--default-policy allow|deny] [--dhcp-timeout-secs <secs>] [--dhcp-retry-max <count>] [--dhcp-lease-min-secs <secs>] [--snat-ip <ipv4>]\n  {bin} [cluster flags]\n  {bin} auth <command>\n\nFlags:\n  --management-interface <iface>\n  --data-plane-interface <iface>\n  --dns-upstream <ip:port>\n  --dns-listen <ip:port>\n  --data-plane-mode tun|tap|dpdk (default: tun)\n  --idle-timeout-secs <secs> (default: 300)\n  --dns-allowlist-idle-secs <secs> (default: idle-timeout + 120)\n  --dns-allowlist-gc-interval-secs <secs> (default: 30)\n  --default-policy allow|deny (default: deny)\n  --dhcp-timeout-secs <secs> (default: 5)\n  --dhcp-retry-max <count> (default: 5)\n  --dhcp-lease-min-secs <secs> (default: 60)\n  --snat-ip <ipv4> (software dataplane only)\n  --http-bind <ip:port> (default: <management-ip>:8443)\n  --http-advertise <ip:port> (default: http-bind)\n  --http-tls-dir <path> (default: /var/lib/neuwerk/http-tls)\n  --http-cert-path <path>\n  --http-key-path <path>\n  --http-ca-path <path>\n  --http-tls-san <comma-separated>\n  --metrics-bind <ip:port> (default: <management-ip>:8080)\n  --integration azure-vmss|aws-asg|gcp-mig|none (default: none)\n  --integration-route-name <name> (default: neuwerk-default)\n  --integration-drain-timeout-secs <secs> (default: 300)\n  --integration-reconcile-interval-secs <secs> (default: 15)\n  --integration-cluster-name <name> (default: neuwerk)\n  --azure-subscription-id <id>\n  --azure-resource-group <name>\n  --azure-vmss-name <name>\n  --aws-region <region>\n  --aws-vpc-id <id>\n  --aws-asg-name <name>\n  --gcp-project <id>\n  --gcp-region <region>\n  --gcp-ig-name <name>\n  --cluster-migrate-from-local\n  --cluster-migrate-force\n  --cluster-migrate-verify\n  --cluster-bind <ip:port>\n  --cluster-join-bind <ip:port> (default: cluster-bind + 1)\n  --cluster-advertise <ip:port> (default: cluster-bind)\n  --join <ip:port>\n  --cluster-data-dir <path> (default: /var/lib/neuwerk/cluster)\n  --node-id-path <path> (default: /var/lib/neuwerk/node_id)\n  --bootstrap-token-path <path> (default: /var/lib/neuwerk/bootstrap-token)\n  -h, --help\n\nAuth Commands:\n  {bin} auth key rotate --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key list --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key retire <kid> --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n"
+        "Usage:\n  {bin} --management-interface <iface> --data-plane-interface <iface|pci|mac> --dns-upstream <ip:port> --dns-listen <ip:port> [--data-plane-mode tun|tap|dpdk] [--idle-timeout-secs <secs>] [--dns-allowlist-idle-secs <secs>] [--dns-allowlist-gc-interval-secs <secs>] [--default-policy allow|deny] [--dhcp-timeout-secs <secs>] [--dhcp-retry-max <count>] [--dhcp-lease-min-secs <secs>] [--internal-cidr <cidr>] [--snat none|auto|<ipv4>] [--encap none|vxlan|geneve] [--encap-vni <id>] [--encap-udp-port <port>] [--encap-vni-internal <id>] [--encap-vni-external <id>] [--encap-udp-port-internal <port>] [--encap-udp-port-external <port>] [--encap-mtu <bytes>]\n  {bin} [cluster flags]\n  {bin} auth <command>\n\nFlags:\n  --management-interface <iface>\n  --data-plane-interface <iface|pci|mac> (dpdk accepts pci:0000:00:00.0 or mac:aa:bb:cc:dd:ee:ff)\n  --dns-upstream <ip:port>\n  --dns-listen <ip:port>\n  --data-plane-mode tun|tap|dpdk (default: tun)\n  --idle-timeout-secs <secs> (default: 300)\n  --dns-allowlist-idle-secs <secs> (default: idle-timeout + 120)\n  --dns-allowlist-gc-interval-secs <secs> (default: 30)\n  --default-policy allow|deny (default: deny)\n  --dhcp-timeout-secs <secs> (default: 5)\n  --dhcp-retry-max <count> (default: 5)\n  --dhcp-lease-min-secs <secs> (default: 60)\n  --internal-cidr <cidr> (overrides DHCP-derived internal network)\n  --snat none|auto|<ipv4>\n  --encap none|vxlan|geneve (default: none)\n  --encap-vni <id>\n  --encap-vni-internal <id>\n  --encap-vni-external <id>\n  --encap-udp-port <port> (default: 10800 for vxlan, 6081 for geneve)\n  --encap-udp-port-internal <port> (default: 10800 when --encap-vni-internal is set)\n  --encap-udp-port-external <port> (default: 10801 when --encap-vni-external is set)\n  --encap-mtu <bytes> (default: 1500)\n  --http-bind <ip:port> (default: <management-ip>:8443)\n  --http-advertise <ip:port> (default: http-bind)\n  --http-tls-dir <path> (default: /var/lib/neuwerk/http-tls)\n  --http-cert-path <path>\n  --http-key-path <path>\n  --http-ca-path <path>\n  --http-tls-san <comma-separated>\n  --metrics-bind <ip:port> (default: <management-ip>:8080)\n  --cloud-provider azure|aws|gcp|none (default: none)\n  --integration azure-vmss|aws-asg|gcp-mig|none (default: none)\n  --integration-route-name <name> (default: neuwerk-default)\n  --integration-drain-timeout-secs <secs> (default: 300)\n  --integration-reconcile-interval-secs <secs> (default: 15)\n  --integration-cluster-name <name> (default: neuwerk)\n  --azure-subscription-id <id>\n  --azure-resource-group <name>\n  --azure-vmss-name <name>\n  --aws-region <region>\n  --aws-vpc-id <id>\n  --aws-asg-name <name>\n  --gcp-project <id>\n  --gcp-region <region>\n  --gcp-ig-name <name>\n  --cluster-migrate-from-local\n  --cluster-migrate-force\n  --cluster-migrate-verify\n  --cluster-bind <ip:port>\n  --cluster-join-bind <ip:port> (default: cluster-bind + 1)\n  --cluster-advertise <ip:port> (default: cluster-bind)\n  --join <ip:port>\n  --cluster-data-dir <path> (default: /var/lib/neuwerk/cluster)\n  --node-id-path <path> (default: /var/lib/neuwerk/node_id)\n  --bootstrap-token-path <path> (default: /var/lib/neuwerk/bootstrap-token)\n  -h, --help\n\nAuth Commands:\n  {bin} auth key rotate --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key list --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key retire <kid> --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n"
     )
 }
 
@@ -122,6 +247,225 @@ fn auth_usage(bin: &str) -> String {
     format!(
         "Usage:\n  {bin} auth key rotate --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key list --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key retire <kid> --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n"
     )
+}
+
+fn looks_like_pci(value: &str) -> bool {
+    let value = value.trim();
+    let value = value.strip_prefix("pci:").unwrap_or(value);
+    is_pci_addr(value)
+}
+
+fn looks_like_mac(value: &str) -> bool {
+    let value = value.trim();
+    let value = value.strip_prefix("mac:").unwrap_or(value);
+    parse_mac(value).is_some()
+}
+
+fn is_pci_addr(value: &str) -> bool {
+    let parts: Vec<&str> = value.split(':').collect();
+    if parts.len() != 2 && parts.len() != 3 {
+        return false;
+    }
+    let (domain, bus, devfn) = if parts.len() == 3 {
+        (Some(parts[0]), parts[1], parts[2])
+    } else {
+        (None, parts[0], parts[1])
+    };
+    if let Some(domain) = domain {
+        if !is_hex_len(domain, 4) {
+            return false;
+        }
+    }
+    if !is_hex_len(bus, 2) {
+        return false;
+    }
+    let mut devfn_parts = devfn.split('.');
+    let dev = match devfn_parts.next() {
+        Some(dev) => dev,
+        None => return false,
+    };
+    let func = match devfn_parts.next() {
+        Some(func) => func,
+        None => return false,
+    };
+    if devfn_parts.next().is_some() {
+        return false;
+    }
+    is_hex_len(dev, 2) && is_hex_len(func, 1)
+}
+
+fn is_hex_len(value: &str, len: usize) -> bool {
+    value.len() == len && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn parse_mac(value: &str) -> Option<[u8; 6]> {
+    let mut bytes = [0u8; 6];
+    let parts: Vec<&str> = value.split(|c| c == ':' || c == '-').collect();
+    if parts.len() != 6 {
+        return None;
+    }
+    for (idx, part) in parts.iter().enumerate() {
+        if part.len() != 2 || !part.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let parsed = u8::from_str_radix(part, 16).ok()?;
+        bytes[idx] = parsed;
+    }
+    Some(bytes)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImdsNetworkInterface {
+    mac_address: String,
+    ipv4: Option<ImdsIpv4>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImdsIpv4 {
+    ip_address: Vec<ImdsIpAddress>,
+    subnet: Vec<ImdsSubnet>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImdsIpAddress {
+    private_ip_address: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImdsSubnet {
+    address: String,
+    prefix: String,
+}
+
+async fn imds_dataplane_config(mac: [u8; 6]) -> Result<(Ipv4Addr, u8, Ipv4Addr), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let response = client
+        .get(IMDS_NETWORK_URL)
+        .header("Metadata", "true")
+        .send()
+        .await
+        .map_err(|err| format!("imds request failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("imds request failed: {}", response.status()));
+    }
+    let payload: Vec<ImdsNetworkInterface> = response
+        .json()
+        .await
+        .map_err(|err| format!("imds decode failed: {err}"))?;
+    let target = format_mac_no_sep(mac);
+    for nic in payload {
+        if normalize_imds_mac(&nic.mac_address) != target {
+            continue;
+        }
+        let Some(ipv4) = nic.ipv4 else {
+            continue;
+        };
+        let ip = ipv4
+            .ip_address
+            .first()
+            .and_then(|addr| addr.private_ip_address.parse::<Ipv4Addr>().ok())
+            .ok_or_else(|| "imds missing dataplane ip".to_string())?;
+        let prefix = ipv4
+            .subnet
+            .first()
+            .and_then(|subnet| subnet.prefix.parse::<u8>().ok())
+            .ok_or_else(|| "imds missing subnet prefix".to_string())?;
+        let gateway = subnet_gateway(ip, prefix)?;
+        return Ok((ip, prefix, gateway));
+    }
+    Err("imds dataplane nic not found for mac".to_string())
+}
+
+async fn imds_dataplane_from_mgmt_ip(
+    mgmt_ip: Ipv4Addr,
+) -> Result<(Ipv4Addr, u8, Ipv4Addr, [u8; 6]), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let response = client
+        .get(IMDS_NETWORK_URL)
+        .header("Metadata", "true")
+        .send()
+        .await
+        .map_err(|err| format!("imds request failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("imds request failed: {}", response.status()));
+    }
+    let payload: Vec<ImdsNetworkInterface> = response
+        .json()
+        .await
+        .map_err(|err| format!("imds decode failed: {err}"))?;
+    let mut dataplane: Option<(Ipv4Addr, u8, Ipv4Addr, [u8; 6])> = None;
+    for nic in payload {
+        let Some(ipv4) = nic.ipv4 else {
+            continue;
+        };
+        let ip = ipv4
+            .ip_address
+            .first()
+            .and_then(|addr| addr.private_ip_address.parse::<Ipv4Addr>().ok())
+            .ok_or_else(|| "imds missing ip address".to_string())?;
+        if ip == mgmt_ip {
+            continue;
+        }
+        let prefix = ipv4
+            .subnet
+            .first()
+            .and_then(|subnet| subnet.prefix.parse::<u8>().ok())
+            .ok_or_else(|| "imds missing subnet prefix".to_string())?;
+        let gateway = subnet_gateway(ip, prefix)?;
+        let mac = parse_imds_mac(&nic.mac_address)?;
+        dataplane = Some((ip, prefix, gateway, mac));
+        break;
+    }
+    dataplane.ok_or_else(|| "imds dataplane nic not found".to_string())
+}
+
+fn subnet_gateway(ip: Ipv4Addr, prefix: u8) -> Result<Ipv4Addr, String> {
+    if prefix == 0 || prefix > 32 {
+        return Err(format!("invalid subnet prefix {prefix}"));
+    }
+    let mask = if prefix == 32 {
+        u32::MAX
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    let network = u32::from(ip) & mask;
+    let gateway = network.saturating_add(1);
+    Ok(Ipv4Addr::from(gateway))
+}
+
+fn normalize_imds_mac(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace([':', '-'], "")
+}
+
+fn format_mac_no_sep(mac: [u8; 6]) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    )
+}
+
+fn parse_imds_mac(value: &str) -> Result<[u8; 6], String> {
+    let raw = normalize_imds_mac(value);
+    if raw.len() != 12 {
+        return Err("invalid imds mac".to_string());
+    }
+    let mut bytes = [0u8; 6];
+    for idx in 0..6 {
+        let start = idx * 2;
+        let part = &raw[start..start + 2];
+        bytes[idx] = u8::from_str_radix(part, 16).map_err(|_| "invalid imds mac".to_string())?;
+    }
+    Ok(bytes)
 }
 
 fn take_flag_value(
@@ -146,6 +490,42 @@ fn parse_socket(flag: &str, value: &str) -> Result<SocketAddr, String> {
         .map_err(|_| format!("{flag} must be a socket address in the form ip:port, got {value}"))
 }
 
+fn parse_port(flag: &str, value: &str) -> Result<u16, String> {
+    let parsed = value
+        .parse::<u16>()
+        .map_err(|_| format!("{flag} must be a valid UDP port, got {value}"))?;
+    if parsed == 0 {
+        return Err(format!("{flag} must be between 1 and 65535, got {value}"));
+    }
+    Ok(parsed)
+}
+
+fn parse_vni(flag: &str, value: &str) -> Result<u32, String> {
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| format!("{flag} must be a number, got {value}"))?;
+    if parsed > 0x00ff_ffff {
+        return Err(format!("{flag} must be <= 16777215, got {value}"));
+    }
+    Ok(parsed)
+}
+
+fn parse_cidr(flag: &str, value: &str) -> Result<(Ipv4Addr, u8), String> {
+    let (addr, prefix) = value
+        .split_once('/')
+        .ok_or_else(|| format!("{flag} must be in CIDR form (e.g. 10.0.0.0/24), got {value}"))?;
+    let ip = addr
+        .parse::<Ipv4Addr>()
+        .map_err(|_| format!("{flag} must be a valid IPv4 CIDR, got {value}"))?;
+    let prefix = prefix
+        .parse::<u8>()
+        .map_err(|_| format!("{flag} must be a valid IPv4 CIDR, got {value}"))?;
+    if prefix > 32 {
+        return Err(format!("{flag} must be <= 32, got {prefix}"));
+    }
+    Ok((ip, prefix))
+}
+
 fn parse_default_policy(value: &str) -> Result<DefaultPolicy, String> {
     match value.to_ascii_lowercase().as_str() {
         "allow" => Ok(DefaultPolicy::Allow),
@@ -168,7 +548,7 @@ fn parse_integration_mode(value: &str) -> Result<IntegrationMode, String> {
     }
 }
 
-fn build_integration_provider(cfg: &CliConfig) -> Option<Arc<dyn CloudProvider>> {
+fn build_integration_provider(cfg: &CliConfig) -> Option<Arc<dyn CloudProviderTrait>> {
     match cfg.integration_mode {
         IntegrationMode::AzureVmss => Some(
             AzureProvider::new(
@@ -209,7 +589,7 @@ fn integration_tag_filter(cfg: &CliConfig) -> DiscoveryFilter {
 }
 
 async fn select_integration_seed(
-    provider: Arc<dyn CloudProvider>,
+    provider: Arc<dyn CloudProviderTrait>,
     filter: &DiscoveryFilter,
     cluster_port: u16,
 ) -> Result<Option<SocketAddr>, String> {
@@ -252,6 +632,7 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     let mut dhcp_timeout_secs = DHCP_TIMEOUT_SECS;
     let mut dhcp_retry_max = DHCP_RETRY_MAX;
     let mut dhcp_lease_min_secs = DHCP_LEASE_MIN_SECS;
+    let mut internal_cidr = None;
     let mut http_bind = None;
     let mut http_advertise = None;
     let mut http_tls_dir = PathBuf::from("/var/lib/neuwerk/http-tls");
@@ -260,7 +641,17 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     let mut http_ca_path = None;
     let mut http_tls_san: Vec<String> = Vec::new();
     let mut metrics_bind = None;
-    let mut snat_ip = None;
+    let mut cloud_provider = CloudProviderKind::None;
+    let mut snat_mode = SnatMode::Auto;
+    let mut encap_mode = EncapMode::None;
+    let mut encap_vni = None;
+    let mut encap_vni_internal = None;
+    let mut encap_vni_external = None;
+    let mut encap_udp_port = None;
+    let mut encap_udp_port_internal = None;
+    let mut encap_udp_port_external = None;
+    let mut encap_mtu: u16 = 1500;
+    let mut snat_set = false;
     let mut cluster_bind = None;
     let mut cluster_join_bind = None;
     let mut cluster_advertise = None;
@@ -374,9 +765,9 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         }
         if arg == "--dhcp-retry-max" || arg.starts_with("--dhcp-retry-max=") {
             let value = take_flag_value("--dhcp-retry-max", &arg, &mut args)?;
-            let parsed = value.parse::<u32>().map_err(|_| {
-                format!("--dhcp-retry-max must be a positive integer, got {value}")
-            })?;
+            let parsed = value
+                .parse::<u32>()
+                .map_err(|_| format!("--dhcp-retry-max must be a positive integer, got {value}"))?;
             if parsed == 0 {
                 return Err("--dhcp-retry-max must be >= 1".to_string());
             }
@@ -394,12 +785,70 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
             dhcp_lease_min_secs = parsed;
             continue;
         }
-        if arg == "--snat-ip" || arg.starts_with("--snat-ip=") {
-            let value = take_flag_value("--snat-ip", &arg, &mut args)?;
+        if arg == "--internal-cidr" || arg.starts_with("--internal-cidr=") {
+            let value = take_flag_value("--internal-cidr", &arg, &mut args)?;
+            internal_cidr = Some(parse_cidr("--internal-cidr", &value)?);
+            continue;
+        }
+        if arg == "--snat" || arg.starts_with("--snat=") {
+            let value = take_flag_value("--snat", &arg, &mut args)?;
+            snat_mode = match value.as_str() {
+                "none" | "NONE" => SnatMode::None,
+                "auto" | "AUTO" => SnatMode::Auto,
+                _ => {
+                    let parsed = value.parse::<Ipv4Addr>().map_err(|_| {
+                        format!("--snat must be none, auto, or an IPv4 address, got {value}")
+                    })?;
+                    SnatMode::Static(parsed)
+                }
+            };
+            snat_set = true;
+            continue;
+        }
+        if arg == "--encap" || arg.starts_with("--encap=") {
+            let value = take_flag_value("--encap", &arg, &mut args)?;
+            encap_mode = EncapMode::parse(&value)?;
+            continue;
+        }
+        if arg == "--encap-vni" || arg.starts_with("--encap-vni=") {
+            let value = take_flag_value("--encap-vni", &arg, &mut args)?;
+            encap_vni = Some(parse_vni("--encap-vni", &value)?);
+            continue;
+        }
+        if arg == "--encap-vni-internal" || arg.starts_with("--encap-vni-internal=") {
+            let value = take_flag_value("--encap-vni-internal", &arg, &mut args)?;
+            encap_vni_internal = Some(parse_vni("--encap-vni-internal", &value)?);
+            continue;
+        }
+        if arg == "--encap-vni-external" || arg.starts_with("--encap-vni-external=") {
+            let value = take_flag_value("--encap-vni-external", &arg, &mut args)?;
+            encap_vni_external = Some(parse_vni("--encap-vni-external", &value)?);
+            continue;
+        }
+        if arg == "--encap-udp-port" || arg.starts_with("--encap-udp-port=") {
+            let value = take_flag_value("--encap-udp-port", &arg, &mut args)?;
+            encap_udp_port = Some(parse_port("--encap-udp-port", &value)?);
+            continue;
+        }
+        if arg == "--encap-udp-port-internal" || arg.starts_with("--encap-udp-port-internal=") {
+            let value = take_flag_value("--encap-udp-port-internal", &arg, &mut args)?;
+            encap_udp_port_internal = Some(parse_port("--encap-udp-port-internal", &value)?);
+            continue;
+        }
+        if arg == "--encap-udp-port-external" || arg.starts_with("--encap-udp-port-external=") {
+            let value = take_flag_value("--encap-udp-port-external", &arg, &mut args)?;
+            encap_udp_port_external = Some(parse_port("--encap-udp-port-external", &value)?);
+            continue;
+        }
+        if arg == "--encap-mtu" || arg.starts_with("--encap-mtu=") {
+            let value = take_flag_value("--encap-mtu", &arg, &mut args)?;
             let parsed = value
-                .parse::<Ipv4Addr>()
-                .map_err(|_| format!("--snat-ip must be an IPv4 address, got {value}"))?;
-            snat_ip = Some(parsed);
+                .parse::<u16>()
+                .map_err(|_| format!("--encap-mtu must be a positive integer, got {value}"))?;
+            if parsed == 0 {
+                return Err("--encap-mtu must be >= 1".to_string());
+            }
+            encap_mtu = parsed;
             continue;
         }
         if arg == "--http-bind" || arg.starts_with("--http-bind=") {
@@ -447,6 +896,11 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
             metrics_bind = Some(parse_socket("--metrics-bind", &value)?);
             continue;
         }
+        if arg == "--cloud-provider" || arg.starts_with("--cloud-provider=") {
+            let value = take_flag_value("--cloud-provider", &arg, &mut args)?;
+            cloud_provider = CloudProviderKind::parse(&value)?;
+            continue;
+        }
         if arg == "--integration" || arg.starts_with("--integration=") {
             let value = take_flag_value("--integration", &arg, &mut args)?;
             integration_mode = parse_integration_mode(&value)?;
@@ -460,12 +914,9 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         if arg == "--integration-drain-timeout-secs"
             || arg.starts_with("--integration-drain-timeout-secs=")
         {
-            let value =
-                take_flag_value("--integration-drain-timeout-secs", &arg, &mut args)?;
+            let value = take_flag_value("--integration-drain-timeout-secs", &arg, &mut args)?;
             let parsed = value.parse::<u64>().map_err(|_| {
-                format!(
-                    "--integration-drain-timeout-secs must be a positive integer, got {value}"
-                )
+                format!("--integration-drain-timeout-secs must be a positive integer, got {value}")
             })?;
             if parsed == 0 {
                 return Err("--integration-drain-timeout-secs must be >= 1".to_string());
@@ -476,11 +927,7 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         if arg == "--integration-reconcile-interval-secs"
             || arg.starts_with("--integration-reconcile-interval-secs=")
         {
-            let value = take_flag_value(
-                "--integration-reconcile-interval-secs",
-                &arg,
-                &mut args,
-            )?;
+            let value = take_flag_value("--integration-reconcile-interval-secs", &arg, &mut args)?;
             let parsed = value.parse::<u64>().map_err(|_| {
                 format!(
                     "--integration-reconcile-interval-secs must be a positive integer, got {value}"
@@ -620,16 +1067,32 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         return Err(format!("missing required flags: {}", missing.join(", ")));
     }
 
+    if matches!(data_plane_mode, DataPlaneMode::Soft(_)) {
+        let iface = data_plane_iface.as_deref().unwrap();
+        if looks_like_pci(iface) || looks_like_mac(iface) {
+            return Err(
+                "--data-plane-interface must be a netdev when --data-plane-mode is tun or tap"
+                    .to_string(),
+            );
+        }
+    }
+
     match integration_mode {
         IntegrationMode::AzureVmss => {
             if azure_subscription_id.is_none() {
-                return Err("--azure-subscription-id is required for --integration azure-vmss".to_string());
+                return Err(
+                    "--azure-subscription-id is required for --integration azure-vmss".to_string(),
+                );
             }
             if azure_resource_group.is_none() {
-                return Err("--azure-resource-group is required for --integration azure-vmss".to_string());
+                return Err(
+                    "--azure-resource-group is required for --integration azure-vmss".to_string(),
+                );
             }
             if azure_vmss_name.is_none() {
-                return Err("--azure-vmss-name is required for --integration azure-vmss".to_string());
+                return Err(
+                    "--azure-vmss-name is required for --integration azure-vmss".to_string()
+                );
             }
         }
         IntegrationMode::AwsAsg => {
@@ -657,8 +1120,42 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         IntegrationMode::None => {}
     }
     if management_iface == data_plane_iface {
-        return Err("--management-interface and --data-plane-interface must be different".to_string());
+        return Err(
+            "--management-interface and --data-plane-interface must be different".to_string(),
+        );
     }
+
+    if !snat_set && encap_mode != EncapMode::None {
+        snat_mode = SnatMode::None;
+    }
+
+    let encap_udp_port_set = encap_udp_port.is_some();
+    if encap_mode == EncapMode::Vxlan && !encap_udp_port_set {
+        if encap_vni_internal.is_some() && encap_udp_port_internal.is_none() {
+            encap_udp_port_internal = Some(10800);
+        }
+        if encap_vni_external.is_some() && encap_udp_port_external.is_none() {
+            encap_udp_port_external = Some(10801);
+        }
+    }
+
+    let encap_udp_port = encap_udp_port.unwrap_or_else(|| match encap_mode {
+        EncapMode::Geneve => 6081,
+        EncapMode::Vxlan => 10800,
+        EncapMode::None => 0,
+    });
+
+    let overlay = OverlayConfig {
+        mode: encap_mode,
+        udp_port: encap_udp_port,
+        udp_port_internal: encap_udp_port_internal,
+        udp_port_external: encap_udp_port_external,
+        vni: encap_vni,
+        vni_internal: encap_vni_internal,
+        vni_external: encap_vni_external,
+        mtu: encap_mtu,
+    };
+    overlay.validate()?;
 
     let dns_allowlist_idle_secs =
         dns_allowlist_idle_secs.unwrap_or(idle_timeout_secs + DNS_ALLOWLIST_IDLE_SLACK_SECS);
@@ -678,7 +1175,16 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         dhcp_timeout_secs,
         dhcp_retry_max,
         dhcp_lease_min_secs,
-        snat_ip,
+        internal_cidr,
+        snat_mode,
+        encap_mode,
+        encap_vni,
+        encap_vni_internal,
+        encap_vni_external,
+        encap_udp_port: Some(encap_udp_port),
+        encap_udp_port_internal,
+        encap_udp_port_external,
+        encap_mtu,
         http_bind,
         http_advertise,
         http_tls_dir,
@@ -687,6 +1193,7 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         http_ca_path,
         http_tls_san,
         metrics_bind,
+        cloud_provider,
         cluster: build_cluster_config(
             cluster_bind,
             cluster_join_bind,
@@ -851,25 +1358,31 @@ async fn run_auth_command(cmd: AuthCommand) -> Result<(), String> {
     match cmd {
         AuthCommand::KeyRotate { .. } => {
             let key = client.rotate_key().await?;
-            println!("rotated key: {} (created {}, status {:?})", key.kid, key.created_at, key.status);
+            println!(
+                "rotated key: {} (created {}, status {:?})",
+                key.kid, key.created_at, key.status
+            );
         }
         AuthCommand::KeyList { .. } => {
             let (active_kid, keys) = client.list_keys().await?;
             println!("active kid: {active_kid}");
             for key in keys {
                 let active = if key.signing { "signing" } else { "" };
-                println!("kid: {} status: {:?} created: {} {}", key.kid, key.status, key.created_at, active);
+                println!(
+                    "kid: {} status: {:?} created: {} {}",
+                    key.kid, key.status, key.created_at, active
+                );
             }
         }
         AuthCommand::KeyRetire { kid, .. } => {
             client.retire_key(&kid).await?;
             println!("retired key: {kid}");
         }
-        AuthCommand::TokenMint { sub, ttl_secs, kid, .. } => {
+        AuthCommand::TokenMint {
+            sub, ttl_secs, kid, ..
+        } => {
             let ttl = ttl_secs.or(Some(DEFAULT_TTL_SECS));
-            let (token, _kid, _exp) = client
-                .mint_token(&sub, ttl, kid.as_deref())
-                .await?;
+            let (token, _kid, _exp) = client.mint_token(&sub, ttl, kid.as_deref()).await?;
             println!("{token}");
         }
     }
@@ -1110,11 +1623,14 @@ fn run_dataplane(
     data_plane_mode: DataPlaneMode,
     idle_timeout_secs: u64,
     policy: Arc<RwLock<PolicySnapshot>>,
+    policy_applied_generation: Arc<AtomicU64>,
     dns_allowlist: DynamicIpSetV4,
     wiretap_emitter: Option<WiretapEmitter>,
     internal_net: Ipv4Addr,
     internal_prefix: u8,
     public_ip: Ipv4Addr,
+    snat_mode: SnatMode,
+    overlay: OverlayConfig,
     data_port: u16,
     dataplane_config: DataplaneConfigStore,
     drain_control: Option<DrainControl>,
@@ -1123,6 +1639,28 @@ fn run_dataplane(
     mac_publisher: Option<watch::Sender<[u8; 6]>>,
     metrics: controlplane::metrics::Metrics,
 ) -> Result<(), String> {
+    let observer_policy = policy.clone();
+    let observer_applied = policy_applied_generation.clone();
+    std::thread::Builder::new()
+        .name("policy-generation-observer".to_string())
+        .spawn(move || {
+            let mut last = observer_applied.load(Ordering::Acquire);
+            loop {
+                let generation = match observer_policy.read() {
+                    Ok(lock) => lock.generation(),
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                };
+                if generation != last {
+                    observer_applied.store(generation, Ordering::Release);
+                    last = generation;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+        .map_err(|err| format!("policy observer start failed: {err}"))?;
     let mut state = EngineState::new_with_idle_timeout(
         policy,
         internal_net,
@@ -1131,6 +1669,8 @@ fn run_dataplane(
         data_port,
         idle_timeout_secs,
     );
+    state.set_snat_mode(snat_mode);
+    state.set_overlay_config(overlay);
     state.set_dns_allowlist(dns_allowlist);
     state.set_dataplane_config(dataplane_config);
     if let Some(control) = drain_control {
@@ -1148,29 +1688,211 @@ fn run_dataplane(
             adapter.run(&mut state)
         }
         DataPlaneMode::Dpdk => {
-            let iface = data_plane_iface.clone();
-            let mut adapter = DpdkAdapter::new(data_plane_iface)?;
-            if let Some(publisher) = mac_publisher {
-                adapter.set_mac_publisher(publisher);
-            }
-            if let Some(tx) = dhcp_tx {
-                adapter.set_dhcp_tx(tx);
-            }
-            if let Some(rx) = dhcp_rx {
-                adapter.set_dhcp_rx(rx);
-            }
-            let mut io = match DpdkIo::new(&iface) {
-                Ok(io) => {
-                    metrics.set_dpdk_init_ok(true);
-                    io
+            let worker_count = std::env::var("NEUWERK_DPDK_WORKERS")
+                .ok()
+                .and_then(|val| val.parse::<usize>().ok())
+                .unwrap_or(1)
+                .max(1);
+            let max_workers = cpu_core_count();
+            let mut worker_count = worker_count.min(max_workers);
+            eprintln!(
+                "dpdk: worker config requested={}, cpu_cores={}, using={}",
+                std::env::var("NEUWERK_DPDK_WORKERS").unwrap_or_else(|_| "unset".to_string()),
+                max_workers,
+                worker_count
+            );
+            if worker_count > 1 {
+                match DpdkIo::effective_queue_count(&data_plane_iface, worker_count as u16) {
+                    Ok(effective) => {
+                        let effective = effective as usize;
+                        if effective == 0 {
+                            metrics.set_dpdk_init_ok(false);
+                            metrics.inc_dpdk_init_failure();
+                            return Err("dpdk: no usable queues available".to_string());
+                        }
+                        if effective < worker_count {
+                            eprintln!(
+                                "dpdk: reducing worker threads to {} (device queue limit)",
+                                effective
+                            );
+                            worker_count = effective;
+                        }
+                    }
+                    Err(err) => {
+                        metrics.set_dpdk_init_ok(false);
+                        metrics.inc_dpdk_init_failure();
+                        return Err(err);
+                    }
                 }
-                Err(err) => {
-                    metrics.set_dpdk_init_ok(false);
-                    metrics.inc_dpdk_init_failure();
-                    return Err(err);
+            }
+            if worker_count == 1 {
+                let iface = data_plane_iface.clone();
+                let mut adapter = DpdkAdapter::new(data_plane_iface)?;
+                if let Some(publisher) = mac_publisher {
+                    adapter.set_mac_publisher(publisher);
                 }
-            };
-            adapter.run_with_io(&mut state, &mut io)
+                if let Some(tx) = dhcp_tx {
+                    adapter.set_dhcp_tx(tx);
+                }
+                if let Some(rx) = dhcp_rx {
+                    adapter.set_dhcp_rx(rx);
+                }
+                let mut io = match DpdkIo::new(&iface, Some(metrics.clone())) {
+                    Ok(io) => {
+                        metrics.set_dpdk_init_ok(true);
+                        io
+                    }
+                    Err(err) => {
+                        metrics.set_dpdk_init_ok(false);
+                        metrics.inc_dpdk_init_failure();
+                        return Err(err);
+                    }
+                };
+                adapter.run_with_io(&mut state, &mut io)
+            } else {
+                eprintln!("dpdk: starting {} worker threads", worker_count);
+                let shard_count = std::env::var("NEUWERK_DPDK_STATE_SHARDS")
+                    .ok()
+                    .and_then(|val| val.parse::<usize>().ok())
+                    .unwrap_or(worker_count)
+                    .max(1);
+                eprintln!("dpdk: state shards={}", shard_count);
+                let base_state = state;
+                let mut shard_states = Vec::with_capacity(shard_count);
+                for shard_id in 0..shard_count {
+                    let mut shard = base_state.clone_for_shard();
+                    shard.set_shard_id(shard_id);
+                    shard_states.push(std::sync::Mutex::new(shard));
+                }
+                let state = std::sync::Arc::new(shard_states);
+                let shared_arp = Arc::new(Mutex::new(SharedArpState::default()));
+                let mut dhcp_rx = dhcp_rx;
+                let mut handles = Vec::with_capacity(worker_count);
+                for worker_id in 0..worker_count {
+                    let iface = data_plane_iface.clone();
+                    let metrics = metrics.clone();
+                    let state = std::sync::Arc::clone(&state);
+                    let shared_arp = Arc::clone(&shared_arp);
+                    let dhcp_tx = dhcp_tx.clone();
+                    let dhcp_rx = if worker_id == 0 { dhcp_rx.take() } else { None };
+                    let mac_publisher = if worker_id == 0 {
+                        mac_publisher.clone()
+                    } else {
+                        None
+                    };
+                    let core_count = max_workers.max(1);
+                    let core_id = worker_id % core_count;
+                    let handle = std::thread::Builder::new()
+                        .name(format!("dpdk-worker-{worker_id}"))
+                        .spawn(move || -> Result<(), String> {
+                            if let Err(err) = pin_thread_to_core(core_id) {
+                                eprintln!(
+                                    "dpdk: worker {} failed to pin to core {}: {}",
+                                    worker_id, core_id, err
+                                );
+                            } else {
+                                eprintln!("dpdk: worker {} pinned to core {}", worker_id, core_id);
+                            }
+                            let mut adapter = DpdkAdapter::new(iface.clone())?;
+                            if let Some(publisher) = mac_publisher {
+                                adapter.set_mac_publisher(publisher);
+                            }
+                            adapter.set_shared_arp(shared_arp);
+                            if let Some(tx) = dhcp_tx {
+                                adapter.set_dhcp_tx(tx);
+                            }
+                            if let Some(rx) = dhcp_rx {
+                                adapter.set_dhcp_rx(rx);
+                            }
+                            let mut io = DpdkIo::new_with_queue(
+                                &iface,
+                                worker_id as u16,
+                                worker_count as u16,
+                                Some(metrics.clone()),
+                            )?;
+                            if let Some(mac) = io.mac() {
+                                adapter.set_mac(mac);
+                            }
+                            let mut pkt = Packet::new(vec![0u8; 65536]);
+                            loop {
+                                pkt.prepare_for_rx(65536);
+                                let n = io.recv_frame(pkt.buffer_mut())?;
+                                if n == 0 {
+                                    io.flush()?;
+                                    if worker_id == 0 {
+                                        while let Some(out) = {
+                                            let guard = state.get(0).ok_or_else(|| {
+                                                "dpdk: state shard missing".to_string()
+                                            })?;
+                                            let mut guard = guard.lock().map_err(|_| {
+                                                "dpdk: state lock poisoned".to_string()
+                                            })?;
+                                            adapter.next_dhcp_frame(&mut guard)
+                                        } {
+                                            io.send_frame(&out)?;
+                                        }
+                                    }
+                                    continue;
+                                }
+                                pkt.truncate(n);
+                                if let Some(out) = {
+                                    let shard_idx = shard_index_for_packet(&pkt, state.len());
+                                    let shard = state
+                                        .get(shard_idx)
+                                        .ok_or_else(|| "dpdk: state shard missing".to_string())?;
+                                    let mut guard = match shard.try_lock() {
+                                        Ok(guard) => guard,
+                                        Err(std::sync::TryLockError::Poisoned(_)) => {
+                                            return Err("dpdk: state lock poisoned".to_string());
+                                        }
+                                        Err(std::sync::TryLockError::WouldBlock) => {
+                                            metrics.inc_dp_state_lock_contended();
+                                            let start = Instant::now();
+                                            let guard = shard.lock().map_err(|_| {
+                                                "dpdk: state lock poisoned".to_string()
+                                            })?;
+                                            metrics.observe_dp_state_lock_wait(start.elapsed());
+                                            guard
+                                        }
+                                    };
+                                    adapter.process_packet_in_place(&mut pkt, &mut guard)
+                                } {
+                                    match out {
+                                        FrameOut::Borrowed(frame) => io.send_frame(frame)?,
+                                        FrameOut::Owned(frame) => io.send_frame(&frame)?,
+                                    }
+                                }
+                                if worker_id == 0 {
+                                    while let Some(out) = {
+                                        let guard = state.get(0).ok_or_else(|| {
+                                            "dpdk: state shard missing".to_string()
+                                        })?;
+                                        let mut guard = guard
+                                            .lock()
+                                            .map_err(|_| "dpdk: state lock poisoned".to_string())?;
+                                        adapter.next_dhcp_frame(&mut guard)
+                                    } {
+                                        io.send_frame(&out)?;
+                                    }
+                                }
+                            }
+                        })
+                        .map_err(|err| format!("dpdk worker start failed: {err}"))?;
+                    handles.push(handle);
+                }
+                metrics.set_dpdk_init_ok(true);
+                for handle in handles {
+                    if let Err(err) = handle
+                        .join()
+                        .map_err(|_| "dpdk worker panicked".to_string())?
+                    {
+                        metrics.set_dpdk_init_ok(false);
+                        metrics.inc_dpdk_init_failure();
+                        return Err(err);
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -1205,6 +1927,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(2);
         }
     };
+    if cfg.cloud_provider != CloudProviderKind::None {
+        std::env::set_var("NEUWERK_CLOUD_PROVIDER", cfg.cloud_provider.as_str());
+    }
 
     let integration_provider = build_integration_provider(&cfg);
     if cfg.integration_mode != IntegrationMode::None
@@ -1239,6 +1964,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("default policy: {:?}", cfg.default_policy);
     println!("dns listen: {}", cfg.dns_listen);
     println!("dns upstream: {}", cfg.dns_upstream);
+    println!("cloud provider: {:?}", cfg.cloud_provider);
     if cfg.cluster.enabled {
         println!("cluster bind: {}", cfg.cluster.bind_addr);
         println!("cluster join bind: {}", cfg.cluster.join_bind_addr);
@@ -1249,10 +1975,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("integration mode: {:?}", cfg.integration_mode);
     if cfg.integration_mode != IntegrationMode::None {
-        println!(
-            "integration route name: {}",
-            cfg.integration_route_name
-        );
+        println!("integration route name: {}", cfg.integration_route_name);
         println!(
             "integration drain timeout (secs): {}",
             cfg.integration_drain_timeout_secs
@@ -1263,13 +1986,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         println!("integration cluster name: {}", cfg.integration_cluster_name);
     }
+    println!("snat mode: {:?}", cfg.snat_mode);
+    if cfg.encap_mode != EncapMode::None {
+        println!("encap mode: {:?}", cfg.encap_mode);
+        if let Some(vni) = cfg.encap_vni {
+            println!("encap vni: {vni}");
+        }
+        if let Some(vni) = cfg.encap_vni_internal {
+            println!("encap vni internal: {vni}");
+        }
+        if let Some(vni) = cfg.encap_vni_external {
+            println!("encap vni external: {vni}");
+        }
+        if let Some(port) = cfg.encap_udp_port {
+            println!("encap udp port: {port}");
+        }
+        if let Some(port) = cfg.encap_udp_port_internal {
+            println!("encap udp port internal: {port}");
+        }
+        if let Some(port) = cfg.encap_udp_port_external {
+            println!("encap udp port external: {port}");
+        }
+        println!("encap mtu: {}", cfg.encap_mtu);
+    }
+    if let Some((net, prefix)) = cfg.internal_cidr {
+        println!("internal cidr: {net}/{prefix}");
+    }
 
     let dpdk_enabled = matches!(cfg.data_plane_mode, DataPlaneMode::Dpdk);
-    if dpdk_enabled && cfg.snat_ip.is_some() {
-        eprintln!("--snat-ip is only supported in software dataplane mode");
+    if dpdk_enabled && matches!(cfg.snat_mode, SnatMode::Static(_)) {
+        eprintln!("--snat <ipv4> is only supported in software dataplane mode");
         std::process::exit(2);
     }
-    let soft_dp_config = if dpdk_enabled || cfg.snat_ip.is_some() {
+    let soft_dp_config = if dpdk_enabled || matches!(cfg.snat_mode, SnatMode::Static(_)) {
         None
     } else {
         dataplane_ipv4_config(&cfg.data_plane_iface).await.ok()
@@ -1295,10 +2044,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("metrics bind: {metrics_bind}");
 
     // TODO: wire dataplane network parameters via CLI or config.
-    let internal_net = Ipv4Addr::UNSPECIFIED;
-    let internal_prefix = 32;
-    let public_ip = cfg.snat_ip.unwrap_or(Ipv4Addr::UNSPECIFIED);
+    let (internal_net, internal_prefix) = cfg.internal_cidr.unwrap_or((Ipv4Addr::UNSPECIFIED, 32));
+    let public_ip = match cfg.snat_mode {
+        SnatMode::Static(ip) => ip,
+        _ => Ipv4Addr::UNSPECIFIED,
+    };
     let data_port = 0;
+    let overlay = OverlayConfig {
+        mode: cfg.encap_mode,
+        udp_port: cfg.encap_udp_port.unwrap_or(0),
+        udp_port_internal: cfg.encap_udp_port_internal,
+        udp_port_external: cfg.encap_udp_port_external,
+        vni: cfg.encap_vni,
+        vni_internal: cfg.encap_vni_internal,
+        vni_external: cfg.encap_vni_external,
+        mtu: cfg.encap_mtu,
+    };
 
     let dataplane_config = DataplaneConfigStore::new();
     let policy_store = PolicyStore::new_with_config(
@@ -1317,7 +2078,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    if !dpdk_enabled {
+    if dpdk_enabled && dataplane_config.get().is_none() {
+        match imds_dataplane_from_mgmt_ip(management_ip).await {
+            Ok((ip, prefix, gateway, mac)) => {
+                dataplane_config.set(firewall::dataplane::DataplaneConfig {
+                    ip,
+                    prefix,
+                    gateway,
+                    mac,
+                    lease_expiry: None,
+                });
+                eprintln!(
+                    "dpdk imds bootstrap: set dataplane config ip={}, prefix={}, gateway={}",
+                    ip, prefix, gateway
+                );
+            }
+            Err(err) => {
+                eprintln!("dpdk imds bootstrap failed: {err}");
+            }
+        }
+    }
+
+    if !dpdk_enabled && cfg.internal_cidr.is_none() {
         if let Ok((ip, prefix)) =
             internal_ipv4_config(&cfg.management_iface, &cfg.data_plane_iface).await
         {
@@ -1327,7 +2109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if !dpdk_enabled && soft_dp_config.is_none() && cfg.snat_ip.is_none() {
+    if !dpdk_enabled && soft_dp_config.is_none() && matches!(cfg.snat_mode, SnatMode::Auto) {
         let iface = cfg.data_plane_iface.clone();
         let dataplane_config = dataplane_config.clone();
         tokio::spawn(async move {
@@ -1382,6 +2164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dns_allowlist_for_dp = dns_allowlist.clone();
     let dns_listen = cfg.dns_listen;
     let dns_upstream = cfg.dns_upstream;
+    let policy_applied_generation = policy_store.policy_applied_tracker();
     let dns_map = DnsMap::new();
     let wiretap_hub = WiretapHub::new(1024);
     let metrics = match controlplane::metrics::Metrics::new() {
@@ -1391,6 +2174,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(2);
         }
     };
+    if dpdk_enabled {
+        match firewall::dataplane::preinit_dpdk_eal(&cfg.data_plane_iface) {
+            Ok(()) => {
+                metrics.set_dpdk_init_ok(true);
+            }
+            Err(err) => {
+                metrics.set_dpdk_init_ok(false);
+                metrics.inc_dpdk_init_failure();
+                eprintln!("dpdk preinit failed: {err}");
+                std::process::exit(2);
+            }
+        }
+    }
     let node_id = match load_or_create_node_id(&cfg.cluster.node_id_path) {
         Ok(node_id) => node_id,
         Err(err) => {
@@ -1406,22 +2202,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let (wiretap_tx, mut wiretap_rx) = tokio::sync::mpsc::channel(1024);
-    let wiretap_emitter =
-        WiretapEmitter::new(wiretap_tx, DEFAULT_WIRETAP_REPORT_INTERVAL_SECS);
+    let wiretap_emitter = WiretapEmitter::new(wiretap_tx, DEFAULT_WIRETAP_REPORT_INTERVAL_SECS);
     let hub_for_wiretap = wiretap_hub.clone();
     let dns_map_for_wiretap = dns_map.clone();
     let dns_map_for_dns = dns_map.clone();
     let dns_map_for_gc = dns_map.clone();
     let dns_map_for_http = dns_map.clone();
     let node_id_for_wiretap = node_id.clone();
-    let _wiretap_task = tokio::spawn(async move {
-        while let Some(event) = wiretap_rx.recv().await {
-            let hostname = dns_map_for_wiretap.lookup(event.dst_ip);
-            let enriched =
-                controlplane::wiretap::WiretapEvent::from_dataplane(event, hostname, &node_id_for_wiretap);
-            hub_for_wiretap.publish(enriched);
-        }
-    });
+    let _wiretap_task = std::thread::Builder::new()
+        .name("wiretap-bridge".to_string())
+        .spawn(move || {
+            while let Some(event) = wiretap_rx.blocking_recv() {
+                let hostname = dns_map_for_wiretap.lookup(event.dst_ip);
+                let enriched = controlplane::wiretap::WiretapEvent::from_dataplane(
+                    event,
+                    hostname,
+                    &node_id_for_wiretap,
+                );
+                hub_for_wiretap.publish(enriched);
+            }
+            eprintln!("wiretap: bridge stopped (all senders dropped)");
+        })
+        .map_err(|err| boxed_error(format!("wiretap bridge thread failed to start: {err}")))?;
 
     let cluster_metrics = metrics.clone();
     let cluster_runtime = if cfg.cluster.enabled {
@@ -1492,7 +2294,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let readiness = ReadinessState::new(
         dataplane_config.clone(),
         policy_store.clone(),
-        cluster_runtime.as_ref().map(|runtime| runtime.store.clone()),
+        cluster_runtime
+            .as_ref()
+            .map(|runtime| runtime.store.clone()),
         cluster_runtime.as_ref().map(|runtime| runtime.raft.clone()),
     );
     readiness.set_policy_ready(true);
@@ -1515,18 +2319,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let metrics_for_dns = metrics.clone();
-    let dns_task = tokio::spawn(async move {
-        controlplane::dns_proxy::run_dns_proxy(
-            dns_listen,
-            dns_upstream,
-            dns_allowlist_for_dns,
-            dns_policy,
-            dns_map_for_dns,
-            metrics_for_dns,
-        )
-        .await
-        .map_err(|err| format!("dns proxy failed: {err}"))
-    });
+    let (dns_tx, dns_rx) = oneshot::channel::<Result<(), String>>();
+    let dns_thread = std::thread::Builder::new()
+        .name("dns-runtime".to_string())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .expect("dns runtime");
+            let res = rt.block_on(async {
+                controlplane::dns_proxy::run_dns_proxy(
+                    dns_listen,
+                    dns_upstream,
+                    dns_allowlist_for_dns,
+                    dns_policy,
+                    dns_map_for_dns,
+                    metrics_for_dns,
+                )
+                .await
+                .map_err(|err| format!("dns proxy failed: {err}"))
+            });
+            let _ = dns_tx.send(res);
+        });
+    if dns_thread.is_err() {
+        eprintln!("dns proxy: failed to spawn runtime thread");
+        std::process::exit(2);
+    }
+    let dns_task = dns_rx;
     readiness.set_dns_ready(true);
 
     let dns_allowlist_idle_secs = cfg.dns_allowlist_idle_secs;
@@ -1569,20 +2389,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_local_store = local_policy_store.clone();
     let metrics_for_http = metrics.clone();
     let readiness_for_http = readiness.clone();
-    let http_task = tokio::spawn(async move {
-        controlplane::http_api::run_http_api(
-            http_cfg,
-            http_policy_store,
-            http_local_store,
-            http_cluster,
-            Some(wiretap_hub.clone()),
-            Some(dns_map_for_http),
-            Some(readiness_for_http),
-            metrics_for_http,
-        )
-        .await
-        .map_err(|err| format!("http api failed: {err}"))
-    });
+    let (http_tx, http_rx) = oneshot::channel::<Result<(), String>>();
+    let http_thread = std::thread::Builder::new()
+        .name("http-runtime".to_string())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .expect("http runtime");
+            let res = rt.block_on(async {
+                controlplane::http_api::run_http_api(
+                    http_cfg,
+                    http_policy_store,
+                    http_local_store,
+                    http_cluster,
+                    Some(wiretap_hub.clone()),
+                    Some(dns_map_for_http),
+                    Some(readiness_for_http),
+                    metrics_for_http,
+                )
+                .await
+                .map_err(|err| format!("http api failed: {err}"))
+            });
+            let _ = http_tx.send(res);
+        });
+    if http_thread.is_err() {
+        eprintln!("http api: failed to spawn runtime thread");
+        std::process::exit(2);
+    }
+    let http_task = http_rx;
 
     let drain_control = DrainControl::new();
     let drain_control_for_dp = drain_control.clone();
@@ -1605,16 +2441,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(client) => Arc::new(client) as Arc<dyn ReadyChecker>,
                 Err(err) => {
                     eprintln!("integration ready client error: {err}");
-                    Arc::new(ReadyClient::new(http_advertise.port(), None)
-                        .expect("ready client fallback")) as Arc<dyn ReadyChecker>
+                    Arc::new(
+                        ReadyClient::new(http_advertise.port(), None)
+                            .expect("ready client fallback"),
+                    ) as Arc<dyn ReadyChecker>
                 }
             };
             let metrics_for_integration = metrics.clone();
             let drain_for_integration = drain_control.clone();
-            let store_for_integration =
-                cluster_runtime.as_ref().map(|runtime| runtime.store.clone());
-            let raft_for_integration =
-                cluster_runtime.as_ref().map(|runtime| runtime.raft.clone());
+            let store_for_integration = cluster_runtime
+                .as_ref()
+                .map(|runtime| runtime.store.clone());
+            let raft_for_integration = cluster_runtime.as_ref().map(|runtime| runtime.raft.clone());
             Some(tokio::spawn(async move {
                 match IntegrationManager::new(
                     integration_cfg,
@@ -1665,14 +2503,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let dhcp_task = if dpdk_enabled {
+        let mac_rx = mac_rx.as_ref().expect("mac receiver").clone();
         let dhcp_client = DhcpClient {
             config: DhcpClientConfig {
                 timeout: Duration::from_secs(cfg.dhcp_timeout_secs),
                 retry_max: cfg.dhcp_retry_max,
                 lease_min_secs: cfg.dhcp_lease_min_secs,
                 hostname: None,
+                update_internal_cidr: cfg.internal_cidr.is_none(),
             },
-            mac_rx: mac_rx.expect("mac receiver"),
+            mac_rx,
             rx: dp_to_cp_rx.expect("dhcp rx"),
             tx: cp_to_dp_tx.expect("dhcp tx"),
             dataplane_config: dataplane_config.clone(),
@@ -1689,6 +2529,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    if dpdk_enabled {
+        let dataplane_config = dataplane_config.clone();
+        let mut mac_rx = mac_rx.expect("mac receiver");
+        tokio::spawn(async move {
+            let mac = loop {
+                let current = *mac_rx.borrow();
+                if current != [0u8; 6] {
+                    break current;
+                }
+                if mac_rx.changed().await.is_err() {
+                    eprintln!("dpdk imds fallback: mac channel closed");
+                    return;
+                }
+            };
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if dataplane_config.get().is_some() {
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            if dataplane_config.get().is_some() {
+                return;
+            }
+            match imds_dataplane_config(mac).await {
+                Ok((ip, prefix, gateway)) => {
+                    dataplane_config.set(firewall::dataplane::DataplaneConfig {
+                        ip,
+                        prefix,
+                        gateway,
+                        mac,
+                        lease_expiry: None,
+                    });
+                    eprintln!(
+                        "dpdk imds fallback: set dataplane config ip={}, prefix={}, gateway={}",
+                        ip, prefix, gateway
+                    );
+                }
+                Err(err) => {
+                    eprintln!("dpdk imds fallback failed: {err}");
+                }
+            }
+        });
+    }
+
     readiness.set_dataplane_running(true);
     let dataplane_task = tokio::task::spawn_blocking(move || {
         run_dataplane(
@@ -1696,11 +2584,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             data_plane_mode,
             idle_timeout_secs,
             policy,
+            policy_applied_generation,
             dns_allowlist_for_dp,
             Some(wiretap_emitter),
             internal_net,
             internal_prefix,
             public_ip,
+            cfg.snat_mode,
+            overlay.clone(),
             data_port,
             dataplane_config_for_dp,
             Some(drain_control_for_dp),
@@ -1718,7 +2609,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match res {
                     Ok(Ok(())) => Err(boxed_error("http api exited unexpectedly")),
                     Ok(Err(err)) => Err(boxed_error(err)),
-                    Err(err) => Err(boxed_error(format!("http api task failed: {err}"))),
+                    Err(err) => Err(boxed_error(format!("http api thread failed: {err}"))),
                 }
             }
             res = dns_task => {
@@ -1749,7 +2640,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match res {
                     Ok(Ok(())) => Err(boxed_error("http api exited unexpectedly")),
                     Ok(Err(err)) => Err(boxed_error(err)),
-                    Err(err) => Err(boxed_error(format!("http api task failed: {err}"))),
+                    Err(err) => Err(boxed_error(format!("http api thread failed: {err}"))),
                 }
             }
             res = dns_task => {

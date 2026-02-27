@@ -549,7 +549,11 @@ impl TlsMatch {
             }
 
             if let Some(server_san) = &self.server_san {
-                if !chain.leaf_san.iter().any(|value| server_san.is_match(value)) {
+                if !chain
+                    .leaf_san
+                    .iter()
+                    .any(|value| server_san.is_match(value))
+                {
                     return TlsMatchOutcome::Mismatch;
                 }
             }
@@ -626,7 +630,9 @@ mod tests {
             rules: Vec::new(),
             default_action: None,
         };
-        group_a.sources.add_cidr(CidrV4::new(Ipv4Addr::new(10, 0, 0, 0), 24));
+        group_a
+            .sources
+            .add_cidr(CidrV4::new(Ipv4Addr::new(10, 0, 0, 0), 24));
 
         let mut group_b = SourceGroup {
             id: "b".to_string(),
@@ -635,7 +641,9 @@ mod tests {
             rules: Vec::new(),
             default_action: None,
         };
-        group_b.sources.add_cidr(CidrV4::new(Ipv4Addr::new(192, 168, 1, 0), 24));
+        group_b
+            .sources
+            .add_cidr(CidrV4::new(Ipv4Addr::new(192, 168, 1, 0), 24));
 
         let snapshot = PolicySnapshot::new(DefaultPolicy::Deny, vec![group_a, group_b]);
         assert!(snapshot.is_internal(Ipv4Addr::new(10, 0, 0, 5)));
