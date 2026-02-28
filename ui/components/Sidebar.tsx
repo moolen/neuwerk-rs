@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   Shield,
   Radio,
+  Search,
   Globe,
   Key,
   Settings,
@@ -29,6 +30,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'policies', label: 'Policies', icon: Shield },
     { id: 'wiretap', label: 'Wiretap', icon: Radio },
+    { id: 'audit', label: 'Audit', icon: Search },
     { id: 'dns', label: 'DNS Cache', icon: Globe },
     ...(userRole === 'admin' ? [
       { id: 'service-accounts', label: 'Service Accounts', icon: Key }

@@ -5,13 +5,14 @@ import { ThemeToggle } from './components/ThemeToggle';
 import { Dashboard } from './pages/Dashboard';
 import { PoliciesPage } from './pages/PoliciesPage';
 import { WiretapPage } from './pages/WiretapPage';
+import { AuditPage } from './pages/AuditPage';
 import { DNSCachePage } from './pages/DNSCachePage';
 import { ServiceAccountsPage } from './pages/ServiceAccountsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AuthProvider, useAuth } from './components/auth/AuthProvider';
 import { LoginPage } from './components/auth/LoginPage';
 
-const validPages = ['dashboard', 'policies', 'wiretap', 'dns', 'service-accounts', 'settings'];
+const validPages = ['dashboard', 'policies', 'wiretap', 'audit', 'dns', 'service-accounts', 'settings'];
 
 function getPageFromPath(): string {
   const path = window.location.pathname.replace(/^\//, '').replace(/\/$/, '');
@@ -58,6 +59,8 @@ function AuthenticatedApp() {
         return <PoliciesPage />;
       case 'wiretap':
         return <WiretapPage />;
+      case 'audit':
+        return <AuditPage />;
       case 'dns':
         return <DNSCachePage />;
       case 'service-accounts':

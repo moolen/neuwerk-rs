@@ -75,6 +75,14 @@ pub struct Metrics {
     dns_upstream_rtt: HistogramVec,
     dns_nxdomain: CounterVec,
     dns_upstream_mismatch: CounterVec,
+    svc_dns_queries: CounterVec,
+    svc_dns_upstream_rtt: HistogramVec,
+    svc_dns_nxdomain: CounterVec,
+    svc_tls_intercept_flows: CounterVec,
+    svc_http_requests: CounterVec,
+    svc_http_denies: CounterVec,
+    svc_policy_rst: CounterVec,
+    svc_fail_closed: CounterVec,
     raft_is_leader: Gauge,
     raft_leader_changes: Counter,
     raft_current_term: Gauge,
@@ -184,6 +192,58 @@ impl Metrics {
                 "DNS upstream response validation mismatches",
             ),
             &["reason", "source_group"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_dns_queries = CounterVec::new(
+            Opts::new("svc_dns_queries_total", "Service-plane DNS queries"),
+            &["result", "reason", "source_group"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_dns_upstream_rtt = HistogramVec::new(
+            HistogramOpts::new(
+                "svc_dns_upstream_rtt_seconds",
+                "Service-plane DNS upstream round trip time seconds",
+            ),
+            &["source_group"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_dns_nxdomain = CounterVec::new(
+            Opts::new(
+                "svc_dns_nxdomain_total",
+                "Service-plane DNS NXDOMAIN responses",
+            ),
+            &["source"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_flows = CounterVec::new(
+            Opts::new(
+                "svc_tls_intercept_flows_total",
+                "Service-plane TLS intercept flow outcomes",
+            ),
+            &["result"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_http_requests = CounterVec::new(
+            Opts::new(
+                "svc_http_requests_total",
+                "Service-plane HTTP request decisions",
+            ),
+            &["proto", "decision"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_http_denies = CounterVec::new(
+            Opts::new("svc_http_denies_total", "Service-plane HTTP deny decisions"),
+            &["proto", "phase", "reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_policy_rst = CounterVec::new(
+            Opts::new("svc_policy_rst_total", "Service-plane policy RSTs"),
+            &["reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_fail_closed = CounterVec::new(
+            Opts::new("svc_fail_closed_total", "Service-plane fail-closed events"),
+            &["component"],
         )
         .map_err(|err| err.to_string())?;
         let raft_is_leader = Gauge::with_opts(Opts::new("raft_is_leader", "Raft leader status"))
@@ -491,6 +551,30 @@ impl Metrics {
             .register(Box::new(dns_upstream_mismatch.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(svc_dns_queries.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_dns_upstream_rtt.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_dns_nxdomain.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_tls_intercept_flows.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_http_requests.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_http_denies.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_policy_rst.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_fail_closed.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(raft_is_leader.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -689,6 +773,30 @@ impl Metrics {
         dns_upstream_mismatch
             .with_label_values(&["txid", "default"])
             .inc_by(0.0);
+        svc_dns_queries
+            .with_label_values(&["allow", "policy_allow", "default"])
+            .inc_by(0.0);
+        svc_dns_queries
+            .with_label_values(&["deny", "policy_deny", "default"])
+            .inc_by(0.0);
+        svc_dns_nxdomain.with_label_values(&["policy"]).inc_by(0.0);
+        svc_tls_intercept_flows
+            .with_label_values(&["allow"])
+            .inc_by(0.0);
+        svc_tls_intercept_flows
+            .with_label_values(&["deny"])
+            .inc_by(0.0);
+        svc_http_requests
+            .with_label_values(&["http1", "allow"])
+            .inc_by(0.0);
+        svc_http_requests
+            .with_label_values(&["h2", "deny"])
+            .inc_by(0.0);
+        svc_http_denies
+            .with_label_values(&["http1", "request", "policy"])
+            .inc_by(0.0);
+        svc_policy_rst.with_label_values(&["policy"]).inc_by(0.0);
+        svc_fail_closed.with_label_values(&["tls"]).inc_by(0.0);
         dp_packets
             .with_label_values(&["outbound", "other", "deny", "default"])
             .inc_by(0.0);
@@ -784,6 +892,14 @@ impl Metrics {
             dns_upstream_rtt,
             dns_nxdomain,
             dns_upstream_mismatch,
+            svc_dns_queries,
+            svc_dns_upstream_rtt,
+            svc_dns_nxdomain,
+            svc_tls_intercept_flows,
+            svc_http_requests,
+            svc_http_denies,
+            svc_policy_rst,
+            svc_fail_closed,
             raft_is_leader,
             raft_leader_changes,
             raft_current_term,
@@ -867,22 +983,55 @@ impl Metrics {
         self.dns_queries
             .with_label_values(&[result, reason, source_group])
             .inc();
+        self.svc_dns_queries
+            .with_label_values(&[result, reason, source_group])
+            .inc();
     }
 
     pub fn observe_dns_upstream_rtt(&self, source_group: &str, duration: Duration) {
         self.dns_upstream_rtt
             .with_label_values(&[source_group])
             .observe(duration.as_secs_f64());
+        self.svc_dns_upstream_rtt
+            .with_label_values(&[source_group])
+            .observe(duration.as_secs_f64());
     }
 
     pub fn observe_dns_nxdomain(&self, source: &str) {
         self.dns_nxdomain.with_label_values(&[source]).inc();
+        self.svc_dns_nxdomain.with_label_values(&[source]).inc();
     }
 
     pub fn observe_dns_upstream_mismatch(&self, reason: &str, source_group: &str) {
         self.dns_upstream_mismatch
             .with_label_values(&[reason, source_group])
             .inc();
+    }
+
+    pub fn inc_svc_tls_intercept_flow(&self, result: &str) {
+        self.svc_tls_intercept_flows
+            .with_label_values(&[result])
+            .inc();
+    }
+
+    pub fn inc_svc_http_request(&self, proto: &str, decision: &str) {
+        self.svc_http_requests
+            .with_label_values(&[proto, decision])
+            .inc();
+    }
+
+    pub fn inc_svc_http_deny(&self, proto: &str, phase: &str, reason: &str) {
+        self.svc_http_denies
+            .with_label_values(&[proto, phase, reason])
+            .inc();
+    }
+
+    pub fn inc_svc_policy_rst(&self, reason: &str) {
+        self.svc_policy_rst.with_label_values(&[reason]).inc();
+    }
+
+    pub fn inc_svc_fail_closed(&self, component: &str) {
+        self.svc_fail_closed.with_label_values(&[component]).inc();
     }
 
     pub fn set_raft_is_leader(&self, is_leader: bool) {

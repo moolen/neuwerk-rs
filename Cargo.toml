@@ -13,6 +13,7 @@ futures = "0.3"
 rcgen = { version = "0.12", features = ["pem", "x509-parser"] }
 tokio-rustls = "0.26"
 rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
 netlink-packet-route = "0.19"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
@@ -42,6 +43,8 @@ prometheus = "0.13"
 x509-parser = { version = "0.15", features = ["verify"] }
 rustls-native-certs = "0.7"
 tokio-stream = { version = "0.1", features = ["sync"] }
+h2 = "0.4"
+bytes = "1"
 dpdk-sys = { version = "0.1.5", optional = true }
 include_dir = "0.7"
 mime_guess = "2"
@@ -61,8 +64,6 @@ default = []
 dpdk = ["dpdk-sys"]
 
 [patch.crates-io]
-libnuma-sys = { path = "third_party/libnuma-sys" }
-rdma-core-sys = { path = "third_party/rdma-core-sys" }
 dpdk-sys = { path = "third_party/dpdk-sys" }
 
 [[bench]]

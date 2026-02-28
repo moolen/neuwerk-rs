@@ -1,11 +1,12 @@
 use std::net::Ipv4Addr;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 
 use firewall::controlplane::metrics::Metrics;
 use firewall::dataplane::config::DataplaneConfig;
 use firewall::dataplane::policy::{
     CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4, PolicySnapshot, PortRange, Proto, Rule,
-    RuleAction, RuleMatch, SourceGroup, Tls13Uninspectable, TlsMatch, TlsNameMatch,
+    RuleAction, RuleMatch, SourceGroup, Tls13Uninspectable, TlsMatch, TlsMode, TlsNameMatch,
 };
 use firewall::dataplane::{
     handle_packet, Action, EngineState, FlowKey, FlowTable, NatTable, Packet, WiretapEmitter,
@@ -282,6 +283,7 @@ fn policy_with_allowlist(
             tls: None,
         },
         action: RuleAction::Allow,
+        mode: firewall::dataplane::policy::RuleMode::Enforce,
     };
 
     let group = SourceGroup {
@@ -296,6 +298,53 @@ fn policy_with_allowlist(
         default_policy,
         vec![group],
     )))
+}
+
+fn policy_with_tls_intercept(
+    internal_net: Ipv4Addr,
+    internal_prefix: u8,
+    generation: u64,
+) -> PolicySnapshot {
+    let mut sources = IpSetV4::new();
+    sources.add_cidr(CidrV4::new(internal_net, internal_prefix));
+
+    let rule = Rule {
+        id: "tls-intercept".to_string(),
+        priority: 0,
+        matcher: RuleMatch {
+            dst_ips: None,
+            proto: Proto::Tcp,
+            src_ports: Vec::new(),
+            dst_ports: vec![PortRange {
+                start: 443,
+                end: 443,
+            }],
+            icmp_types: Vec::new(),
+            icmp_codes: Vec::new(),
+            tls: Some(TlsMatch {
+                mode: TlsMode::Intercept,
+                sni: None,
+                server_san: None,
+                server_cn: None,
+                fingerprints_sha256: Vec::new(),
+                trust_anchors: Vec::new(),
+                tls13_uninspectable: Tls13Uninspectable::Deny,
+                intercept_http: None,
+            }),
+        },
+        action: RuleAction::Allow,
+        mode: firewall::dataplane::policy::RuleMode::Enforce,
+    };
+
+    let group = SourceGroup {
+        id: "internal".to_string(),
+        priority: 0,
+        sources,
+        rules: vec![rule],
+        default_action: None,
+    };
+
+    PolicySnapshot::new_with_generation(DefaultPolicy::Deny, vec![group], generation)
 }
 
 fn checksum_sum(data: &[u8]) -> u32 {
@@ -397,6 +446,7 @@ fn dataplane_metrics_track_allow_and_deny() {
             tls: None,
         },
         action: RuleAction::Allow,
+        mode: firewall::dataplane::policy::RuleMode::Enforce,
     };
     let group = SourceGroup {
         id: "internal".to_string(),
@@ -561,6 +611,94 @@ fn test_ipv4_fragment_drops_with_metric() {
     let rendered = metrics.render().unwrap();
     let value = metric_value(&rendered, "dp_ipv4_fragments_dropped_total").unwrap_or(0.0);
     assert!(value >= 1.0, "metrics:\n{rendered}");
+}
+
+#[test]
+fn dns_target_udp_short_circuits_policy_and_round_trips() {
+    let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+        DefaultPolicy::Deny,
+        Vec::new(),
+    )));
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::new(203, 0, 113, 1),
+        0,
+    );
+    set_dataplane_ip(&mut state, Ipv4Addr::new(10, 0, 0, 1));
+    let dns_target = Ipv4Addr::new(198, 51, 100, 53);
+    state.set_dns_target_ips(vec![dns_target]);
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+    let mut outbound = build_ipv4_udp(client_ip, dns_target, 40000, 53, b"dns-udp");
+    let action = handle_packet(&mut outbound, &mut state);
+    assert_eq!(action, Action::Forward { out_port: 0 });
+    assert_eq!(outbound.src_ip(), Some(Ipv4Addr::new(10, 0, 0, 1)));
+    let external_port = outbound.ports().map(|(src, _)| src).unwrap_or(0);
+    assert_ne!(external_port, 40000);
+
+    let mut inbound = build_ipv4_udp(
+        dns_target,
+        Ipv4Addr::new(10, 0, 0, 1),
+        53,
+        external_port,
+        b"ok",
+    );
+    let action = handle_packet(&mut inbound, &mut state);
+    assert_eq!(action, Action::Forward { out_port: 0 });
+    assert_eq!(inbound.dst_ip(), Some(client_ip));
+    assert_eq!(inbound.ports().map(|(_, dst)| dst), Some(40000));
+}
+
+#[test]
+fn dns_target_tcp_short_circuits_policy() {
+    let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+        DefaultPolicy::Deny,
+        Vec::new(),
+    )));
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::new(203, 0, 113, 1),
+        0,
+    );
+    set_dataplane_ip(&mut state, Ipv4Addr::new(10, 0, 0, 1));
+    let dns_target = Ipv4Addr::new(198, 51, 100, 53);
+    state.set_dns_target_ips(vec![dns_target]);
+
+    let mut outbound = build_ipv4_tcp(Ipv4Addr::new(10, 0, 0, 42), dns_target, 40001, 53, b"");
+    let action = handle_packet(&mut outbound, &mut state);
+    assert_eq!(action, Action::Forward { out_port: 0 });
+    assert_eq!(outbound.src_ip(), Some(Ipv4Addr::new(10, 0, 0, 1)));
+}
+
+#[test]
+fn dns_non_target_still_uses_policy_path() {
+    let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+        DefaultPolicy::Deny,
+        Vec::new(),
+    )));
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::new(203, 0, 113, 1),
+        0,
+    );
+    set_dataplane_ip(&mut state, Ipv4Addr::new(10, 0, 0, 1));
+    state.set_dns_target_ips(vec![Ipv4Addr::new(198, 51, 100, 53)]);
+
+    let mut outbound = build_ipv4_udp(
+        Ipv4Addr::new(10, 0, 0, 42),
+        Ipv4Addr::new(198, 51, 100, 54),
+        40002,
+        53,
+        b"dns-udp",
+    );
+    let action = handle_packet(&mut outbound, &mut state);
+    assert_eq!(action, Action::Drop);
 }
 
 #[test]
@@ -1147,6 +1285,7 @@ fn test_tls_sni_allows_flow() {
     sources.add_cidr(CidrV4::new(Ipv4Addr::new(10, 0, 0, 0), 24));
 
     let tls = TlsMatch {
+        mode: TlsMode::Metadata,
         sni: Some(TlsNameMatch {
             exact: vec!["api.example.com".to_string()],
             regex: None,
@@ -1156,6 +1295,7 @@ fn test_tls_sni_allows_flow() {
         fingerprints_sha256: Vec::new(),
         trust_anchors: Vec::new(),
         tls13_uninspectable: Tls13Uninspectable::Deny,
+        intercept_http: None,
     };
 
     let rule = Rule {
@@ -1174,6 +1314,7 @@ fn test_tls_sni_allows_flow() {
             tls: Some(tls),
         },
         action: RuleAction::Allow,
+        mode: firewall::dataplane::policy::RuleMode::Enforce,
     };
 
     let group = SourceGroup {
@@ -1216,6 +1357,7 @@ fn test_tls_application_data_before_handshake_denies() {
     sources.add_cidr(CidrV4::new(Ipv4Addr::new(10, 0, 0, 0), 24));
 
     let tls = TlsMatch {
+        mode: TlsMode::Metadata,
         sni: Some(TlsNameMatch {
             exact: vec!["api.example.com".to_string()],
             regex: None,
@@ -1225,6 +1367,7 @@ fn test_tls_application_data_before_handshake_denies() {
         fingerprints_sha256: Vec::new(),
         trust_anchors: Vec::new(),
         tls13_uninspectable: Tls13Uninspectable::Deny,
+        intercept_http: None,
     };
 
     let rule = Rule {
@@ -1243,6 +1386,7 @@ fn test_tls_application_data_before_handshake_denies() {
             tls: Some(tls),
         },
         action: RuleAction::Allow,
+        mode: firewall::dataplane::policy::RuleMode::Enforce,
     };
 
     let group = SourceGroup {
@@ -1277,4 +1421,185 @@ fn test_tls_application_data_before_handshake_denies() {
 
     let action = handle_packet(&mut pkt, &mut state);
     assert_eq!(action, Action::Drop);
+}
+
+#[test]
+fn test_tls_intercept_fail_closed_sends_rst() {
+    let policy = Arc::new(RwLock::new(policy_with_tls_intercept(
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        1,
+    )));
+
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::new(203, 0, 113, 1),
+        0,
+    );
+    state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(0)));
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let server_ip = Ipv4Addr::new(93, 184, 216, 34);
+    let mut pkt = build_ipv4_tcp(client_ip, server_ip, 40000, 443, &[]);
+    {
+        let buf = pkt.buffer_mut();
+        let l4_off = 20;
+        buf[l4_off + 4..l4_off + 8].copy_from_slice(&100u32.to_be_bytes());
+        buf[l4_off + 8..l4_off + 12].copy_from_slice(&77u32.to_be_bytes());
+        buf[l4_off + 13] = 0x10; // ACK
+    }
+    assert!(pkt.recalc_checksums());
+
+    let action = handle_packet(&mut pkt, &mut state);
+    assert_eq!(action, Action::Forward { out_port: 0 });
+    assert_eq!(pkt.src_ip(), Some(server_ip));
+    assert_eq!(pkt.dst_ip(), Some(client_ip));
+    assert_eq!(pkt.ports(), Some((443, 40000)));
+    assert_eq!(pkt.tcp_flags(), Some(0x14)); // RST + ACK
+    assert_eq!(pkt.tcp_seq(), Some(77));
+    assert_eq!(pkt.tcp_ack(), Some(100));
+
+    let flow = FlowKey {
+        src_ip: client_ip,
+        dst_ip: server_ip,
+        src_port: 40000,
+        dst_port: 443,
+        proto: 6,
+    };
+    assert!(!state.flows.contains(&flow));
+}
+
+#[test]
+fn test_tls_intercept_allows_when_service_plane_ready() {
+    let policy = Arc::new(RwLock::new(policy_with_tls_intercept(
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        1,
+    )));
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::new(203, 0, 113, 1),
+        0,
+    );
+    state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let server_ip = Ipv4Addr::new(93, 184, 216, 34);
+    let mut pkt = build_ipv4_tcp(client_ip, server_ip, 40000, 443, &[]);
+    let action = handle_packet(&mut pkt, &mut state);
+    assert_eq!(action, Action::Forward { out_port: 0 });
+    assert_eq!(pkt.src_ip(), Some(Ipv4Addr::new(203, 0, 113, 1)));
+    assert_eq!(pkt.dst_ip(), Some(server_ip));
+    assert_eq!(pkt.tcp_flags().unwrap() & 0x04, 0);
+
+    let flow = FlowKey {
+        src_ip: client_ip,
+        dst_ip: server_ip,
+        src_port: 40000,
+        dst_port: 443,
+        proto: 6,
+    };
+    assert!(state.flows.contains(&flow));
+}
+
+#[test]
+fn test_tls_intercept_steers_to_host_when_enabled() {
+    let policy = Arc::new(RwLock::new(policy_with_tls_intercept(
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        1,
+    )));
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::new(203, 0, 113, 1),
+        0,
+    );
+    state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+    state.set_intercept_to_host_steering(true);
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let server_ip = Ipv4Addr::new(93, 184, 216, 34);
+    let original_sport = 40000u16;
+    let mut pkt = build_ipv4_tcp(client_ip, server_ip, original_sport, 443, &[]);
+    let action = handle_packet(&mut pkt, &mut state);
+    assert_eq!(action, Action::ToHost);
+    assert_eq!(pkt.src_ip(), Some(client_ip));
+    assert_eq!(pkt.dst_ip(), Some(server_ip));
+    assert_eq!(pkt.ports(), Some((original_sport, 443)));
+
+    let flow = FlowKey {
+        src_ip: client_ip,
+        dst_ip: server_ip,
+        src_port: original_sport,
+        dst_port: 443,
+        proto: 6,
+    };
+    assert!(state.flows.contains(&flow));
+}
+
+#[test]
+fn test_tls_intercept_fail_closed_sends_rst_on_generation_recheck() {
+    let allowlist = DynamicIpSetV4::new();
+    let server_ip = Ipv4Addr::new(93, 184, 216, 34);
+    allowlist.insert(server_ip);
+    let policy = policy_with_allowlist(
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        DefaultPolicy::Deny,
+        allowlist,
+    );
+    let mut state = EngineState::new(
+        policy.clone(),
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::new(203, 0, 113, 1),
+        0,
+    );
+    let service_applied_generation = Arc::new(AtomicU64::new(0));
+    state.set_service_policy_applied_generation(service_applied_generation.clone());
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let flow = FlowKey {
+        src_ip: client_ip,
+        dst_ip: server_ip,
+        src_port: 40000,
+        dst_port: 443,
+        proto: 6,
+    };
+
+    let mut first = build_ipv4_tcp(client_ip, server_ip, 40000, 443, &[]);
+    let first_action = handle_packet(&mut first, &mut state);
+    assert_eq!(first_action, Action::Forward { out_port: 0 });
+    assert!(state.flows.contains(&flow));
+
+    if let Ok(mut lock) = policy.write() {
+        *lock = policy_with_tls_intercept(Ipv4Addr::new(10, 0, 0, 0), 24, 1);
+    } else {
+        panic!("policy lock poisoned");
+    }
+
+    let mut second = build_ipv4_tcp(client_ip, server_ip, 40000, 443, &[]);
+    {
+        let buf = second.buffer_mut();
+        let l4_off = 20;
+        buf[l4_off + 4..l4_off + 8].copy_from_slice(&300u32.to_be_bytes());
+        buf[l4_off + 8..l4_off + 12].copy_from_slice(&90u32.to_be_bytes());
+        buf[l4_off + 13] = 0x10; // ACK
+    }
+    assert!(second.recalc_checksums());
+
+    let second_action = handle_packet(&mut second, &mut state);
+    assert_eq!(second_action, Action::Forward { out_port: 0 });
+    assert_eq!(second.src_ip(), Some(server_ip));
+    assert_eq!(second.dst_ip(), Some(client_ip));
+    assert_eq!(second.ports(), Some((443, 40000)));
+    assert_eq!(second.tcp_flags(), Some(0x14)); // RST + ACK
+    assert_eq!(second.tcp_seq(), Some(90));
+    assert_eq!(second.tcp_ack(), Some(300));
+    assert!(!state.flows.contains(&flow));
 }

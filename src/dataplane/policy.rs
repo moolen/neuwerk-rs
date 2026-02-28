@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,6 +17,12 @@ pub enum DefaultPolicy {
 pub enum RuleAction {
     Allow,
     Deny,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleMode {
+    Audit,
+    Enforce,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,16 +254,80 @@ impl IpSetV4 {
         }
         self.cidrs.iter().any(|cidr| cidr.contains(ip))
     }
+
+    pub fn cidrs(&self) -> &[CidrV4] {
+        &self.cidrs
+    }
+
+    pub fn has_dynamic(&self) -> bool {
+        self.dynamic.is_some()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct TlsMatch {
+    pub mode: TlsMode,
     pub sni: Option<TlsNameMatch>,
     pub server_san: Option<TlsNameMatch>,
     pub server_cn: Option<TlsNameMatch>,
     pub fingerprints_sha256: Vec<[u8; 32]>,
     pub trust_anchors: Vec<Vec<u8>>,
     pub tls13_uninspectable: Tls13Uninspectable,
+    pub intercept_http: Option<TlsInterceptHttpPolicy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsMode {
+    Metadata,
+    Intercept,
+}
+
+#[derive(Debug, Clone)]
+pub struct TlsInterceptHttpPolicy {
+    pub request: Option<HttpRequestPolicy>,
+    pub response: Option<HttpResponsePolicy>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpRequestPolicy {
+    pub host: Option<HttpStringMatcher>,
+    pub methods: Vec<String>,
+    pub path: Option<HttpPathMatcher>,
+    pub query: Option<HttpQueryMatcher>,
+    pub headers: Option<HttpHeadersMatcher>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpResponsePolicy {
+    pub headers: Option<HttpHeadersMatcher>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpStringMatcher {
+    pub exact: Vec<String>,
+    pub regex: Option<Regex>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpPathMatcher {
+    pub exact: Vec<String>,
+    pub prefix: Vec<String>,
+    pub regex: Option<Regex>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpQueryMatcher {
+    pub keys_present: Vec<String>,
+    pub key_values_exact: BTreeMap<String, Vec<String>>,
+    pub key_values_regex: BTreeMap<String, Regex>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpHeadersMatcher {
+    pub require_present: Vec<String>,
+    pub deny_present: Vec<String>,
+    pub exact: BTreeMap<String, Vec<String>>,
+    pub regex: BTreeMap<String, Regex>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,6 +389,7 @@ pub struct Rule {
     pub priority: u32,
     pub matcher: RuleMatch,
     pub action: RuleAction,
+    pub mode: RuleMode,
 }
 
 #[derive(Debug, Clone)]
@@ -335,6 +406,13 @@ pub struct PolicySnapshot {
     pub default_policy: DefaultPolicy,
     pub groups: Vec<SourceGroup>,
     pub generation: u64,
+    pub enforcement_mode: EnforcementMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnforcementMode {
+    Audit,
+    Enforce,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -366,11 +444,24 @@ impl PolicySnapshot {
             default_policy,
             groups,
             generation,
+            enforcement_mode: EnforcementMode::Enforce,
         }
     }
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub fn enforcement_mode(&self) -> EnforcementMode {
+        self.enforcement_mode
+    }
+
+    pub fn set_enforcement_mode(&mut self, mode: EnforcementMode) {
+        self.enforcement_mode = mode;
+    }
+
+    pub fn audit_passthrough_enabled(&self) -> bool {
+        self.enforcement_mode == EnforcementMode::Audit
     }
 
     pub fn evaluate(
@@ -388,12 +479,72 @@ impl PolicySnapshot {
         tls: Option<&TlsObservation>,
         verifier: Option<&TlsVerifier>,
     ) -> (PolicyDecision, Option<String>) {
+        let (decision, group, _) = self.evaluate_with_source_group_detailed(meta, tls, verifier);
+        (decision, group)
+    }
+
+    pub fn evaluate_with_source_group_detailed(
+        &self,
+        meta: &PacketMeta,
+        tls: Option<&TlsObservation>,
+        verifier: Option<&TlsVerifier>,
+    ) -> (PolicyDecision, Option<String>, bool) {
+        let (decision, group, intercept_requires_service) =
+            self.evaluate_with_source_group_detailed_raw(meta, tls, verifier);
+        (
+            self.apply_enforcement_mode(decision),
+            group,
+            intercept_requires_service,
+        )
+    }
+
+    pub fn evaluate_with_source_group_detailed_raw(
+        &self,
+        meta: &PacketMeta,
+        tls: Option<&TlsObservation>,
+        verifier: Option<&TlsVerifier>,
+    ) -> (PolicyDecision, Option<String>, bool) {
+        self.evaluate_with_source_group_detailed_for_mode(
+            meta,
+            tls,
+            verifier,
+            RuleMode::Enforce,
+            true,
+        )
+    }
+
+    pub fn evaluate_audit_rules_with_source_group(
+        &self,
+        meta: &PacketMeta,
+        tls: Option<&TlsObservation>,
+        verifier: Option<&TlsVerifier>,
+    ) -> (PolicyDecision, Option<String>, bool) {
+        self.evaluate_with_source_group_detailed_for_mode(
+            meta,
+            tls,
+            verifier,
+            RuleMode::Audit,
+            false,
+        )
+    }
+
+    fn evaluate_with_source_group_detailed_for_mode(
+        &self,
+        meta: &PacketMeta,
+        tls: Option<&TlsObservation>,
+        verifier: Option<&TlsVerifier>,
+        selected_mode: RuleMode,
+        include_defaults: bool,
+    ) -> (PolicyDecision, Option<String>, bool) {
         for group in &self.groups {
             if !group.sources.contains(meta.src_ip) {
                 continue;
             }
 
             for rule in &group.rules {
+                if rule.mode != selected_mode {
+                    continue;
+                }
                 if !rule_matches_basic(&rule.matcher, meta) {
                     continue;
                 }
@@ -401,11 +552,21 @@ impl PolicySnapshot {
                     if meta.proto != 6 {
                         continue;
                     }
+                    if matches!(tls_match.mode, TlsMode::Intercept) {
+                        return (
+                            match rule.action {
+                                RuleAction::Allow => PolicyDecision::Allow,
+                                RuleAction::Deny => PolicyDecision::Deny,
+                            },
+                            Some(group.id.clone()),
+                            true,
+                        );
+                    }
                     let Some(obs) = tls else {
-                        return (PolicyDecision::PendingTls, Some(group.id.clone()));
+                        return (PolicyDecision::PendingTls, Some(group.id.clone()), false);
                     };
                     let Some(verifier) = verifier else {
-                        return (PolicyDecision::Deny, Some(group.id.clone()));
+                        return (PolicyDecision::Deny, Some(group.id.clone()), false);
                     };
                     match tls_match.evaluate(obs, verifier) {
                         TlsMatchOutcome::Match => {
@@ -415,14 +576,15 @@ impl PolicySnapshot {
                                     RuleAction::Deny => PolicyDecision::Deny,
                                 },
                                 Some(group.id.clone()),
+                                false,
                             );
                         }
                         TlsMatchOutcome::Mismatch => continue,
                         TlsMatchOutcome::Pending => {
-                            return (PolicyDecision::PendingTls, Some(group.id.clone()))
+                            return (PolicyDecision::PendingTls, Some(group.id.clone()), false)
                         }
                         TlsMatchOutcome::Deny => {
-                            return (PolicyDecision::Deny, Some(group.id.clone()))
+                            return (PolicyDecision::Deny, Some(group.id.clone()), false)
                         }
                     }
                 } else {
@@ -432,28 +594,44 @@ impl PolicySnapshot {
                             RuleAction::Deny => PolicyDecision::Deny,
                         },
                         Some(group.id.clone()),
+                        false,
                     );
                 }
             }
 
-            if let Some(action) = group.default_action {
-                return (
-                    match action {
-                        RuleAction::Allow => PolicyDecision::Allow,
-                        RuleAction::Deny => PolicyDecision::Deny,
-                    },
-                    Some(group.id.clone()),
-                );
+            if include_defaults && selected_mode == RuleMode::Enforce {
+                if let Some(action) = group.default_action {
+                    return (
+                        match action {
+                            RuleAction::Allow => PolicyDecision::Allow,
+                            RuleAction::Deny => PolicyDecision::Deny,
+                        },
+                        Some(group.id.clone()),
+                        false,
+                    );
+                }
             }
         }
 
-        (
-            match self.default_policy {
-                DefaultPolicy::Allow => PolicyDecision::Allow,
-                DefaultPolicy::Deny => PolicyDecision::Deny,
-            },
-            None,
-        )
+        if include_defaults && selected_mode == RuleMode::Enforce {
+            return (
+                match self.default_policy {
+                    DefaultPolicy::Allow => PolicyDecision::Allow,
+                    DefaultPolicy::Deny => PolicyDecision::Deny,
+                },
+                None,
+                false,
+            );
+        }
+
+        (PolicyDecision::Allow, None, false)
+    }
+
+    fn apply_enforcement_mode(&self, decision: PolicyDecision) -> PolicyDecision {
+        if self.enforcement_mode == EnforcementMode::Audit && decision == PolicyDecision::Deny {
+            return PolicyDecision::Allow;
+        }
+        decision
     }
 
     pub fn is_internal(&self, ip: Ipv4Addr) -> bool {
@@ -517,6 +695,11 @@ enum TlsMatchOutcome {
 
 impl TlsMatch {
     fn evaluate(&self, obs: &TlsObservation, verifier: &TlsVerifier) -> TlsMatchOutcome {
+        if matches!(self.mode, TlsMode::Intercept) {
+            // Intercept mode is handled in policy evaluation before metadata checks.
+            return TlsMatchOutcome::Match;
+        }
+
         if let Some(sni) = &self.sni {
             if !obs.client_hello_seen {
                 return TlsMatchOutcome::Pending;

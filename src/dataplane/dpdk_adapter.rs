@@ -1,5 +1,8 @@
 use std::collections::{HashMap, VecDeque};
+use std::fs::File;
+use std::io::{Read, Write};
 use std::net::Ipv4Addr;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -17,6 +20,13 @@ const ETH_TYPE_ARP: u16 = 0x0806;
 const HEALTH_PROBE_PORT: u16 = 8080;
 const ARP_CACHE_TTL_SECS: u64 = 120;
 const ARP_REQUEST_COOLDOWN_MS: u64 = 500;
+const INTERCEPT_DEMUX_IDLE_SECS: u64 = 300;
+const SERVICE_LANE_TAP_RETRY_MS: u64 = 1_000;
+const INTERCEPT_SERVICE_IP_DEFAULT: Ipv4Addr = Ipv4Addr::new(169, 254, 255, 1);
+const INTERCEPT_SERVICE_PORT_DEFAULT: u16 = 15443;
+const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
+const IFF_TAP: libc::c_short = 0x0002;
+const IFF_NO_PI: libc::c_short = 0x1000;
 static HEALTH_PROBE_LOGGED: AtomicBool = AtomicBool::new(false);
 static OVERLAY_PARSE_LOGS: AtomicUsize = AtomicUsize::new(0);
 static OVERLAY_SAMPLE_LOGS: AtomicUsize = AtomicUsize::new(0);
@@ -59,18 +69,22 @@ fn azure_gateway_mac() -> Option<[u8; 6]> {
         Ok(value) => value,
         Err(_) => return None,
     };
-    let mut bytes = [0u8; 6];
-    let parts: Vec<&str> = mac.split(':').collect();
-    if parts.len() != 6 {
-        return None;
-    }
-    for (idx, part) in parts.iter().enumerate() {
-        if part.len() != 2 {
-            return None;
-        }
-        bytes[idx] = u8::from_str_radix(part, 16).ok()?;
-    }
-    Some(bytes)
+    parse_mac_addr(&mac).ok()
+}
+
+fn intercept_service_ip() -> Ipv4Addr {
+    std::env::var("NEUWERK_DPDK_INTERCEPT_SERVICE_IP")
+        .ok()
+        .and_then(|raw| raw.parse::<Ipv4Addr>().ok())
+        .unwrap_or(INTERCEPT_SERVICE_IP_DEFAULT)
+}
+
+fn intercept_service_port() -> u16 {
+    std::env::var("NEUWERK_DPDK_INTERCEPT_SERVICE_PORT")
+        .ok()
+        .and_then(|raw| raw.parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .unwrap_or(INTERCEPT_SERVICE_PORT_DEFAULT)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +105,74 @@ pub struct SharedArpState {
     last_request: HashMap<Ipv4Addr, Instant>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct InterceptDemuxKey {
+    client_ip: Ipv4Addr,
+    client_port: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InterceptDemuxEntry {
+    upstream_ip: Ipv4Addr,
+    upstream_port: u16,
+    last_seen: Instant,
+}
+
+#[derive(Debug, Default)]
+pub struct SharedInterceptDemuxState {
+    map: HashMap<InterceptDemuxKey, InterceptDemuxEntry>,
+}
+
+impl SharedInterceptDemuxState {
+    fn gc(&mut self) {
+        let now = Instant::now();
+        self.map.retain(|_, entry| {
+            now.duration_since(entry.last_seen) <= Duration::from_secs(INTERCEPT_DEMUX_IDLE_SECS)
+        });
+    }
+
+    pub fn upsert(
+        &mut self,
+        client_ip: Ipv4Addr,
+        client_port: u16,
+        upstream_ip: Ipv4Addr,
+        upstream_port: u16,
+    ) {
+        self.gc();
+        self.map.insert(
+            InterceptDemuxKey {
+                client_ip,
+                client_port,
+            },
+            InterceptDemuxEntry {
+                upstream_ip,
+                upstream_port,
+                last_seen: Instant::now(),
+            },
+        );
+    }
+
+    pub fn remove(&mut self, client_ip: Ipv4Addr, client_port: u16) {
+        self.map.remove(&InterceptDemuxKey {
+            client_ip,
+            client_port,
+        });
+    }
+
+    pub fn lookup(&mut self, client_ip: Ipv4Addr, client_port: u16) -> Option<(Ipv4Addr, u16)> {
+        self.gc();
+        let key = InterceptDemuxKey {
+            client_ip,
+            client_port,
+        };
+        if let Some(entry) = self.map.get_mut(&key) {
+            entry.last_seen = Instant::now();
+            return Some((entry.upstream_ip, entry.upstream_port));
+        }
+        None
+    }
+}
+
 #[derive(Debug)]
 pub struct DpdkAdapter {
     data_iface: String,
@@ -100,9 +182,15 @@ pub struct DpdkAdapter {
     dhcp_server_hint: Option<DhcpServerHint>,
     mac_publisher: Option<watch::Sender<[u8; 6]>>,
     shared_arp: Option<Arc<Mutex<SharedArpState>>>,
+    shared_intercept_demux: Option<Arc<Mutex<SharedInterceptDemuxState>>>,
+    intercept_demux: HashMap<InterceptDemuxKey, InterceptDemuxEntry>,
     arp_cache: HashMap<Ipv4Addr, ArpEntry>,
     arp_last_request: HashMap<Ipv4Addr, Instant>,
     pending_frames: VecDeque<Vec<u8>>,
+    pending_host_frames: VecDeque<Vec<u8>>,
+    service_lane_tap: Option<File>,
+    service_lane_mac: Option<[u8; 6]>,
+    service_lane_tap_last_attempt: Option<Instant>,
 }
 
 pub enum FrameOut<'a> {
@@ -123,9 +211,15 @@ impl DpdkAdapter {
             dhcp_server_hint: None,
             mac_publisher: None,
             shared_arp: None,
+            shared_intercept_demux: None,
+            intercept_demux: HashMap::new(),
             arp_cache: HashMap::new(),
             arp_last_request: HashMap::new(),
             pending_frames: VecDeque::new(),
+            pending_host_frames: VecDeque::new(),
+            service_lane_tap: None,
+            service_lane_mac: None,
+            service_lane_tap_last_attempt: None,
         })
     }
 
@@ -144,6 +238,10 @@ impl DpdkAdapter {
         self.shared_arp = Some(shared);
     }
 
+    pub fn set_shared_intercept_demux(&mut self, shared: Arc<Mutex<SharedInterceptDemuxState>>) {
+        self.shared_intercept_demux = Some(shared);
+    }
+
     pub fn set_dhcp_channels(&mut self, tx: mpsc::Sender<DhcpRx>, rx: mpsc::Receiver<DhcpTx>) {
         self.dhcp_tx = Some(tx);
         self.dhcp_rx = Some(rx);
@@ -155,6 +253,301 @@ impl DpdkAdapter {
 
     pub fn set_dhcp_rx(&mut self, rx: mpsc::Receiver<DhcpTx>) {
         self.dhcp_rx = Some(rx);
+    }
+
+    pub fn service_lane_ready(&mut self) -> bool {
+        if self.service_lane_tap.is_some() {
+            return true;
+        }
+        if let Some(last_attempt) = self.service_lane_tap_last_attempt {
+            if last_attempt.elapsed() < Duration::from_millis(SERVICE_LANE_TAP_RETRY_MS) {
+                return false;
+            }
+        }
+        self.service_lane_tap_last_attempt = Some(Instant::now());
+        let iface = std::env::var("NEUWERK_DPDK_SERVICE_LANE_IFACE")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "svc0".to_string());
+        match open_tap(&iface) {
+            Ok(file) => {
+                match read_interface_mac(&iface) {
+                    Ok(mac) => self.service_lane_mac = Some(mac),
+                    Err(err) => eprintln!("dpdk: service lane mac unavailable on {iface}: {err}"),
+                }
+                self.service_lane_tap = Some(file);
+                true
+            }
+            Err(err) => {
+                eprintln!("dpdk: service lane tap unavailable on {iface}: {err}");
+                false
+            }
+        }
+    }
+
+    pub fn refresh_service_lane_steering(&mut self, state: &mut EngineState) {
+        state.set_intercept_to_host_steering(self.service_lane_ready());
+    }
+
+    fn queue_host_frame(&mut self, frame: &[u8]) {
+        if frame.len() < ETH_HDR_LEN {
+            return;
+        }
+        let mut host_frame = frame.to_vec();
+        host_frame[0..6].copy_from_slice(
+            &self
+                .service_lane_mac
+                .unwrap_or([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+        );
+        self.pending_host_frames.push_back(host_frame);
+    }
+
+    fn with_intercept_demux_map<R>(
+        &mut self,
+        f: impl FnOnce(&mut HashMap<InterceptDemuxKey, InterceptDemuxEntry>) -> R,
+    ) -> R {
+        if let Some(shared) = &self.shared_intercept_demux {
+            if let Ok(mut lock) = shared.lock() {
+                return f(&mut lock.map);
+            }
+        }
+        f(&mut self.intercept_demux)
+    }
+
+    fn gc_intercept_demux_map(map: &mut HashMap<InterceptDemuxKey, InterceptDemuxEntry>) {
+        let now = Instant::now();
+        map.retain(|_, entry| {
+            now.duration_since(entry.last_seen) <= Duration::from_secs(INTERCEPT_DEMUX_IDLE_SECS)
+        });
+    }
+
+    fn upsert_intercept_demux_entry(
+        &mut self,
+        client_ip: Ipv4Addr,
+        client_port: u16,
+        upstream_ip: Ipv4Addr,
+        upstream_port: u16,
+    ) {
+        if let Some(shared) = &self.shared_intercept_demux {
+            if let Ok(mut lock) = shared.lock() {
+                lock.upsert(client_ip, client_port, upstream_ip, upstream_port);
+                return;
+            }
+        }
+        self.with_intercept_demux_map(|map| {
+            Self::gc_intercept_demux_map(map);
+            map.insert(
+                InterceptDemuxKey {
+                    client_ip,
+                    client_port,
+                },
+                InterceptDemuxEntry {
+                    upstream_ip,
+                    upstream_port,
+                    last_seen: Instant::now(),
+                },
+            );
+        });
+    }
+
+    fn remove_intercept_demux_entry(&mut self, client_ip: Ipv4Addr, client_port: u16) {
+        if let Some(shared) = &self.shared_intercept_demux {
+            if let Ok(mut lock) = shared.lock() {
+                lock.remove(client_ip, client_port);
+                return;
+            }
+        }
+        self.with_intercept_demux_map(|map| {
+            map.remove(&InterceptDemuxKey {
+                client_ip,
+                client_port,
+            });
+        });
+    }
+
+    fn lookup_intercept_demux_entry(
+        &mut self,
+        client_ip: Ipv4Addr,
+        client_port: u16,
+    ) -> Option<InterceptDemuxEntry> {
+        if let Some(shared) = &self.shared_intercept_demux {
+            if let Ok(mut lock) = shared.lock() {
+                return lock
+                    .lookup(client_ip, client_port)
+                    .map(|(upstream_ip, upstream_port)| InterceptDemuxEntry {
+                        upstream_ip,
+                        upstream_port,
+                        last_seen: Instant::now(),
+                    });
+            }
+        }
+        self.with_intercept_demux_map(|map| {
+            Self::gc_intercept_demux_map(map);
+            let key = InterceptDemuxKey {
+                client_ip,
+                client_port,
+            };
+            if let Some(entry) = map.get_mut(&key) {
+                entry.last_seen = Instant::now();
+                Some(*entry)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn queue_intercept_host_frame(&mut self, frame: &[u8]) {
+        if frame.len() < ETH_HDR_LEN {
+            return;
+        }
+        let mut pkt = Packet::from_bytes(frame);
+        let (src_port, dst_port) = match pkt.ports() {
+            Some(ports) => ports,
+            None => {
+                self.queue_host_frame(frame);
+                return;
+            }
+        };
+        let src_ip = match pkt.src_ip() {
+            Some(ip) => ip,
+            None => {
+                self.queue_host_frame(frame);
+                return;
+            }
+        };
+        let dst_ip = match pkt.dst_ip() {
+            Some(ip) => ip,
+            None => {
+                self.queue_host_frame(frame);
+                return;
+            }
+        };
+        if pkt.protocol() != Some(6) {
+            self.queue_host_frame(frame);
+            return;
+        }
+
+        self.upsert_intercept_demux_entry(src_ip, src_port, dst_ip, dst_port);
+        if !pkt.set_dst_ip(intercept_service_ip())
+            || !pkt.set_dst_port(intercept_service_port())
+            || !pkt.recalc_checksums()
+        {
+            return;
+        }
+        if let Some(flags) = pkt.tcp_flags() {
+            if flags & (0x01 | 0x04) != 0 {
+                self.remove_intercept_demux_entry(src_ip, src_port);
+            }
+        }
+        self.queue_host_frame(pkt.buffer());
+    }
+
+    fn rewrite_intercept_service_lane_egress(&mut self, pkt: &mut Packet) {
+        if pkt.protocol() != Some(6) {
+            return;
+        }
+        let (src_port, dst_port) = match pkt.ports() {
+            Some(ports) => ports,
+            None => return,
+        };
+        if src_port != intercept_service_port() {
+            return;
+        }
+        let src_ip = match pkt.src_ip() {
+            Some(ip) => ip,
+            None => return,
+        };
+        if src_ip != intercept_service_ip() {
+            return;
+        }
+        let client_ip = match pkt.dst_ip() {
+            Some(ip) => ip,
+            None => return,
+        };
+        let Some(entry) = self.lookup_intercept_demux_entry(client_ip, dst_port) else {
+            return;
+        };
+
+        if !pkt.set_src_ip(entry.upstream_ip)
+            || !pkt.set_src_port(entry.upstream_port)
+            || !pkt.recalc_checksums()
+        {
+            return;
+        }
+        if let Some(flags) = pkt.tcp_flags() {
+            if flags & (0x01 | 0x04) != 0 {
+                self.remove_intercept_demux_entry(client_ip, dst_port);
+            }
+        }
+    }
+
+    pub fn next_host_frame(&mut self) -> Option<Vec<u8>> {
+        self.pending_host_frames.pop_front()
+    }
+
+    pub fn flush_host_frames<I: FrameIo>(&mut self, io: &mut I) -> Result<(), String> {
+        if self.pending_host_frames.is_empty() {
+            return Ok(());
+        }
+        let Some(tap) = self.service_lane_tap.as_mut() else {
+            return Err("dpdk: service lane steering unavailable".to_string());
+        };
+        while let Some(frame) = self.pending_host_frames.pop_front() {
+            tap.write_all(&frame)
+                .map_err(|err| format!("dpdk: service lane write failed: {err}"))?;
+        }
+        io.flush()
+    }
+
+    pub fn process_service_lane_egress_frame(
+        &mut self,
+        frame: &[u8],
+        state: &EngineState,
+    ) -> Option<Vec<u8>> {
+        if frame.len() < ETH_HDR_LEN {
+            return None;
+        }
+        let mut pkt = Packet::from_bytes(frame);
+        self.rewrite_intercept_service_lane_egress(&mut pkt);
+        self.rewrite_l2_for_forward(&mut pkt, state)
+    }
+
+    pub fn drain_service_lane_egress<I: FrameIo>(
+        &mut self,
+        state: &EngineState,
+        io: &mut I,
+    ) -> Result<(), String> {
+        if self.service_lane_tap.is_none() {
+            return Ok(());
+        }
+        let mut buf = [0u8; 65536];
+        loop {
+            let readable = {
+                let tap = self
+                    .service_lane_tap
+                    .as_ref()
+                    .ok_or_else(|| "dpdk: service lane tap unavailable".to_string())?;
+                service_lane_tap_readable(tap)?
+            };
+            if !readable {
+                break;
+            }
+            let n = {
+                let tap = self
+                    .service_lane_tap
+                    .as_mut()
+                    .ok_or_else(|| "dpdk: service lane tap unavailable".to_string())?;
+                tap.read(&mut buf)
+                    .map_err(|err| format!("dpdk: service lane read failed: {err}"))?
+            };
+            if n == 0 {
+                break;
+            }
+            if let Some(frame) = self.process_service_lane_egress_frame(&buf[..n], state) {
+                io.send_frame(&frame)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn process_frame(&mut self, frame: &[u8], state: &mut EngineState) -> Option<Vec<u8>> {
@@ -280,7 +673,11 @@ impl DpdkAdapter {
         let mut pkt = Packet::from_bytes(frame);
         match crate::dataplane::engine::handle_packet(&mut pkt, state) {
             Action::Forward { .. } => self.rewrite_l2_for_forward(&mut pkt, state),
-            Action::Drop | Action::ToHost => None,
+            Action::ToHost => {
+                self.queue_intercept_host_frame(pkt.buffer());
+                None
+            }
+            Action::Drop => None,
         }
     }
 
@@ -320,7 +717,11 @@ impl DpdkAdapter {
                     None
                 }
             }
-            Action::Drop | Action::ToHost => None,
+            Action::ToHost => {
+                self.queue_intercept_host_frame(pkt.buffer());
+                None
+            }
+            Action::Drop => None,
         }
     }
 
@@ -360,10 +761,13 @@ impl DpdkAdapter {
         }
         let mut pkt = Packet::new(vec![0u8; 65536]);
         loop {
+            self.refresh_service_lane_steering(state);
             pkt.prepare_for_rx(65536);
             let n = io.recv_frame(pkt.buffer_mut())?;
             if n == 0 {
                 io.flush()?;
+                self.drain_service_lane_egress(state, io)?;
+                self.flush_host_frames(io)?;
                 while let Some(out) = self.next_dhcp_frame(state) {
                     io.send_frame(&out)?;
                 }
@@ -376,6 +780,8 @@ impl DpdkAdapter {
                     FrameOut::Owned(frame) => io.send_frame(&frame)?,
                 }
             }
+            self.drain_service_lane_egress(state, io)?;
+            self.flush_host_frames(io)?;
             while let Some(out) = self.next_dhcp_frame(state) {
                 io.send_frame(&out)?;
             }
@@ -411,6 +817,9 @@ impl DpdkAdapter {
                 payload,
             });
         }
+        // DHCP replies come from a valid L2 peer; seed ARP for the sender so
+        // early forwarded traffic after lease acquisition can resolve gateway MAC.
+        self.insert_arp(ipv4.src, eth.src_mac);
         eprintln!("dpdk: received dhcp frame from {}", ipv4.src);
         self.dhcp_server_hint = Some(DhcpServerHint {
             ip: ipv4.src,
@@ -988,6 +1397,96 @@ fn build_udp_frame(
     pkt.buffer().to_vec()
 }
 
+#[repr(C)]
+struct IfReq {
+    ifr_name: [libc::c_char; libc::IFNAMSIZ],
+    ifr_flags: libc::c_short,
+}
+
+fn open_tap(name: &str) -> Result<File, String> {
+    if name.is_empty() {
+        return Err("dpdk: service lane interface cannot be empty".to_string());
+    }
+    if name.len() >= libc::IFNAMSIZ {
+        return Err(format!(
+            "dpdk: service lane interface name too long (max {})",
+            libc::IFNAMSIZ - 1
+        ));
+    }
+    let fd = unsafe { libc::open(b"/dev/net/tun\0".as_ptr() as *const _, libc::O_RDWR) };
+    if fd < 0 {
+        return Err(format!(
+            "dpdk: open /dev/net/tun failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut ifr = IfReq {
+        ifr_name: [0; libc::IFNAMSIZ],
+        ifr_flags: IFF_TAP | IFF_NO_PI,
+    };
+    for (dst, src) in ifr.ifr_name.iter_mut().zip(name.as_bytes().iter()) {
+        *dst = *src as libc::c_char;
+    }
+    let rc = unsafe { libc::ioctl(fd, TUNSETIFF, &ifr) };
+    if rc < 0 {
+        let err = std::io::Error::last_os_error();
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(format!("dpdk: TUNSETIFF {name} failed: {err}"));
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+fn read_interface_mac(iface: &str) -> Result<[u8; 6], String> {
+    let path = format!("/sys/class/net/{iface}/address");
+    let value =
+        std::fs::read_to_string(&path).map_err(|err| format!("read {path} failed: {err}"))?;
+    parse_mac_addr(value.trim())
+}
+
+fn parse_mac_addr(value: &str) -> Result<[u8; 6], String> {
+    let parts: Vec<&str> = value.split(':').collect();
+    if parts.len() != 6 {
+        return Err(format!("invalid mac address '{value}'"));
+    }
+    let mut bytes = [0u8; 6];
+    for (idx, part) in parts.iter().enumerate() {
+        if part.len() != 2 {
+            return Err(format!("invalid mac address '{value}'"));
+        }
+        bytes[idx] = u8::from_str_radix(part, 16)
+            .map_err(|err| format!("invalid mac address '{value}': {err}"))?;
+    }
+    Ok(bytes)
+}
+
+fn service_lane_tap_readable(tap: &File) -> Result<bool, String> {
+    let fd = tap.as_raw_fd();
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let rc = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, 0) };
+    if rc < 0 {
+        return Err(format!(
+            "dpdk: service lane poll failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if rc == 0 {
+        return Ok(false);
+    }
+    if pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+        return Err(format!(
+            "dpdk: service lane poll error revents=0x{:x}",
+            pfd.revents
+        ));
+    }
+    Ok(pfd.revents & libc::POLLIN != 0)
+}
+
 fn select_mac(fallback: [u8; 6], candidate: Option<[u8; 6]>) -> [u8; 6] {
     if let Some(mac) = candidate {
         if mac != [0; 6] {
@@ -1113,9 +1612,54 @@ mod dpdk_io {
         tx_count: u16,
     }
 
+    // Safety: `DpdkIo` owns raw DPDK pointers that are thread-compatible but not
+    // intrinsically synchronized. We only move `DpdkIo` across threads and use
+    // shared instances behind `Mutex` in the software-demux path.
+    unsafe impl Send for DpdkIo {}
+
     static DPDK_RX_LOGGED: AtomicBool = AtomicBool::new(false);
     static DPDK_RX_OVERSIZE_LOGS: AtomicU32 = AtomicU32::new(0);
     static DPDK_IPV4_LOGS: AtomicUsize = AtomicUsize::new(0);
+
+    fn preferred_rss_hf(supported: u64) -> u64 {
+        let preferred = (ETH_RSS_NONFRAG_IPV4_TCP as u64)
+            | (ETH_RSS_NONFRAG_IPV4_UDP as u64)
+            | (ETH_RSS_NONFRAG_IPV6_TCP as u64)
+            | (ETH_RSS_NONFRAG_IPV6_UDP as u64)
+            | (ETH_RSS_IPV4 as u64)
+            | (ETH_RSS_IPV6 as u64);
+        let selected = supported & preferred;
+        if selected != 0 {
+            selected
+        } else {
+            supported
+        }
+    }
+
+    fn configure_rss_reta(port_id: u16, queue_count: u16, reta_size: u16) -> Result<(), String> {
+        if queue_count <= 1 || reta_size == 0 {
+            return Ok(());
+        }
+        let groups = ((reta_size as usize) + 63) / 64;
+        let mut reta = Vec::with_capacity(groups);
+        for _ in 0..groups {
+            reta.push(rte_eth_rss_reta_entry64::default());
+        }
+        for idx in 0..(reta_size as usize) {
+            let group = idx / 64;
+            let offset = idx % 64;
+            reta[group].mask |= 1u64 << offset;
+            reta[group].reta[offset] = (idx % queue_count as usize) as u16;
+        }
+        let ret = unsafe { rte_eth_dev_rss_reta_update(port_id, reta.as_mut_ptr(), reta_size) };
+        if ret < 0 {
+            return Err(format!(
+                "dpdk: rss reta update failed (reta_size={}, queues={}, ret={})",
+                reta_size, queue_count, ret
+            ));
+        }
+        Ok(())
+    }
 
     fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
         let cached = PORT_INIT.get_or_init(|| {
@@ -1200,14 +1744,30 @@ mod dpdk_io {
                 ));
             }
 
+            let mut rss_hf = 0u64;
+            if queue_count > 1 {
+                rss_hf = preferred_rss_hf(dev_info.flow_type_rss_offloads);
+                if rss_hf == 0 {
+                    eprintln!(
+                        "dpdk: rss unsupported (supported_hf=0x{:x}); forcing single queue",
+                        dev_info.flow_type_rss_offloads
+                    );
+                    queue_count = 1;
+                }
+            }
+
             let mut port_conf: rte_eth_conf = unsafe {
                 let mut conf = std::mem::MaybeUninit::<rte_eth_conf>::uninit();
                 std::ptr::write_bytes(conf.as_mut_ptr(), 0, 1);
                 conf.assume_init()
             };
             if queue_count > 1 {
+                eprintln!(
+                    "dpdk: rss supported_hf=0x{:x} selected_hf=0x{:x} reta_size={}",
+                    dev_info.flow_type_rss_offloads, rss_hf, dev_info.reta_size
+                );
                 port_conf.rxmode.mq_mode = rte_eth_rx_mq_mode::ETH_MQ_RX_RSS;
-                port_conf.rx_adv_conf.rss_conf.rss_hf = dev_info.flow_type_rss_offloads;
+                port_conf.rx_adv_conf.rss_conf.rss_hf = rss_hf;
                 port_conf.rx_adv_conf.rss_conf.rss_key = std::ptr::null_mut();
                 port_conf.rx_adv_conf.rss_conf.rss_key_len = 0;
             }
@@ -1253,6 +1813,13 @@ mod dpdk_io {
 
             unsafe {
                 rte_eth_promiscuous_enable(port_id);
+            }
+            if queue_count > 1 {
+                if let Err(err) = configure_rss_reta(port_id, queue_count, dev_info.reta_size) {
+                    eprintln!("{err}");
+                    eprintln!("dpdk: rss reta unavailable; forcing single worker");
+                    queue_count = 1;
+                }
             }
 
             let mut addr: ether_addr = unsafe { std::mem::zeroed() };
@@ -1976,9 +2543,28 @@ mod tests {
     use super::*;
     use crate::controlplane::metrics::Metrics;
     use crate::dataplane::config::DataplaneConfig;
-    use crate::dataplane::policy::DefaultPolicy;
-    use crate::dataplane::policy::PolicySnapshot;
+    use crate::dataplane::policy::{
+        CidrV4, DefaultPolicy, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction, RuleMatch,
+        SourceGroup, Tls13Uninspectable, TlsMatch, TlsMode,
+    };
+    use std::sync::atomic::AtomicU64;
     use std::sync::{Arc, RwLock};
+
+    #[derive(Default)]
+    struct RecordingIo {
+        sent: Vec<Vec<u8>>,
+    }
+
+    impl FrameIo for RecordingIo {
+        fn recv_frame(&mut self, _buf: &mut [u8]) -> Result<usize, String> {
+            Ok(0)
+        }
+
+        fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+            self.sent.push(frame.to_vec());
+            Ok(())
+        }
+    }
 
     fn metric_value(rendered: &str, name: &str) -> Option<f64> {
         for line in rendered.lines() {
@@ -2030,6 +2616,88 @@ mod tests {
         build_udp_frame(
             src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port, payload,
         )
+    }
+
+    fn build_tcp_syn_ipv4_frame(
+        src_mac: [u8; 6],
+        dst_mac: [u8; 6],
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
+        src_port: u16,
+        dst_port: u16,
+    ) -> Vec<u8> {
+        let total_len = 20 + 20;
+        let mut buf = vec![0u8; ETH_HDR_LEN + total_len];
+        buf[0..6].copy_from_slice(&dst_mac);
+        buf[6..12].copy_from_slice(&src_mac);
+        buf[12..14].copy_from_slice(&ETH_TYPE_IPV4.to_be_bytes());
+
+        let ip_off = ETH_HDR_LEN;
+        buf[ip_off] = 0x45;
+        buf[ip_off + 1] = 0;
+        buf[ip_off + 2..ip_off + 4].copy_from_slice(&(total_len as u16).to_be_bytes());
+        buf[ip_off + 4..ip_off + 6].copy_from_slice(&0u16.to_be_bytes());
+        buf[ip_off + 6..ip_off + 8].copy_from_slice(&0u16.to_be_bytes());
+        buf[ip_off + 8] = 64;
+        buf[ip_off + 9] = 6;
+        buf[ip_off + 10..ip_off + 12].copy_from_slice(&0u16.to_be_bytes());
+        buf[ip_off + 12..ip_off + 16].copy_from_slice(&src_ip.octets());
+        buf[ip_off + 16..ip_off + 20].copy_from_slice(&dst_ip.octets());
+
+        let tcp_off = ip_off + 20;
+        buf[tcp_off..tcp_off + 2].copy_from_slice(&src_port.to_be_bytes());
+        buf[tcp_off + 2..tcp_off + 4].copy_from_slice(&dst_port.to_be_bytes());
+        buf[tcp_off + 4..tcp_off + 8].copy_from_slice(&1u32.to_be_bytes());
+        buf[tcp_off + 8..tcp_off + 12].copy_from_slice(&0u32.to_be_bytes());
+        buf[tcp_off + 12] = 0x50;
+        buf[tcp_off + 13] = 0x02;
+        buf[tcp_off + 14..tcp_off + 16].copy_from_slice(&64240u16.to_be_bytes());
+        buf[tcp_off + 16..tcp_off + 18].copy_from_slice(&0u16.to_be_bytes());
+        buf[tcp_off + 18..tcp_off + 20].copy_from_slice(&0u16.to_be_bytes());
+
+        let mut pkt = Packet::new(buf);
+        let _ = pkt.recalc_checksums();
+        pkt.buffer().to_vec()
+    }
+
+    fn intercept_policy_snapshot() -> PolicySnapshot {
+        let mut sources = IpSetV4::new();
+        sources.add_cidr(CidrV4::new(Ipv4Addr::new(10, 0, 0, 0), 24));
+        let rule = Rule {
+            id: "tls-intercept".to_string(),
+            priority: 0,
+            matcher: RuleMatch {
+                dst_ips: None,
+                proto: Proto::Tcp,
+                src_ports: Vec::new(),
+                dst_ports: vec![crate::dataplane::policy::PortRange {
+                    start: 443,
+                    end: 443,
+                }],
+                icmp_types: Vec::new(),
+                icmp_codes: Vec::new(),
+                tls: Some(TlsMatch {
+                    mode: TlsMode::Intercept,
+                    sni: None,
+                    server_san: None,
+                    server_cn: None,
+                    fingerprints_sha256: Vec::new(),
+                    trust_anchors: Vec::new(),
+                    tls13_uninspectable: Tls13Uninspectable::Deny,
+                    intercept_http: None,
+                }),
+            },
+            action: RuleAction::Allow,
+            mode: crate::dataplane::policy::RuleMode::Enforce,
+        };
+        let group = SourceGroup {
+            id: "internal".to_string(),
+            priority: 0,
+            sources,
+            rules: vec![rule],
+            default_action: None,
+        };
+        PolicySnapshot::new_with_generation(DefaultPolicy::Deny, vec![group], 1)
     }
 
     #[test]
@@ -2105,6 +2773,35 @@ mod tests {
     }
 
     #[test]
+    fn process_frame_learns_arp_from_dhcp_server_frame() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let mut state = EngineState::new(
+            Arc::new(RwLock::new(PolicySnapshot::new(
+                DefaultPolicy::Deny,
+                Vec::new(),
+            ))),
+            Ipv4Addr::UNSPECIFIED,
+            0,
+            Ipv4Addr::UNSPECIFIED,
+            0,
+        );
+        let server_ip = Ipv4Addr::new(10, 0, 0, 254);
+        let server_mac = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
+        let frame = build_udp_ipv4_frame(
+            server_mac,
+            [0xff; 6],
+            server_ip,
+            Ipv4Addr::BROADCAST,
+            DHCP_SERVER_PORT,
+            DHCP_CLIENT_PORT,
+            b"dhcp-test",
+        );
+
+        assert!(adapter.process_frame(&frame, &mut state).is_none());
+        assert_eq!(adapter.lookup_arp(server_ip), Some(server_mac));
+    }
+
+    #[test]
     fn next_dhcp_frame_builds_broadcast_frame() {
         let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
         adapter.set_mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
@@ -2134,5 +2831,394 @@ mod tests {
             u16::from_be_bytes([frame[udp_off + 2], frame[udp_off + 3]]),
             DHCP_SERVER_PORT
         );
+    }
+
+    #[test]
+    fn process_frame_intercept_fail_closed_returns_rst() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        adapter.set_mac(fw_mac);
+
+        let policy = Arc::new(RwLock::new(intercept_policy_snapshot()));
+        let mut state = EngineState::new(
+            policy,
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            Ipv4Addr::new(203, 0, 113, 1),
+            0,
+        );
+        state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(0)));
+        state.set_dataplane_config({
+            let store = crate::dataplane::config::DataplaneConfigStore::new();
+            store.set(DataplaneConfig {
+                ip: Ipv4Addr::new(10, 0, 0, 2),
+                prefix: 24,
+                gateway: Ipv4Addr::new(10, 0, 0, 1),
+                mac: fw_mac,
+                lease_expiry: None,
+            });
+            store
+        });
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        adapter.insert_arp(client_ip, client_mac);
+        let outbound = build_tcp_syn_ipv4_frame(
+            client_mac,
+            fw_mac,
+            client_ip,
+            Ipv4Addr::new(198, 51, 100, 10),
+            40000,
+            443,
+        );
+
+        let rst = adapter
+            .process_frame(&outbound, &mut state)
+            .expect("expected fail-closed rst frame");
+        assert_eq!(&rst[0..6], &client_mac);
+        assert_eq!(&rst[6..12], &fw_mac);
+        let ipv4 = parse_ipv4(&rst, ETH_HDR_LEN).expect("ipv4");
+        let tcp = parse_tcp(&rst, ipv4.l4_offset).expect("tcp");
+        assert!(
+            tcp.flags & 0x04 != 0,
+            "tcp rst flag missing: {:02x}",
+            tcp.flags
+        );
+        assert_eq!(ipv4.src, Ipv4Addr::new(198, 51, 100, 10));
+        assert_eq!(ipv4.dst, client_ip);
+    }
+
+    #[test]
+    fn process_frame_intercept_ready_queues_service_lane_frame() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        adapter.set_mac(fw_mac);
+
+        let policy = Arc::new(RwLock::new(intercept_policy_snapshot()));
+        let mut state = EngineState::new(
+            policy,
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            Ipv4Addr::new(203, 0, 113, 1),
+            0,
+        );
+        state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+        state.set_intercept_to_host_steering(true);
+        state.set_dataplane_config({
+            let store = crate::dataplane::config::DataplaneConfigStore::new();
+            store.set(DataplaneConfig {
+                ip: Ipv4Addr::new(10, 0, 0, 2),
+                prefix: 24,
+                gateway: Ipv4Addr::new(10, 0, 0, 1),
+                mac: fw_mac,
+                lease_expiry: None,
+            });
+            store
+        });
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let outbound = build_tcp_syn_ipv4_frame(
+            client_mac,
+            fw_mac,
+            client_ip,
+            Ipv4Addr::new(198, 51, 100, 10),
+            40000,
+            443,
+        );
+
+        let out = adapter.process_frame(&outbound, &mut state);
+        assert!(
+            out.is_none(),
+            "intercept-eligible flow should not egress dataplane directly"
+        );
+        let host_frame = adapter
+            .next_host_frame()
+            .expect("expected service-lane frame");
+        assert_eq!(host_frame.len(), outbound.len());
+        assert_eq!(&host_frame[0..6], &[0xff; 6]);
+        assert_eq!(
+            u16::from_be_bytes([host_frame[12], host_frame[13]]),
+            ETH_TYPE_IPV4
+        );
+        let ipv4 = parse_ipv4(&host_frame, ETH_HDR_LEN).expect("ipv4");
+        let tcp = parse_tcp(&host_frame, ipv4.l4_offset).expect("tcp");
+        assert_eq!(ipv4.src, client_ip);
+        assert_eq!(ipv4.dst, INTERCEPT_SERVICE_IP_DEFAULT);
+        assert_eq!(tcp.dst_port, INTERCEPT_SERVICE_PORT_DEFAULT);
+    }
+
+    #[test]
+    fn process_frame_intercept_ready_targets_service_lane_mac_when_known() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let svc_mac = [0x4a, 0x0e, 0x7b, 0x9e, 0x36, 0x7d];
+        adapter.set_mac(fw_mac);
+        adapter.service_lane_mac = Some(svc_mac);
+
+        let policy = Arc::new(RwLock::new(intercept_policy_snapshot()));
+        let mut state = EngineState::new(
+            policy,
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            Ipv4Addr::new(203, 0, 113, 1),
+            0,
+        );
+        state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+        state.set_intercept_to_host_steering(true);
+        state.set_dataplane_config({
+            let store = crate::dataplane::config::DataplaneConfigStore::new();
+            store.set(DataplaneConfig {
+                ip: Ipv4Addr::new(10, 0, 0, 2),
+                prefix: 24,
+                gateway: Ipv4Addr::new(10, 0, 0, 1),
+                mac: fw_mac,
+                lease_expiry: None,
+            });
+            store
+        });
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let outbound = build_tcp_syn_ipv4_frame(
+            client_mac,
+            fw_mac,
+            client_ip,
+            Ipv4Addr::new(198, 51, 100, 10),
+            40000,
+            443,
+        );
+
+        let out = adapter.process_frame(&outbound, &mut state);
+        assert!(
+            out.is_none(),
+            "intercept-eligible flow should not egress dataplane directly"
+        );
+        let host_frame = adapter
+            .next_host_frame()
+            .expect("expected service-lane frame");
+        assert_eq!(host_frame.len(), outbound.len());
+        assert_eq!(&host_frame[0..6], &svc_mac);
+        let ipv4 = parse_ipv4(&host_frame, ETH_HDR_LEN).expect("ipv4");
+        let tcp = parse_tcp(&host_frame, ipv4.l4_offset).expect("tcp");
+        assert_eq!(ipv4.src, client_ip);
+        assert_eq!(ipv4.dst, INTERCEPT_SERVICE_IP_DEFAULT);
+        assert_eq!(tcp.dst_port, INTERCEPT_SERVICE_PORT_DEFAULT);
+    }
+
+    #[test]
+    fn process_service_lane_egress_restores_intercept_tuple_and_rewrites_l2() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        adapter.set_mac(fw_mac);
+        let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        adapter.insert_arp(client_ip, client_mac);
+
+        let mut state = EngineState::new(
+            Arc::new(RwLock::new(intercept_policy_snapshot())),
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            Ipv4Addr::new(203, 0, 113, 1),
+            0,
+        );
+        state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+        state.set_intercept_to_host_steering(true);
+        state.set_dataplane_config({
+            let store = crate::dataplane::config::DataplaneConfigStore::new();
+            store.set(DataplaneConfig {
+                ip: Ipv4Addr::new(10, 0, 0, 2),
+                prefix: 24,
+                gateway: Ipv4Addr::new(10, 0, 0, 1),
+                mac: fw_mac,
+                lease_expiry: None,
+            });
+            store
+        });
+
+        let outbound = build_tcp_syn_ipv4_frame(
+            client_mac,
+            fw_mac,
+            client_ip,
+            Ipv4Addr::new(198, 51, 100, 10),
+            40000,
+            443,
+        );
+        let out = adapter.process_frame(&outbound, &mut state);
+        assert!(
+            out.is_none(),
+            "intercept packet should steer to service lane"
+        );
+        let _ = adapter
+            .next_host_frame()
+            .expect("expected queued service-lane frame");
+
+        let egress = build_tcp_syn_ipv4_frame(
+            [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+            [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01],
+            INTERCEPT_SERVICE_IP_DEFAULT,
+            client_ip,
+            INTERCEPT_SERVICE_PORT_DEFAULT,
+            40000,
+        );
+        let forwarded = adapter
+            .process_service_lane_egress_frame(&egress, &state)
+            .expect("service-lane return frame should forward");
+        assert_eq!(&forwarded[0..6], &client_mac);
+        assert_eq!(&forwarded[6..12], &fw_mac);
+        let ipv4 = parse_ipv4(&forwarded, ETH_HDR_LEN).expect("ipv4");
+        let tcp = parse_tcp(&forwarded, ipv4.l4_offset).expect("tcp");
+        assert_eq!(ipv4.src, Ipv4Addr::new(198, 51, 100, 10));
+        assert_eq!(tcp.src_port, 443);
+    }
+
+    #[test]
+    fn drain_service_lane_egress_reads_tap_rewrites_intercept_tuple_and_sends_dpdk_frame() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        adapter.set_mac(fw_mac);
+        let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        adapter.insert_arp(client_ip, client_mac);
+
+        let mut state = EngineState::new(
+            Arc::new(RwLock::new(intercept_policy_snapshot())),
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            Ipv4Addr::new(203, 0, 113, 1),
+            0,
+        );
+        state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+        state.set_intercept_to_host_steering(true);
+        state.set_dataplane_config({
+            let store = crate::dataplane::config::DataplaneConfigStore::new();
+            store.set(DataplaneConfig {
+                ip: Ipv4Addr::new(10, 0, 0, 2),
+                prefix: 24,
+                gateway: Ipv4Addr::new(10, 0, 0, 1),
+                mac: fw_mac,
+                lease_expiry: None,
+            });
+            store
+        });
+
+        let outbound = build_tcp_syn_ipv4_frame(
+            client_mac,
+            fw_mac,
+            client_ip,
+            Ipv4Addr::new(198, 51, 100, 10),
+            40000,
+            443,
+        );
+        let out = adapter.process_frame(&outbound, &mut state);
+        assert!(
+            out.is_none(),
+            "intercept packet should steer to service lane"
+        );
+        let _ = adapter
+            .next_host_frame()
+            .expect("expected queued service-lane frame");
+
+        let egress = build_tcp_syn_ipv4_frame(
+            [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+            [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01],
+            INTERCEPT_SERVICE_IP_DEFAULT,
+            client_ip,
+            INTERCEPT_SERVICE_PORT_DEFAULT,
+            40000,
+        );
+
+        let mut fds = [0i32; 2];
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "pipe setup failed");
+        let mut writer = unsafe { File::from_raw_fd(fds[1]) };
+        adapter.service_lane_tap = Some(unsafe { File::from_raw_fd(fds[0]) });
+
+        writer
+            .write_all(&egress)
+            .expect("write service-lane egress frame");
+
+        let mut io = RecordingIo::default();
+        adapter
+            .drain_service_lane_egress(&state, &mut io)
+            .expect("drain service lane egress");
+
+        assert_eq!(io.sent.len(), 1);
+        assert_eq!(&io.sent[0][0..6], &client_mac);
+        assert_eq!(&io.sent[0][6..12], &fw_mac);
+        let ipv4 = parse_ipv4(&io.sent[0], ETH_HDR_LEN).expect("ipv4");
+        let tcp = parse_tcp(&io.sent[0], ipv4.l4_offset).expect("tcp");
+        assert_eq!(ipv4.src, Ipv4Addr::new(198, 51, 100, 10));
+        assert_eq!(tcp.src_port, 443);
+    }
+
+    #[test]
+    fn process_service_lane_egress_uses_shared_intercept_demux_across_adapters() {
+        let shared = Arc::new(Mutex::new(SharedInterceptDemuxState::default()));
+        let mut ingress = DpdkAdapter::new("data0".to_string()).unwrap();
+        let mut egress = DpdkAdapter::new("data0".to_string()).unwrap();
+        ingress.set_shared_intercept_demux(shared.clone());
+        egress.set_shared_intercept_demux(shared);
+
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        ingress.set_mac(fw_mac);
+        egress.set_mac(fw_mac);
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        egress.insert_arp(client_ip, client_mac);
+
+        let mut state = EngineState::new(
+            Arc::new(RwLock::new(intercept_policy_snapshot())),
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            Ipv4Addr::new(203, 0, 113, 1),
+            0,
+        );
+        state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+        state.set_intercept_to_host_steering(true);
+        state.set_dataplane_config({
+            let store = crate::dataplane::config::DataplaneConfigStore::new();
+            store.set(DataplaneConfig {
+                ip: Ipv4Addr::new(10, 0, 0, 2),
+                prefix: 24,
+                gateway: Ipv4Addr::new(10, 0, 0, 1),
+                mac: fw_mac,
+                lease_expiry: None,
+            });
+            store
+        });
+
+        let outbound = build_tcp_syn_ipv4_frame(
+            client_mac,
+            fw_mac,
+            client_ip,
+            Ipv4Addr::new(198, 51, 100, 10),
+            40000,
+            443,
+        );
+        assert!(
+            ingress.process_frame(&outbound, &mut state).is_none(),
+            "intercept packet should steer to service lane"
+        );
+        let _ = ingress
+            .next_host_frame()
+            .expect("expected queued service-lane frame");
+
+        let egress_frame = build_tcp_syn_ipv4_frame(
+            [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+            [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01],
+            INTERCEPT_SERVICE_IP_DEFAULT,
+            client_ip,
+            INTERCEPT_SERVICE_PORT_DEFAULT,
+            40000,
+        );
+        let forwarded = egress
+            .process_service_lane_egress_frame(&egress_frame, &state)
+            .expect("service-lane return frame should forward");
+        let ipv4 = parse_ipv4(&forwarded, ETH_HDR_LEN).expect("ipv4");
+        let tcp = parse_tcp(&forwarded, ipv4.l4_offset).expect("tcp");
+        assert_eq!(ipv4.src, Ipv4Addr::new(198, 51, 100, 10));
+        assert_eq!(tcp.src_port, 443);
     }
 }

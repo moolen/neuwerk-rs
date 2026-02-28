@@ -38,8 +38,12 @@ variable "dataplane_lb_backend_pool_id" {
   type = string
 }
 
-variable "dns_upstream_ip" {
-  type = string
+variable "dns_target_ips" {
+  type = list(string)
+}
+
+variable "dns_upstreams" {
+  type = list(string)
 }
 
 variable "dns_zone_name" {
@@ -99,10 +103,6 @@ variable "azure_vmss_name" {
 }
 
 variable "cloud_provider" {
-  type = string
-}
-
-variable "mgmt_lb_backend_pool_id" {
   type = string
 }
 

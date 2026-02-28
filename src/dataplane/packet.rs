@@ -366,6 +366,19 @@ impl Packet {
         ]))
     }
 
+    pub fn tcp_ack(&self) -> Option<u32> {
+        let (l4_off, _) = self.tcp_offsets()?;
+        if l4_off + 12 > self.buf.len() {
+            return None;
+        }
+        Some(u32::from_be_bytes([
+            self.buf[l4_off + 8],
+            self.buf[l4_off + 9],
+            self.buf[l4_off + 10],
+            self.buf[l4_off + 11],
+        ]))
+    }
+
     pub fn tcp_flags(&self) -> Option<u8> {
         let (l4_off, _) = self.tcp_offsets()?;
         if l4_off + 14 > self.buf.len() {
@@ -450,6 +463,90 @@ impl Packet {
         }
         self.buf[l4_off + 2..l4_off + 4].copy_from_slice(&port.to_be_bytes());
         true
+    }
+
+    pub fn rewrite_as_tcp_rst_reply(&mut self) -> bool {
+        let ip_off = match self.ipv4_offset() {
+            Some(off) => off,
+            None => return false,
+        };
+        let ihl = match self.ipv4_header_len(ip_off) {
+            Some(len) => len,
+            None => return false,
+        };
+        let total_len = match self.ipv4_total_len(ip_off) {
+            Some(len) => len,
+            None => return false,
+        };
+        if self.protocol() != Some(6) {
+            return false;
+        }
+        let (src_ip, dst_ip) = match (self.src_ip(), self.dst_ip()) {
+            (Some(src), Some(dst)) => (src, dst),
+            _ => return false,
+        };
+        let (src_port, dst_port) = match self.ports() {
+            Some(ports) => ports,
+            None => return false,
+        };
+        let seq = match self.tcp_seq() {
+            Some(seq) => seq,
+            None => return false,
+        };
+        let ack = match self.tcp_ack() {
+            Some(ack) => ack,
+            None => return false,
+        };
+        let flags = match self.tcp_flags() {
+            Some(flags) => flags,
+            None => return false,
+        };
+
+        let l4_off = ip_off + ihl;
+        if l4_off + 20 > self.buf.len() {
+            return false;
+        }
+        let data_off = ((self.buf[l4_off + 12] >> 4) as usize) * 4;
+        if data_off < 20 || l4_off + data_off > self.buf.len() {
+            return false;
+        }
+        let tcp_len = match total_len.checked_sub(ihl) {
+            Some(len) => len,
+            None => return false,
+        };
+        if tcp_len < data_off {
+            return false;
+        }
+        let payload_len = tcp_len - data_off;
+        let syn = flags & 0x02 != 0;
+        let fin = flags & 0x01 != 0;
+        let ack_set = flags & 0x10 != 0;
+        let ack_inc = payload_len as u32 + if syn { 1 } else { 0 } + if fin { 1 } else { 0 };
+        let rst_seq = if ack_set { ack } else { 0 };
+        let rst_ack = seq.wrapping_add(ack_inc);
+
+        if !self.set_src_ip(dst_ip) || !self.set_dst_ip(src_ip) {
+            return false;
+        }
+        if !self.set_src_port(dst_port) || !self.set_dst_port(src_port) {
+            return false;
+        }
+
+        self.buf[l4_off + 4..l4_off + 8].copy_from_slice(&rst_seq.to_be_bytes());
+        self.buf[l4_off + 8..l4_off + 12].copy_from_slice(&rst_ack.to_be_bytes());
+        self.buf[l4_off + 13] = 0x14; // RST + ACK
+        self.buf[l4_off + 14..l4_off + 16].copy_from_slice(&0u16.to_be_bytes()); // window
+        self.buf[l4_off + 18..l4_off + 20].copy_from_slice(&0u16.to_be_bytes()); // urgent ptr
+
+        let new_total_len = ihl + data_off;
+        self.buf[ip_off + 2..ip_off + 4].copy_from_slice(&(new_total_len as u16).to_be_bytes());
+        let new_frame_len = ip_off + new_total_len;
+        if self.buf.len() < new_frame_len {
+            return false;
+        }
+        self.buf.truncate(new_frame_len);
+
+        self.recalc_checksums()
     }
 
     pub fn recalc_checksums(&mut self) -> bool {

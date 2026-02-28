@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod config;
 pub mod dhcp;
 pub mod dpdk_adapter;
@@ -12,10 +13,12 @@ pub mod soft_adapter;
 pub mod tls;
 pub mod wiretap;
 
+pub use audit::{AuditEmitter, AuditEvent, AuditEventType, DEFAULT_AUDIT_REPORT_INTERVAL_SECS};
 pub use config::{DataplaneConfig, DataplaneConfigStore};
 pub use dhcp::{DhcpRx, DhcpTx, DHCP_CLIENT_PORT, DHCP_SERVER_PORT};
 pub use dpdk_adapter::{
-    preinit_dpdk_eal, DpdkAdapter, DpdkIo, FrameIo, FrameOut, SharedArpState, UnwiredDpdkIo,
+    preinit_dpdk_eal, DpdkAdapter, DpdkIo, FrameIo, FrameOut, SharedArpState,
+    SharedInterceptDemuxState, UnwiredDpdkIo,
 };
 pub use drain::DrainControl;
 pub use engine::{handle_packet, Action, EngineState};

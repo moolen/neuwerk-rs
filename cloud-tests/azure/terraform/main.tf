@@ -62,50 +62,40 @@ module "upstream_lb" {
   tags                = var.tags
 }
 
-module "mgmt_dns_lb" {
-  source               = "./modules/mgmt_dns_lb"
-  resource_group_name  = azurerm_resource_group.main.name
-  location             = azurerm_resource_group.main.location
-  name_prefix          = local.name_prefix
-  mgmt_subnet_id       = module.network.mgmt_subnet_id
-  mgmt_dns_lb_ip       = var.mgmt_dns_lb_ip
-  tags                 = var.tags
-}
-
 module "firewall_vmss" {
-  source                 = "./modules/firewall_vmss"
-  resource_group_name    = azurerm_resource_group.main.name
-  location               = azurerm_resource_group.main.location
-  name_prefix            = local.name_prefix
-  instance_count         = var.firewall_instance_count
-  vm_size                = var.firewall_vmss_size
-  admin_username         = var.admin_username
-  ssh_public_key         = file(var.ssh_public_key_path)
-  mgmt_subnet_id         = module.network.mgmt_subnet_id
-  dataplane_subnet_id    = module.network.dataplane_subnet_id
+  source                       = "./modules/firewall_vmss"
+  resource_group_name          = azurerm_resource_group.main.name
+  location                     = azurerm_resource_group.main.location
+  name_prefix                  = local.name_prefix
+  instance_count               = var.firewall_instance_count
+  vm_size                      = var.firewall_vmss_size
+  admin_username               = var.admin_username
+  ssh_public_key               = file(var.ssh_public_key_path)
+  mgmt_subnet_id               = module.network.mgmt_subnet_id
+  dataplane_subnet_id          = module.network.dataplane_subnet_id
   dataplane_lb_backend_pool_id = module.dataplane_lb.backend_pool_id
-  dns_upstream_ip        = module.upstream_vm.private_ip
-  dns_zone_name          = var.dns_zone_name
-  gwlb_vni_internal      = var.gwlb_vni_internal
-  gwlb_vni_external      = var.gwlb_vni_external
-  gwlb_udp_port_internal = var.gwlb_udp_port_internal
-  gwlb_udp_port_external = var.gwlb_udp_port_external
-  internal_cidr          = var.consumer_subnet_cidr
-  snat_mode              = var.firewall_snat_mode
-  dpdk_workers           = var.firewall_dpdk_workers
-  storage_account_name   = module.storage.account_name
-  storage_container_name = module.storage.container_name
-  storage_blob_name      = module.storage.blob_name
-  azure_subscription_id  = var.subscription_id
-  azure_resource_group   = azurerm_resource_group.main.name
-  azure_vmss_name        = "${local.name_prefix}-fw"
-  cloud_provider         = var.cloud_provider
-  mgmt_lb_backend_pool_id = module.mgmt_dns_lb.backend_pool_id
-  tags                   = var.tags
-  image_publisher        = var.image_publisher
-  image_offer            = var.image_offer
-  image_sku              = var.image_sku
-  image_version          = var.image_version
+  dns_target_ips               = length(var.dns_target_ips) > 0 ? var.dns_target_ips : ["$${MGMT_IP}"]
+  dns_upstreams                = length(var.dns_upstreams) > 0 ? var.dns_upstreams : ["${module.upstream_vm.private_ip}:53"]
+  dns_zone_name                = var.dns_zone_name
+  gwlb_vni_internal            = var.gwlb_vni_internal
+  gwlb_vni_external            = var.gwlb_vni_external
+  gwlb_udp_port_internal       = var.gwlb_udp_port_internal
+  gwlb_udp_port_external       = var.gwlb_udp_port_external
+  internal_cidr                = var.consumer_subnet_cidr
+  snat_mode                    = var.firewall_snat_mode
+  dpdk_workers                 = var.firewall_dpdk_workers
+  storage_account_name         = module.storage.account_name
+  storage_container_name       = module.storage.container_name
+  storage_blob_name            = module.storage.blob_name
+  azure_subscription_id        = var.subscription_id
+  azure_resource_group         = azurerm_resource_group.main.name
+  azure_vmss_name              = "${local.name_prefix}-fw"
+  cloud_provider               = var.cloud_provider
+  tags                         = var.tags
+  image_publisher              = var.image_publisher
+  image_offer                  = var.image_offer
+  image_sku                    = var.image_sku
+  image_version                = var.image_version
 }
 
 module "upstream_vm" {

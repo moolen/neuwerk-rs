@@ -8,8 +8,8 @@ export const POLICY_REQUEST_SCHEMA = {
   properties: {
     mode: {
       type: 'string',
-      enum: ['enforce', 'audit'],
-      description: 'Whether this policy is enforced or only audited.',
+      enum: ['disabled', 'enforce', 'audit'],
+      description: 'Policy activity mode: disabled, audit passthrough, or enforce.',
       default: 'enforce',
     },
     policy: {

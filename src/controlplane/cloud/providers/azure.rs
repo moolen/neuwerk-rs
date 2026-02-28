@@ -1136,9 +1136,14 @@ mod tests {
             map.insert((*tag).to_string(), "true".to_string());
         }
         NicResource {
+            name: Some("nic-test".to_string()),
             tags: Some(map),
+            virtual_machine: None,
             properties: Some(NicProperties {
+                virtual_machine: None,
                 ip_configurations: Some(vec![NicIpConfiguration {
+                    name: Some("ipcfg-test".to_string()),
+                    private_ip_address: None,
                     properties: Some(NicIpProperties {
                         private_ip_address: Some(ip.to_string()),
                     }),

@@ -16,6 +16,9 @@ use crate::controlplane::cluster::types::ClusterCommand;
 use crate::controlplane::cluster::types::ClusterTypeConfig;
 use crate::controlplane::http_api::{run_http_api, HttpApiCluster, HttpApiConfig};
 use crate::controlplane::http_tls::{ensure_http_tls, HttpTlsConfig};
+use crate::controlplane::intercept_tls::{
+    local_intercept_ca_paths, INTERCEPT_CA_CERT_KEY, INTERCEPT_CA_ENVELOPE_KEY,
+};
 use crate::controlplane::metrics::Metrics;
 use crate::controlplane::policy_config::{PolicyConfig, PolicyMode};
 use crate::controlplane::policy_repository::{
@@ -423,6 +426,7 @@ fn cluster_migrate_from_local_enforce() -> Result<(), String> {
             store: None,
         })
         .await?;
+        seed_local_intercept_ca(&http_tls_dir)?;
 
         let seed = bootstrap::run_cluster(seed_cfg, None, None)
             .await
@@ -444,6 +448,9 @@ fn cluster_migrate_from_local_enforce() -> Result<(), String> {
         if !report.migrated {
             return Err("migration did not run".to_string());
         }
+        if !report.intercept_ca_seeded {
+            return Err("migration did not seed tls intercept ca".to_string());
+        }
 
         wait_for_state_present(&seed.store, POLICY_INDEX_KEY, Duration::from_secs(5)).await?;
         wait_for_state_present(&seed.store, POLICY_ACTIVE_KEY, Duration::from_secs(5)).await?;
@@ -454,6 +461,13 @@ fn cluster_migrate_from_local_enforce() -> Result<(), String> {
         )
         .await?;
         wait_for_state_present(&seed.store, b"http/ca/cert", Duration::from_secs(5)).await?;
+        wait_for_state_present(&seed.store, INTERCEPT_CA_CERT_KEY, Duration::from_secs(5)).await?;
+        wait_for_state_present(
+            &seed.store,
+            INTERCEPT_CA_ENVELOPE_KEY,
+            Duration::from_secs(5),
+        )
+        .await?;
 
         let local_keyset =
             api_auth::load_keyset_from_file(&api_auth::local_keyset_path(&http_tls_dir))?
@@ -477,6 +491,14 @@ fn cluster_migrate_from_local_enforce() -> Result<(), String> {
         )
         .await?;
         wait_for_state_present(&joiner.store, b"http/ca/cert", Duration::from_secs(5)).await?;
+        wait_for_state_present(&joiner.store, INTERCEPT_CA_CERT_KEY, Duration::from_secs(5))
+            .await?;
+        wait_for_state_present(
+            &joiner.store,
+            INTERCEPT_CA_ENVELOPE_KEY,
+            Duration::from_secs(5),
+        )
+        .await?;
 
         let verify_report = migration::run(
             &seed.raft,
@@ -527,7 +549,7 @@ fn cluster_migrate_from_local_audit() -> Result<(), String> {
 
     api_auth::ensure_local_keyset(&http_tls_dir).map_err(|e| format!("local keyset: {e}"))?;
     let local_policy_store = PolicyDiskStore::new(local_policy_dir.clone());
-    let _record = seed_local_policy(&local_policy_store, PolicyMode::Audit)?;
+    let record = seed_local_policy(&local_policy_store, PolicyMode::Audit)?;
     seed_local_service_accounts(&local_sa_dir)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -577,8 +599,15 @@ fn cluster_migrate_from_local_audit() -> Result<(), String> {
         }
 
         wait_for_state_present(&seed.store, POLICY_INDEX_KEY, Duration::from_secs(5)).await?;
-        if seed.store.get_state_value(POLICY_ACTIVE_KEY)?.is_some() {
-            return Err("audit policy should not set active policy in cluster".to_string());
+        wait_for_state_present(&seed.store, POLICY_ACTIVE_KEY, Duration::from_secs(5)).await?;
+        let active_raw = seed
+            .store
+            .get_state_value(POLICY_ACTIVE_KEY)?
+            .ok_or_else(|| "missing cluster active policy".to_string())?;
+        let active: crate::controlplane::policy_repository::PolicyActive =
+            serde_json::from_slice(&active_raw).map_err(|err| err.to_string())?;
+        if active.id != record.id {
+            return Err("audit policy should be active after migration".to_string());
         }
 
         seed.shutdown().await;
@@ -1915,7 +1944,7 @@ fn seed_local_policy(store: &PolicyDiskStore, mode: PolicyMode) -> Result<Policy
     store
         .write_record(&record)
         .map_err(|err| format!("local policy write failed: {err}"))?;
-    if mode == PolicyMode::Enforce {
+    if mode.is_active() {
         store
             .set_active(Some(record.id))
             .map_err(|err| format!("local policy active write failed: {err}"))?;
@@ -1979,6 +2008,22 @@ fn seed_local_service_accounts(dir: &Path) -> Result<Vec<ServiceAccount>, String
     Ok(accounts)
 }
 
+fn seed_local_intercept_ca(tls_dir: &Path) -> Result<(), String> {
+    let ca_cert_path = tls_dir.join("ca.crt");
+    let ca_key_path = tls_dir.join("ca.key");
+    if !ca_cert_path.exists() || !ca_key_path.exists() {
+        return Err("http tls ca cert/key missing while seeding intercept ca".to_string());
+    }
+    let (intercept_cert_path, intercept_key_path) = local_intercept_ca_paths(tls_dir);
+    let cert = fs::read(&ca_cert_path).map_err(|err| format!("read ca cert failed: {err}"))?;
+    let key = fs::read(&ca_key_path).map_err(|err| format!("read ca key failed: {err}"))?;
+    fs::write(&intercept_cert_path, cert)
+        .map_err(|err| format!("write intercept ca cert failed: {err}"))?;
+    fs::write(&intercept_key_path, key)
+        .map_err(|err| format!("write intercept ca key failed: {err}"))?;
+    Ok(())
+}
+
 fn keysets_equivalent(left: &api_auth::ApiKeySet, right: &api_auth::ApiKeySet) -> bool {
     if left.active_kid != right.active_kid {
         return false;
@@ -2026,6 +2071,8 @@ fn spawn_http_api(
         management_ip: bind_addr.ip(),
         token_path,
         cluster_tls_dir: None,
+        tls_intercept_ca_ready: None,
+        tls_intercept_ca_generation: None,
     };
     let metrics = Metrics::new().map_err(|err| format!("metrics init failed: {err}"))?;
     Ok(tokio::spawn(async move {
@@ -2034,6 +2081,7 @@ fn spawn_http_api(
             policy_store,
             local_store,
             cluster,
+            None,
             None,
             None,
             None,

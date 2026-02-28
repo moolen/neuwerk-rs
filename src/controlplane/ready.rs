@@ -20,6 +20,7 @@ pub struct ReadinessState {
     dataplane_running: Arc<AtomicBool>,
     policy_ready: Arc<AtomicBool>,
     dns_ready: Arc<AtomicBool>,
+    service_plane_ready: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -50,6 +51,7 @@ impl ReadinessState {
             dataplane_running: Arc::new(AtomicBool::new(false)),
             policy_ready: Arc::new(AtomicBool::new(false)),
             dns_ready: Arc::new(AtomicBool::new(false)),
+            service_plane_ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -67,6 +69,10 @@ impl ReadinessState {
 
     pub fn set_dns_ready(&self, ready: bool) {
         self.dns_ready.store(ready, Ordering::Relaxed);
+    }
+
+    pub fn set_service_plane_ready(&self, ready: bool) {
+        self.service_plane_ready.store(ready, Ordering::Relaxed);
     }
 
     pub fn snapshot(&self) -> ReadyStatus {
@@ -113,6 +119,17 @@ impl ReadinessState {
                 None
             } else {
                 Some("dns proxy not ready".to_string())
+            },
+        });
+
+        let service_ok = self.service_plane_ready.load(Ordering::Relaxed);
+        checks.push(ReadyCheck {
+            name: "service_plane".to_string(),
+            ok: service_ok,
+            detail: if service_ok {
+                None
+            } else {
+                Some("service-plane runtime not ready".to_string())
             },
         });
 

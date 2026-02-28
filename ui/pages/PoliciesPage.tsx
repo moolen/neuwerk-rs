@@ -17,7 +17,7 @@ const DEFAULT_POLICY_TEMPLATE: PolicyCreateRequest = {
 };
 
 const isPolicyMode = (value: unknown): value is PolicyCreateRequest['mode'] =>
-  value === 'audit' || value === 'enforce';
+  value === 'disabled' || value === 'audit' || value === 'enforce';
 
 export const PoliciesPage: React.FC = () => {
   const { theme } = useTheme();
@@ -134,7 +134,7 @@ export const PoliciesPage: React.FC = () => {
       const mode = parsed.mode;
       const policy = parsed.policy;
       if (!isPolicyMode(mode)) {
-        throw new Error('mode must be "enforce" or "audit"');
+        throw new Error('mode must be "disabled", "enforce", or "audit"');
       }
       if (!policy || typeof policy !== 'object') {
         throw new Error('policy must be an object');

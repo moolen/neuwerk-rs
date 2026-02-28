@@ -12,7 +12,9 @@ use crate::controlplane::cluster::bootstrap::token::TokenStore;
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
 use crate::controlplane::http_tls::{HTTP_CA_CERT_KEY, HTTP_CA_ENVELOPE_KEY};
-use crate::controlplane::policy_config::PolicyMode;
+use crate::controlplane::intercept_tls::{
+    load_local_intercept_ca_pair, INTERCEPT_CA_CERT_KEY, INTERCEPT_CA_ENVELOPE_KEY,
+};
 use crate::controlplane::policy_repository::{
     policy_item_key, PolicyActive, PolicyDiskStore, PolicyIndex, PolicyMeta, PolicyRecord,
     POLICY_ACTIVE_KEY, POLICY_INDEX_KEY,
@@ -47,6 +49,7 @@ pub struct MigrationReport {
     pub tokens_seeded: usize,
     pub api_keyset_source: Option<String>,
     pub http_ca_seeded: bool,
+    pub intercept_ca_seeded: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +126,15 @@ pub async fn run(
         &mut report,
     )
     .await?;
+    seed_intercept_ca(
+        raft,
+        store,
+        &cfg,
+        current_token.kid.as_str(),
+        &current_token.token,
+        &mut report,
+    )
+    .await?;
 
     if cfg.verify {
         verify_state(store, &cfg)?;
@@ -154,6 +166,14 @@ fn ensure_empty_state(store: &ClusterStore) -> Result<(), String> {
     if store.get_state_value(HTTP_CA_CERT_KEY)?.is_some() {
         return Err(
             "cluster already contains HTTP CA material; abort migration or use --cluster-migrate-force"
+                .to_string(),
+        );
+    }
+    if store.get_state_value(INTERCEPT_CA_CERT_KEY)?.is_some()
+        || store.get_state_value(INTERCEPT_CA_ENVELOPE_KEY)?.is_some()
+    {
+        return Err(
+            "cluster already contains TLS intercept CA material; abort migration or use --cluster-migrate-force"
                 .to_string(),
         );
     }
@@ -231,7 +251,7 @@ async fn seed_policies(
             .read_record(id)
             .map_err(|err| format!("read local policy failed: {err}"))?
         {
-            Some(record) if record.mode == PolicyMode::Enforce => Some(id),
+            Some(record) if record.mode.is_active() => Some(id),
             _ => None,
         },
         None => None,
@@ -361,6 +381,45 @@ async fn seed_http_ca(
     Ok(())
 }
 
+async fn seed_intercept_ca(
+    raft: &openraft::Raft<ClusterTypeConfig>,
+    store: &ClusterStore,
+    cfg: &MigrationConfig,
+    kid: &str,
+    token: &[u8],
+    report: &mut MigrationReport,
+) -> Result<(), String> {
+    let Some((ca_cert, ca_key)) = load_local_intercept_ca_pair(&cfg.http_tls_dir)? else {
+        return Ok(());
+    };
+
+    if store.get_state_value(INTERCEPT_CA_CERT_KEY)?.is_some() && !cfg.force {
+        return Err(
+            "cluster already contains TLS intercept CA material; abort migration or use --cluster-migrate-force"
+                .to_string(),
+        );
+    }
+
+    let envelope = encrypt_ca_key(kid, token, &ca_key).map_err(|err| err.to_string())?;
+    let envelope_bytes = bincode::serialize(&envelope).map_err(|err| err.to_string())?;
+
+    raft.client_write(ClusterCommand::Put {
+        key: INTERCEPT_CA_CERT_KEY.to_vec(),
+        value: ca_cert,
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+    raft.client_write(ClusterCommand::Put {
+        key: INTERCEPT_CA_ENVELOPE_KEY.to_vec(),
+        value: envelope_bytes,
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+
+    report.intercept_ca_seeded = true;
+    Ok(())
+}
+
 fn write_marker(path: &Path, node_id: &Uuid, report: &MigrationReport) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
@@ -385,6 +444,7 @@ fn verify_state(store: &ClusterStore, cfg: &MigrationConfig) -> Result<(), Strin
     verify_policies(store, cfg)?;
     verify_service_accounts(store, cfg)?;
     verify_http_ca(store, cfg)?;
+    verify_intercept_ca(store, cfg)?;
     Ok(())
 }
 
@@ -448,7 +508,7 @@ fn verify_policies(store: &ClusterStore, cfg: &MigrationConfig) -> Result<(), St
                 .read_record(id)
                 .ok()
                 .flatten()
-                .filter(|record| record.mode == PolicyMode::Enforce)
+                .filter(|record| record.mode.is_active())
                 .map(|_| id)
         });
     let cluster_active_raw = store.get_state_value(POLICY_ACTIVE_KEY)?;
@@ -571,6 +631,23 @@ fn verify_http_ca(store: &ClusterStore, cfg: &MigrationConfig) -> Result<(), Str
         .ok_or_else(|| "cluster http ca missing".to_string())?;
     if local_cert != cluster_cert {
         return Err("http ca cert mismatch between local and cluster".to_string());
+    }
+    Ok(())
+}
+
+fn verify_intercept_ca(store: &ClusterStore, cfg: &MigrationConfig) -> Result<(), String> {
+    let Some((local_cert, _local_key)) = load_local_intercept_ca_pair(&cfg.http_tls_dir)? else {
+        return Ok(());
+    };
+
+    let cluster_cert = store
+        .get_state_value(INTERCEPT_CA_CERT_KEY)?
+        .ok_or_else(|| "cluster tls intercept ca cert missing".to_string())?;
+    if local_cert != cluster_cert {
+        return Err("tls intercept ca cert mismatch between local and cluster".to_string());
+    }
+    if store.get_state_value(INTERCEPT_CA_ENVELOPE_KEY)?.is_none() {
+        return Err("cluster tls intercept ca key envelope missing".to_string());
     }
     Ok(())
 }

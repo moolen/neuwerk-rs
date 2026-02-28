@@ -1,4 +1,4 @@
-export type PolicyMode = 'audit' | 'enforce';
+export type PolicyMode = 'disabled' | 'audit' | 'enforce';
 
 export type PolicyConfig = Record<string, unknown>;
 
@@ -89,6 +89,40 @@ export interface WiretapEvent {
   node_id: string;
 }
 
+export type AuditFindingType = 'dns_deny' | 'l4_deny' | 'tls_deny' | 'icmp_deny';
+
+export interface AuditFinding {
+  finding_type: AuditFindingType;
+  policy_id?: string | null;
+  source_group: string;
+  hostname?: string | null;
+  dst_ip?: string | null;
+  dst_port?: number | null;
+  proto?: number | null;
+  fqdn?: string | null;
+  sni?: string | null;
+  icmp_type?: number | null;
+  icmp_code?: number | null;
+  query_type?: number | null;
+  first_seen: number;
+  last_seen: number;
+  count: number;
+  node_ids: string[];
+}
+
+export interface AuditNodeError {
+  node_id: string;
+  error: string;
+}
+
+export interface AuditQueryResponse {
+  items: AuditFinding[];
+  partial: boolean;
+  node_errors: AuditNodeError[];
+  nodes_queried: number;
+  nodes_responded: number;
+}
+
 export interface AuthUser {
   sub: string;
   sa_id?: string | null;
@@ -135,4 +169,10 @@ export interface CreateServiceAccountTokenRequest {
 export interface CreateServiceAccountTokenResponse {
   token: string;
   token_meta: ServiceAccountToken;
+}
+
+export interface TlsInterceptCaStatus {
+  configured: boolean;
+  source?: 'local' | 'cluster' | null;
+  fingerprint_sha256?: string | null;
 }

@@ -73,6 +73,7 @@ fn policy_with_allowlist(
             tls: None,
         },
         action: RuleAction::Allow,
+        mode: firewall::dataplane::policy::RuleMode::Enforce,
     };
 
     let group = SourceGroup {

@@ -1,7 +1,12 @@
 use std::convert::Infallible;
+use std::fs;
 use std::net::{IpAddr, SocketAddr};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
@@ -14,11 +19,14 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use axum_server::Server;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use futures::stream::SelectAll;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -27,10 +35,19 @@ use include_dir::{include_dir, Dir};
 use mime_guess::MimeGuess;
 
 use crate::controlplane::api_auth::{self, ApiKeySet};
+use crate::controlplane::audit::{AuditFinding, AuditQuery, AuditQueryResponse, AuditStore};
 use crate::controlplane::cluster::rpc::{RaftTlsConfig, WiretapClient};
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
+use crate::controlplane::cluster::{
+    bootstrap::ca::{encrypt_ca_key, CaSigner},
+    bootstrap::token::TokenStore,
+};
 use crate::controlplane::http_tls::{ensure_http_tls, HttpTlsConfig};
+use crate::controlplane::intercept_tls::{
+    load_local_intercept_ca_pair, local_intercept_ca_paths, INTERCEPT_CA_CERT_KEY,
+    INTERCEPT_CA_ENVELOPE_KEY,
+};
 use crate::controlplane::metrics::{Metrics, StatsSnapshot};
 use crate::controlplane::policy_config::PolicyMode;
 use crate::controlplane::policy_repository::{
@@ -46,6 +63,7 @@ use crate::controlplane::wiretap::{
     DnsCacheEntry, DnsMap, WiretapFilter, WiretapHub, WiretapQuery,
 };
 use crate::controlplane::PolicyStore;
+use crate::dataplane::policy::EnforcementMode;
 static UI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const AUTH_COOKIE_NAME: &str = "neuwerk_auth";
@@ -71,6 +89,8 @@ pub struct HttpApiConfig {
     pub management_ip: IpAddr,
     pub token_path: PathBuf,
     pub cluster_tls_dir: Option<PathBuf>,
+    pub tls_intercept_ca_ready: Option<Arc<AtomicBool>>,
+    pub tls_intercept_ca_generation: Option<Arc<AtomicU64>>,
 }
 
 #[derive(Clone)]
@@ -78,6 +98,7 @@ struct ApiState {
     policy_store: PolicyStore,
     local_store: PolicyDiskStore,
     service_accounts: ServiceAccountStore,
+    audit_store: Option<AuditStore>,
     cluster: Option<HttpApiCluster>,
     metrics: Metrics,
     proxy_client: Option<reqwest::Client>,
@@ -85,6 +106,10 @@ struct ApiState {
     auth_source: ApiAuthSource,
     wiretap_hub: Option<WiretapHub>,
     cluster_tls_dir: Option<PathBuf>,
+    tls_dir: PathBuf,
+    token_path: PathBuf,
+    tls_intercept_ca_ready: Option<Arc<AtomicBool>>,
+    tls_intercept_ca_generation: Option<Arc<AtomicU64>>,
     dns_map: Option<DnsMap>,
     readiness: Option<ReadinessState>,
 }
@@ -92,6 +117,20 @@ struct ApiState {
 #[derive(Clone)]
 struct AuthContext {
     claims: api_auth::JwtClaims,
+}
+
+#[derive(Debug, Serialize)]
+struct TlsInterceptCaStatus {
+    configured: bool,
+    source: Option<String>,
+    fingerprint_sha256: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TlsInterceptCaUpdateRequest {
+    ca_cert_pem: String,
+    ca_key_pem: Option<String>,
+    ca_key_der_b64: Option<String>,
 }
 
 #[derive(Clone)]
@@ -124,20 +163,32 @@ async fn wait_for_policy_activation(
             return Ok(());
         }
     }
-    if policy_store.policy_applied_generation() >= generation {
+    if policy_store.policy_applied_generation() >= generation
+        && policy_store.service_policy_applied_generation() >= generation
+    {
         return Ok(());
     }
     let deadline = Instant::now() + POLICY_ACTIVATION_TIMEOUT;
     loop {
-        if policy_store.policy_applied_generation() >= generation {
+        let dataplane_applied = policy_store.policy_applied_generation();
+        let service_applied = policy_store.service_policy_applied_generation();
+        if dataplane_applied >= generation && service_applied >= generation {
             return Ok(());
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "policy activation timed out waiting for generation {generation}"
+                "policy activation timed out waiting for generation {generation} (dataplane={dataplane_applied}, service_plane={service_applied})"
             ));
         }
         tokio::time::sleep(POLICY_ACTIVATION_POLL).await;
+    }
+}
+
+fn enforcement_mode_for_policy_mode(mode: PolicyMode) -> EnforcementMode {
+    if mode == PolicyMode::Audit {
+        EnforcementMode::Audit
+    } else {
+        EnforcementMode::Enforce
     }
 }
 
@@ -146,6 +197,7 @@ pub async fn run_http_api(
     policy_store: PolicyStore,
     local_store: PolicyDiskStore,
     cluster: Option<HttpApiCluster>,
+    audit_store: Option<AuditStore>,
     wiretap_hub: Option<WiretapHub>,
     dns_map: Option<DnsMap>,
     readiness: Option<ReadinessState>,
@@ -173,7 +225,7 @@ pub async fn run_http_api(
     .await?;
 
     let proxy_client = if cluster.is_some() {
-        let mut builder = reqwest::Client::builder();
+        let mut builder = reqwest::Client::builder().pool_max_idle_per_host(0);
         if !tls.ca_pem.is_empty() {
             let ca = reqwest::Certificate::from_pem(&tls.ca_pem)
                 .map_err(|err| format!("invalid http ca pem: {err}"))?;
@@ -197,6 +249,7 @@ pub async fn run_http_api(
         policy_store,
         local_store,
         service_accounts,
+        audit_store,
         cluster,
         metrics: metrics.clone(),
         proxy_client,
@@ -204,6 +257,10 @@ pub async fn run_http_api(
         auth_source,
         wiretap_hub,
         cluster_tls_dir: cfg.cluster_tls_dir.clone(),
+        tls_dir: cfg.tls_dir.clone(),
+        token_path: cfg.token_path.clone(),
+        tls_intercept_ca_ready: cfg.tls_intercept_ca_ready.clone(),
+        tls_intercept_ca_generation: cfg.tls_intercept_ca_generation.clone(),
         dns_map,
         readiness,
     };
@@ -238,8 +295,16 @@ pub async fn run_http_api(
             "/service-accounts/:id/tokens/:token_id",
             delete(revoke_service_account_token),
         )
+        .route("/audit/findings", get(audit_findings))
+        .route("/audit/findings/local", get(audit_findings_local))
         .route("/wiretap/stream", get(wiretap_stream))
         .route("/dns-cache", get(list_dns_cache))
+        .route(
+            "/settings/tls-intercept-ca",
+            get(get_tls_intercept_ca)
+                .put(put_tls_intercept_ca)
+                .delete(delete_tls_intercept_ca),
+        )
         .route("/stats", get(stats_handler))
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
@@ -501,11 +566,12 @@ async fn create_policy(State(state): State<ApiState>, mut request: Request) -> R
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
     }
 
-    if record.mode == PolicyMode::Enforce {
+    if record.mode.is_active() {
         let generation = match state.policy_store.rebuild(
             compiled.groups,
             compiled.dns_policy,
             compiled.default_policy,
+            enforcement_mode_for_policy_mode(record.mode),
         ) {
             Ok(generation) => generation,
             Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
@@ -526,7 +592,7 @@ async fn create_policy(State(state): State<ApiState>, mut request: Request) -> R
         if let Err(err) = persist_cluster_policy(cluster, &record).await {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, err);
         }
-        if record.mode != PolicyMode::Enforce {
+        if !record.mode.is_active() {
             if let Ok(Some(active)) = read_cluster_active(&cluster.store) {
                 if active.id == record.id {
                     let cmd = ClusterCommand::Delete {
@@ -580,11 +646,12 @@ async fn update_policy(
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
     }
 
-    if record.mode == PolicyMode::Enforce {
+    if record.mode.is_active() {
         let generation = match state.policy_store.rebuild(
             compiled.groups,
             compiled.dns_policy,
             compiled.default_policy,
+            enforcement_mode_for_policy_mode(record.mode),
         ) {
             Ok(generation) => generation,
             Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
@@ -608,6 +675,7 @@ async fn update_policy(
                 Vec::new(),
                 crate::controlplane::policy_config::DnsPolicy::new(Vec::new()),
                 None,
+                EnforcementMode::Enforce,
             ) {
                 Ok(generation) => generation,
                 Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
@@ -659,6 +727,7 @@ async fn delete_policy(
                 Vec::new(),
                 crate::controlplane::policy_config::DnsPolicy::new(Vec::new()),
                 None,
+                EnforcementMode::Enforce,
             ) {
                 Ok(generation) => generation,
                 Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
@@ -686,6 +755,211 @@ async fn delete_policy(
     StatusCode::NO_CONTENT.into_response()
 }
 
+async fn audit_findings(
+    State(state): State<ApiState>,
+    Query(query): Query<AuditQuery>,
+    headers: HeaderMap,
+    request: Request,
+) -> Response {
+    let _request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    if state.cluster.is_none() {
+        return audit_findings_local_response(&state, &query);
+    }
+    audit_findings_leader_response(&state, query, &headers).await
+}
+
+async fn audit_findings_local(
+    State(state): State<ApiState>,
+    Query(query): Query<AuditQuery>,
+    _request: Request,
+) -> Response {
+    // Intentionally bypass leader proxying so cluster leaders can fan out to
+    // every node and aggregate local audit stores.
+    audit_findings_local_response(&state, &query)
+}
+
+fn audit_findings_local_response(state: &ApiState, query: &AuditQuery) -> Response {
+    let Some(audit_store) = &state.audit_store else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "audit store unavailable".to_string(),
+        );
+    };
+    let items = match audit_store.query(query) {
+        Ok(items) => items,
+        Err(err) => return error_response(StatusCode::BAD_REQUEST, err),
+    };
+    Json(AuditQueryResponse {
+        items,
+        partial: false,
+        node_errors: Vec::new(),
+        nodes_queried: 1,
+        nodes_responded: 1,
+    })
+    .into_response()
+}
+
+async fn audit_findings_leader_response(
+    state: &ApiState,
+    query: AuditQuery,
+    headers: &HeaderMap,
+) -> Response {
+    let local_items = match &state.audit_store {
+        Some(store) => match store.query(&query) {
+            Ok(items) => items,
+            Err(err) => return error_response(StatusCode::BAD_REQUEST, err),
+        },
+        None => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "audit store unavailable".to_string(),
+            )
+        }
+    };
+
+    let Some(cluster) = &state.cluster else {
+        return Json(AuditQueryResponse {
+            items: local_items,
+            partial: false,
+            node_errors: Vec::new(),
+            nodes_queried: 1,
+            nodes_responded: 1,
+        })
+        .into_response();
+    };
+
+    let client = match &state.proxy_client {
+        Some(client) => client,
+        None => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "proxy client missing".to_string(),
+            )
+        }
+    };
+
+    let metrics = cluster.raft.metrics().borrow().clone();
+    let query_string = match encode_audit_query(&query) {
+        Ok(value) => value,
+        Err(err) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("audit query encode failed: {err}"),
+            )
+        }
+    };
+
+    let mut sources: Vec<Vec<AuditFinding>> = vec![local_items];
+    let mut node_errors = Vec::new();
+    let mut nodes_queried = 1usize;
+    let mut nodes_responded = 1usize;
+    for (node_id, node) in metrics.membership_config.membership().nodes() {
+        if *node_id == metrics.id {
+            continue;
+        }
+        nodes_queried = nodes_queried.saturating_add(1);
+        let addr = match node.addr.parse::<SocketAddr>() {
+            Ok(addr) => addr,
+            Err(err) => {
+                node_errors.push(crate::controlplane::audit::NodeQueryError {
+                    node_id: node_id.to_string(),
+                    error: format!("invalid cluster node addr: {err}"),
+                });
+                continue;
+            }
+        };
+        let peer_http_addr = SocketAddr::new(addr.ip(), state.http_port);
+        let path = if query_string.is_empty() {
+            format!("https://{peer_http_addr}/api/v1/audit/findings/local")
+        } else {
+            format!("https://{peer_http_addr}/api/v1/audit/findings/local?{query_string}")
+        };
+        let mut req = client.get(path);
+        if let Some(value) = headers.get(AUTHORIZATION) {
+            req = req.header(AUTHORIZATION, value);
+        }
+        if let Some(value) = headers.get(COOKIE) {
+            req = req.header(COOKIE, value);
+        }
+
+        let response = match req.send().await {
+            Ok(response) => response,
+            Err(err) => {
+                node_errors.push(crate::controlplane::audit::NodeQueryError {
+                    node_id: node_id.to_string(),
+                    error: err.to_string(),
+                });
+                continue;
+            }
+        };
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "failed to read error body".to_string());
+            node_errors.push(crate::controlplane::audit::NodeQueryError {
+                node_id: node_id.to_string(),
+                error: format!("status {status}: {body}"),
+            });
+            continue;
+        }
+        let payload: AuditQueryResponse = match response.json().await {
+            Ok(payload) => payload,
+            Err(err) => {
+                node_errors.push(crate::controlplane::audit::NodeQueryError {
+                    node_id: node_id.to_string(),
+                    error: format!("invalid response payload: {err}"),
+                });
+                continue;
+            }
+        };
+        sources.push(payload.items);
+        nodes_responded = nodes_responded.saturating_add(1);
+    }
+
+    let mut items = AuditStore::merge_findings(sources);
+    let limit = query.limit.unwrap_or(500).clamp(1, 10_000);
+    items.truncate(limit);
+
+    Json(AuditQueryResponse {
+        items,
+        partial: !node_errors.is_empty(),
+        node_errors,
+        nodes_queried,
+        nodes_responded,
+    })
+    .into_response()
+}
+
+fn encode_audit_query(query: &AuditQuery) -> Result<String, String> {
+    let mut params: Vec<(String, String)> = Vec::new();
+    if let Some(policy_id) = &query.policy_id {
+        if !policy_id.trim().is_empty() {
+            params.push(("policy_id".to_string(), policy_id.clone()));
+        }
+    }
+    for finding_type in &query.finding_type {
+        params.push(("finding_type".to_string(), finding_type.clone()));
+    }
+    for source_group in &query.source_group {
+        params.push(("source_group".to_string(), source_group.clone()));
+    }
+    if let Some(since) = query.since {
+        params.push(("since".to_string(), since.to_string()));
+    }
+    if let Some(until) = query.until {
+        params.push(("until".to_string(), until.to_string()));
+    }
+    if let Some(limit) = query.limit {
+        params.push(("limit".to_string(), limit.to_string()));
+    }
+    serde_urlencoded::to_string(params).map_err(|err| err.to_string())
+}
+
 async fn list_dns_cache(State(state): State<ApiState>, request: Request) -> Response {
     let _request = match maybe_proxy(&state, request).await {
         Ok(request) => request,
@@ -699,6 +973,202 @@ async fn list_dns_cache(State(state): State<ApiState>, request: Request) -> Resp
     };
     let entries: Vec<DnsCacheEntry> = dns_map.snapshot_grouped();
     Json(json!({ "entries": entries })).into_response()
+}
+
+async fn get_tls_intercept_ca(State(state): State<ApiState>, request: Request) -> Response {
+    let _request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+
+    let (configured, source, cert) = if let Some(cluster) = &state.cluster {
+        let cert = match cluster.store.get_state_value(INTERCEPT_CA_CERT_KEY) {
+            Ok(value) => value,
+            Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+        };
+        let envelope = match cluster.store.get_state_value(INTERCEPT_CA_ENVELOPE_KEY) {
+            Ok(value) => value,
+            Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+        };
+        match (cert, envelope) {
+            (None, None) => (false, None, None),
+            (Some(cert), Some(_)) => (true, Some("cluster".to_string()), Some(cert)),
+            _ => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "tls intercept ca material is incomplete".to_string(),
+                );
+            }
+        }
+    } else {
+        match load_local_intercept_ca_pair(&state.tls_dir) {
+            Ok(Some((cert, _key))) => (true, Some("local".to_string()), Some(cert)),
+            Ok(None) => (false, None, None),
+            Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+        }
+    };
+
+    let fingerprint_sha256 = cert.map(|cert| sha256_hex(&cert));
+    Json(TlsInterceptCaStatus {
+        configured,
+        source,
+        fingerprint_sha256,
+    })
+    .into_response()
+}
+
+async fn put_tls_intercept_ca(State(state): State<ApiState>, mut request: Request) -> Response {
+    request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let body = match read_body_limited(request.into_body()).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let update: TlsInterceptCaUpdateRequest = match serde_json::from_slice(&body) {
+        Ok(update) => update,
+        Err(err) => return error_response(StatusCode::BAD_REQUEST, format!("invalid json: {err}")),
+    };
+    let cert_pem = update.ca_cert_pem.trim().as_bytes().to_vec();
+    if cert_pem.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "ca_cert_pem is required".to_string(),
+        );
+    }
+    let key_der = match parse_tls_intercept_ca_key_der(&update) {
+        Ok(key) => key,
+        Err(err) => return error_response(StatusCode::BAD_REQUEST, err),
+    };
+    if let Err(err) = CaSigner::from_cert_and_key(&cert_pem, &key_der) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!("invalid tls intercept ca cert/key pair: {err}"),
+        );
+    }
+
+    if let Some(cluster) = &state.cluster {
+        let token_store = match TokenStore::load(&state.token_path) {
+            Ok(store) => store,
+            Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        };
+        let token = match token_store.current(OffsetDateTime::now_utc()) {
+            Ok(token) => token,
+            Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        };
+        let envelope = match encrypt_ca_key(&token.kid, &token.token, &key_der) {
+            Ok(envelope) => envelope,
+            Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        };
+        let encoded = match bincode::serialize(&envelope) {
+            Ok(value) => value,
+            Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        };
+        let cmd = ClusterCommand::Put {
+            key: INTERCEPT_CA_CERT_KEY.to_vec(),
+            value: cert_pem.clone(),
+        };
+        if let Err(err) = cluster.raft.client_write(cmd).await {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+        }
+        let cmd = ClusterCommand::Put {
+            key: INTERCEPT_CA_ENVELOPE_KEY.to_vec(),
+            value: encoded,
+        };
+        if let Err(err) = cluster.raft.client_write(cmd).await {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+        }
+    } else {
+        let (cert_path, key_path) = local_intercept_ca_paths(&state.tls_dir);
+        if let Some(parent) = cert_path.parent() {
+            if let Err(err) = fs::create_dir_all(parent) {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+            }
+        }
+        if let Some(parent) = key_path.parent() {
+            if let Err(err) = fs::create_dir_all(parent) {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+            }
+        }
+        if let Err(err) = fs::write(&cert_path, &cert_pem) {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+        }
+        if let Err(err) = fs::write(&key_path, &key_der) {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+        }
+        #[cfg(unix)]
+        {
+            let _ = fs::set_permissions(&cert_path, fs::Permissions::from_mode(0o644));
+            let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600));
+        }
+    }
+
+    if let Some(ready) = &state.tls_intercept_ca_ready {
+        ready.store(true, Ordering::Release);
+    }
+    if let Some(generation) = &state.tls_intercept_ca_generation {
+        generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    Json(TlsInterceptCaStatus {
+        configured: true,
+        source: if state.cluster.is_some() {
+            Some("cluster".to_string())
+        } else {
+            Some("local".to_string())
+        },
+        fingerprint_sha256: Some(sha256_hex(&cert_pem)),
+    })
+    .into_response()
+}
+
+async fn delete_tls_intercept_ca(State(state): State<ApiState>, request: Request) -> Response {
+    let _request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+
+    if let Some(cluster) = &state.cluster {
+        let cmd = ClusterCommand::Delete {
+            key: INTERCEPT_CA_CERT_KEY.to_vec(),
+        };
+        if let Err(err) = cluster.raft.client_write(cmd).await {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+        }
+        let cmd = ClusterCommand::Delete {
+            key: INTERCEPT_CA_ENVELOPE_KEY.to_vec(),
+        };
+        if let Err(err) = cluster.raft.client_write(cmd).await {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+        }
+    } else {
+        let (cert_path, key_path) = local_intercept_ca_paths(&state.tls_dir);
+        if let Err(err) = fs::remove_file(&cert_path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+            }
+        }
+        if let Err(err) = fs::remove_file(&key_path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
+            }
+        }
+    }
+
+    if let Some(ready) = &state.tls_intercept_ca_ready {
+        ready.store(false, Ordering::Release);
+    }
+    if let Some(generation) = &state.tls_intercept_ca_generation {
+        generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    Json(TlsInterceptCaStatus {
+        configured: false,
+        source: None,
+        fingerprint_sha256: None,
+    })
+    .into_response()
 }
 
 async fn stats_handler(State(state): State<ApiState>, request: Request) -> Response {
@@ -1670,6 +2140,7 @@ mod tests {
             policy_store,
             local_store,
             service_accounts,
+            audit_store: None,
             cluster: None,
             metrics,
             proxy_client: Some(client),
@@ -1677,6 +2148,10 @@ mod tests {
             auth_source: ApiAuthSource::Local(dir.path().join("auth.json")),
             wiretap_hub: None,
             cluster_tls_dir: None,
+            tls_dir: dir.path().join("http-tls"),
+            token_path: dir.path().join("bootstrap-token"),
+            tls_intercept_ca_ready: None,
+            tls_intercept_ca_generation: None,
             dns_map: None,
             readiness: None,
         };
@@ -1716,6 +2191,7 @@ mod tests {
             policy_store,
             local_store,
             service_accounts,
+            audit_store: None,
             cluster: None,
             metrics: metrics.clone(),
             proxy_client: None,
@@ -1723,6 +2199,10 @@ mod tests {
             auth_source: ApiAuthSource::Local(keyset_path.clone()),
             wiretap_hub: None,
             cluster_tls_dir: None,
+            tls_dir: tls_dir.clone(),
+            token_path: dir.path().join("bootstrap-token"),
+            tls_intercept_ca_ready: None,
+            tls_intercept_ca_generation: None,
             dns_map: None,
             readiness: None,
         };
@@ -1944,7 +2424,7 @@ async fn persist_cluster_policy(
         .await
         .map_err(|err| err.to_string())?;
 
-    if record.mode == PolicyMode::Enforce {
+    if record.mode.is_active() {
         let active = PolicyActive { id: record.id };
         let active_bytes = serde_json::to_vec(&active).map_err(|err| err.to_string())?;
         let cmd = ClusterCommand::Put {
@@ -1956,6 +2436,17 @@ async fn persist_cluster_policy(
             .client_write(cmd)
             .await
             .map_err(|err| err.to_string())?;
+    } else if let Ok(Some(active)) = read_cluster_active(&cluster.store) {
+        if active.id == record.id {
+            let cmd = ClusterCommand::Delete {
+                key: POLICY_ACTIVE_KEY.to_vec(),
+            };
+            cluster
+                .raft
+                .client_write(cmd)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
     }
 
     Ok(())
@@ -2016,6 +2507,34 @@ fn read_cluster_active(store: &ClusterStore) -> Result<Option<PolicyActive>, Str
             .map_err(|err| err.to_string()),
         None => Ok(None),
     }
+}
+
+fn parse_tls_intercept_ca_key_der(update: &TlsInterceptCaUpdateRequest) -> Result<Vec<u8>, String> {
+    match (
+        update.ca_key_pem.as_deref(),
+        update.ca_key_der_b64.as_deref(),
+    ) {
+        (Some(_), Some(_)) => {
+            Err("provide either ca_key_pem or ca_key_der_b64, not both".to_string())
+        }
+        (Some(key_pem), None) => {
+            let mut reader = std::io::BufReader::new(key_pem.as_bytes());
+            let key = rustls_pemfile::private_key(&mut reader)
+                .map_err(|err| format!("parse ca_key_pem failed: {err}"))?
+                .ok_or_else(|| "ca_key_pem does not contain a private key".to_string())?;
+            Ok(key.secret_der().to_vec())
+        }
+        (None, Some(key_der_b64)) => BASE64_STANDARD
+            .decode(key_der_b64)
+            .map_err(|err| format!("invalid ca_key_der_b64: {err}")),
+        (None, None) => Err("ca_key_pem or ca_key_der_b64 is required".to_string()),
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
 }
 
 fn parse_uuid(value: &str, field: &str) -> Result<Uuid, Response> {

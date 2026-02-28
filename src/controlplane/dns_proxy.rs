@@ -2,42 +2,105 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tokio::net::UdpSocket;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
+use crate::controlplane::audit::{
+    AuditEvent as ControlplaneAuditEvent, AuditFindingType, AuditStore,
+};
 use crate::controlplane::metrics::Metrics;
 use crate::controlplane::policy_config::DnsPolicy;
 use crate::controlplane::wiretap::DnsMap;
+use crate::controlplane::PolicyStore;
 use crate::dataplane::policy::DynamicIpSetV4;
+
+static DNS_LOGS: AtomicUsize = AtomicUsize::new(0);
+const DNS_UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub async fn run_dns_proxy(
     bind_addr: SocketAddr,
-    upstream_addr: SocketAddr,
+    upstream_addrs: Vec<SocketAddr>,
     allowlist: DynamicIpSetV4,
     policy: std::sync::Arc<std::sync::RwLock<DnsPolicy>>,
     dns_map: DnsMap,
     metrics: Metrics,
+    policy_store: Option<PolicyStore>,
+    audit_store: Option<AuditStore>,
+    node_id: String,
+    mut startup_status_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> io::Result<()> {
+    fn report_startup(
+        tx: &mut Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+        status: Result<(), String>,
+    ) {
+        if let Some(sender) = tx.take() {
+            let _ = sender.send(status);
+        }
+    }
+
+    if upstream_addrs.is_empty() {
+        report_startup(
+            &mut startup_status_tx,
+            Err("dns proxy requires at least one upstream".to_string()),
+        );
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "dns proxy requires at least one upstream",
+        ));
+    }
+    let upstream_addrs = std::sync::Arc::new(upstream_addrs);
     eprintln!("dns proxy: binding udp {}", bind_addr);
     let listen = match UdpSocket::bind(bind_addr).await {
         Ok(sock) => sock,
         Err(err) => {
             eprintln!("dns proxy: bind {} failed: {err}", bind_addr);
+            report_startup(&mut startup_status_tx, Err(err.to_string()));
             return Err(err);
         }
     };
-    let upstream = UdpSocket::bind("0.0.0.0:0").await?;
+    let tcp_listen = match TcpListener::bind(bind_addr).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            report_startup(&mut startup_status_tx, Err(err.to_string()));
+            return Err(err);
+        }
+    };
     eprintln!("dns proxy: listening on {}", bind_addr);
+    report_startup(&mut startup_status_tx, Ok(()));
+
+    let tcp_policy = policy.clone();
+    let tcp_allowlist = allowlist.clone();
+    let tcp_dns_map = dns_map.clone();
+    let tcp_metrics = metrics.clone();
+    let tcp_upstreams = upstream_addrs.clone();
+    let tcp_policy_store = policy_store.clone();
+    let tcp_audit_store = audit_store.clone();
+    let tcp_node_id = node_id.clone();
+    tokio::spawn(async move {
+        if let Err(err) = run_dns_proxy_tcp(
+            tcp_listen,
+            tcp_upstreams,
+            tcp_allowlist,
+            tcp_policy,
+            tcp_dns_map,
+            tcp_metrics,
+            tcp_policy_store,
+            tcp_audit_store,
+            tcp_node_id,
+        )
+        .await
+        {
+            eprintln!("dns proxy: tcp listener failed: {err}");
+        }
+    });
 
     let mut buf = vec![0u8; 2048];
-    let mut upstream_buf = vec![0u8; 2048];
-
-    static DNS_LOGS: AtomicUsize = AtomicUsize::new(0);
 
     loop {
         let (len, peer) = listen.recv_from(&mut buf).await?;
         let request = &buf[..len];
 
-        let (allowed, question, source_group) = match peer.ip() {
+        let (allowed, question, source_group, would_deny) = match peer.ip() {
             IpAddr::V4(src_ip) => {
                 let question = match parse_dns_question(request) {
                     Some(question) => question,
@@ -55,30 +118,41 @@ pub async fn run_dns_proxy(
                         continue;
                     }
                 };
-                let hostname = question.name.clone();
-                let (allowed, source_group) = match policy.read() {
-                    Ok(lock) => lock.evaluate_with_source_group(src_ip, &hostname),
-                    Err(_) => (false, None),
-                };
-                (
-                    allowed,
-                    question,
-                    source_group.unwrap_or_else(|| "default".to_string()),
-                )
+                let (allowed, would_deny, source_group) = evaluate_dns_policy_decision(
+                    &policy,
+                    policy_store.as_ref(),
+                    src_ip,
+                    &question.name,
+                );
+                (allowed, question, source_group, would_deny)
             }
-            _ => (false, DnsQuestion::empty(), "default".to_string()),
+            _ => (false, DnsQuestion::empty(), "default".to_string(), false),
         };
 
         if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
             eprintln!(
-                "dns proxy: query from={} name={} allowed={} group={}",
-                peer, question.name, allowed, source_group
+                "dns proxy: query from={} name={} allowed={} would_deny={} group={}",
+                peer, question.name, allowed, would_deny, source_group
+            );
+        }
+
+        if matches!(peer.ip(), IpAddr::V4(_)) && would_deny {
+            ingest_dns_deny_audit(
+                audit_store.as_ref(),
+                policy_store.as_ref(),
+                &node_id,
+                &source_group,
+                &question,
             );
         }
 
         if !allowed {
             let reason = if matches!(peer.ip(), IpAddr::V4(_)) {
-                "policy_deny"
+                if would_deny {
+                    "policy_deny"
+                } else {
+                    "policy_unavailable"
+                }
             } else {
                 "unsupported_src_ip"
             };
@@ -89,41 +163,37 @@ pub async fn run_dns_proxy(
             continue;
         }
 
-        let start = Instant::now();
-        if let Err(err) = upstream.send_to(request, upstream_addr).await {
-            metrics.observe_dns_query("deny", "upstream_error", &source_group);
-            return Err(err);
-        }
-
-        let (resp_len, resp_peer) = match upstream.recv_from(&mut upstream_buf).await {
-            Ok(value) => value,
-            Err(err) => {
+        let response = match forward_dns_query_udp(
+            request,
+            &question,
+            upstream_addrs.as_ref().as_slice(),
+            &source_group,
+            &metrics,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(UpstreamQueryError::Mismatch) => {
+                metrics.observe_dns_query("deny", "upstream_mismatch", &source_group);
+                metrics.observe_dns_nxdomain("upstream_mismatch");
+                let response = build_nxdomain(request);
+                listen.send_to(&response, peer).await?;
+                continue;
+            }
+            Err(UpstreamQueryError::Transport) => {
                 metrics.observe_dns_query("deny", "upstream_error", &source_group);
-                return Err(err);
+                metrics.observe_dns_nxdomain("upstream_error");
+                let response = build_nxdomain(request);
+                listen.send_to(&response, peer).await?;
+                continue;
             }
         };
-        if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-            eprintln!(
-                "dns proxy: upstream response from={} bytes={} group={}",
-                resp_peer, resp_len, source_group
-            );
-        }
-        let response = &upstream_buf[..resp_len];
-        if let Err(reason) = validate_dns_response(&question, response, resp_peer, upstream_addr) {
-            metrics.observe_dns_query("deny", "upstream_mismatch", &source_group);
-            metrics.observe_dns_upstream_mismatch(reason.as_label(), &source_group);
-            metrics.observe_dns_nxdomain("upstream_mismatch");
-            let response = build_nxdomain(request);
-            listen.send_to(&response, peer).await?;
-            continue;
-        }
-        metrics.observe_dns_upstream_rtt(&source_group, start.elapsed());
         metrics.observe_dns_query("allow", "policy_allow", &source_group);
-        if is_nxdomain(response) {
+        if is_nxdomain(&response) {
             metrics.observe_dns_nxdomain("upstream");
         }
 
-        let ips = extract_ips_from_dns_response(response);
+        let ips = extract_ips_from_dns_response(&response);
         if !ips.is_empty() {
             let mut v4s = Vec::new();
             for ip in ips {
@@ -141,8 +211,338 @@ pub async fn run_dns_proxy(
             }
         }
 
-        listen.send_to(response, peer).await?;
+        listen.send_to(&response, peer).await?;
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpstreamQueryError {
+    Transport,
+    Mismatch,
+}
+
+async fn forward_dns_query_udp(
+    request: &[u8],
+    question: &DnsQuestion,
+    upstream_addrs: &[SocketAddr],
+    source_group: &str,
+    metrics: &Metrics,
+) -> Result<Vec<u8>, UpstreamQueryError> {
+    let mut saw_transport_error = false;
+    let mut saw_mismatch = false;
+
+    for upstream_addr in upstream_addrs {
+        let upstream = match UdpSocket::bind("0.0.0.0:0").await {
+            Ok(sock) => sock,
+            Err(_) => {
+                saw_transport_error = true;
+                continue;
+            }
+        };
+
+        let start = Instant::now();
+        if upstream.send_to(request, upstream_addr).await.is_err() {
+            saw_transport_error = true;
+            continue;
+        }
+
+        let mut upstream_buf = vec![0u8; 2048];
+        let recv =
+            tokio::time::timeout(DNS_UPSTREAM_TIMEOUT, upstream.recv_from(&mut upstream_buf)).await;
+        let (resp_len, resp_peer) = match recv {
+            Ok(Ok(value)) => value,
+            Ok(Err(_)) | Err(_) => {
+                saw_transport_error = true;
+                continue;
+            }
+        };
+
+        if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
+            eprintln!(
+                "dns proxy: upstream response from={} bytes={} group={}",
+                resp_peer, resp_len, source_group
+            );
+        }
+
+        let response = &upstream_buf[..resp_len];
+        if let Err(reason) = validate_dns_response(question, response, resp_peer, *upstream_addr) {
+            saw_mismatch = true;
+            metrics.observe_dns_upstream_mismatch(reason.as_label(), source_group);
+            continue;
+        }
+
+        metrics.observe_dns_upstream_rtt(source_group, start.elapsed());
+        return Ok(response.to_vec());
+    }
+
+    if saw_mismatch {
+        Err(UpstreamQueryError::Mismatch)
+    } else if saw_transport_error {
+        Err(UpstreamQueryError::Transport)
+    } else {
+        Err(UpstreamQueryError::Transport)
+    }
+}
+
+async fn run_dns_proxy_tcp(
+    listener: TcpListener,
+    upstream_addrs: std::sync::Arc<Vec<SocketAddr>>,
+    allowlist: DynamicIpSetV4,
+    policy: std::sync::Arc<std::sync::RwLock<DnsPolicy>>,
+    dns_map: DnsMap,
+    metrics: Metrics,
+    policy_store: Option<PolicyStore>,
+    audit_store: Option<AuditStore>,
+    node_id: String,
+) -> io::Result<()> {
+    loop {
+        let (stream, peer) = listener.accept().await?;
+        let allowlist = allowlist.clone();
+        let policy = policy.clone();
+        let dns_map = dns_map.clone();
+        let metrics = metrics.clone();
+        let upstream_addrs = upstream_addrs.clone();
+        let policy_store = policy_store.clone();
+        let audit_store = audit_store.clone();
+        let node_id = node_id.clone();
+        tokio::spawn(async move {
+            if let Err(err) = handle_dns_tcp_client(
+                stream,
+                peer,
+                upstream_addrs,
+                allowlist,
+                policy,
+                dns_map,
+                metrics,
+                policy_store,
+                audit_store,
+                node_id,
+            )
+            .await
+            {
+                eprintln!("dns proxy: tcp client {} failed: {err}", peer);
+            }
+        });
+    }
+}
+
+async fn handle_dns_tcp_client(
+    mut stream: TcpStream,
+    peer: SocketAddr,
+    upstream_addrs: std::sync::Arc<Vec<SocketAddr>>,
+    allowlist: DynamicIpSetV4,
+    policy: std::sync::Arc<std::sync::RwLock<DnsPolicy>>,
+    dns_map: DnsMap,
+    metrics: Metrics,
+    policy_store: Option<PolicyStore>,
+    audit_store: Option<AuditStore>,
+    node_id: String,
+) -> Result<(), String> {
+    loop {
+        let mut len_buf = [0u8; 2];
+        match stream.read_exact(&mut len_buf).await {
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(err) => return Err(format!("read tcp length failed: {err}")),
+        }
+        let req_len = u16::from_be_bytes(len_buf) as usize;
+        if req_len == 0 {
+            return Ok(());
+        }
+        let mut request = vec![0u8; req_len];
+        stream
+            .read_exact(&mut request)
+            .await
+            .map_err(|e| format!("read tcp query failed: {e}"))?;
+
+        let (allowed, question, source_group, would_deny) = match peer.ip() {
+            IpAddr::V4(src_ip) => {
+                let question = match parse_dns_question(&request) {
+                    Some(question) => question,
+                    None => {
+                        let source_group = match policy.read() {
+                            Ok(lock) => lock
+                                .source_group_for_ip(src_ip)
+                                .unwrap_or_else(|| "default".to_string()),
+                            Err(_) => "default".to_string(),
+                        };
+                        metrics.observe_dns_query("deny", "parse_error", &source_group);
+                        metrics.observe_dns_nxdomain("policy");
+                        let response = build_nxdomain(&request);
+                        write_dns_tcp_response(&mut stream, &response).await?;
+                        continue;
+                    }
+                };
+                let (allowed, would_deny, source_group) = evaluate_dns_policy_decision(
+                    &policy,
+                    policy_store.as_ref(),
+                    src_ip,
+                    &question.name,
+                );
+                (allowed, question, source_group, would_deny)
+            }
+            _ => (false, DnsQuestion::empty(), "default".to_string(), false),
+        };
+
+        if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
+            eprintln!(
+                "dns proxy: tcp query from={} name={} allowed={} would_deny={} group={}",
+                peer, question.name, allowed, would_deny, source_group
+            );
+        }
+
+        if matches!(peer.ip(), IpAddr::V4(_)) && would_deny {
+            ingest_dns_deny_audit(
+                audit_store.as_ref(),
+                policy_store.as_ref(),
+                &node_id,
+                &source_group,
+                &question,
+            );
+        }
+
+        if !allowed {
+            let reason = if matches!(peer.ip(), IpAddr::V4(_)) {
+                if would_deny {
+                    "policy_deny"
+                } else {
+                    "policy_unavailable"
+                }
+            } else {
+                "unsupported_src_ip"
+            };
+            metrics.observe_dns_query("deny", reason, &source_group);
+            metrics.observe_dns_nxdomain("policy");
+            let response = build_nxdomain(&request);
+            write_dns_tcp_response(&mut stream, &response).await?;
+            continue;
+        }
+
+        let response = match forward_dns_query_udp(
+            &request,
+            &question,
+            upstream_addrs.as_slice(),
+            &source_group,
+            &metrics,
+        )
+        .await
+        {
+            Ok(response) => {
+                metrics.observe_dns_query("allow", "policy_allow", &source_group);
+                if is_nxdomain(&response) {
+                    metrics.observe_dns_nxdomain("upstream");
+                }
+                response
+            }
+            Err(UpstreamQueryError::Mismatch) => {
+                metrics.observe_dns_query("deny", "upstream_mismatch", &source_group);
+                metrics.observe_dns_nxdomain("upstream_mismatch");
+                build_nxdomain(&request)
+            }
+            Err(UpstreamQueryError::Transport) => {
+                metrics.observe_dns_query("deny", "upstream_error", &source_group);
+                metrics.observe_dns_nxdomain("upstream_error");
+                build_nxdomain(&request)
+            }
+        };
+
+        if !is_nxdomain(&response) {
+            let ips = extract_ips_from_dns_response(&response);
+            if !ips.is_empty() {
+                let mut v4s = Vec::new();
+                for ip in ips {
+                    if let IpAddr::V4(v4) = ip {
+                        v4s.push(v4);
+                    }
+                }
+                if !v4s.is_empty() {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    dns_map.insert_many(&question.name, &v4s, now);
+                    allowlist.insert_many(v4s);
+                }
+            }
+        }
+
+        write_dns_tcp_response(&mut stream, &response).await?;
+    }
+}
+
+fn evaluate_dns_policy_decision(
+    policy: &std::sync::Arc<std::sync::RwLock<DnsPolicy>>,
+    policy_store: Option<&PolicyStore>,
+    src_ip: Ipv4Addr,
+    hostname: &str,
+) -> (bool, bool, String) {
+    let audit_passthrough = policy_store
+        .map(|store| store.enforcement_mode() == crate::dataplane::policy::EnforcementMode::Audit)
+        .unwrap_or(false);
+    let lock = match policy.read() {
+        Ok(lock) => lock,
+        Err(_) => return (false, false, "default".to_string()),
+    };
+    let (raw_allowed, enforce_group) = lock.evaluate_with_source_group(src_ip, hostname);
+    let (audit_rule_denied, audit_group) =
+        lock.evaluate_audit_denied_with_source_group(src_ip, hostname);
+    let source_group = enforce_group
+        .or(audit_group)
+        .unwrap_or_else(|| "default".to_string());
+    let would_deny = !raw_allowed || audit_rule_denied;
+    let allowed = raw_allowed || (audit_passthrough && !raw_allowed);
+    (allowed, would_deny, source_group)
+}
+
+async fn write_dns_tcp_response(stream: &mut TcpStream, response: &[u8]) -> Result<(), String> {
+    if response.len() > u16::MAX as usize {
+        return Err("tcp dns response too large".to_string());
+    }
+    let len = (response.len() as u16).to_be_bytes();
+    stream
+        .write_all(&len)
+        .await
+        .map_err(|e| format!("write tcp response length failed: {e}"))?;
+    stream
+        .write_all(response)
+        .await
+        .map_err(|e| format!("write tcp response body failed: {e}"))?;
+    Ok(())
+}
+
+fn ingest_dns_deny_audit(
+    audit_store: Option<&AuditStore>,
+    policy_store: Option<&PolicyStore>,
+    node_id: &str,
+    source_group: &str,
+    question: &DnsQuestion,
+) {
+    let Some(audit_store) = audit_store else {
+        return;
+    };
+    if question.name.is_empty() {
+        return;
+    }
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let event = ControlplaneAuditEvent {
+        finding_type: AuditFindingType::DnsDeny,
+        source_group: source_group.to_string(),
+        hostname: Some(question.name.clone()),
+        dst_ip: None,
+        dst_port: None,
+        proto: None,
+        fqdn: Some(question.name.clone()),
+        sni: None,
+        icmp_type: None,
+        icmp_code: None,
+        query_type: Some(question.qtype),
+        observed_at,
+    };
+    let policy_id = policy_store.and_then(|store| store.active_policy_id());
+    audit_store.ingest(event, policy_id, node_id);
 }
 
 #[derive(Debug, Clone)]
@@ -429,6 +829,47 @@ fn read_u32(buf: &[u8], idx: usize) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controlplane::metrics::Metrics;
+    use crate::controlplane::policy_config::{DnsRule, DnsSourceGroup};
+    use crate::controlplane::PolicyStore;
+    use crate::dataplane::policy::{
+        DefaultPolicy, EnforcementMode, IpSetV4, RuleAction, RuleMode as DataplaneRuleMode,
+    };
+    use regex::Regex;
+    use tokio::net::UdpSocket;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum UpstreamMode {
+        Valid(Ipv4Addr),
+        TxIdMismatch(Ipv4Addr),
+        QuestionMismatch(Ipv4Addr),
+    }
+
+    async fn spawn_test_upstream(mode: UpstreamMode) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let mut buf = vec![0u8; 2048];
+            let (len, peer) = socket.recv_from(&mut buf).await.unwrap();
+            let req = &buf[..len];
+            let response = match mode {
+                UpstreamMode::Valid(ip) => {
+                    let q = parse_dns_question(req).unwrap();
+                    build_dns_response(&q.name, ip)
+                }
+                UpstreamMode::TxIdMismatch(ip) => {
+                    let q = parse_dns_question(req).unwrap();
+                    let mut resp = build_dns_response(&q.name, ip);
+                    resp[0] = 0x33;
+                    resp[1] = 0x44;
+                    resp
+                }
+                UpstreamMode::QuestionMismatch(ip) => build_dns_response("other.allowed", ip),
+            };
+            let _ = socket.send_to(&response, peer).await;
+        });
+        (addr, handle)
+    }
 
     fn build_dns_query(name: &str) -> Vec<u8> {
         let mut msg = Vec::new();
@@ -471,6 +912,33 @@ mod tests {
         msg.extend_from_slice(&[0x00, 0x04]); // rdlen
         msg.extend_from_slice(&ip.octets());
         msg
+    }
+
+    fn single_group_policy(rules: Vec<DnsRule>) -> DnsPolicy {
+        let mut sources = IpSetV4::new();
+        sources.add_ip(Ipv4Addr::new(192, 0, 2, 2));
+        DnsPolicy::new(vec![DnsSourceGroup {
+            id: "client-primary".to_string(),
+            priority: 0,
+            sources,
+            rules,
+        }])
+    }
+
+    fn dns_rule(
+        id: &str,
+        priority: u32,
+        action: RuleAction,
+        mode: DataplaneRuleMode,
+        host_re: &str,
+    ) -> DnsRule {
+        DnsRule {
+            id: id.to_string(),
+            priority,
+            action,
+            mode,
+            hostname: Regex::new(host_re).unwrap(),
+        }
     }
 
     #[test]
@@ -531,5 +999,182 @@ mod tests {
         let response = build_dns_response("example.com.", ip);
         assert_eq!(dns_rcode(&response), Some(0));
         assert!(!is_nxdomain(&response));
+    }
+
+    #[test]
+    fn evaluate_dns_policy_decision_enforce_mode_denies() {
+        let policy = std::sync::Arc::new(std::sync::RwLock::new(DnsPolicy::new(Vec::new())));
+        let store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+        let (allowed, would_deny, source_group) = evaluate_dns_policy_decision(
+            &policy,
+            Some(&store),
+            Ipv4Addr::new(192, 0, 2, 2),
+            "foo.allowed",
+        );
+        assert!(!allowed);
+        assert!(would_deny);
+        assert_eq!(source_group, "default");
+    }
+
+    #[test]
+    fn evaluate_dns_policy_decision_audit_mode_passthroughs_raw_deny() {
+        let policy = std::sync::Arc::new(std::sync::RwLock::new(DnsPolicy::new(Vec::new())));
+        let store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+        store
+            .rebuild(
+                Vec::new(),
+                DnsPolicy::new(Vec::new()),
+                None,
+                EnforcementMode::Audit,
+            )
+            .unwrap();
+        let (allowed, would_deny, source_group) = evaluate_dns_policy_decision(
+            &policy,
+            Some(&store),
+            Ipv4Addr::new(192, 0, 2, 2),
+            "foo.allowed",
+        );
+        assert!(allowed);
+        assert!(would_deny);
+        assert_eq!(source_group, "default");
+    }
+
+    #[test]
+    fn evaluate_dns_policy_decision_marks_audit_rule_deny_without_blocking() {
+        let policy = std::sync::Arc::new(std::sync::RwLock::new(single_group_policy(vec![
+            dns_rule(
+                "allow-enforce",
+                0,
+                RuleAction::Allow,
+                DataplaneRuleMode::Enforce,
+                r"^foo\.allowed$",
+            ),
+            dns_rule(
+                "deny-audit",
+                1,
+                RuleAction::Deny,
+                DataplaneRuleMode::Audit,
+                r"^foo\.allowed$",
+            ),
+        ])));
+        let store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+        let (allowed, would_deny, source_group) = evaluate_dns_policy_decision(
+            &policy,
+            Some(&store),
+            Ipv4Addr::new(192, 0, 2, 2),
+            "foo.allowed",
+        );
+        assert!(allowed);
+        assert!(would_deny);
+        assert_eq!(source_group, "client-primary");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn udp_upstream_failover_recovers_after_mismatch() {
+        let request = build_dns_query("spoof.allowed");
+        let question = parse_dns_question(&request).unwrap();
+        let metrics = Metrics::new().unwrap();
+
+        let (bad_addr, bad_task) =
+            spawn_test_upstream(UpstreamMode::TxIdMismatch(Ipv4Addr::new(203, 0, 113, 10))).await;
+        let expected = Ipv4Addr::new(203, 0, 113, 11);
+        let (good_addr, good_task) = spawn_test_upstream(UpstreamMode::Valid(expected)).await;
+
+        let response = forward_dns_query_udp(
+            &request,
+            &question,
+            &[bad_addr, good_addr],
+            "unit",
+            &metrics,
+        )
+        .await
+        .expect("query should succeed via fallback upstream");
+        assert_eq!(
+            extract_ips_from_dns_response(&response),
+            vec![IpAddr::V4(expected)]
+        );
+
+        let _ = bad_task.await;
+        let _ = good_task.await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn udp_upstream_failover_returns_mismatch_when_all_invalid() {
+        let request = build_dns_query("spoof.allowed");
+        let question = parse_dns_question(&request).unwrap();
+        let metrics = Metrics::new().unwrap();
+
+        let (bad_txid_addr, bad_txid_task) =
+            spawn_test_upstream(UpstreamMode::TxIdMismatch(Ipv4Addr::new(203, 0, 113, 12))).await;
+        let (bad_question_addr, bad_question_task) = spawn_test_upstream(
+            UpstreamMode::QuestionMismatch(Ipv4Addr::new(203, 0, 113, 13)),
+        )
+        .await;
+
+        let result = forward_dns_query_udp(
+            &request,
+            &question,
+            &[bad_txid_addr, bad_question_addr],
+            "unit",
+            &metrics,
+        )
+        .await;
+        assert_eq!(result, Err(UpstreamQueryError::Mismatch));
+
+        let _ = bad_txid_task.await;
+        let _ = bad_question_task.await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn startup_status_reports_empty_upstream_error() {
+        let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+
+        let result = run_dns_proxy(
+            bind_addr,
+            Vec::new(),
+            DynamicIpSetV4::new(),
+            std::sync::Arc::new(std::sync::RwLock::new(DnsPolicy::new(Vec::new()))),
+            DnsMap::new(),
+            Metrics::new().unwrap(),
+            None,
+            None,
+            "node-test".to_string(),
+            Some(startup_tx),
+        )
+        .await;
+        assert!(result.is_err());
+
+        let startup = startup_rx
+            .await
+            .expect("startup channel should be reported");
+        assert!(startup.is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn startup_status_reports_bind_error() {
+        let occupied = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let bind_addr = occupied.local_addr().unwrap();
+        let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+
+        let result = run_dns_proxy(
+            bind_addr,
+            vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 53)],
+            DynamicIpSetV4::new(),
+            std::sync::Arc::new(std::sync::RwLock::new(DnsPolicy::new(Vec::new()))),
+            DnsMap::new(),
+            Metrics::new().unwrap(),
+            None,
+            None,
+            "node-test".to_string(),
+            Some(startup_tx),
+        )
+        .await;
+        assert!(result.is_err());
+
+        let startup = startup_rx
+            .await
+            .expect("startup channel should be reported");
+        assert!(startup.is_err());
     }
 }

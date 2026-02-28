@@ -9,6 +9,8 @@ import type {
   CreateServiceAccountRequest,
   CreateServiceAccountTokenRequest,
   CreateServiceAccountTokenResponse,
+  TlsInterceptCaStatus,
+  AuditQueryResponse,
 } from '../types';
 
 const API_BASE = '/api/v1';
@@ -185,6 +187,31 @@ export async function getDNSCache(): Promise<DNSCacheResponse> {
   return fetchJSON<DNSCacheResponse>('/dns-cache');
 }
 
+export interface AuditFindingsParams {
+  policy_id?: string;
+  finding_type?: string[];
+  source_group?: string[];
+  since?: number;
+  until?: number;
+  limit?: number;
+}
+
+export async function getAuditFindings(params: AuditFindingsParams = {}): Promise<AuditQueryResponse> {
+  const query = new URLSearchParams();
+  if (params.policy_id) query.set('policy_id', params.policy_id);
+  for (const findingType of params.finding_type ?? []) {
+    query.append('finding_type', findingType);
+  }
+  for (const sourceGroup of params.source_group ?? []) {
+    query.append('source_group', sourceGroup);
+  }
+  if (typeof params.since === 'number') query.set('since', String(params.since));
+  if (typeof params.until === 'number') query.set('until', String(params.until));
+  if (typeof params.limit === 'number') query.set('limit', String(params.limit));
+  const suffix = query.toString();
+  return fetchJSON<AuditQueryResponse>(`/audit/findings${suffix ? `?${suffix}` : ''}`);
+}
+
 // Wiretap SSE
 export function subscribeToWiretap(
   onEvent: (event: import('../types').WiretapEvent) => void,
@@ -253,4 +280,22 @@ export async function revokeServiceAccountToken(id: string, tokenId: string): Pr
     `/service-accounts/${encodeURIComponent(id)}/tokens/${encodeURIComponent(tokenId)}`,
     { method: 'DELETE' }
   );
+}
+
+// Settings
+export async function getTlsInterceptCaStatus(): Promise<TlsInterceptCaStatus> {
+  return fetchJSON<TlsInterceptCaStatus>('/settings/tls-intercept-ca');
+}
+
+export async function updateTlsInterceptCa(
+  certPem: string,
+  keyPem: string,
+): Promise<TlsInterceptCaStatus> {
+  return fetchJSON<TlsInterceptCaStatus>('/settings/tls-intercept-ca', {
+    method: 'PUT',
+    body: JSON.stringify({
+      ca_cert_pem: certPem,
+      ca_key_pem: keyPem,
+    }),
+  });
 }

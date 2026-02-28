@@ -3,14 +3,17 @@ use std::time::Duration;
 use tokio::time::MissedTickBehavior;
 
 use crate::controlplane::cluster::store::ClusterStore;
-use crate::controlplane::policy_config::PolicyMode;
+use crate::controlplane::cluster::types::ClusterTypeConfig;
+use crate::controlplane::policy_config::{DnsPolicy, PolicyMode};
 use crate::controlplane::policy_repository::{
     policy_item_key, PolicyActive, PolicyDiskStore, PolicyRecord, POLICY_ACTIVE_KEY,
 };
 use crate::controlplane::PolicyStore;
+use crate::dataplane::policy::EnforcementMode;
 
 pub async fn run_policy_replication(
     store: ClusterStore,
+    raft: openraft::Raft<ClusterTypeConfig>,
     policy_store: PolicyStore,
     local_store: PolicyDiskStore,
     readiness: Option<crate::controlplane::ready::ReadinessState>,
@@ -20,8 +23,32 @@ pub async fn run_policy_replication(
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut last_record: Option<Vec<u8>> = None;
 
+    fn clear_active_policy(
+        policy_store: &PolicyStore,
+        local_store: &PolicyDiskStore,
+    ) -> Result<(), String> {
+        policy_store.rebuild(
+            Vec::new(),
+            DnsPolicy::new(Vec::new()),
+            None,
+            EnforcementMode::Enforce,
+        )?;
+        policy_store.set_active_policy_id(None);
+        local_store
+            .set_active(None)
+            .map_err(|err| format!("clear local active policy failed: {err}"))?;
+        Ok(())
+    }
+
     loop {
         ticker.tick().await;
+        let snapshot = raft.metrics().borrow().clone();
+        // Local HTTP API writes are applied directly on the leader; followers
+        // mirror from cluster state via this loop.
+        let is_leader = snapshot.current_leader == Some(snapshot.id);
+        if !snapshot.current_leader.is_some() || is_leader {
+            continue;
+        }
         let active = match store.get_state_value(POLICY_ACTIVE_KEY) {
             Ok(value) => value,
             Err(err) => {
@@ -30,6 +57,18 @@ pub async fn run_policy_replication(
             }
         };
         let Some(active) = active else {
+            let needs_clear = policy_store.active_policy_id().is_some()
+                || local_store.active_id().ok().flatten().is_some();
+            if needs_clear {
+                if let Err(err) = clear_active_policy(&policy_store, &local_store) {
+                    eprintln!("policy replication: failed to clear inactive policy: {err}");
+                    continue;
+                }
+                last_record = None;
+            }
+            if let Some(readiness) = &readiness {
+                readiness.set_policy_ready(true);
+            }
             continue;
         };
         let active: PolicyActive = match serde_json::from_slice(&active) {
@@ -61,8 +100,15 @@ pub async fn run_policy_replication(
                 continue;
             }
         };
-        if record.mode != PolicyMode::Enforce {
-            eprintln!("policy replication: active policy is not enforce mode");
+        if !record.mode.is_active() {
+            eprintln!("policy replication: active policy is disabled");
+            if policy_store.active_policy_id() == Some(record.id) {
+                if let Err(err) = clear_active_policy(&policy_store, &local_store) {
+                    eprintln!("policy replication: failed to clear disabled active policy: {err}");
+                    continue;
+                }
+                last_record = None;
+            }
             continue;
         }
         if policy_store.active_policy_id() == Some(record.id) {
@@ -72,7 +118,24 @@ pub async fn run_policy_replication(
             }
             continue;
         }
-        if let Err(err) = policy_store.rebuild_from_config(record.policy.clone()) {
+        let enforcement_mode = if record.mode == PolicyMode::Audit {
+            EnforcementMode::Audit
+        } else {
+            EnforcementMode::Enforce
+        };
+        let compiled = match record.policy.clone().compile() {
+            Ok(compiled) => compiled,
+            Err(err) => {
+                eprintln!("policy replication: policy compile failed: {err}");
+                continue;
+            }
+        };
+        if let Err(err) = policy_store.rebuild(
+            compiled.groups,
+            compiled.dns_policy,
+            compiled.default_policy,
+            enforcement_mode,
+        ) {
             eprintln!("policy replication: policy update failed: {err}");
             continue;
         }

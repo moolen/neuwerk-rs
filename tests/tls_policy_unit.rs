@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 
 use firewall::dataplane::policy::{
     CidrV4, DefaultPolicy, IpSetV4, PolicyDecision, PolicySnapshot, PortRange, Proto, Rule,
-    RuleAction, RuleMatch, SourceGroup, Tls13Uninspectable, TlsMatch, TlsNameMatch,
+    RuleAction, RuleMatch, SourceGroup, Tls13Uninspectable, TlsMatch, TlsMode, TlsNameMatch,
 };
 use firewall::dataplane::tls::{TlsCertChain, TlsObservation, TlsVerifier};
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyUsagePurpose};
@@ -48,6 +48,7 @@ fn policy_with_tls_match(tls: TlsMatch) -> PolicySnapshot {
             tls: Some(tls),
         },
         action: RuleAction::Allow,
+        mode: firewall::dataplane::policy::RuleMode::Enforce,
     };
     let group = SourceGroup {
         id: "internal".to_string(),
@@ -61,12 +62,14 @@ fn policy_with_tls_match(tls: TlsMatch) -> PolicySnapshot {
 
 fn base_tls_match() -> TlsMatch {
     TlsMatch {
+        mode: TlsMode::Metadata,
         sni: None,
         server_san: None,
         server_cn: None,
         fingerprints_sha256: Vec::new(),
         trust_anchors: Vec::new(),
         tls13_uninspectable: Tls13Uninspectable::Deny,
+        intercept_http: None,
     }
 }
 
@@ -178,4 +181,33 @@ fn tls_policy_trust_anchor_mismatch_denies() {
     let policy = policy_with_tls_match(tls_bad);
     let decision = policy.evaluate(&meta(), Some(&obs), Some(&verifier));
     assert_eq!(decision, PolicyDecision::Deny);
+}
+
+#[test]
+fn tls_intercept_mode_requires_service_lane() {
+    let tls = TlsMatch {
+        mode: TlsMode::Intercept,
+        intercept_http: Some(firewall::dataplane::policy::TlsInterceptHttpPolicy {
+            request: Some(firewall::dataplane::policy::HttpRequestPolicy {
+                host: Some(firewall::dataplane::policy::HttpStringMatcher {
+                    exact: vec!["foo.allowed".to_string()],
+                    regex: None,
+                }),
+                methods: vec!["GET".to_string()],
+                path: None,
+                query: None,
+                headers: None,
+            }),
+            response: None,
+        }),
+        ..base_tls_match()
+    };
+    let policy = policy_with_tls_match(tls);
+    let verifier = TlsVerifier::new();
+    let decision = policy.evaluate(&meta(), None, Some(&verifier));
+    assert_eq!(decision, PolicyDecision::Allow);
+    let (decision, _, intercept_requires_service) =
+        policy.evaluate_with_source_group_detailed(&meta(), None, Some(&verifier));
+    assert_eq!(decision, PolicyDecision::Allow);
+    assert!(intercept_requires_service);
 }

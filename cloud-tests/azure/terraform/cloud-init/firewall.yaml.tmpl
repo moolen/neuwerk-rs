@@ -534,7 +534,6 @@ write_files:
       NEUWERK_AZURE_GATEWAY_MAC=12:34:56:78:9a:bc
       NEUWERK_GWLB_SWAP_TUNNELS=0
       NEUWERK_GWLB_TUNNEL_SRC_PORT=0
-      DNS_UPSTREAM=${dns_upstream_ip}:53
       VNI_INTERNAL=${gwlb_vni_internal}
       VNI_EXTERNAL=${gwlb_vni_external}
       UDP_INTERNAL=${gwlb_udp_port_internal}
@@ -637,8 +636,12 @@ write_files:
         --data-plane-mode dpdk \
         --encap none \
         --internal-cidr $${INTERNAL_CIDR} \
-        --dns-upstream $${DNS_UPSTREAM} \
-        --dns-listen $${MGMT_IP}:53 \
+%{ for dns_target in dns_target_ips ~}
+        --dns-target-ip ${dns_target} \
+%{ endfor ~}
+%{ for dns_upstream in dns_upstreams ~}
+        --dns-upstream ${dns_upstream} \
+%{ endfor ~}
         --http-bind $${MGMT_IP}:8443 \
         --metrics-bind 0.0.0.0:8080 \
         --default-policy allow \

@@ -37,7 +37,8 @@ resource "azurerm_orchestrated_virtual_machine_scale_set" "firewall" {
       storage_container_name = var.storage_container_name
       storage_blob_name      = var.storage_blob_name
       dns_zone_name          = var.dns_zone_name
-      dns_upstream_ip        = var.dns_upstream_ip
+      dns_target_ips         = var.dns_target_ips
+      dns_upstreams          = var.dns_upstreams
       gwlb_vni_internal      = var.gwlb_vni_internal
       gwlb_vni_external      = var.gwlb_vni_external
       gwlb_udp_port_internal = var.gwlb_udp_port_internal
@@ -82,7 +83,6 @@ resource "azurerm_orchestrated_virtual_machine_scale_set" "firewall" {
       name      = "mgmt-ipcfg"
       primary   = true
       subnet_id = var.mgmt_subnet_id
-      load_balancer_backend_address_pool_ids = [var.mgmt_lb_backend_pool_id]
     }
   }
 

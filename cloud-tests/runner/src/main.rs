@@ -1,3 +1,5 @@
+use base64::Engine as _;
+use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyUsagePurpose};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
@@ -28,6 +30,11 @@ struct ApiClient {
     base: String,
     token: String,
     client: reqwest::blocking::Client,
+}
+
+#[derive(Debug, Deserialize)]
+struct TlsInterceptCaStatus {
+    configured: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +72,7 @@ struct Context {
     apis: Vec<ApiClient>,
     originals: Vec<Option<PolicyRecord>>,
     created_ids: Vec<Vec<String>>,
+    seeded_intercept_ca: Vec<bool>,
     consumer_ip: Ipv4Addr,
     deadline: Instant,
 }
@@ -181,6 +189,7 @@ fn main() {
         apis,
         originals,
         created_ids: vec![Vec::new(); api_count],
+        seeded_intercept_ca: vec![false; api_count],
         consumer_ip,
         deadline,
     };
@@ -251,12 +260,20 @@ fn main() {
             func: test_dns_allowlist_allow,
         },
         TestCase {
+            name: "dns_allowlist_allow_tcp",
+            func: test_dns_allowlist_allow_tcp,
+        },
+        TestCase {
             name: "dns_allowlist_deny",
             func: test_dns_allowlist_deny,
         },
         TestCase {
             name: "dns_allowlist_reset_on_rebuild",
             func: test_dns_allowlist_reset,
+        },
+        TestCase {
+            name: "tls_intercept_http_path_enforcement",
+            func: test_tls_intercept_http_path_enforcement,
         },
     ];
 
@@ -490,18 +507,48 @@ impl Context {
                     eprintln!("warning: failed to delete policy {id}: {err}");
                 }
             }
+            if self.seeded_intercept_ca[idx] {
+                if let Err(err) = api.delete_tls_intercept_ca() {
+                    eprintln!(
+                        "warning: failed to delete intercept ca on {}: {err}",
+                        api.base
+                    );
+                }
+            }
         }
         Ok(())
     }
 
     fn get_metrics(&self) -> Result<String, String> {
+        let snapshots = self.get_metrics_by_endpoint()?;
         let mut merged = String::new();
-        for api in &self.apis {
-            let body = api.get_metrics()?;
+        for (_base, body) in snapshots {
             merged.push_str(&body);
             merged.push('\n');
         }
         Ok(merged)
+    }
+
+    fn get_metrics_by_endpoint(&self) -> Result<Vec<(String, String)>, String> {
+        let mut out = Vec::with_capacity(self.apis.len());
+        for api in &self.apis {
+            let body = api.get_metrics()?;
+            out.push((api.base.clone(), body));
+        }
+        Ok(out)
+    }
+
+    fn ensure_tls_intercept_ca(&mut self) -> Result<(), String> {
+        let (cert_pem, key_der_b64) = generate_intercept_ca_pair()?;
+        for (idx, api) in self.apis.iter().enumerate() {
+            let status = api.get_tls_intercept_ca_status()?;
+            if status.configured {
+                continue;
+            }
+            api.put_tls_intercept_ca(&cert_pem, &key_der_b64)?;
+            self.seeded_intercept_ca[idx] = true;
+        }
+        Ok(())
     }
 }
 
@@ -546,6 +593,31 @@ fn test_dns_allowlist_allow(ctx: &mut Context) -> Result<(), String> {
         },
         "dns allowlist did not permit upstream http after repeated dns queries",
     )
+}
+
+fn test_dns_allowlist_allow_tcp(ctx: &mut Context) -> Result<(), String> {
+    let host_regex = hostname_regex(&ctx.cfg.dns_zone);
+    let policy = policy_with_rules(
+        ctx.consumer_ip,
+        vec![rule_dns("dns-allow", "allow", &host_regex)],
+    );
+    ctx.apply_policy(policy)?;
+
+    let result = dig_query_tcp(&ctx.cfg, &ctx.cfg.dns_zone)?;
+    if result.status != "NOERROR" {
+        return Err(format!(
+            "dns tcp status {}, expected NOERROR",
+            result.status
+        ));
+    }
+    if !result.answers.contains(&ctx.cfg.upstream_vip) {
+        return Err(format!(
+            "dns tcp answers {:?} missing vip {}",
+            result.answers, ctx.cfg.upstream_vip
+        ));
+    }
+
+    Ok(())
 }
 
 fn test_dns_allowlist_deny(ctx: &mut Context) -> Result<(), String> {
@@ -593,6 +665,65 @@ fn test_dns_allowlist_reset(ctx: &mut Context) -> Result<(), String> {
             }
         },
         "dns status stayed non-NXDOMAIN after deny policy",
+    )
+}
+
+fn test_tls_intercept_http_path_enforcement(ctx: &mut Context) -> Result<(), String> {
+    // Baseline: prove upstream HTTPS works before switching to intercept policy.
+    let baseline_policy = policy_with_rules(
+        ctx.consumer_ip,
+        vec![rule_tcp("allow-https-baseline", "allow", ctx.cfg.upstream_vip, &[443])],
+    );
+    ctx.apply_policy(baseline_policy)?;
+    curl_expect_success_path(
+        &ctx.cfg,
+        &ctx.cfg.dns_zone,
+        ctx.cfg.upstream_vip,
+        443,
+        true,
+        "/external-secrets/external-secrets",
+        None,
+    )?;
+
+    ctx.ensure_tls_intercept_ca()?;
+    let policy = policy_with_rules(
+        ctx.consumer_ip,
+        vec![rule_tls_intercept_http(
+            "tls-intercept-http",
+            "allow",
+            ctx.cfg.upstream_vip,
+            &ctx.cfg.dns_zone,
+            "/external-secrets/",
+        )],
+    );
+    ctx.apply_policy(policy)?;
+
+    let allow_out = run_curl_path(
+        &ctx.cfg,
+        &ctx.cfg.dns_zone,
+        ctx.cfg.upstream_vip,
+        443,
+        true,
+        "/external-secrets/external-secrets",
+        None,
+        false,
+    )?;
+
+    if allow_out.status != 0 {
+        return Err(format!(
+            "allow path failed under intercept policy: stderr={}",
+            allow_out.stderr
+        ));
+    }
+
+    curl_expect_failure_with_reset_path(
+        &ctx.cfg,
+        &ctx.cfg.dns_zone,
+        ctx.cfg.upstream_vip,
+        443,
+        true,
+        "/moolen",
+        None,
     )
 }
 
@@ -927,46 +1058,64 @@ fn test_metrics_protocol_specific_validation(ctx: &mut Context) -> Result<(), St
     let policy = policy_with_rules(
         ctx.consumer_ip,
         vec![
-            rule_tcp("allow-iperf-tcp", "allow", ctx.cfg.upstream_vip, &[5201]),
+            rule_tcp("allow-http", "allow", ctx.cfg.upstream_vip, &[80]),
             rule_udp("deny-iperf-udp", "deny", ctx.cfg.upstream_vip, &[5201]),
         ],
     );
     ctx.apply_policy(policy)?;
 
-    let before = ctx.get_metrics()?;
-    let tcp_allow_before = metric_sum(
-        &before,
+    let before_snapshots = ctx.get_metrics_by_endpoint()?;
+    let tcp_allow_before = metric_values_by_endpoint(
+        &before_snapshots,
         "dp_packets_total",
         &[("decision", "allow"), ("proto", "tcp")],
     )?;
-    let udp_deny_before = metric_sum(
-        &before,
+    let udp_deny_before = metric_values_by_endpoint(
+        &before_snapshots,
         "dp_packets_total",
         &[("decision", "deny"), ("proto", "udp")],
     )?;
 
-    iperf3_tcp_expect_success(ctx.cfg.upstream_vip, 5201)?;
-    iperf3_udp_expect_deny(ctx.cfg.upstream_vip, 5201)?;
-
-    let after = ctx.get_metrics()?;
-    let tcp_allow_after = metric_sum(
-        &after,
-        "dp_packets_total",
-        &[("decision", "allow"), ("proto", "tcp")],
+    curl_expect_success(
+        &ctx.cfg,
+        &ctx.cfg.dns_zone,
+        ctx.cfg.upstream_vip,
+        80,
+        false,
+        None,
     )?;
-    let udp_deny_after = metric_sum(
-        &after,
-        "dp_packets_total",
-        &[("decision", "deny"), ("proto", "udp")],
-    )?;
+    send_udp_probes(ctx.cfg.upstream_vip, 5201, 16)?;
 
-    if tcp_allow_after <= tcp_allow_before {
-        return Err("tcp allow counter did not increase".to_string());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let after_snapshots = ctx.get_metrics_by_endpoint()?;
+        let tcp_allow_after = metric_values_by_endpoint(
+            &after_snapshots,
+            "dp_packets_total",
+            &[("decision", "allow"), ("proto", "tcp")],
+        )?;
+        let udp_deny_after = metric_values_by_endpoint(
+            &after_snapshots,
+            "dp_packets_total",
+            &[("decision", "deny"), ("proto", "udp")],
+        )?;
+
+        let tcp_allow_increased = endpoint_counter_increased(&tcp_allow_before, &tcp_allow_after);
+        let udp_deny_increased = endpoint_counter_increased(&udp_deny_before, &udp_deny_after);
+        if tcp_allow_increased && udp_deny_increased {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "protocol counters did not increase (tcp_allow_before={:?}, tcp_allow_after={:?}, udp_deny_before={:?}, udp_deny_after={:?})",
+                tcp_allow_before,
+                tcp_allow_after,
+                udp_deny_before,
+                udp_deny_after
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(300));
     }
-    if udp_deny_after <= udp_deny_before {
-        return Err("udp deny counter did not increase".to_string());
-    }
-    Ok(())
 }
 
 fn policy_with_rules(consumer_ip: Ipv4Addr, rules: Vec<Value>) -> Value {
@@ -1065,6 +1214,34 @@ fn rule_tls_sni(
     })
 }
 
+fn rule_tls_intercept_http(
+    id: &str,
+    action: &str,
+    vip: Ipv4Addr,
+    host: &str,
+    path_prefix: &str,
+) -> Value {
+    json!({
+        "id": id,
+        "action": action,
+        "match": {
+            "proto": "tcp",
+            "dst_ports": [443],
+            "dst_ips": [vip.to_string()],
+            "tls": {
+                "mode": "intercept",
+                "http": {
+                    "request": {
+                        "host": { "exact": [host] },
+                        "methods": ["GET"],
+                        "path": { "prefix": [path_prefix] }
+                    }
+                }
+            }
+        }
+    })
+}
+
 fn hostname_regex(hostname: &str) -> String {
     let mut out = String::from("^");
     for ch in hostname.chars() {
@@ -1086,12 +1263,23 @@ struct DigResult {
 }
 
 fn dig_query(cfg: &Config, name: &str) -> Result<DigResult, String> {
+    dig_query_with_mode(cfg, name, false)
+}
+
+fn dig_query_tcp(cfg: &Config, name: &str) -> Result<DigResult, String> {
+    dig_query_with_mode(cfg, name, true)
+}
+
+fn dig_query_with_mode(cfg: &Config, name: &str, tcp: bool) -> Result<DigResult, String> {
     let mut args = Vec::new();
     args.push("+time=2".to_string());
     args.push("+tries=1".to_string());
     args.push("+noall".to_string());
     args.push("+answer".to_string());
     args.push("+comments".to_string());
+    if tcp {
+        args.push("+tcp".to_string());
+    }
     if cfg.dns_server.port() != 53 {
         args.push("-p".to_string());
         args.push(cfg.dns_server.port().to_string());
@@ -1137,7 +1325,19 @@ fn curl_expect_success(
     https: bool,
     tls_version: Option<&str>,
 ) -> Result<(), String> {
-    let output = run_curl(cfg, host, vip, port, https, tls_version, false)?;
+    curl_expect_success_path(cfg, host, vip, port, https, "/", tls_version)
+}
+
+fn curl_expect_success_path(
+    cfg: &Config,
+    host: &str,
+    vip: Ipv4Addr,
+    port: u16,
+    https: bool,
+    path: &str,
+    tls_version: Option<&str>,
+) -> Result<(), String> {
+    let output = run_curl_path(cfg, host, vip, port, https, path, tls_version, false)?;
     if output.status == 0 {
         Ok(())
     } else {
@@ -1156,12 +1356,46 @@ fn curl_expect_failure(
     https: bool,
     tls_version: Option<&str>,
 ) -> Result<(), String> {
-    let output = run_curl(cfg, host, vip, port, https, tls_version, true)?;
+    let output = run_curl_path(cfg, host, vip, port, https, "/", tls_version, true)?;
     if output.status == 0 {
         Err("curl unexpectedly succeeded".to_string())
     } else {
         Ok(())
     }
+}
+
+fn curl_expect_failure_with_reset_path(
+    cfg: &Config,
+    host: &str,
+    vip: Ipv4Addr,
+    port: u16,
+    https: bool,
+    path: &str,
+    tls_version: Option<&str>,
+) -> Result<(), String> {
+    let output = run_curl_path(cfg, host, vip, port, https, path, tls_version, true)?;
+    if output.status == 0 {
+        return Err("curl unexpectedly succeeded".to_string());
+    }
+    if is_fail_closed_stderr(&output.stderr) {
+        return Ok(());
+    }
+    Err(format!(
+        "expected reset/refused/closed failure semantics, got stderr={}",
+        output.stderr
+    ))
+}
+
+fn is_fail_closed_stderr(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("reset")
+        || stderr.contains("refused")
+        || stderr.contains("empty reply")
+        || stderr.contains("closed")
+        || stderr.contains("broken pipe")
+        || stderr.contains("couldn't connect")
+        || stderr.contains("failed to connect")
+        || stderr.contains("timed out")
 }
 
 struct CmdOutput {
@@ -1171,11 +1405,24 @@ struct CmdOutput {
 }
 
 fn run_curl(
+    cfg: &Config,
+    host: &str,
+    vip: Ipv4Addr,
+    port: u16,
+    https: bool,
+    tls_version: Option<&str>,
+    fast_fail: bool,
+) -> Result<CmdOutput, String> {
+    run_curl_path(cfg, host, vip, port, https, "/", tls_version, fast_fail)
+}
+
+fn run_curl_path(
     _cfg: &Config,
     host: &str,
     vip: Ipv4Addr,
     port: u16,
     https: bool,
+    path: &str,
     tls_version: Option<&str>,
     fast_fail: bool,
 ) -> Result<CmdOutput, String> {
@@ -1220,10 +1467,15 @@ fn run_curl(
     args.push(format!("{host}:{port}:{vip}"));
 
     let scheme = if https { "https" } else { "http" };
-    let url = if (https && port == 443) || (!https && port == 80) {
-        format!("{scheme}://{host}")
+    let normalized_path = if path.starts_with('/') {
+        path.to_string()
     } else {
-        format!("{scheme}://{host}:{port}")
+        format!("/{path}")
+    };
+    let url = if (https && port == 443) || (!https && port == 80) {
+        format!("{scheme}://{host}{normalized_path}")
+    } else {
+        format!("{scheme}://{host}:{port}{normalized_path}")
     };
     args.push(url);
 
@@ -1319,6 +1571,16 @@ fn iperf3_udp_run(vip: Ipv4Addr, port: u16) -> Result<CmdOutput, String> {
         "5000".to_string(),
     ];
     run_cmd("iperf3", &args)
+}
+
+fn send_udp_probes(vip: Ipv4Addr, port: u16, count: usize) -> Result<(), String> {
+    let sock = UdpSocket::bind("0.0.0.0:0").map_err(|err| format!("udp probe bind failed: {err}"))?;
+    for idx in 0..count.max(1) {
+        let payload = format!("neuwerk-metrics-probe-{idx}");
+        sock.send_to(payload.as_bytes(), (vip, port))
+            .map_err(|err| format!("udp probe send failed: {err}"))?;
+    }
+    Ok(())
 }
 
 fn parse_iperf3_udp_bps(stdout: &str) -> Option<f64> {
@@ -1426,6 +1688,31 @@ fn metric_sum(body: &str, name: &str, labels: &[(&str, &str)]) -> Result<f64, St
         }
     }
     Ok(sum)
+}
+
+fn metric_values_by_endpoint(
+    snapshots: &[(String, String)],
+    name: &str,
+    labels: &[(&str, &str)],
+) -> Result<Vec<(String, f64)>, String> {
+    let mut values = Vec::with_capacity(snapshots.len());
+    for (base, body) in snapshots {
+        let value = metric_sum(body, name, labels)?;
+        values.push((base.clone(), value));
+    }
+    Ok(values)
+}
+
+fn endpoint_counter_increased(before: &[(String, f64)], after: &[(String, f64)]) -> bool {
+    for (before_item, after_item) in before.iter().zip(after.iter()) {
+        if before_item.0 != after_item.0 {
+            continue;
+        }
+        if after_item.1 > before_item.1 {
+            return true;
+        }
+    }
+    false
 }
 
 fn parse_api_endpoints() -> Result<Vec<ApiEndpoint>, String> {
@@ -1577,11 +1864,83 @@ fn parse_test_filter(filter: Option<&str>) -> std::collections::HashSet<&'static
             "policy_consistency_all_firewalls" => Some("policy_consistency_all_firewalls"),
             "metrics_protocol_specific_validation" => Some("metrics_protocol_specific_validation"),
             "dns_allowlist_allow" => Some("dns_allowlist_allow"),
+            "dns_allowlist_allow_tcp" => Some("dns_allowlist_allow_tcp"),
             "dns_allowlist_deny" => Some("dns_allowlist_deny"),
             "dns_allowlist_reset_on_rebuild" => Some("dns_allowlist_reset_on_rebuild"),
+            "tls_intercept_http_path_enforcement" => Some("tls_intercept_http_path_enforcement"),
             _ => None,
         })
         .collect()
+}
+
+fn generate_intercept_ca_pair() -> Result<(String, String), String> {
+    let mut params = CertificateParams::default();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "Cloud Smoke Intercept CA");
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    let cert =
+        Certificate::from_params(params).map_err(|err| format!("ca generation failed: {err}"))?;
+    let cert_pem = cert
+        .serialize_pem()
+        .map_err(|err| format!("ca cert pem encode failed: {err}"))?;
+    let key_der_b64 =
+        base64::engine::general_purpose::STANDARD.encode(cert.serialize_private_key_der());
+    Ok((cert_pem, key_der_b64))
+}
+
+impl ApiClient {
+    fn get_tls_intercept_ca_status(&self) -> Result<TlsInterceptCaStatus, String> {
+        let url = format!("{}/api/v1/settings/tls-intercept-ca", self.base);
+        let resp = self
+            .client
+            .get(url)
+            .bearer_auth(&self.token)
+            .send()
+            .map_err(|err| format!("get intercept ca status request failed: {err}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("get intercept ca status {}", resp.status()));
+        }
+        resp.json::<TlsInterceptCaStatus>()
+            .map_err(|err| format!("get intercept ca status decode failed: {err}"))
+    }
+
+    fn put_tls_intercept_ca(&self, cert_pem: &str, key_der_b64: &str) -> Result<(), String> {
+        let url = format!("{}/api/v1/settings/tls-intercept-ca", self.base);
+        let body = json!({
+            "ca_cert_pem": cert_pem,
+            "ca_key_der_b64": key_der_b64
+        });
+        let resp = self
+            .client
+            .put(url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .map_err(|err| format!("put intercept ca request failed: {err}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("put intercept ca status {}", resp.status()));
+        }
+        Ok(())
+    }
+
+    fn delete_tls_intercept_ca(&self) -> Result<(), String> {
+        let url = format!("{}/api/v1/settings/tls-intercept-ca", self.base);
+        let resp = self
+            .client
+            .delete(url)
+            .bearer_auth(&self.token)
+            .send()
+            .map_err(|err| format!("delete intercept ca request failed: {err}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("delete intercept ca status {}", resp.status()));
+        }
+        Ok(())
+    }
 }
 
 fn wait_for<F>(
@@ -1691,12 +2050,14 @@ dns_queries_total{result="allow"} 7
     #[test]
     fn parse_test_filter_selects_known_names_only() {
         let selected = parse_test_filter(Some(
-            "cidr_port_allow,unknown,dns_allowlist_allow,,metrics_allow_deny_counters,udp_allow_5201",
+            "cidr_port_allow,unknown,dns_allowlist_allow,dns_allowlist_allow_tcp,metrics_allow_deny_counters,udp_allow_5201,tls_intercept_http_path_enforcement",
         ));
         assert!(selected.contains("cidr_port_allow"));
         assert!(selected.contains("dns_allowlist_allow"));
+        assert!(selected.contains("dns_allowlist_allow_tcp"));
         assert!(selected.contains("metrics_allow_deny_counters"));
         assert!(selected.contains("udp_allow_5201"));
+        assert!(selected.contains("tls_intercept_http_path_enforcement"));
         assert!(!selected.contains("unknown"));
     }
 

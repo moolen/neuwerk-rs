@@ -1,6 +1,24 @@
 ## TODOs
+
+### audit / passthrough mode 
+Problem: when initially setting up the firewall, or creating a new policy, i want it to run in a "audit" mode where no traffic gets dropped. Instead, the firewall monitors/captures metadata of the traffic which violates policies. This audit mode should be configured on a per-policy basis. The policy today has a enabled/disabled enum or bool. Maybe we can change it to a enum such that the mode can be disabled|audit|enabled.
+
+As a user i want to know which source group/network tries to make what network calls. In particular i want to know:
+1. the DNS names which have been requested
+2. the L4 connections (DST IP, DST Port, Protocol, FQDN if available through mapping data)
+3. TLS: SNI
+4. ICMP: what kind of packets, what destination
+
+The data should be stored on a per-node basis on disk. An HTTP API endpoint exposes that information. When requested, a given node aggregates the data from other nodes, deduplicates it and returns it to the user. 
+
+This data should be available from the UI. Maybe add a "audit" sidebar and then the user can explore the data from policies which are in audit mode.
+
+Let's further explore this topic together and write a implementation plan. Once everything is clear write the plan to ROADMAP/AUDIT-MODE.md. Ask me questions to clarify your assumptions.
+
+---
+
 - per-node DNS cache with respect to TTL, figure out how this interacts with the distributed storage.
-- "audit" mode DNS hostname / traffic capturing and aggregation
+
 
 ## Azure Cloud integration
 

@@ -134,12 +134,6 @@ variable "cloud_provider" {
   description = "Cloud provider identifier for dataplane selection (azure|aws|gcp|none)."
 }
 
-variable "mgmt_dns_lb_ip" {
-  type        = string
-  default     = "10.20.1.10"
-  description = "Static IP for the internal DNS LB on the management subnet."
-}
-
 variable "image_publisher" {
   type        = string
   default     = "Canonical"
@@ -177,6 +171,18 @@ variable "consumer_count" {
 variable "dns_zone_name" {
   type    = string
   default = "upstream.test"
+}
+
+variable "dns_target_ips" {
+  type        = list(string)
+  default     = []
+  description = "DNS target IPs passed to repeated --dns-target-ip flags. Empty defaults to firewall management IP."
+}
+
+variable "dns_upstreams" {
+  type        = list(string)
+  default     = []
+  description = "DNS upstream resolvers passed to repeated --dns-upstream flags (<ip:port>). Empty defaults to upstream VM :53."
 }
 
 variable "gwlb_vni_internal" {

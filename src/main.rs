@@ -3,11 +3,15 @@ use std::env;
 use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use firewall::controlplane::api_auth::DEFAULT_TTL_SECS;
+use firewall::controlplane::audit::{
+    AuditEvent as ControlplaneAuditEvent, AuditFindingType, AuditStore,
+    DEFAULT_AUDIT_STORE_MAX_BYTES,
+};
 use firewall::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
 use firewall::controlplane::cloud::providers::{
     aws::AwsProvider, azure::AzureProvider, gcp::GcpProvider,
@@ -17,16 +21,17 @@ use firewall::controlplane::cloud::{self, IntegrationManager, ReadyChecker, Read
 use firewall::controlplane::cluster::migration;
 use firewall::controlplane::cluster::rpc::{AuthClient, RaftTlsConfig};
 use firewall::controlplane::dhcp::{DhcpClient, DhcpClientConfig};
-use firewall::controlplane::policy_config::PolicyMode;
 use firewall::controlplane::policy_repository::PolicyDiskStore;
 use firewall::controlplane::ready::ReadinessState;
 use firewall::controlplane::wiretap::{load_or_create_node_id, DnsMap, WiretapHub};
 use firewall::controlplane::{self, PolicyStore};
 use firewall::dataplane::policy::{DefaultPolicy, DynamicIpSetV4, PolicySnapshot};
 use firewall::dataplane::{
-    DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo, DrainControl, EncapMode,
-    EngineState, FrameIo, FrameOut, OverlayConfig, Packet, SharedArpState, SnatMode, SoftAdapter,
-    SoftMode, WiretapEmitter, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_WIRETAP_REPORT_INTERVAL_SECS,
+    AuditEmitter, AuditEventType, DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo,
+    DrainControl, EncapMode, EngineState, FrameIo, FrameOut, OverlayConfig, Packet, SharedArpState,
+    SharedInterceptDemuxState, SnatMode, SoftAdapter, SoftMode, WiretapEmitter,
+    DEFAULT_AUDIT_REPORT_INTERVAL_SECS, DEFAULT_IDLE_TIMEOUT_SECS,
+    DEFAULT_WIRETAP_REPORT_INTERVAL_SECS,
 };
 use futures::stream::TryStreamExt;
 use netlink_packet_route::address::AddressAttribute;
@@ -107,6 +112,124 @@ fn pin_thread_to_core(core_id: usize) -> Result<(), String> {
 fn pin_thread_to_core(_core_id: usize) -> Result<(), String> {
     Ok(())
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DpdkWorkerMode {
+    Single,
+    QueuePerWorker,
+    SharedRxDemux,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DpdkWorkerPlan {
+    requested: usize,
+    effective_queues: usize,
+    worker_count: usize,
+    mode: DpdkWorkerMode,
+}
+
+fn choose_dpdk_worker_plan(
+    requested: usize,
+    max_workers: usize,
+    effective_queues: usize,
+) -> Result<DpdkWorkerPlan, String> {
+    let requested = requested.max(1).min(max_workers.max(1));
+    if effective_queues == 0 {
+        return Err("dpdk: no usable queues available".to_string());
+    }
+    if requested == 1 {
+        return Ok(DpdkWorkerPlan {
+            requested,
+            effective_queues,
+            worker_count: 1,
+            mode: DpdkWorkerMode::Single,
+        });
+    }
+    if effective_queues >= requested {
+        return Ok(DpdkWorkerPlan {
+            requested,
+            effective_queues,
+            worker_count: requested,
+            mode: DpdkWorkerMode::QueuePerWorker,
+        });
+    }
+    if effective_queues == 1 {
+        return Ok(DpdkWorkerPlan {
+            requested,
+            effective_queues,
+            worker_count: requested,
+            mode: DpdkWorkerMode::SharedRxDemux,
+        });
+    }
+    Ok(DpdkWorkerPlan {
+        requested,
+        effective_queues,
+        worker_count: effective_queues,
+        mode: DpdkWorkerMode::QueuePerWorker,
+    })
+}
+
+fn shared_demux_owner_for_packet(pkt: &Packet, shard_count: usize, worker_count: usize) -> usize {
+    if worker_count <= 1 {
+        return 0;
+    }
+    if let Some((src_port, dst_port)) = pkt.ports() {
+        // Route common HTTPS flows to worker 0 so service-lane intercept is
+        // handled by the worker that owns the service-lane TAP attachment.
+        if src_port == 443 || dst_port == 443 {
+            return 0;
+        }
+    }
+    let shard_idx = shard_index_for_packet(pkt, shard_count);
+    shard_idx % worker_count
+}
+
+enum DpdkWorkerIo {
+    Dedicated(DpdkIo),
+    Shared(Arc<Mutex<DpdkIo>>),
+}
+
+impl DpdkWorkerIo {
+    fn mac(&self) -> Option<[u8; 6]> {
+        match self {
+            DpdkWorkerIo::Dedicated(io) => io.mac(),
+            DpdkWorkerIo::Shared(io) => io.lock().ok().and_then(|guard| guard.mac()),
+        }
+    }
+}
+
+impl FrameIo for DpdkWorkerIo {
+    fn recv_frame(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        match self {
+            DpdkWorkerIo::Dedicated(io) => io.recv_frame(buf),
+            DpdkWorkerIo::Shared(io) => io
+                .lock()
+                .map_err(|_| "dpdk: shared io lock poisoned".to_string())?
+                .recv_frame(buf),
+        }
+    }
+
+    fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+        match self {
+            DpdkWorkerIo::Dedicated(io) => io.send_frame(frame),
+            DpdkWorkerIo::Shared(io) => io
+                .lock()
+                .map_err(|_| "dpdk: shared io lock poisoned".to_string())?
+                .send_frame(frame),
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), String> {
+        match self {
+            DpdkWorkerIo::Dedicated(io) => io.flush(),
+            DpdkWorkerIo::Shared(io) => io
+                .lock()
+                .map_err(|_| "dpdk: shared io lock poisoned".to_string())?
+                .flush(),
+        }
+    }
+}
+
 const INTEGRATION_ROUTE_NAME: &str = "neuwerk-default";
 const INTEGRATION_DRAIN_TIMEOUT_SECS: u64 = 300;
 const INTEGRATION_RECONCILE_INTERVAL_SECS: u64 = 15;
@@ -118,8 +241,8 @@ const IMDS_NETWORK_URL: &str =
 struct CliConfig {
     management_iface: String,
     data_plane_iface: String,
-    dns_listen: SocketAddr,
-    dns_upstream: SocketAddr,
+    dns_target_ips: Vec<Ipv4Addr>,
+    dns_upstreams: Vec<SocketAddr>,
     data_plane_mode: DataPlaneMode,
     idle_timeout_secs: u64,
     dns_allowlist_idle_secs: u64,
@@ -239,7 +362,7 @@ impl DataPlaneMode {
 
 fn usage(bin: &str) -> String {
     format!(
-        "Usage:\n  {bin} --management-interface <iface> --data-plane-interface <iface|pci|mac> --dns-upstream <ip:port> --dns-listen <ip:port> [--data-plane-mode tun|tap|dpdk] [--idle-timeout-secs <secs>] [--dns-allowlist-idle-secs <secs>] [--dns-allowlist-gc-interval-secs <secs>] [--default-policy allow|deny] [--dhcp-timeout-secs <secs>] [--dhcp-retry-max <count>] [--dhcp-lease-min-secs <secs>] [--internal-cidr <cidr>] [--snat none|auto|<ipv4>] [--encap none|vxlan|geneve] [--encap-vni <id>] [--encap-udp-port <port>] [--encap-vni-internal <id>] [--encap-vni-external <id>] [--encap-udp-port-internal <port>] [--encap-udp-port-external <port>] [--encap-mtu <bytes>]\n  {bin} [cluster flags]\n  {bin} auth <command>\n\nFlags:\n  --management-interface <iface>\n  --data-plane-interface <iface|pci|mac> (dpdk accepts pci:0000:00:00.0 or mac:aa:bb:cc:dd:ee:ff)\n  --dns-upstream <ip:port>\n  --dns-listen <ip:port>\n  --data-plane-mode tun|tap|dpdk (default: tun)\n  --idle-timeout-secs <secs> (default: 300)\n  --dns-allowlist-idle-secs <secs> (default: idle-timeout + 120)\n  --dns-allowlist-gc-interval-secs <secs> (default: 30)\n  --default-policy allow|deny (default: deny)\n  --dhcp-timeout-secs <secs> (default: 5)\n  --dhcp-retry-max <count> (default: 5)\n  --dhcp-lease-min-secs <secs> (default: 60)\n  --internal-cidr <cidr> (overrides DHCP-derived internal network)\n  --snat none|auto|<ipv4>\n  --encap none|vxlan|geneve (default: none)\n  --encap-vni <id>\n  --encap-vni-internal <id>\n  --encap-vni-external <id>\n  --encap-udp-port <port> (default: 10800 for vxlan, 6081 for geneve)\n  --encap-udp-port-internal <port> (default: 10800 when --encap-vni-internal is set)\n  --encap-udp-port-external <port> (default: 10801 when --encap-vni-external is set)\n  --encap-mtu <bytes> (default: 1500)\n  --http-bind <ip:port> (default: <management-ip>:8443)\n  --http-advertise <ip:port> (default: http-bind)\n  --http-tls-dir <path> (default: /var/lib/neuwerk/http-tls)\n  --http-cert-path <path>\n  --http-key-path <path>\n  --http-ca-path <path>\n  --http-tls-san <comma-separated>\n  --metrics-bind <ip:port> (default: <management-ip>:8080)\n  --cloud-provider azure|aws|gcp|none (default: none)\n  --integration azure-vmss|aws-asg|gcp-mig|none (default: none)\n  --integration-route-name <name> (default: neuwerk-default)\n  --integration-drain-timeout-secs <secs> (default: 300)\n  --integration-reconcile-interval-secs <secs> (default: 15)\n  --integration-cluster-name <name> (default: neuwerk)\n  --azure-subscription-id <id>\n  --azure-resource-group <name>\n  --azure-vmss-name <name>\n  --aws-region <region>\n  --aws-vpc-id <id>\n  --aws-asg-name <name>\n  --gcp-project <id>\n  --gcp-region <region>\n  --gcp-ig-name <name>\n  --cluster-migrate-from-local\n  --cluster-migrate-force\n  --cluster-migrate-verify\n  --cluster-bind <ip:port>\n  --cluster-join-bind <ip:port> (default: cluster-bind + 1)\n  --cluster-advertise <ip:port> (default: cluster-bind)\n  --join <ip:port>\n  --cluster-data-dir <path> (default: /var/lib/neuwerk/cluster)\n  --node-id-path <path> (default: /var/lib/neuwerk/node_id)\n  --bootstrap-token-path <path> (default: /var/lib/neuwerk/bootstrap-token)\n  -h, --help\n\nAuth Commands:\n  {bin} auth key rotate --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key list --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key retire <kid> --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n"
+        "Usage:\n  {bin} --management-interface <iface> --data-plane-interface <iface|pci|mac> --dns-target-ip <ipv4> --dns-upstream <ip:port> [--data-plane-mode tun|tap|dpdk] [--idle-timeout-secs <secs>] [--dns-allowlist-idle-secs <secs>] [--dns-allowlist-gc-interval-secs <secs>] [--default-policy allow|deny] [--dhcp-timeout-secs <secs>] [--dhcp-retry-max <count>] [--dhcp-lease-min-secs <secs>] [--internal-cidr <cidr>] [--snat none|auto|<ipv4>] [--encap none|vxlan|geneve] [--encap-vni <id>] [--encap-udp-port <port>] [--encap-vni-internal <id>] [--encap-vni-external <id>] [--encap-udp-port-internal <port>] [--encap-udp-port-external <port>] [--encap-mtu <bytes>]\n  {bin} [cluster flags]\n  {bin} auth <command>\n\nFlags:\n  --management-interface <iface>\n  --data-plane-interface <iface|pci|mac> (dpdk accepts pci:0000:00:00.0 or mac:aa:bb:cc:dd:ee:ff)\n  --dns-target-ip <ipv4> (repeatable)\n  --dns-target-ips <csv IPv4 list>\n  --dns-upstream <ip:port> (repeatable)\n  --dns-upstreams <csv ip:port list>\n  --data-plane-mode tun|tap|dpdk (default: tun)\n  --idle-timeout-secs <secs> (default: 300)\n  --dns-allowlist-idle-secs <secs> (default: idle-timeout + 120)\n  --dns-allowlist-gc-interval-secs <secs> (default: 30)\n  --default-policy allow|deny (default: deny)\n  --dhcp-timeout-secs <secs> (default: 5)\n  --dhcp-retry-max <count> (default: 5)\n  --dhcp-lease-min-secs <secs> (default: 60)\n  --internal-cidr <cidr> (overrides DHCP-derived internal network)\n  --snat none|auto|<ipv4>\n  --encap none|vxlan|geneve (default: none)\n  --encap-vni <id>\n  --encap-vni-internal <id>\n  --encap-vni-external <id>\n  --encap-udp-port <port> (default: 10800 for vxlan, 6081 for geneve)\n  --encap-udp-port-internal <port> (default: 10800 when --encap-vni-internal is set)\n  --encap-udp-port-external <port> (default: 10801 when --encap-vni-external is set)\n  --encap-mtu <bytes> (default: 1500)\n  --http-bind <ip:port> (default: <management-ip>:8443)\n  --http-advertise <ip:port> (default: http-bind)\n  --http-tls-dir <path> (default: /var/lib/neuwerk/http-tls)\n  --http-cert-path <path>\n  --http-key-path <path>\n  --http-ca-path <path>\n  --http-tls-san <comma-separated>\n  --metrics-bind <ip:port> (default: <management-ip>:8080)\n  --cloud-provider azure|aws|gcp|none (default: none)\n  --integration azure-vmss|aws-asg|gcp-mig|none (default: none)\n  --integration-route-name <name> (default: neuwerk-default)\n  --integration-drain-timeout-secs <secs> (default: 300)\n  --integration-reconcile-interval-secs <secs> (default: 15)\n  --integration-cluster-name <name> (default: neuwerk)\n  --azure-subscription-id <id>\n  --azure-resource-group <name>\n  --azure-vmss-name <name>\n  --aws-region <region>\n  --aws-vpc-id <id>\n  --aws-asg-name <name>\n  --gcp-project <id>\n  --gcp-region <region>\n  --gcp-ig-name <name>\n  --cluster-migrate-from-local\n  --cluster-migrate-force\n  --cluster-migrate-verify\n  --cluster-bind <ip:port>\n  --cluster-join-bind <ip:port> (default: cluster-bind + 1)\n  --cluster-advertise <ip:port> (default: cluster-bind)\n  --join <ip:port>\n  --cluster-data-dir <path> (default: /var/lib/neuwerk/cluster)\n  --node-id-path <path> (default: /var/lib/neuwerk/node_id)\n  --bootstrap-token-path <path> (default: /var/lib/neuwerk/bootstrap-token)\n  -h, --help\n\nAuth Commands:\n  {bin} auth key rotate --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key list --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key retire <kid> --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n"
     )
 }
 
@@ -337,7 +460,6 @@ struct ImdsIpAddress {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ImdsSubnet {
-    address: String,
     prefix: String,
 }
 
@@ -490,6 +612,42 @@ fn parse_socket(flag: &str, value: &str) -> Result<SocketAddr, String> {
         .map_err(|_| format!("{flag} must be a socket address in the form ip:port, got {value}"))
 }
 
+fn parse_ipv4(flag: &str, value: &str) -> Result<Ipv4Addr, String> {
+    value
+        .parse()
+        .map_err(|_| format!("{flag} must be an IPv4 address, got {value}"))
+}
+
+fn parse_csv_ipv4_list(flag: &str, value: &str) -> Result<Vec<Ipv4Addr>, String> {
+    let mut parsed = Vec::new();
+    for part in value.split(',') {
+        let entry = part.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        parsed.push(parse_ipv4(flag, entry)?);
+    }
+    if parsed.is_empty() {
+        return Err(format!("{flag} requires at least one IPv4 address"));
+    }
+    Ok(parsed)
+}
+
+fn parse_csv_socket_list(flag: &str, value: &str) -> Result<Vec<SocketAddr>, String> {
+    let mut parsed = Vec::new();
+    for part in value.split(',') {
+        let entry = part.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        parsed.push(parse_socket(flag, entry)?);
+    }
+    if parsed.is_empty() {
+        return Err(format!("{flag} requires at least one ip:port"));
+    }
+    Ok(parsed)
+}
+
 fn parse_port(flag: &str, value: &str) -> Result<u16, String> {
     let parsed = value
         .parse::<u16>()
@@ -622,8 +780,10 @@ fn load_http_ca(cfg: &CliConfig) -> Option<Vec<u8>> {
 fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     let mut management_iface = None;
     let mut data_plane_iface = None;
-    let mut dns_listen = None;
-    let mut dns_upstream = None;
+    let mut dns_target_ips: Vec<Ipv4Addr> = Vec::new();
+    let mut dns_target_ips_csv: Option<Vec<Ipv4Addr>> = None;
+    let mut dns_upstreams: Vec<SocketAddr> = Vec::new();
+    let mut dns_upstreams_csv: Option<Vec<SocketAddr>> = None;
     let mut data_plane_mode = DataPlaneMode::Soft(SoftMode::Tun);
     let mut idle_timeout_secs = DEFAULT_IDLE_TIMEOUT_SECS;
     let mut dns_allowlist_idle_secs = None;
@@ -697,15 +857,31 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
             data_plane_iface = Some(value);
             continue;
         }
+        if arg == "--dns-target-ip" || arg.starts_with("--dns-target-ip=") {
+            let value = take_flag_value("--dns-target-ip", &arg, &mut args)?;
+            dns_target_ips.push(parse_ipv4("--dns-target-ip", &value)?);
+            continue;
+        }
+        if arg == "--dns-target-ips" || arg.starts_with("--dns-target-ips=") {
+            let value = take_flag_value("--dns-target-ips", &arg, &mut args)?;
+            dns_target_ips_csv = Some(parse_csv_ipv4_list("--dns-target-ips", &value)?);
+            continue;
+        }
         if arg == "--dns-upstream" || arg.starts_with("--dns-upstream=") {
             let value = take_flag_value("--dns-upstream", &arg, &mut args)?;
-            dns_upstream = Some(parse_socket("--dns-upstream", &value)?);
+            dns_upstreams.push(parse_socket("--dns-upstream", &value)?);
+            continue;
+        }
+        if arg == "--dns-upstreams" || arg.starts_with("--dns-upstreams=") {
+            let value = take_flag_value("--dns-upstreams", &arg, &mut args)?;
+            dns_upstreams_csv = Some(parse_csv_socket_list("--dns-upstreams", &value)?);
             continue;
         }
         if arg == "--dns-listen" || arg.starts_with("--dns-listen=") {
-            let value = take_flag_value("--dns-listen", &arg, &mut args)?;
-            dns_listen = Some(parse_socket("--dns-listen", &value)?);
-            continue;
+            return Err(
+                "--dns-listen has been removed; DNS interception now binds on management-ip:53"
+                    .to_string(),
+            );
         }
         if arg == "--data-plane-mode" || arg.starts_with("--data-plane-mode=") {
             let value = take_flag_value("--data-plane-mode", &arg, &mut args)?;
@@ -1050,17 +1226,33 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     }
 
     let mut missing = Vec::new();
+    if dns_target_ips_csv.is_some() && !dns_target_ips.is_empty() {
+        return Err(
+            "cannot combine repeated --dns-target-ip with --dns-target-ips csv form".to_string(),
+        );
+    }
+    if dns_upstreams_csv.is_some() && !dns_upstreams.is_empty() {
+        return Err(
+            "cannot combine repeated --dns-upstream with --dns-upstreams csv form".to_string(),
+        );
+    }
+    if let Some(list) = dns_target_ips_csv.take() {
+        dns_target_ips = list;
+    }
+    if let Some(list) = dns_upstreams_csv.take() {
+        dns_upstreams = list;
+    }
     if management_iface.is_none() {
         missing.push("--management-interface");
     }
     if data_plane_iface.is_none() {
         missing.push("--data-plane-interface");
     }
-    if dns_upstream.is_none() {
-        missing.push("--dns-upstream");
+    if dns_target_ips.is_empty() {
+        missing.push("--dns-target-ip");
     }
-    if dns_listen.is_none() {
-        missing.push("--dns-listen");
+    if dns_upstreams.is_empty() {
+        missing.push("--dns-upstream");
     }
 
     if !missing.is_empty() {
@@ -1165,8 +1357,8 @@ fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     Ok(CliConfig {
         management_iface: management_iface.unwrap(),
         data_plane_iface: data_plane_iface.unwrap(),
-        dns_listen: dns_listen.unwrap(),
-        dns_upstream: dns_upstream.unwrap(),
+        dns_target_ips,
+        dns_upstreams,
         data_plane_mode,
         idle_timeout_secs,
         dns_allowlist_idle_secs,
@@ -1624,8 +1816,11 @@ fn run_dataplane(
     idle_timeout_secs: u64,
     policy: Arc<RwLock<PolicySnapshot>>,
     policy_applied_generation: Arc<AtomicU64>,
+    service_policy_applied_generation: Arc<AtomicU64>,
     dns_allowlist: DynamicIpSetV4,
+    dns_target_ips: Vec<Ipv4Addr>,
     wiretap_emitter: Option<WiretapEmitter>,
+    audit_emitter: Option<AuditEmitter>,
     internal_net: Ipv4Addr,
     internal_prefix: u8,
     public_ip: Ipv4Addr,
@@ -1637,6 +1832,7 @@ fn run_dataplane(
     dhcp_tx: Option<mpsc::Sender<DhcpRx>>,
     dhcp_rx: Option<mpsc::Receiver<DhcpTx>>,
     mac_publisher: Option<watch::Sender<[u8; 6]>>,
+    shared_intercept_demux: Arc<Mutex<SharedInterceptDemuxState>>,
     metrics: controlplane::metrics::Metrics,
 ) -> Result<(), String> {
     let observer_policy = policy.clone();
@@ -1672,7 +1868,9 @@ fn run_dataplane(
     state.set_snat_mode(snat_mode);
     state.set_overlay_config(overlay);
     state.set_dns_allowlist(dns_allowlist);
+    state.set_dns_target_ips(dns_target_ips);
     state.set_dataplane_config(dataplane_config);
+    state.set_service_policy_applied_generation(service_policy_applied_generation);
     if let Some(control) = drain_control {
         state.set_drain_control(control);
     }
@@ -1681,6 +1879,9 @@ fn run_dataplane(
     if let Some(emitter) = wiretap_emitter {
         state.set_wiretap_emitter(emitter);
     }
+    if let Some(emitter) = audit_emitter {
+        state.set_audit_emitter(emitter);
+    }
 
     match data_plane_mode {
         DataPlaneMode::Soft(mode) => {
@@ -1688,44 +1889,53 @@ fn run_dataplane(
             adapter.run(&mut state)
         }
         DataPlaneMode::Dpdk => {
-            let worker_count = std::env::var("NEUWERK_DPDK_WORKERS")
+            let requested_workers = std::env::var("NEUWERK_DPDK_WORKERS")
                 .ok()
                 .and_then(|val| val.parse::<usize>().ok())
                 .unwrap_or(1)
                 .max(1);
             let max_workers = cpu_core_count();
-            let mut worker_count = worker_count.min(max_workers);
+            let requested_workers = requested_workers.min(max_workers);
             eprintln!(
                 "dpdk: worker config requested={}, cpu_cores={}, using={}",
                 std::env::var("NEUWERK_DPDK_WORKERS").unwrap_or_else(|_| "unset".to_string()),
                 max_workers,
-                worker_count
+                requested_workers
             );
-            if worker_count > 1 {
-                match DpdkIo::effective_queue_count(&data_plane_iface, worker_count as u16) {
-                    Ok(effective) => {
-                        let effective = effective as usize;
-                        if effective == 0 {
-                            metrics.set_dpdk_init_ok(false);
-                            metrics.inc_dpdk_init_failure();
-                            return Err("dpdk: no usable queues available".to_string());
-                        }
-                        if effective < worker_count {
-                            eprintln!(
-                                "dpdk: reducing worker threads to {} (device queue limit)",
-                                effective
-                            );
-                            worker_count = effective;
-                        }
-                    }
+            let effective_queues = if requested_workers > 1 {
+                match DpdkIo::effective_queue_count(&data_plane_iface, requested_workers as u16) {
+                    Ok(effective) => effective as usize,
                     Err(err) => {
                         metrics.set_dpdk_init_ok(false);
                         metrics.inc_dpdk_init_failure();
                         return Err(err);
                     }
                 }
+            } else {
+                1
+            };
+            let plan =
+                match choose_dpdk_worker_plan(requested_workers, max_workers, effective_queues) {
+                    Ok(plan) => plan,
+                    Err(err) => {
+                        metrics.set_dpdk_init_ok(false);
+                        metrics.inc_dpdk_init_failure();
+                        return Err(err);
+                    }
+                };
+            if plan.worker_count < plan.requested {
+                eprintln!(
+                    "dpdk: reducing worker threads to {} (device queue limit)",
+                    plan.worker_count
+                );
             }
-            if worker_count == 1 {
+            if matches!(plan.mode, DpdkWorkerMode::SharedRxDemux) {
+                eprintln!(
+                    "dpdk: single rx queue detected (effective_queues={}), enabling shared-rx software demux across {} workers",
+                    plan.effective_queues, plan.worker_count
+                );
+            }
+            if matches!(plan.mode, DpdkWorkerMode::Single) {
                 let iface = data_plane_iface.clone();
                 let mut adapter = DpdkAdapter::new(data_plane_iface)?;
                 if let Some(publisher) = mac_publisher {
@@ -1737,6 +1947,7 @@ fn run_dataplane(
                 if let Some(rx) = dhcp_rx {
                     adapter.set_dhcp_rx(rx);
                 }
+                adapter.set_shared_intercept_demux(shared_intercept_demux);
                 let mut io = match DpdkIo::new(&iface, Some(metrics.clone())) {
                     Ok(io) => {
                         metrics.set_dpdk_init_ok(true);
@@ -1750,7 +1961,13 @@ fn run_dataplane(
                 };
                 adapter.run_with_io(&mut state, &mut io)
             } else {
-                eprintln!("dpdk: starting {} worker threads", worker_count);
+                let worker_count = plan.worker_count;
+                let queue_per_worker = matches!(plan.mode, DpdkWorkerMode::QueuePerWorker);
+                let shared_rx_demux = matches!(plan.mode, DpdkWorkerMode::SharedRxDemux);
+                eprintln!(
+                    "dpdk: starting {} worker threads (mode={:?})",
+                    worker_count, plan.mode
+                );
                 let shard_count = std::env::var("NEUWERK_DPDK_STATE_SHARDS")
                     .ok()
                     .and_then(|val| val.parse::<usize>().ok())
@@ -1767,14 +1984,45 @@ fn run_dataplane(
                 let state = std::sync::Arc::new(shard_states);
                 let shared_arp = Arc::new(Mutex::new(SharedArpState::default()));
                 let mut dhcp_rx = dhcp_rx;
+                let shared_io = if queue_per_worker {
+                    None
+                } else {
+                    Some(Arc::new(Mutex::new(DpdkIo::new_with_queue(
+                        &data_plane_iface,
+                        0,
+                        plan.effective_queues as u16,
+                        Some(metrics.clone()),
+                    )?)))
+                };
+                let (flow_steer_txs, mut flow_steer_rxs) = if shared_rx_demux {
+                    let mut txs = Vec::with_capacity(worker_count);
+                    let mut rxs = Vec::with_capacity(worker_count);
+                    for _ in 0..worker_count {
+                        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
+                        txs.push(tx);
+                        rxs.push(Some(rx));
+                    }
+                    (Some(Arc::new(txs)), Some(rxs))
+                } else {
+                    (None, None)
+                };
+                let service_lane_ready_shared = Arc::new(AtomicBool::new(false));
                 let mut handles = Vec::with_capacity(worker_count);
                 for worker_id in 0..worker_count {
                     let iface = data_plane_iface.clone();
                     let metrics = metrics.clone();
                     let state = std::sync::Arc::clone(&state);
                     let shared_arp = Arc::clone(&shared_arp);
+                    let shared_intercept_demux = Arc::clone(&shared_intercept_demux);
                     let dhcp_tx = dhcp_tx.clone();
                     let dhcp_rx = if worker_id == 0 { dhcp_rx.take() } else { None };
+                    let shared_io = shared_io.clone();
+                    let flow_steer_tx = flow_steer_txs.clone();
+                    let flow_steer_rx = flow_steer_rxs
+                        .as_mut()
+                        .and_then(|rxs| rxs.get_mut(worker_id))
+                        .and_then(Option::take);
+                    let service_lane_ready_shared = service_lane_ready_shared.clone();
                     let mac_publisher = if worker_id == 0 {
                         mac_publisher.clone()
                     } else {
@@ -1785,6 +2033,7 @@ fn run_dataplane(
                     let handle = std::thread::Builder::new()
                         .name(format!("dpdk-worker-{worker_id}"))
                         .spawn(move || -> Result<(), String> {
+                            let housekeeping_shard_idx = worker_id % state.len();
                             if let Err(err) = pin_thread_to_core(core_id) {
                                 eprintln!(
                                     "dpdk: worker {} failed to pin to core {}: {}",
@@ -1798,43 +2047,108 @@ fn run_dataplane(
                                 adapter.set_mac_publisher(publisher);
                             }
                             adapter.set_shared_arp(shared_arp);
+                            adapter.set_shared_intercept_demux(shared_intercept_demux);
                             if let Some(tx) = dhcp_tx {
                                 adapter.set_dhcp_tx(tx);
                             }
                             if let Some(rx) = dhcp_rx {
                                 adapter.set_dhcp_rx(rx);
                             }
-                            let mut io = DpdkIo::new_with_queue(
-                                &iface,
-                                worker_id as u16,
-                                worker_count as u16,
-                                Some(metrics.clone()),
-                            )?;
+                            let mut io = if let Some(shared) = shared_io {
+                                DpdkWorkerIo::Shared(shared)
+                            } else {
+                                DpdkWorkerIo::Dedicated(DpdkIo::new_with_queue(
+                                    &iface,
+                                    worker_id as u16,
+                                    worker_count as u16,
+                                    Some(metrics.clone()),
+                                )?)
+                            };
                             if let Some(mac) = io.mac() {
                                 adapter.set_mac(mac);
                             }
                             let mut pkt = Packet::new(vec![0u8; 65536]);
                             loop {
-                                pkt.prepare_for_rx(65536);
-                                let n = io.recv_frame(pkt.buffer_mut())?;
-                                if n == 0 {
-                                    io.flush()?;
-                                    if worker_id == 0 {
-                                        while let Some(out) = {
-                                            let guard = state.get(0).ok_or_else(|| {
-                                                "dpdk: state shard missing".to_string()
-                                            })?;
-                                            let mut guard = guard.lock().map_err(|_| {
-                                                "dpdk: state lock poisoned".to_string()
-                                            })?;
-                                            adapter.next_dhcp_frame(&mut guard)
-                                        } {
-                                            io.send_frame(&out)?;
+                                let service_lane_ready = if worker_id == 0 {
+                                    let ready = adapter.service_lane_ready();
+                                    service_lane_ready_shared.store(ready, Ordering::Release);
+                                    ready
+                                } else {
+                                    service_lane_ready_shared.load(Ordering::Acquire)
+                                };
+                                let mut from_steer_queue = false;
+                                if let Some(rx) = flow_steer_rx.as_ref() {
+                                    match rx.try_recv() {
+                                        Ok(frame) => {
+                                            pkt = Packet::from_bytes(&frame);
+                                            from_steer_queue = true;
+                                        }
+                                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                            return Err(
+                                                "dpdk: flow steer channel disconnected".to_string()
+                                            );
                                         }
                                     }
-                                    continue;
                                 }
-                                pkt.truncate(n);
+                                if !from_steer_queue {
+                                    pkt.prepare_for_rx(65536);
+                                    let n = io.recv_frame(pkt.buffer_mut())?;
+                                    if n == 0 {
+                                        io.flush()?;
+                                        if worker_id == 0 {
+                                            let guard =
+                                                state.get(housekeeping_shard_idx).ok_or_else(
+                                                    || "dpdk: state shard missing".to_string(),
+                                                )?;
+                                            let guard = guard.lock().map_err(|_| {
+                                                "dpdk: state lock poisoned".to_string()
+                                            })?;
+                                            adapter.drain_service_lane_egress(&guard, &mut io)?;
+                                        }
+                                        adapter.flush_host_frames(&mut io)?;
+                                        if worker_id == 0 {
+                                            while let Some(out) = {
+                                                let guard =
+                                                    state.get(housekeeping_shard_idx).ok_or_else(
+                                                        || "dpdk: state shard missing".to_string(),
+                                                    )?;
+                                                let mut guard = guard.lock().map_err(|_| {
+                                                    "dpdk: state lock poisoned".to_string()
+                                                })?;
+                                                adapter.next_dhcp_frame(&mut guard)
+                                            } {
+                                                io.send_frame(&out)?;
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    pkt.truncate(n);
+                                    if flow_steer_tx.is_some() {
+                                        let owner = shared_demux_owner_for_packet(
+                                            &pkt,
+                                            state.len(),
+                                            worker_count,
+                                        );
+                                        if owner != worker_id {
+                                            let payload = pkt.buffer().to_vec();
+                                            flow_steer_tx
+                                                .as_ref()
+                                                .ok_or_else(|| {
+                                                    "dpdk: flow steer tx missing".to_string()
+                                                })?
+                                                .get(owner)
+                                                .ok_or_else(|| {
+                                                    "dpdk: flow steer worker missing".to_string()
+                                                })?
+                                                .send(payload)
+                                                .map_err(|_| {
+                                                    "dpdk: flow steer dispatch failed".to_string()
+                                                })?;
+                                            continue;
+                                        }
+                                    }
+                                }
                                 if let Some(out) = {
                                     let shard_idx = shard_index_for_packet(&pkt, state.len());
                                     let shard = state
@@ -1855,6 +2169,7 @@ fn run_dataplane(
                                             guard
                                         }
                                     };
+                                    guard.set_intercept_to_host_steering(service_lane_ready);
                                     adapter.process_packet_in_place(&mut pkt, &mut guard)
                                 } {
                                     match out {
@@ -1863,10 +2178,21 @@ fn run_dataplane(
                                     }
                                 }
                                 if worker_id == 0 {
+                                    let guard = state
+                                        .get(housekeeping_shard_idx)
+                                        .ok_or_else(|| "dpdk: state shard missing".to_string())?;
+                                    let guard = guard
+                                        .lock()
+                                        .map_err(|_| "dpdk: state lock poisoned".to_string())?;
+                                    adapter.drain_service_lane_egress(&guard, &mut io)?;
+                                }
+                                adapter.flush_host_frames(&mut io)?;
+                                if worker_id == 0 {
                                     while let Some(out) = {
-                                        let guard = state.get(0).ok_or_else(|| {
-                                            "dpdk: state shard missing".to_string()
-                                        })?;
+                                        let guard =
+                                            state.get(housekeeping_shard_idx).ok_or_else(|| {
+                                                "dpdk: state shard missing".to_string()
+                                            })?;
                                         let mut guard = guard
                                             .lock()
                                             .map_err(|_| "dpdk: state lock poisoned".to_string())?;
@@ -1962,8 +2288,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.dns_allowlist_gc_interval_secs
     );
     println!("default policy: {:?}", cfg.default_policy);
-    println!("dns listen: {}", cfg.dns_listen);
-    println!("dns upstream: {}", cfg.dns_upstream);
+    println!("dns targets: {:?}", cfg.dns_target_ips);
+    println!("dns upstreams: {:?}", cfg.dns_upstreams);
     println!("cloud provider: {:?}", cfg.cloud_provider);
     if cfg.cluster.enabled {
         println!("cluster bind: {}", cfg.cluster.bind_addr);
@@ -2143,8 +2469,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !cfg.cluster.enabled {
         if let Ok(Some(active_id)) = local_policy_store.active_id() {
             match local_policy_store.read_record(active_id) {
-                Ok(Some(record)) if record.mode == PolicyMode::Enforce => {
-                    if let Err(err) = policy_store.rebuild_from_config(record.policy) {
+                Ok(Some(record)) if record.mode.is_active() => {
+                    if let Err(err) =
+                        policy_store.rebuild_from_config_with_mode(record.policy, record.mode)
+                    {
                         eprintln!("local policy error: {err}");
                         std::process::exit(2);
                     }
@@ -2162,9 +2490,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dns_allowlist_for_dns = dns_allowlist.clone();
     let dns_allowlist_for_gc = dns_allowlist.clone();
     let dns_allowlist_for_dp = dns_allowlist.clone();
-    let dns_listen = cfg.dns_listen;
-    let dns_upstream = cfg.dns_upstream;
+    let dns_upstreams = cfg.dns_upstreams.clone();
+    let dns_listen = SocketAddr::new(IpAddr::V4(management_ip), 53);
+    let service_lane_iface = "svc0".to_string();
+    let service_lane_ip = Ipv4Addr::new(169, 254, 255, 1);
+    let service_lane_prefix = 30u8;
     let policy_applied_generation = policy_store.policy_applied_tracker();
+    let service_policy_snapshot = policy_store.snapshot();
+    let service_policy_applied_generation = policy_store.service_policy_applied_tracker();
     let dns_map = DnsMap::new();
     let wiretap_hub = WiretapHub::new(1024);
     let metrics = match controlplane::metrics::Metrics::new() {
@@ -2201,14 +2534,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(2);
         }
     };
+    let audit_store = AuditStore::new(
+        PathBuf::from("/var/lib/neuwerk/audit-store"),
+        DEFAULT_AUDIT_STORE_MAX_BYTES,
+    );
     let (wiretap_tx, mut wiretap_rx) = tokio::sync::mpsc::channel(1024);
+    let (audit_tx, mut audit_rx) = tokio::sync::mpsc::channel(4096);
     let wiretap_emitter = WiretapEmitter::new(wiretap_tx, DEFAULT_WIRETAP_REPORT_INTERVAL_SECS);
+    let audit_emitter = AuditEmitter::new(audit_tx, DEFAULT_AUDIT_REPORT_INTERVAL_SECS);
     let hub_for_wiretap = wiretap_hub.clone();
     let dns_map_for_wiretap = dns_map.clone();
     let dns_map_for_dns = dns_map.clone();
     let dns_map_for_gc = dns_map.clone();
     let dns_map_for_http = dns_map.clone();
+    let dns_map_for_audit = dns_map.clone();
+    let audit_store_for_events = audit_store.clone();
+    let policy_store_for_audit = policy_store.clone();
     let node_id_for_wiretap = node_id.clone();
+    let node_id_for_audit = node_id.clone();
     let _wiretap_task = std::thread::Builder::new()
         .name("wiretap-bridge".to_string())
         .spawn(move || {
@@ -2224,6 +2567,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("wiretap: bridge stopped (all senders dropped)");
         })
         .map_err(|err| boxed_error(format!("wiretap bridge thread failed to start: {err}")))?;
+    let _audit_task = std::thread::Builder::new()
+        .name("audit-bridge".to_string())
+        .spawn(move || {
+            while let Some(event) = audit_rx.blocking_recv() {
+                let fqdn = dns_map_for_audit.lookup(event.dst_ip);
+                let finding_type = match event.event_type {
+                    AuditEventType::L4Deny => AuditFindingType::L4Deny,
+                    AuditEventType::TlsDeny => AuditFindingType::TlsDeny,
+                    AuditEventType::IcmpDeny => AuditFindingType::IcmpDeny,
+                };
+                let enriched = ControlplaneAuditEvent {
+                    finding_type,
+                    source_group: event.source_group,
+                    hostname: None,
+                    dst_ip: Some(event.dst_ip),
+                    dst_port: Some(event.dst_port),
+                    proto: Some(event.proto),
+                    fqdn,
+                    sni: event.sni,
+                    icmp_type: event.icmp_type,
+                    icmp_code: event.icmp_code,
+                    query_type: None,
+                    observed_at: event.observed_at,
+                };
+                audit_store_for_events.ingest(
+                    enriched,
+                    policy_store_for_audit.active_policy_id(),
+                    &node_id_for_audit,
+                );
+            }
+            eprintln!("audit: bridge stopped (all senders dropped)");
+        })
+        .map_err(|err| boxed_error(format!("audit bridge thread failed to start: {err}")))?;
 
     let cluster_metrics = metrics.clone();
     let cluster_runtime = if cfg.cluster.enabled {
@@ -2303,12 +2679,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(runtime) = cluster_runtime.as_ref() {
         let store = runtime.store.clone();
+        let raft = runtime.raft.clone();
         let policy_store = policy_store.clone();
         let local_policy_store = local_policy_store.clone();
         let readiness_for_replication = readiness.clone();
         tokio::spawn(async move {
             controlplane::policy_replication::run_policy_replication(
                 store,
+                raft,
                 policy_store,
                 local_policy_store,
                 Some(readiness_for_replication),
@@ -2318,8 +2696,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    let tls_intercept_ca_present = match controlplane::intercept_tls::has_intercept_ca_material(
+        &cfg.http_tls_dir,
+        cluster_runtime.as_ref().map(|runtime| &runtime.store),
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("tls intercept ca check failed: {err}");
+            std::process::exit(2);
+        }
+    };
+    let tls_intercept_ca_ready = Arc::new(AtomicBool::new(tls_intercept_ca_present));
+    let tls_intercept_ca_generation = Arc::new(AtomicU64::new(0));
+    let tls_intercept_ca_source = if let Some(runtime) = cluster_runtime.as_ref() {
+        controlplane::intercept_tls::InterceptCaSource::Cluster {
+            store: runtime.store.clone(),
+            token_path: cfg.cluster.token_path.clone(),
+        }
+    } else {
+        controlplane::intercept_tls::InterceptCaSource::Local {
+            tls_dir: cfg.http_tls_dir.clone(),
+        }
+    };
+    let tls_intercept_listen_port = 15443u16;
+    let shared_intercept_demux = Arc::new(Mutex::new(SharedInterceptDemuxState::default()));
+
     let metrics_for_dns = metrics.clone();
     let (dns_tx, dns_rx) = oneshot::channel::<Result<(), String>>();
+    let (dns_startup_tx, dns_startup_rx) = oneshot::channel::<Result<(), String>>();
+    let tls_intercept_ca_ready_for_dns = tls_intercept_ca_ready.clone();
+    let tls_intercept_ca_generation_for_dns = tls_intercept_ca_generation.clone();
+    let tls_intercept_ca_source_for_dns = tls_intercept_ca_source.clone();
+    let service_policy_applied_generation_for_dns = service_policy_applied_generation.clone();
+    let service_lane_iface_for_dns = service_lane_iface.clone();
+    let shared_intercept_demux_for_dns = shared_intercept_demux.clone();
+    let policy_store_for_dns = policy_store.clone();
+    let audit_store_for_dns = audit_store.clone();
+    let node_id_for_dns = node_id.clone();
     let dns_thread = std::thread::Builder::new()
         .name("dns-runtime".to_string())
         .spawn(move || {
@@ -2329,16 +2742,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .build()
                 .expect("dns runtime");
             let res = rt.block_on(async {
-                controlplane::dns_proxy::run_dns_proxy(
-                    dns_listen,
-                    dns_upstream,
-                    dns_allowlist_for_dns,
+                controlplane::trafficd::run(controlplane::trafficd::TrafficdConfig {
+                    dns_bind: dns_listen,
+                    dns_upstreams,
+                    dns_allowlist: dns_allowlist_for_dns,
                     dns_policy,
-                    dns_map_for_dns,
-                    metrics_for_dns,
-                )
+                    dns_map: dns_map_for_dns,
+                    metrics: metrics_for_dns,
+                    policy_snapshot: service_policy_snapshot,
+                    service_policy_applied_generation: service_policy_applied_generation_for_dns,
+                    tls_intercept_ca_ready: tls_intercept_ca_ready_for_dns,
+                    tls_intercept_ca_generation: tls_intercept_ca_generation_for_dns,
+                    tls_intercept_ca_source: tls_intercept_ca_source_for_dns,
+                    tls_intercept_listen_port,
+                    enable_kernel_intercept_steering: !dpdk_enabled,
+                    service_lane_iface: service_lane_iface_for_dns,
+                    service_lane_ip,
+                    service_lane_prefix,
+                    intercept_demux: shared_intercept_demux_for_dns,
+                    policy_store: policy_store_for_dns.clone(),
+                    audit_store: Some(audit_store_for_dns),
+                    node_id: node_id_for_dns,
+                    startup_status_tx: Some(dns_startup_tx),
+                })
                 .await
-                .map_err(|err| format!("dns proxy failed: {err}"))
             });
             let _ = dns_tx.send(res);
         });
@@ -2347,7 +2774,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
     let dns_task = dns_rx;
-    readiness.set_dns_ready(true);
+    match tokio::time::timeout(Duration::from_secs(2), dns_startup_rx).await {
+        Ok(Ok(Ok(()))) => {
+            readiness.set_dns_ready(true);
+            readiness.set_service_plane_ready(true);
+        }
+        Ok(Ok(Err(err))) => {
+            eprintln!("dns proxy: startup failed: {err}");
+            std::process::exit(2);
+        }
+        Ok(Err(_)) => {
+            eprintln!("dns proxy: startup channel dropped");
+            std::process::exit(2);
+        }
+        Err(_) => {
+            eprintln!("dns proxy: startup timed out after 2s");
+            std::process::exit(2);
+        }
+    }
 
     let dns_allowlist_idle_secs = cfg.dns_allowlist_idle_secs;
     let dns_allowlist_gc_interval_secs = cfg.dns_allowlist_gc_interval_secs;
@@ -2384,6 +2828,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             None
         },
+        tls_intercept_ca_ready: Some(tls_intercept_ca_ready.clone()),
+        tls_intercept_ca_generation: Some(tls_intercept_ca_generation.clone()),
     };
     let http_policy_store = policy_store.clone();
     let http_local_store = local_policy_store.clone();
@@ -2404,6 +2850,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     http_policy_store,
                     http_local_store,
                     http_cluster,
+                    Some(audit_store.clone()),
                     Some(wiretap_hub.clone()),
                     Some(dns_map_for_http),
                     Some(readiness_for_http),
@@ -2482,6 +2929,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let policy = policy_store.snapshot();
     let metrics_for_dataplane = metrics.clone();
     let dataplane_config_for_dp = dataplane_config.clone();
+    let shared_intercept_demux_for_dp = shared_intercept_demux.clone();
 
     let (dp_to_cp_tx, dp_to_cp_rx) = if dpdk_enabled {
         let (tx, rx) = mpsc::channel::<DhcpRx>(128);
@@ -2585,8 +3033,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             idle_timeout_secs,
             policy,
             policy_applied_generation,
+            service_policy_applied_generation,
             dns_allowlist_for_dp,
+            cfg.dns_target_ips.clone(),
             Some(wiretap_emitter),
+            Some(audit_emitter),
             internal_net,
             internal_prefix,
             public_ip,
@@ -2598,6 +3049,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             dp_to_cp_tx,
             cp_to_dp_rx,
             mac_tx,
+            shared_intercept_demux_for_dp,
             metrics_for_dataplane,
         )
         .map_err(|err| format!("dataplane failed: {err}"))
@@ -2658,5 +3110,162 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_test_tcp_packet(src_port: u16, dst_port: u16) -> Packet {
+        const ETH_HDR_LEN: usize = 14;
+        let total_len = 20 + 20;
+        let mut buf = vec![0u8; ETH_HDR_LEN + total_len];
+        buf[0..6].copy_from_slice(&[0; 6]);
+        buf[6..12].copy_from_slice(&[1; 6]);
+        buf[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+        let ip_off = ETH_HDR_LEN;
+        buf[ip_off] = 0x45;
+        buf[ip_off + 1] = 0;
+        buf[ip_off + 2..ip_off + 4].copy_from_slice(&(total_len as u16).to_be_bytes());
+        buf[ip_off + 8] = 64;
+        buf[ip_off + 9] = 6;
+        buf[ip_off + 12..ip_off + 16].copy_from_slice(&Ipv4Addr::new(10, 0, 0, 1).octets());
+        buf[ip_off + 16..ip_off + 20].copy_from_slice(&Ipv4Addr::new(198, 51, 100, 10).octets());
+        let tcp_off = ip_off + 20;
+        buf[tcp_off..tcp_off + 2].copy_from_slice(&src_port.to_be_bytes());
+        buf[tcp_off + 2..tcp_off + 4].copy_from_slice(&dst_port.to_be_bytes());
+        buf[tcp_off + 12] = 0x50;
+        buf[tcp_off + 13] = 0x18;
+        let mut pkt = Packet::new(buf);
+        let _ = pkt.recalc_checksums();
+        pkt
+    }
+
+    fn base_args() -> Vec<String> {
+        vec![
+            "--management-interface".to_string(),
+            "mgmt0".to_string(),
+            "--data-plane-interface".to_string(),
+            "data0".to_string(),
+        ]
+    }
+
+    #[test]
+    fn parse_args_accepts_repeated_dns_flags() {
+        let mut args = base_args();
+        args.extend_from_slice(&[
+            "--dns-target-ip".to_string(),
+            "10.0.0.1".to_string(),
+            "--dns-target-ip".to_string(),
+            "10.0.0.2".to_string(),
+            "--dns-upstream".to_string(),
+            "1.1.1.1:53".to_string(),
+            "--dns-upstream".to_string(),
+            "8.8.8.8:53".to_string(),
+        ]);
+        let cfg = parse_args("firewall", args).expect("parse args");
+        assert_eq!(cfg.dns_target_ips.len(), 2);
+        assert_eq!(cfg.dns_upstreams.len(), 2);
+    }
+
+    #[test]
+    fn parse_args_accepts_csv_dns_flags() {
+        let mut args = base_args();
+        args.extend_from_slice(&[
+            "--dns-target-ips".to_string(),
+            "10.0.0.1,10.0.0.2".to_string(),
+            "--dns-upstreams".to_string(),
+            "1.1.1.1:53,8.8.8.8:53".to_string(),
+        ]);
+        let cfg = parse_args("firewall", args).expect("parse args");
+        assert_eq!(cfg.dns_target_ips.len(), 2);
+        assert_eq!(cfg.dns_upstreams.len(), 2);
+    }
+
+    #[test]
+    fn parse_args_rejects_mixed_dns_target_forms() {
+        let mut args = base_args();
+        args.extend_from_slice(&[
+            "--dns-target-ip".to_string(),
+            "10.0.0.1".to_string(),
+            "--dns-target-ips".to_string(),
+            "10.0.0.2".to_string(),
+            "--dns-upstream".to_string(),
+            "1.1.1.1:53".to_string(),
+        ]);
+        let err = parse_args("firewall", args).expect_err("expected parse failure");
+        assert!(err.contains("cannot combine repeated --dns-target-ip"));
+    }
+
+    #[test]
+    fn parse_args_rejects_mixed_dns_upstream_forms() {
+        let mut args = base_args();
+        args.extend_from_slice(&[
+            "--dns-target-ip".to_string(),
+            "10.0.0.1".to_string(),
+            "--dns-upstream".to_string(),
+            "1.1.1.1:53".to_string(),
+            "--dns-upstreams".to_string(),
+            "8.8.8.8:53".to_string(),
+        ]);
+        let err = parse_args("firewall", args).expect_err("expected parse failure");
+        assert!(err.contains("cannot combine repeated --dns-upstream"));
+    }
+
+    #[test]
+    fn parse_args_rejects_removed_dns_listen_flag() {
+        let mut args = base_args();
+        args.extend_from_slice(&[
+            "--dns-target-ip".to_string(),
+            "10.0.0.1".to_string(),
+            "--dns-upstream".to_string(),
+            "1.1.1.1:53".to_string(),
+            "--dns-listen".to_string(),
+            "10.0.0.1:53".to_string(),
+        ]);
+        let err = parse_args("firewall", args).expect_err("expected parse failure");
+        assert!(err.contains("--dns-listen has been removed"));
+    }
+
+    #[test]
+    fn choose_dpdk_worker_plan_prefers_queue_per_worker_when_available() {
+        let plan = choose_dpdk_worker_plan(4, 8, 4).expect("worker plan");
+        assert_eq!(plan.worker_count, 4);
+        assert_eq!(plan.mode, DpdkWorkerMode::QueuePerWorker);
+    }
+
+    #[test]
+    fn choose_dpdk_worker_plan_uses_shared_demux_on_single_queue() {
+        let plan = choose_dpdk_worker_plan(4, 8, 1).expect("worker plan");
+        assert_eq!(plan.worker_count, 4);
+        assert_eq!(plan.mode, DpdkWorkerMode::SharedRxDemux);
+    }
+
+    #[test]
+    fn choose_dpdk_worker_plan_reduces_to_effective_queue_count() {
+        let plan = choose_dpdk_worker_plan(8, 8, 2).expect("worker plan");
+        assert_eq!(plan.worker_count, 2);
+        assert_eq!(plan.mode, DpdkWorkerMode::QueuePerWorker);
+    }
+
+    #[test]
+    fn choose_dpdk_worker_plan_rejects_zero_effective_queues() {
+        let err = choose_dpdk_worker_plan(2, 8, 0).expect_err("expected queue error");
+        assert!(err.contains("no usable queues"));
+    }
+
+    #[test]
+    fn shared_demux_owner_pins_https_to_worker_zero() {
+        let pkt = build_test_tcp_packet(40000, 443);
+        let owner = shared_demux_owner_for_packet(&pkt, 4, 2);
+        assert_eq!(owner, 0);
+    }
+
+    #[test]
+    fn shared_demux_owner_hashes_non_https_flows() {
+        let pkt = build_test_tcp_packet(40000, 5201);
+        let owner = shared_demux_owner_for_packet(&pkt, 4, 2);
+        assert!(owner < 2);
     }
 }

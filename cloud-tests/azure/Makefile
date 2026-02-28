@@ -145,7 +145,6 @@ policy-smoke:
 	jump_ip=$$(cd "$(TF_DIR)" && terraform output -raw jumpbox_public_ip); \
 	upstream_vip=$$(cd "$(TF_DIR)" && terraform output -raw upstream_vip); \
 	upstream_ip=$$(cd "$(TF_DIR)" && terraform output -raw upstream_private_ip); \
-	mgmt_dns_lb_ip=$$(cd "$(TF_DIR)" && terraform output -raw mgmt_dns_lb_ip 2>/dev/null || true); \
 	consumer_ip=$$(cd "$(TF_DIR)" && terraform output -json consumer_private_ips | jq -r '.[0]'); \
 	if [ -z "$$jump_ip" ] || [ -z "$$upstream_vip" ] || [ -z "$$upstream_ip" ] || [ -z "$$consumer_ip" ] || [ "$$consumer_ip" = "null" ]; then \
 		echo "missing terraform outputs for policy smoke" >&2; exit 1; \
@@ -154,7 +153,6 @@ policy-smoke:
 	fw_mgmt_ip=$$(echo "$$fw_mgmt_ips" | awk '{print $$1}'); \
 	if [ -z "$$fw_mgmt_ip" ]; then echo "missing firewall mgmt ip" >&2; exit 1; fi; \
 	dns_server="$$fw_mgmt_ip"; \
-	if [ -n "$$mgmt_dns_lb_ip" ] && [ "$$mgmt_dns_lb_ip" != "null" ]; then dns_server="$$mgmt_dns_lb_ip"; fi; \
 	JUMPBOX_IP=$$jump_ip CONSUMER_IP=$$consumer_ip FW_MGMT_IP=$$fw_mgmt_ip FW_MGMT_IPS="$$fw_mgmt_ips" UPSTREAM_VIP=$$upstream_vip UPSTREAM_IP=$$upstream_ip DNS_SERVER=$$dns_server \
 	DNS_ZONE=$${DNS_ZONE:-upstream.test} KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
 	"$(CURDIR)/../common/run-policy-smoke.sh"

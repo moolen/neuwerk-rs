@@ -44,6 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let upstream_services = UpstreamServices::start(
         upstream_ns,
         (cfg.up_mgmt_ip, 53).into(),
+        (cfg.up_mgmt_ip_alt, 53).into(),
         (cfg.up_dp_ip, 80).into(),
         (cfg.up_dp_ip, 443).into(),
         (cfg.up_dp_ip, cfg.up_udp_port).into(),
@@ -250,10 +251,12 @@ fn spawn_firewall(
         .arg(cfg.dns_allowlist_idle_secs.to_string())
         .arg("--dns-allowlist-gc-interval-secs")
         .arg(cfg.dns_allowlist_gc_interval_secs.to_string())
+        .arg("--dns-target-ip")
+        .arg(cfg.fw_mgmt_ip.to_string())
         .arg("--dns-upstream")
         .arg(format!("{}:53", cfg.up_mgmt_ip))
-        .arg("--dns-listen")
-        .arg(format!("{}:53", cfg.fw_mgmt_ip))
+        .arg("--dns-upstream")
+        .arg(format!("{}:53", cfg.up_mgmt_ip_alt))
         .arg("--snat")
         .arg(cfg.dp_public_ip.to_string())
         .arg("--http-tls-dir")

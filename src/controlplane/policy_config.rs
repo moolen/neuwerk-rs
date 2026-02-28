@@ -4,8 +4,10 @@ use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::dataplane::policy::{
-    CidrV4, DefaultPolicy, IpSetV4, PortRange, Proto, Rule, RuleAction, RuleMatch, SourceGroup,
-    Tls13Uninspectable, TlsMatch, TlsNameMatch,
+    CidrV4, DefaultPolicy, HttpHeadersMatcher, HttpPathMatcher, HttpQueryMatcher,
+    HttpRequestPolicy, HttpResponsePolicy, HttpStringMatcher, IpSetV4, PortRange, Proto, Rule,
+    RuleAction, RuleMatch, RuleMode as DataplaneRuleMode, SourceGroup, Tls13Uninspectable,
+    TlsInterceptHttpPolicy, TlsMatch, TlsMode, TlsNameMatch,
 };
 use x509_parser::pem::parse_x509_pem;
 
@@ -19,6 +21,7 @@ pub struct CompiledPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PolicyMode {
+    Disabled,
     Audit,
     Enforce,
 }
@@ -26,6 +29,38 @@ pub enum PolicyMode {
 impl Default for PolicyMode {
     fn default() -> Self {
         PolicyMode::Enforce
+    }
+}
+
+impl PolicyMode {
+    pub fn is_active(self) -> bool {
+        !matches!(self, PolicyMode::Disabled)
+    }
+
+    pub fn is_enforcing(self) -> bool {
+        matches!(self, PolicyMode::Enforce)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleMode {
+    Audit,
+    Enforce,
+}
+
+impl Default for RuleMode {
+    fn default() -> Self {
+        RuleMode::Enforce
+    }
+}
+
+impl From<RuleMode> for DataplaneRuleMode {
+    fn from(value: RuleMode) -> Self {
+        match value {
+            RuleMode::Audit => DataplaneRuleMode::Audit,
+            RuleMode::Enforce => DataplaneRuleMode::Enforce,
+        }
     }
 }
 
@@ -52,19 +87,51 @@ impl DnsPolicy {
         src_ip: Ipv4Addr,
         hostname: &str,
     ) -> (bool, Option<String>) {
+        self.evaluate_with_source_group_for_mode(src_ip, hostname, DataplaneRuleMode::Enforce, true)
+    }
+
+    pub fn evaluate_audit_denied_with_source_group(
+        &self,
+        src_ip: Ipv4Addr,
+        hostname: &str,
+    ) -> (bool, Option<String>) {
+        let (allowed, group) = self.evaluate_with_source_group_for_mode(
+            src_ip,
+            hostname,
+            DataplaneRuleMode::Audit,
+            false,
+        );
+        (!allowed, group)
+    }
+
+    fn evaluate_with_source_group_for_mode(
+        &self,
+        src_ip: Ipv4Addr,
+        hostname: &str,
+        mode: DataplaneRuleMode,
+        include_group_default_deny: bool,
+    ) -> (bool, Option<String>) {
         let hostname = normalize_hostname(hostname);
         for group in &self.groups {
             if !group.sources.contains(src_ip) {
                 continue;
             }
             for rule in &group.rules {
+                if rule.mode != mode {
+                    continue;
+                }
                 if rule.hostname.is_match(&hostname) {
                     return (rule.action == RuleAction::Allow, Some(group.id.clone()));
                 }
             }
-            return (false, Some(group.id.clone()));
+            if include_group_default_deny && mode == DataplaneRuleMode::Enforce {
+                return (false, Some(group.id.clone()));
+            }
         }
-        (false, None)
+        if include_group_default_deny && mode == DataplaneRuleMode::Enforce {
+            return (false, None);
+        }
+        (true, None)
     }
 
     pub fn source_group_for_ip(&self, src_ip: Ipv4Addr) -> Option<String> {
@@ -88,6 +155,7 @@ pub struct DnsRule {
     pub id: String,
     pub priority: u32,
     pub action: RuleAction,
+    pub mode: DataplaneRuleMode,
     pub hostname: Regex,
 }
 
@@ -144,9 +212,7 @@ impl SourceGroupConfig {
         let mut dns_rules = Vec::with_capacity(self.rules.len());
         for (idx, rule) in self.rules.into_iter().enumerate() {
             let (rule, dns_rule) = rule.compile(idx as u32)?;
-            if let Some(rule) = rule {
-                rules.push(rule);
-            }
+            rules.push(rule);
             if let Some(dns_rule) = dns_rule {
                 dns_rules.push(dns_rule);
             }
@@ -207,35 +273,34 @@ pub struct RuleConfig {
     pub priority: Option<u32>,
     pub action: PolicyValue,
     #[serde(default)]
-    pub mode: PolicyMode,
+    pub mode: RuleMode,
     #[serde(rename = "match")]
     pub matcher: RuleMatchConfig,
 }
 
 impl RuleConfig {
-    fn compile(self, fallback_priority: u32) -> Result<(Option<Rule>, Option<DnsRule>), String> {
+    fn compile(self, fallback_priority: u32) -> Result<(Rule, Option<DnsRule>), String> {
         let priority = self.priority.unwrap_or(fallback_priority);
         let action = parse_rule_action(self.action)?;
+        let mode: DataplaneRuleMode = self.mode.into();
         let dns_rule = compile_dns_rule(
             &self.id,
             priority,
             action,
+            mode,
             self.matcher.dns_hostname.as_deref(),
         )?;
         let matcher = self.matcher.compile(&self.id)?;
-
-        if self.mode == PolicyMode::Audit {
-            return Ok((None, None));
-        }
 
         let rule = Rule {
             id: self.id,
             priority,
             matcher,
             action,
+            mode,
         };
 
-        Ok((Some(rule), dns_rule))
+        Ok((rule, dns_rule))
     }
 }
 
@@ -337,6 +402,8 @@ impl RuleMatchConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsMatchConfig {
+    #[serde(default)]
+    pub mode: Option<TlsModeValue>,
     pub sni: Option<TlsNameMatchConfig>,
     pub server_dn: Option<String>,
     pub server_san: Option<TlsNameMatchConfig>,
@@ -347,6 +414,24 @@ pub struct TlsMatchConfig {
     pub trust_anchors_pem: Vec<String>,
     #[serde(default)]
     pub tls13_uninspectable: Option<Tls13UninspectableValue>,
+    #[serde(default)]
+    pub http: Option<HttpPolicyConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsModeValue {
+    Metadata,
+    Intercept,
+}
+
+impl From<TlsModeValue> for TlsMode {
+    fn from(value: TlsModeValue) -> Self {
+        match value {
+            TlsModeValue::Metadata => TlsMode::Metadata,
+            TlsModeValue::Intercept => TlsMode::Intercept,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -375,6 +460,74 @@ pub enum TlsNameMatchConfig {
         exact: Vec<String>,
         regex: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HttpPolicyConfig {
+    #[serde(default)]
+    pub request: Option<HttpRequestPolicyConfig>,
+    #[serde(default)]
+    pub response: Option<HttpResponsePolicyConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HttpRequestPolicyConfig {
+    #[serde(default)]
+    pub host: Option<HttpStringMatcherConfig>,
+    #[serde(default)]
+    pub methods: Vec<String>,
+    #[serde(default)]
+    pub path: Option<HttpPathMatcherConfig>,
+    #[serde(default)]
+    pub query: Option<HttpQueryMatcherConfig>,
+    #[serde(default)]
+    pub headers: Option<HttpHeadersMatcherConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HttpResponsePolicyConfig {
+    #[serde(default)]
+    pub headers: Option<HttpHeadersMatcherConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HttpStringMatcherConfig {
+    #[serde(default)]
+    pub exact: Vec<String>,
+    #[serde(default)]
+    pub regex: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HttpPathMatcherConfig {
+    #[serde(default)]
+    pub exact: Vec<String>,
+    #[serde(default)]
+    pub prefix: Vec<String>,
+    #[serde(default)]
+    pub regex: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HttpQueryMatcherConfig {
+    #[serde(default)]
+    pub keys_present: Vec<String>,
+    #[serde(default)]
+    pub key_values_exact: std::collections::BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub key_values_regex: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HttpHeadersMatcherConfig {
+    #[serde(default)]
+    pub require_present: Vec<String>,
+    #[serde(default)]
+    pub deny_present: Vec<String>,
+    #[serde(default)]
+    pub exact: std::collections::BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub regex: std::collections::BTreeMap<String, String>,
 }
 
 impl TlsNameMatchConfig {
@@ -414,8 +567,250 @@ impl TlsNameMatchConfig {
     }
 }
 
+impl HttpPolicyConfig {
+    fn compile(self, rule_id: &str) -> Result<TlsInterceptHttpPolicy, String> {
+        let request = match self.request {
+            Some(request) => Some(request.compile(rule_id)?),
+            None => None,
+        };
+        let response = match self.response {
+            Some(response) => Some(response.compile(rule_id)?),
+            None => None,
+        };
+
+        if request.is_none() && response.is_none() {
+            return Err(format!(
+                "rule {rule_id}: tls.http requires request and/or response constraints"
+            ));
+        }
+
+        Ok(TlsInterceptHttpPolicy { request, response })
+    }
+}
+
+impl HttpRequestPolicyConfig {
+    fn compile(self, rule_id: &str) -> Result<HttpRequestPolicy, String> {
+        let host = match self.host {
+            Some(host) => Some(host.compile(rule_id, "tls.http.request.host")?),
+            None => None,
+        };
+        let mut methods = Vec::new();
+        for method in self.methods {
+            let method = method.trim().to_ascii_uppercase();
+            if method.is_empty() {
+                return Err(format!(
+                    "rule {rule_id}: tls.http.request.methods entries cannot be empty"
+                ));
+            }
+            methods.push(method);
+        }
+        let path = match self.path {
+            Some(path) => Some(path.compile(rule_id)?),
+            None => None,
+        };
+        let query = match self.query {
+            Some(query) => Some(query.compile(rule_id)?),
+            None => None,
+        };
+        let headers = match self.headers {
+            Some(headers) => Some(headers.compile(rule_id, "tls.http.request.headers")?),
+            None => None,
+        };
+
+        Ok(HttpRequestPolicy {
+            host,
+            methods,
+            path,
+            query,
+            headers,
+        })
+    }
+}
+
+impl HttpResponsePolicyConfig {
+    fn compile(self, rule_id: &str) -> Result<HttpResponsePolicy, String> {
+        let headers = match self.headers {
+            Some(headers) => Some(headers.compile(rule_id, "tls.http.response.headers")?),
+            None => None,
+        };
+        Ok(HttpResponsePolicy { headers })
+    }
+}
+
+impl HttpStringMatcherConfig {
+    fn compile(self, rule_id: &str, field: &str) -> Result<HttpStringMatcher, String> {
+        let mut exact = Vec::new();
+        for value in self.exact {
+            let value = value.trim().to_ascii_lowercase();
+            if !value.is_empty() {
+                exact.push(value);
+            }
+        }
+        let regex = compile_optional_regex(self.regex, rule_id, field, true)?;
+        if exact.is_empty() && regex.is_none() {
+            return Err(format!("rule {rule_id}: {field} matcher cannot be empty"));
+        }
+        Ok(HttpStringMatcher { exact, regex })
+    }
+}
+
+impl HttpPathMatcherConfig {
+    fn compile(self, rule_id: &str) -> Result<HttpPathMatcher, String> {
+        let exact = self
+            .exact
+            .into_iter()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<_>>();
+        let prefix = self
+            .prefix
+            .into_iter()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<_>>();
+        let regex = compile_optional_regex(self.regex, rule_id, "tls.http.request.path", false)?;
+        if exact.is_empty() && prefix.is_empty() && regex.is_none() {
+            return Err(format!(
+                "rule {rule_id}: tls.http.request.path matcher cannot be empty"
+            ));
+        }
+        Ok(HttpPathMatcher {
+            exact,
+            prefix,
+            regex,
+        })
+    }
+}
+
+impl HttpQueryMatcherConfig {
+    fn compile(self, rule_id: &str) -> Result<HttpQueryMatcher, String> {
+        let keys_present = self
+            .keys_present
+            .into_iter()
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty())
+            .collect::<Vec<_>>();
+
+        let mut key_values_exact = std::collections::BTreeMap::new();
+        for (key, values) in self.key_values_exact {
+            let key = key.trim().to_string();
+            if key.is_empty() {
+                return Err(format!(
+                    "rule {rule_id}: tls.http.request.query.key_values_exact has empty key"
+                ));
+            }
+            let values = values
+                .into_iter()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                return Err(format!(
+                    "rule {rule_id}: tls.http.request.query.key_values_exact[{key}] cannot be empty"
+                ));
+            }
+            key_values_exact.insert(key, values);
+        }
+
+        let mut key_values_regex = std::collections::BTreeMap::new();
+        for (key, regex) in self.key_values_regex {
+            let key = key.trim().to_string();
+            if key.is_empty() {
+                return Err(format!(
+                    "rule {rule_id}: tls.http.request.query.key_values_regex has empty key"
+                ));
+            }
+            let compiled = compile_regex(
+                &regex,
+                rule_id,
+                &format!("tls.http.request.query.key_values_regex[{key}]"),
+                false,
+            )?;
+            key_values_regex.insert(key, compiled);
+        }
+
+        if keys_present.is_empty() && key_values_exact.is_empty() && key_values_regex.is_empty() {
+            return Err(format!(
+                "rule {rule_id}: tls.http.request.query matcher cannot be empty"
+            ));
+        }
+        Ok(HttpQueryMatcher {
+            keys_present,
+            key_values_exact,
+            key_values_regex,
+        })
+    }
+}
+
+impl HttpHeadersMatcherConfig {
+    fn compile(self, rule_id: &str, field: &str) -> Result<HttpHeadersMatcher, String> {
+        let require_present = self
+            .require_present
+            .into_iter()
+            .map(|key| normalize_header_name(&key))
+            .filter(|key| !key.is_empty())
+            .collect::<Vec<_>>();
+        let deny_present = self
+            .deny_present
+            .into_iter()
+            .map(|key| normalize_header_name(&key))
+            .filter(|key| !key.is_empty())
+            .collect::<Vec<_>>();
+
+        let mut exact = std::collections::BTreeMap::new();
+        for (key, values) in self.exact {
+            let key = normalize_header_name(&key);
+            if key.is_empty() {
+                return Err(format!(
+                    "rule {rule_id}: {field}.exact has empty header name"
+                ));
+            }
+            let values = values
+                .into_iter()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                return Err(format!(
+                    "rule {rule_id}: {field}.exact[{key}] cannot be empty"
+                ));
+            }
+            exact.insert(key, values);
+        }
+
+        let mut regex = std::collections::BTreeMap::new();
+        for (key, pattern) in self.regex {
+            let key = normalize_header_name(&key);
+            if key.is_empty() {
+                return Err(format!(
+                    "rule {rule_id}: {field}.regex has empty header name"
+                ));
+            }
+            let compiled =
+                compile_regex(&pattern, rule_id, &format!("{field}.regex[{key}]"), false)?;
+            regex.insert(key, compiled);
+        }
+
+        if require_present.is_empty()
+            && deny_present.is_empty()
+            && exact.is_empty()
+            && regex.is_empty()
+        {
+            return Err(format!("rule {rule_id}: {field} matcher cannot be empty"));
+        }
+        Ok(HttpHeadersMatcher {
+            require_present,
+            deny_present,
+            exact,
+            regex,
+        })
+    }
+}
+
 impl TlsMatchConfig {
     fn compile(self, rule_id: &str) -> Result<TlsMatch, String> {
+        let mode = self.mode.unwrap_or(TlsModeValue::Metadata).into();
+
         let sni = match self.sni {
             Some(config) => Some(config.compile(rule_id, "tls.sni")?),
             None => None,
@@ -453,13 +848,47 @@ impl TlsMatchConfig {
             .unwrap_or(Tls13UninspectableValue::Deny)
             .into();
 
+        let intercept_http = match self.http {
+            Some(http) => Some(http.compile(rule_id)?),
+            None => None,
+        };
+
+        match mode {
+            TlsMode::Metadata => {
+                if intercept_http.is_some() {
+                    return Err(format!(
+                        "rule {rule_id}: tls.http is only valid when tls.mode is intercept"
+                    ));
+                }
+            }
+            TlsMode::Intercept => {
+                if sni.is_some()
+                    || server_cn.is_some()
+                    || server_san.is_some()
+                    || !fingerprints_sha256.is_empty()
+                    || !trust_anchors.is_empty()
+                {
+                    return Err(format!(
+                        "rule {rule_id}: tls.mode intercept cannot be combined with metadata matchers"
+                    ));
+                }
+                if intercept_http.is_none() {
+                    return Err(format!(
+                        "rule {rule_id}: tls.mode intercept requires tls.http constraints"
+                    ));
+                }
+            }
+        }
+
         Ok(TlsMatch {
+            mode,
             sni,
             server_san,
             server_cn,
             fingerprints_sha256,
             trust_anchors,
             tls13_uninspectable,
+            intercept_http,
         })
     }
 }
@@ -633,6 +1062,7 @@ fn compile_dns_rule(
     rule_id: &str,
     priority: u32,
     action: RuleAction,
+    mode: DataplaneRuleMode,
     hostname: Option<&str>,
 ) -> Result<Option<DnsRule>, String> {
     let Some(hostname) = hostname else {
@@ -650,12 +1080,50 @@ fn compile_dns_rule(
         id: rule_id.to_string(),
         priority,
         action,
+        mode,
         hostname: regex,
     }))
 }
 
 fn normalize_hostname(name: &str) -> String {
     name.trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn normalize_header_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
+}
+
+fn compile_optional_regex(
+    pattern: Option<String>,
+    rule_id: &str,
+    field: &str,
+    case_insensitive: bool,
+) -> Result<Option<Regex>, String> {
+    match pattern {
+        Some(pattern) => Ok(Some(compile_regex(
+            &pattern,
+            rule_id,
+            field,
+            case_insensitive,
+        )?)),
+        None => Ok(None),
+    }
+}
+
+fn compile_regex(
+    pattern: &str,
+    rule_id: &str,
+    field: &str,
+    case_insensitive: bool,
+) -> Result<Regex, String> {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return Err(format!("rule {rule_id}: {field} regex cannot be empty"));
+    }
+    RegexBuilder::new(pattern)
+        .case_insensitive(case_insensitive)
+        .build()
+        .map_err(|err| format!("rule {rule_id}: invalid {field} regex: {err}"))
 }
 
 #[cfg(test)]
@@ -822,7 +1290,7 @@ source_groups:
     }
 
     #[test]
-    fn audit_rules_are_ignored() {
+    fn audit_rules_are_mode_filtered() {
         let yaml = r#"
 source_groups:
   - id: "mixed"
@@ -842,9 +1310,42 @@ source_groups:
 "#;
         let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
         let compiled = cfg.compile().unwrap();
-        let group = &compiled.groups[0];
-        assert_eq!(group.rules.len(), 1);
-        assert_eq!(group.rules[0].id, "enforce-rule");
+        let policy = crate::dataplane::policy::PolicySnapshot::new(
+            crate::dataplane::policy::DefaultPolicy::Deny,
+            compiled.groups,
+        );
+        let enforce_meta = crate::dataplane::policy::PacketMeta {
+            src_ip: "192.0.2.9".parse().unwrap(),
+            dst_ip: "203.0.113.11".parse().unwrap(),
+            proto: 6,
+            src_port: 12345,
+            dst_port: 443,
+            icmp_type: None,
+            icmp_code: None,
+        };
+        let audit_meta = crate::dataplane::policy::PacketMeta {
+            dst_ip: "203.0.113.10".parse().unwrap(),
+            ..enforce_meta
+        };
+        assert_eq!(
+            policy
+                .evaluate_with_source_group_detailed_raw(&enforce_meta, None, None)
+                .0,
+            crate::dataplane::policy::PolicyDecision::Deny
+        );
+        assert_eq!(
+            policy
+                .evaluate_with_source_group_detailed_raw(&audit_meta, None, None)
+                .0,
+            crate::dataplane::policy::PolicyDecision::Deny
+        );
+        let (audit_decision, _, audit_matched) =
+            policy.evaluate_audit_rules_with_source_group(&audit_meta, None, None);
+        assert!(audit_matched);
+        assert_eq!(
+            audit_decision,
+            crate::dataplane::policy::PolicyDecision::Allow
+        );
     }
 
     #[test]
@@ -903,5 +1404,108 @@ source_groups:
         let matcher = &compiled.groups[0].rules[0].matcher;
         assert_eq!(matcher.icmp_types, vec![0, 3, 11]);
         assert_eq!(matcher.icmp_codes, vec![0, 4]);
+    }
+
+    #[test]
+    fn tls_intercept_http_policy_compiles() {
+        let yaml = r#"
+source_groups:
+  - id: "tls"
+    sources:
+      ips: ["10.0.0.2"]
+    rules:
+      - id: "intercept"
+        action: allow
+        match:
+          proto: tcp
+          dst_ports: [443]
+          tls:
+            mode: intercept
+            http:
+              request:
+                host:
+                  exact: ["example.com"]
+                methods: ["GET", "post"]
+                path:
+                  prefix: ["/api/"]
+              response:
+                headers:
+                  require_present: ["content-type"]
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let compiled = cfg.compile().unwrap();
+        let tls = compiled.groups[0].rules[0].matcher.tls.as_ref().unwrap();
+        assert!(matches!(tls.mode, TlsMode::Intercept));
+        let http = tls.intercept_http.as_ref().unwrap();
+        let req = http.request.as_ref().unwrap();
+        assert_eq!(req.methods, vec!["GET".to_string(), "POST".to_string()]);
+    }
+
+    #[test]
+    fn tls_http_requires_intercept_mode() {
+        let yaml = r#"
+source_groups:
+  - id: "tls"
+    sources:
+      ips: ["10.0.0.2"]
+    rules:
+      - id: "bad"
+        action: allow
+        match:
+          proto: tcp
+          tls:
+            http:
+              request:
+                host:
+                  exact: ["example.com"]
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = cfg.compile().unwrap_err();
+        assert!(err.contains("tls.http is only valid when tls.mode is intercept"));
+    }
+
+    #[test]
+    fn tls_intercept_requires_http_constraints() {
+        let yaml = r#"
+source_groups:
+  - id: "tls"
+    sources:
+      ips: ["10.0.0.2"]
+    rules:
+      - id: "bad"
+        action: allow
+        match:
+          proto: tcp
+          tls:
+            mode: intercept
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = cfg.compile().unwrap_err();
+        assert!(err.contains("tls.mode intercept requires tls.http constraints"));
+    }
+
+    #[test]
+    fn tls_intercept_rejects_metadata_matchers() {
+        let yaml = r#"
+source_groups:
+  - id: "tls"
+    sources:
+      ips: ["10.0.0.2"]
+    rules:
+      - id: "bad"
+        action: allow
+        match:
+          proto: tcp
+          tls:
+            mode: intercept
+            sni: ["example.com"]
+            http:
+              request:
+                host:
+                  exact: ["example.com"]
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = cfg.compile().unwrap_err();
+        assert!(err.contains("cannot be combined with metadata matchers"));
     }
 }

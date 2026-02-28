@@ -25,3 +25,5 @@ This folder provisions the Azure test bench described in `ROADMAP/AZURE-E2E.md`.
 - If you do not provide a firewall binary path, Terraform uploads a placeholder that will cause the firewall service to fail. Override `firewall_binary_path` with a DPDK-enabled build.
 - Azure rejects chaining an internal Standard LB to a GWLB. We use a public Standard LB chained to the GWLB for upstream traffic, and only the required test ports are exposed (TCP 80/443/9000/5201, UDP 5201, and TCP/UDP 53).
 - Azure load balancers do not forward ICMP; policy-smoke ICMP tests target the upstream VM private IP (still routed through the firewall by UDR) instead of the upstream ILB VIP.
+- DNS service args now use repeated `--dns-target-ip` and `--dns-upstream`; Terraform inputs are `dns_target_ips` and `dns_upstreams` (both lists). Empty values default to management IP target and upstream VM `:53`.
+- `scripts/run-tests.sh` now validates both UDP and TCP DNS queries and enforces strict TLS intercept allow/deny behavior (`/external-secrets/*` allowed, `/moolen` reset/refused).

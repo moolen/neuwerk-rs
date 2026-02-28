@@ -3,11 +3,16 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use axum::http::{Request, Response, StatusCode};
+use base64::Engine;
+use bytes::Bytes;
+use h2::{client, server};
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyUsagePurpose};
 use reqwest::Client;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::oneshot;
@@ -43,11 +48,18 @@ pub struct UpstreamServices {
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
     pub dns_addr: SocketAddr,
+    pub dns_addr_secondary: SocketAddr,
     pub http_addr: SocketAddr,
     pub https_addr: SocketAddr,
     pub udp_echo_addr: SocketAddr,
     pub answer_ip: Ipv4Addr,
     pub answer_ip_alt: Ipv4Addr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DnsServerBehavior {
+    Primary,
+    Secondary,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +110,7 @@ impl UpstreamServices {
     pub fn start(
         ns: netns_rs::NetNs,
         dns_addr: SocketAddr,
+        dns_addr_secondary: SocketAddr,
         http_addr: SocketAddr,
         https_addr: SocketAddr,
         udp_echo_addr: SocketAddr,
@@ -113,7 +126,18 @@ impl UpstreamServices {
                     .build()
                     .map_err(|e| format!("tokio runtime error: {e}"))?;
                 rt.block_on(async move {
-                    let dns_task = tokio::spawn(run_dns_server(dns_addr, answer_ip, answer_ip_alt));
+                    let dns_task = tokio::spawn(run_dns_server(
+                        dns_addr,
+                        answer_ip,
+                        answer_ip_alt,
+                        DnsServerBehavior::Primary,
+                    ));
+                    let dns_task_secondary = tokio::spawn(run_dns_server(
+                        dns_addr_secondary,
+                        answer_ip,
+                        answer_ip_alt,
+                        DnsServerBehavior::Secondary,
+                    ));
                     let http_task = tokio::spawn(run_http_server(http_addr));
                     let http_task_alt =
                         tokio::spawn(run_http_server((answer_ip_alt, http_addr.port()).into()));
@@ -129,6 +153,7 @@ impl UpstreamServices {
 
                     let _ = shutdown_rx.await;
                     dns_task.abort();
+                    dns_task_secondary.abort();
                     http_task.abort();
                     http_task_alt.abort();
                     https_task.abort();
@@ -144,6 +169,7 @@ impl UpstreamServices {
             shutdown: Some(shutdown_tx),
             thread: Some(thread),
             dns_addr,
+            dns_addr_secondary,
             http_addr,
             https_addr,
             udp_echo_addr,
@@ -168,6 +194,7 @@ async fn run_dns_server(
     bind: SocketAddr,
     answer_ip: Ipv4Addr,
     answer_ip_alt: Ipv4Addr,
+    behavior: DnsServerBehavior,
 ) -> Result<(), String> {
     let socket = UdpSocket::bind(bind)
         .await
@@ -179,7 +206,7 @@ async fn run_dns_server(
             .await
             .map_err(|e| format!("dns recv failed: {e}"))?;
         let request = &buf[..len];
-        let response = build_dns_response(request, answer_ip, answer_ip_alt);
+        let response = build_dns_response(request, answer_ip, answer_ip_alt, behavior);
         if let Some(resp) = response {
             socket
                 .send_to(&resp, peer)
@@ -193,6 +220,7 @@ fn build_dns_response(
     request: &[u8],
     answer_ip: Ipv4Addr,
     answer_ip_alt: Ipv4Addr,
+    behavior: DnsServerBehavior,
 ) -> Option<Vec<u8>> {
     if request.len() < 12 {
         return None;
@@ -207,7 +235,9 @@ fn build_dns_response(
     let qsection = &request[12..idx + 4];
 
     let mut resp = Vec::new();
-    if name_norm == "spoof.allowed" {
+    let force_mismatch = name_norm == "spoof-fail.allowed"
+        || (name_norm == "spoof.allowed" && behavior == DnsServerBehavior::Primary);
+    if force_mismatch {
         resp.extend_from_slice(&[0x33, 0x44]); // mismatched transaction ID
     } else {
         resp.extend_from_slice(&request[0..2]); // transaction ID
@@ -249,6 +279,7 @@ fn matches_allowed_name(name: &str) -> bool {
             | "baz.allowed"
             | "cluster.allowed"
             | "spoof.allowed"
+            | "spoof-fail.allowed"
             | "api.example.com"
             | "very.long.subdomain.name.example.com"
     )
@@ -311,10 +342,11 @@ async fn run_https_server(bind: SocketAddr, tls: UpstreamTlsMaterial) -> Result<
         .map(|cert| CertificateDer::from(cert).into_owned())
         .collect();
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(tls.key_der));
-    let config = rustls::ServerConfig::builder()
+    let mut config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(cert_chain, key_der)
         .map_err(|e| format!("tls server config failed: {e}"))?;
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let acceptor = TlsAcceptor::from(Arc::new(config));
     let listener = TcpListener::bind(bind)
         .await
@@ -326,11 +358,74 @@ async fn run_https_server(bind: SocketAddr, tls: UpstreamTlsMaterial) -> Result<
             .map_err(|e| format!("https accept failed: {e}"))?;
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
-            if let Ok(mut tls) = acceptor.accept(stream).await {
-                let _ = handle_http(&mut tls, peer).await;
+            if let Ok(tls) = acceptor.accept(stream).await {
+                let alpn = tls.get_ref().1.alpn_protocol().map(|value| value.to_vec());
+                if alpn.as_deref() == Some(b"h2") {
+                    let _ = handle_http_h2(tls, peer).await;
+                } else {
+                    let mut tls = tls;
+                    let _ = handle_http(&mut tls, peer).await;
+                }
             }
         });
     }
+}
+
+fn response_body_for_path(
+    path: &str,
+    peer: SocketAddr,
+) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
+    if path == "/whoami" {
+        return (
+            StatusCode::OK,
+            Vec::new(),
+            peer.ip().to_string().into_bytes(),
+        );
+    }
+    if path == "/external-secrets/forbidden-response" {
+        return (
+            StatusCode::OK,
+            vec![("x-forbidden".to_string(), "1".to_string())],
+            b"forbidden".to_vec(),
+        );
+    }
+    if let Some(rest) = path.strip_prefix("/echo/") {
+        return (StatusCode::OK, Vec::new(), rest.as_bytes().to_vec());
+    }
+    (StatusCode::OK, Vec::new(), b"ok".to_vec())
+}
+
+async fn handle_http_h2(
+    tls: tokio_rustls::server::TlsStream<TcpStream>,
+    peer: SocketAddr,
+) -> Result<(), String> {
+    let mut conn = server::handshake(tls)
+        .await
+        .map_err(|e| format!("https h2 server handshake failed: {e}"))?;
+    while let Some(next) = conn.accept().await {
+        let (request, mut respond) = next.map_err(|e| format!("https h2 accept failed: {e}"))?;
+        let path = request
+            .uri()
+            .path_and_query()
+            .map(|value| value.path())
+            .unwrap_or("/");
+        let (status, extra_headers, body) = response_body_for_path(path, peer);
+        let mut response = Response::builder().status(status);
+        for (name, value) in &extra_headers {
+            response = response.header(name, value);
+        }
+        let response = response
+            .body(())
+            .map_err(|e| format!("https h2 response build failed: {e}"))?;
+        let mut send = respond
+            .send_response(response, body.is_empty())
+            .map_err(|e| format!("https h2 send response failed: {e}"))?;
+        if !body.is_empty() {
+            send.send_data(Bytes::from(body), true)
+                .map_err(|e| format!("https h2 send body failed: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 async fn handle_http<S: AsyncReadExt + AsyncWriteExt + Unpin>(
@@ -387,14 +482,22 @@ async fn handle_http<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     }
 
     let body_string;
-    let body = if let Some(rest) = path.strip_prefix("/echo/") {
+    let body: &[u8] = if let Some(rest) = path.strip_prefix("/echo/") {
         body_string = rest.to_string();
         body_string.as_bytes()
+    } else if path == "/external-secrets/forbidden-response" {
+        b"forbidden"
     } else {
         b"ok"
     };
+    let extra_headers = if path == "/external-secrets/forbidden-response" {
+        "X-Forbidden: 1\r\n"
+    } else {
+        ""
+    };
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        extra_headers,
         body.len()
     );
     stream
@@ -441,6 +544,61 @@ pub async fn dns_query_response(
     let rcode = parse_rcode(&buf[..len]);
     Ok(DnsResponse {
         ips: extract_ips_from_dns_response(&buf[..len]),
+        rcode,
+    })
+}
+
+pub async fn dns_query_response_tcp(
+    bind: SocketAddr,
+    server: SocketAddr,
+    name: &str,
+) -> Result<DnsResponse, String> {
+    let socket = tokio::net::TcpSocket::new_v4()
+        .map_err(|e| format!("dns tcp client socket failed: {e}"))?;
+    socket
+        .bind(bind)
+        .map_err(|e| format!("dns tcp client bind failed: {e}"))?;
+    let mut stream =
+        tokio::time::timeout(std::time::Duration::from_secs(2), socket.connect(server))
+            .await
+            .map_err(|_| "dns tcp connect timed out".to_string())?
+            .map_err(|e| format!("dns tcp connect failed: {e}"))?;
+
+    let query = build_dns_query(name);
+    if query.len() > u16::MAX as usize {
+        return Err("dns tcp query too large".to_string());
+    }
+    let mut framed = Vec::with_capacity(query.len() + 2);
+    framed.extend_from_slice(&(query.len() as u16).to_be_bytes());
+    framed.extend_from_slice(&query);
+    stream
+        .write_all(&framed)
+        .await
+        .map_err(|e| format!("dns tcp write failed: {e}"))?;
+
+    let mut len_buf = [0u8; 2];
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        stream.read_exact(&mut len_buf),
+    )
+    .await
+    .map_err(|_| "dns tcp length read timed out".to_string())?
+    .map_err(|e| format!("dns tcp length read failed: {e}"))?;
+    let resp_len = u16::from_be_bytes(len_buf) as usize;
+    if resp_len == 0 {
+        return Err("dns tcp response length is zero".to_string());
+    }
+    let mut resp = vec![0u8; resp_len];
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        stream.read_exact(&mut resp),
+    )
+    .await
+    .map_err(|_| "dns tcp response read timed out".to_string())?
+    .map_err(|e| format!("dns tcp response read failed: {e}"))?;
+    let rcode = parse_rcode(&resp);
+    Ok(DnsResponse {
+        ips: extract_ips_from_dns_response(&resp),
         rcode,
     })
 }
@@ -962,6 +1120,72 @@ pub async fn http_get_stats(
         .map_err(|e| format!("stats decode failed: {e}"))
 }
 
+pub async fn http_put_tls_intercept_ca_from_http_ca(
+    addr: SocketAddr,
+    tls_dir: &Path,
+    auth_token: Option<&str>,
+) -> Result<(), String> {
+    let mut params = CertificateParams::default();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "E2E Intercept CA");
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    let cert = Certificate::from_params(params)
+        .map_err(|e| format!("intercept ca certificate generation failed: {e}"))?;
+    let cert_pem = cert
+        .serialize_pem()
+        .map_err(|e| format!("intercept ca pem encode failed: {e}"))?;
+    let key_der = cert.serialize_private_key_der();
+    let payload = serde_json::json!({
+        "ca_cert_pem": cert_pem,
+        "ca_key_der_b64": base64::engine::general_purpose::STANDARD.encode(key_der),
+    });
+
+    let client = http_api_client(tls_dir)?;
+    let mut builder = client
+        .put(format!("https://{addr}/api/v1/settings/tls-intercept-ca"))
+        .json(&payload);
+    if let Some(token) = auth_token {
+        builder = builder.bearer_auth(token);
+    }
+    let resp = builder
+        .send()
+        .await
+        .map_err(|e| format!("intercept ca put failed: {e}"))?;
+    if resp.status().is_success() {
+        return Ok(());
+    }
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    Err(format!("intercept ca put status {status}: {body}"))
+}
+
+pub async fn http_delete_tls_intercept_ca(
+    addr: SocketAddr,
+    tls_dir: &Path,
+    auth_token: Option<&str>,
+) -> Result<(), String> {
+    let client = http_api_client(tls_dir)?;
+    let mut builder = client.delete(format!("https://{addr}/api/v1/settings/tls-intercept-ca"));
+    if let Some(token) = auth_token {
+        builder = builder.bearer_auth(token);
+    }
+    let resp = builder
+        .send()
+        .await
+        .map_err(|e| format!("intercept ca delete failed: {e}"))?;
+    if resp.status().is_success() {
+        return Ok(());
+    }
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    Err(format!("intercept ca delete status {status}: {body}"))
+}
+
 fn http_api_client(tls_dir: &Path) -> Result<Client, String> {
     let ca = std::fs::read(tls_dir.join("ca.crt"))
         .map_err(|e| format!("read http ca cert failed: {e}"))?;
@@ -1068,6 +1292,39 @@ pub async fn https_get(addr: SocketAddr, host: &str) -> Result<String, String> {
     https_get_path(addr, host, "/").await
 }
 
+pub async fn https_leaf_cert_sha256(addr: SocketAddr, host: &str) -> Result<[u8; 32], String> {
+    ensure_rustls_provider();
+    let config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerifier))
+        .with_no_client_auth();
+    let connector = TlsConnector::from(Arc::new(config));
+    let stream = tokio::time::timeout(std::time::Duration::from_secs(3), TcpStream::connect(addr))
+        .await
+        .map_err(|_| "https connect timed out".to_string())?
+        .map_err(|e| format!("https connect failed: {e}"))?;
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+        .map_err(|_| "invalid server name".to_string())?;
+    let tls = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        connector.connect(server_name, stream),
+    )
+    .await
+    .map_err(|_| "tls connect timed out".to_string())?
+    .map_err(|e| format!("tls connect failed: {e}"))?;
+    let (_io, conn) = tls.get_ref();
+    let certs = conn
+        .peer_certificates()
+        .ok_or_else(|| "tls peer certificate chain missing".to_string())?;
+    let leaf = certs
+        .first()
+        .ok_or_else(|| "tls peer leaf certificate missing".to_string())?;
+    let digest = Sha256::digest(leaf.as_ref());
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    Ok(out)
+}
+
 pub async fn https_get_path(addr: SocketAddr, host: &str, path: &str) -> Result<String, String> {
     https_get_path_with_versions(addr, host, path, None).await
 }
@@ -1078,6 +1335,110 @@ pub async fn https_get_tls12(addr: SocketAddr, host: &str) -> Result<String, Str
 
 pub async fn https_get_tls13(addr: SocketAddr, host: &str) -> Result<String, String> {
     https_get_path_with_versions(addr, host, "/", Some(&[&rustls::version::TLS13])).await
+}
+
+pub async fn https_h2_preface(addr: SocketAddr, host: &str) -> Result<usize, String> {
+    ensure_rustls_provider();
+    let mut config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerifier))
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    let connector = TlsConnector::from(Arc::new(config));
+
+    let stream = tokio::time::timeout(std::time::Duration::from_secs(3), TcpStream::connect(addr))
+        .await
+        .map_err(|_| "https h2 connect timed out".to_string())?
+        .map_err(|e| format!("https h2 connect failed: {e}"))?;
+
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+        .map_err(|_| "invalid server name".to_string())?;
+    let mut tls = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        connector.connect(server_name, stream),
+    )
+    .await
+    .map_err(|_| "tls h2 connect timed out".to_string())?
+    .map_err(|e| format!("tls h2 connect failed: {e}"))?;
+
+    // HTTP/2 client preface plus an empty SETTINGS frame.
+    let preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    let settings = [0u8, 0, 0, 4, 0, 0, 0, 0, 0];
+    tls.write_all(preface)
+        .await
+        .map_err(|e| format!("https h2 preface write failed: {e}"))?;
+    tls.write_all(&settings)
+        .await
+        .map_err(|e| format!("https h2 settings write failed: {e}"))?;
+
+    let mut buf = [0u8; 1024];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(3), tls.read(&mut buf))
+        .await
+        .map_err(|_| "https h2 read timed out".to_string())?
+        .map_err(|e| format!("https h2 read failed: {e}"))?;
+    if n == 0 {
+        return Err("https h2 peer closed".to_string());
+    }
+    Ok(n)
+}
+
+pub async fn https_h2_get_path(addr: SocketAddr, host: &str, path: &str) -> Result<String, String> {
+    ensure_rustls_provider();
+    let mut config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerifier))
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    let connector = TlsConnector::from(Arc::new(config));
+
+    let stream = tokio::time::timeout(std::time::Duration::from_secs(3), TcpStream::connect(addr))
+        .await
+        .map_err(|_| "https h2 connect timed out".to_string())?
+        .map_err(|e| format!("https h2 connect failed: {e}"))?;
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+        .map_err(|_| "invalid server name".to_string())?;
+    let tls = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        connector.connect(server_name, stream),
+    )
+    .await
+    .map_err(|_| "tls h2 connect timed out".to_string())?
+    .map_err(|e| format!("tls h2 connect failed: {e}"))?;
+
+    let (mut send_request, connection) =
+        tokio::time::timeout(std::time::Duration::from_secs(3), client::handshake(tls))
+            .await
+            .map_err(|_| "https h2 handshake timed out".to_string())?
+            .map_err(|e| format!("https h2 handshake failed: {e}"))?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("host", host)
+        .body(())
+        .map_err(|e| format!("https h2 request build failed: {e}"))?;
+    let (response_fut, _) = send_request
+        .send_request(request, true)
+        .map_err(|e| format!("https h2 request send failed: {e}"))?;
+    let response = tokio::time::timeout(std::time::Duration::from_secs(3), response_fut)
+        .await
+        .map_err(|_| "https h2 response timed out".to_string())?
+        .map_err(|e| format!("https h2 response failed: {e}"))?;
+    let status = response.status();
+    let mut body = Vec::new();
+    let mut recv = response.into_body();
+    while let Some(next) = recv.data().await {
+        let chunk = next.map_err(|e| format!("https h2 body read failed: {e}"))?;
+        body.extend_from_slice(&chunk);
+    }
+    Ok(format!(
+        "HTTP/2 {}\r\n\r\n{}",
+        status.as_u16(),
+        String::from_utf8_lossy(&body)
+    ))
 }
 
 async fn https_get_path_with_versions(
@@ -1119,6 +1480,31 @@ async fn https_get_path_with_versions(
         .map_err(|_| "https read timed out".to_string())?
         .map_err(|e| format!("https read failed: {e}"))?;
     Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn https_h2_get_path_works_against_upstream_server() {
+        let tls = generate_upstream_tls_material().expect("tls material");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        drop(listener);
+        let server = tokio::spawn(run_https_server(addr, tls));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let response = https_h2_get_path(addr, "foo.allowed", "/external-secrets/external-secrets")
+            .await
+            .expect("h2 get");
+        assert!(
+            response.starts_with("HTTP/2 200"),
+            "unexpected response: {response}"
+        );
+
+        server.abort();
+    }
 }
 
 pub async fn tls_client_hello_raw(

@@ -35,16 +35,12 @@ RG=$(terraform output -raw resource_group)
 JUMPBOX_IP=$(terraform output -raw jumpbox_public_ip)
 UPSTREAM_VIP=$(terraform output -raw upstream_vip)
 UPSTREAM_IP=$(terraform output -raw upstream_private_ip)
-MGMT_DNS_LB_IP=$(terraform output -raw mgmt_dns_lb_ip 2>/dev/null || true)
 CONSUMERS=$(terraform output -json consumer_private_ips | jq -r '.[]')
 popd >/dev/null
 
 FW_MGMT_IPS=$(TF_DIR="$TF_DIR" "$RESOLVE_FW_IPS")
 FW_MGMT_IP=$(echo "$FW_MGMT_IPS" | head -n1)
-DNS_TARGET="$FW_MGMT_IP"
-if [ -n "$MGMT_DNS_LB_IP" ] && [ "$MGMT_DNS_LB_IP" != "null" ]; then
-  DNS_TARGET="$MGMT_DNS_LB_IP"
-fi
+DNS_TARGET="${DNS_TARGET:-$FW_MGMT_IP}"
 IPERF_TARGET="${IPERF_TARGET:-$UPSTREAM_IP}"
 
 if [ -z "$CONSUMERS" ]; then
@@ -55,6 +51,12 @@ fi
 for ip in $CONSUMERS; do
   echo "DNS test from ${ip}"
   ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "dig +time=2 +tries=1 @${DNS_TARGET} ${DNS_ZONE}"
+
+done
+
+for ip in $CONSUMERS; do
+  echo "DNS TCP test from ${ip}"
+  ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "dig +tcp +time=2 +tries=1 @${DNS_TARGET} ${DNS_ZONE}"
 
 done
 
@@ -70,6 +72,19 @@ for ip in $CONSUMERS; do
   ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
     "curl -sk --max-time 20 --connect-timeout 10 --retry 3 --retry-delay 1 --retry-all-errors --resolve ${DNS_ZONE}:443:${UPSTREAM_VIP} https://${DNS_ZONE}"
 
+done
+
+for ip in $CONSUMERS; do
+  echo "HTTPS allow-path smoke from ${ip}"
+  ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
+    "curl -skf --max-time 20 --connect-timeout 10 --retry 3 --retry-delay 1 --retry-all-errors --resolve ${DNS_ZONE}:443:${UPSTREAM_VIP} https://${DNS_ZONE}/external-secrets/external-secrets"
+
+done
+
+for ip in $CONSUMERS; do
+  echo "HTTPS deny-path RST smoke from ${ip}"
+  ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
+    "set -e; out=\$(curl -sk --max-time 10 --connect-timeout 5 --resolve ${DNS_ZONE}:443:${UPSTREAM_VIP} https://${DNS_ZONE}/moolen 2>&1 >/dev/null || true); echo \"\$out\" | egrep -qi 'reset|refused|empty reply' || { echo \"expected reset/refused for deny path\" >&2; exit 1; }"
 done
 
 echo "starting long-lived connection on first consumer"

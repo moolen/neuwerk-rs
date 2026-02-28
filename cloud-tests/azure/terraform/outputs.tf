@@ -38,10 +38,6 @@ output "dataplane_lb_ip" {
   value = module.dataplane_lb.private_ip
 }
 
-output "mgmt_dns_lb_ip" {
-  value = module.mgmt_dns_lb.private_ip
-}
-
 output "gwlb_tunnel" {
   value = {
     vni_internal      = var.gwlb_vni_internal

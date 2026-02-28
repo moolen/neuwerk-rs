@@ -43,6 +43,7 @@ pub struct TopologyConfig {
     pub up_udp_port: u16,
     pub fw_up_mgmt_ip: Ipv4Addr,
     pub up_mgmt_ip: Ipv4Addr,
+    pub up_mgmt_ip_alt: Ipv4Addr,
     pub dp_public_ip: Ipv4Addr,
     pub cluster_bind_port: u16,
     pub cluster_join_port: u16,
@@ -90,6 +91,7 @@ impl Default for TopologyConfig {
             up_udp_port: 9000,
             fw_up_mgmt_ip: Ipv4Addr::new(172, 16, 0, 1),
             up_mgmt_ip: Ipv4Addr::new(172, 16, 0, 2),
+            up_mgmt_ip_alt: Ipv4Addr::new(172, 16, 0, 3),
             dp_public_ip: Ipv4Addr::new(203, 0, 113, 1),
             cluster_bind_port: 9600,
             cluster_join_port: 9601,
@@ -281,6 +283,7 @@ impl Topology {
 
                         let mgmt = get_link_index(&handle, &cfg.up_mgmt_iface).await?;
                         add_address(&handle, mgmt, IpAddr::V4(cfg.up_mgmt_ip), 24).await?;
+                        add_address(&handle, mgmt, IpAddr::V4(cfg.up_mgmt_ip_alt), 24).await?;
                         set_link_up(&handle, mgmt).await?;
 
                         add_gateway_route_v4(

@@ -5,6 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::fd::AsRawFd;
 use std::process::Command;
 use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::controlplane::api_auth;
@@ -17,18 +18,22 @@ use crate::controlplane::service_accounts::{ServiceAccountStatus, TokenStatus};
 use crate::controlplane::PolicyStore;
 use crate::dataplane::config::DataplaneConfigStore;
 use crate::dataplane::policy::{
-    CidrV4, DefaultPolicy, IpSetV4, Proto, Rule, RuleAction, RuleMatch, SourceGroup,
+    CidrV4, DefaultPolicy, IpSetV4, PolicySnapshot, PortRange, Proto, Rule, RuleAction, RuleMatch,
+    RuleMode, SourceGroup, Tls13Uninspectable, TlsMatch, TlsMode,
 };
-use crate::dataplane::{DpdkAdapter, EngineState};
+use crate::dataplane::{
+    DataplaneConfig, DpdkAdapter, EngineState, SharedArpState, SharedInterceptDemuxState,
+};
 use crate::e2e::services::{
-    dns_query, dns_query_response, http_api_client_with_cookie, http_api_health, http_api_post_raw,
-    http_api_status, http_auth_token_login, http_auth_whoami, http_create_service_account,
-    http_create_service_account_token, http_delete_policy, http_delete_service_account, http_get,
-    http_get_dns_cache, http_get_path, http_get_policy, http_get_stats, http_list_policies,
-    http_list_service_account_tokens, http_list_service_accounts,
+    dns_query, dns_query_response, dns_query_response_tcp, http_api_client_with_cookie,
+    http_api_health, http_api_post_raw, http_api_status, http_auth_token_login, http_auth_whoami,
+    http_create_service_account, http_create_service_account_token, http_delete_policy,
+    http_delete_service_account, http_get, http_get_dns_cache, http_get_path, http_get_policy,
+    http_get_stats, http_list_policies, http_list_service_account_tokens,
+    http_list_service_accounts, http_put_tls_intercept_ca_from_http_ca,
     http_revoke_service_account_token, http_set_policy, http_stream, http_stream_path,
     http_update_policy, http_wait_for_health, https_get, https_get_path, https_get_tls12,
-    https_get_tls13, tls_client_hello_raw, udp_echo,
+    https_get_tls13, https_h2_get_path, https_leaf_cert_sha256, tls_client_hello_raw, udp_echo,
 };
 use crate::e2e::topology::TopologyConfig;
 use ::time::format_description::well_known::Rfc3339;
@@ -170,12 +175,16 @@ pub fn cases() -> Vec<TestCase> {
             func: dpdk_dhcp_renewal_updates_config,
         },
         TestCase {
+            name: "dpdk_tls_intercept_service_lane_round_trip",
+            func: dpdk_tls_intercept_service_lane_round_trip,
+        },
+        TestCase {
             name: "api_audit_policy_listed",
             func: api_audit_policy_listed,
         },
         TestCase {
-            name: "api_audit_does_not_override",
-            func: api_audit_does_not_override,
+            name: "api_audit_passthrough_overrides_deny",
+            func: api_audit_passthrough_overrides_deny,
         },
         TestCase {
             name: "api_policy_persisted_local",
@@ -266,6 +275,10 @@ pub fn cases() -> Vec<TestCase> {
             func: mgmt_api_unreachable_from_dataplane,
         },
         TestCase {
+            name: "service_lane_svc0_present",
+            func: service_lane_svc0_present,
+        },
+        TestCase {
             name: "cluster_policy_update_applies",
             func: cluster_policy_update_applies,
         },
@@ -326,6 +339,38 @@ pub fn cases() -> Vec<TestCase> {
             func: tls_reassembly_client_hello,
         },
         TestCase {
+            name: "tls_intercept_http_allow",
+            func: tls_intercept_http_allow,
+        },
+        TestCase {
+            name: "tls_intercept_http_deny_rst",
+            func: tls_intercept_http_deny_rst,
+        },
+        TestCase {
+            name: "tls_intercept_response_header_deny_rst",
+            func: tls_intercept_response_header_deny_rst,
+        },
+        TestCase {
+            name: "tls_intercept_h2_allow",
+            func: tls_intercept_h2_allow,
+        },
+        TestCase {
+            name: "tls_intercept_h2_concurrency_smoke",
+            func: tls_intercept_h2_concurrency_smoke,
+        },
+        TestCase {
+            name: "tls_intercept_ca_rotation_reloads_runtime",
+            func: tls_intercept_ca_rotation_reloads_runtime,
+        },
+        TestCase {
+            name: "tls_intercept_h2_deny_fail_closed",
+            func: tls_intercept_h2_deny_fail_closed,
+        },
+        TestCase {
+            name: "tls_intercept_service_metrics",
+            func: tls_intercept_service_metrics,
+        },
+        TestCase {
             name: "dns_allows_http",
             func: dns_allows_http,
         },
@@ -336,6 +381,14 @@ pub fn cases() -> Vec<TestCase> {
         TestCase {
             name: "dns_allows_https",
             func: dns_allows_https,
+        },
+        TestCase {
+            name: "dns_tcp_allows_https",
+            func: dns_tcp_allows_https,
+        },
+        TestCase {
+            name: "dns_tcp_blocks_nonmatch",
+            func: dns_tcp_blocks_nonmatch,
         },
         TestCase {
             name: "dns_regex_allows_example",
@@ -356,6 +409,10 @@ pub fn cases() -> Vec<TestCase> {
         TestCase {
             name: "dns_case_insensitive_match",
             func: dns_case_insensitive_match,
+        },
+        TestCase {
+            name: "dns_upstream_failover_allows_secondary",
+            func: dns_upstream_failover_allows_secondary,
         },
         TestCase {
             name: "dns_upstream_mismatch_nxdomain",
@@ -942,6 +999,7 @@ fn dpdk_dhcp_l2_hairpin(_cfg: &TopologyConfig) -> Result<(), String> {
                 tls: None,
             },
             action: RuleAction::Allow,
+            mode: crate::dataplane::policy::RuleMode::Enforce,
         };
 
         let mut sources = IpSetV4::new();
@@ -960,6 +1018,7 @@ fn dpdk_dhcp_l2_hairpin(_cfg: &TopologyConfig) -> Result<(), String> {
                 vec![group],
                 DnsPolicy::new(Vec::new()),
                 Some(DefaultPolicy::Deny),
+                crate::dataplane::policy::EnforcementMode::Enforce,
             )
             .map_err(|e| format!("{e}"))?;
 
@@ -1216,6 +1275,148 @@ fn dpdk_dhcp_renewal_updates_config(_cfg: &TopologyConfig) -> Result<(), String>
     })
 }
 
+fn dpdk_tls_intercept_service_lane_round_trip(_cfg: &TopologyConfig) -> Result<(), String> {
+    let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+    let client_mac = [0x02, 0x01, 0x02, 0x03, 0x04, 0x05];
+    let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+    let fw_ip = Ipv4Addr::new(10, 0, 0, 1);
+    let upstream_ip = Ipv4Addr::new(198, 51, 100, 10);
+    let client_port = 40_000;
+
+    let mut sources = IpSetV4::new();
+    sources.add_cidr(CidrV4::new(Ipv4Addr::new(10, 0, 0, 0), 24));
+    let rule = Rule {
+        id: "tls-intercept".to_string(),
+        priority: 0,
+        matcher: RuleMatch {
+            dst_ips: None,
+            proto: Proto::Tcp,
+            src_ports: Vec::new(),
+            dst_ports: vec![PortRange {
+                start: 443,
+                end: 443,
+            }],
+            icmp_types: Vec::new(),
+            icmp_codes: Vec::new(),
+            tls: Some(TlsMatch {
+                mode: TlsMode::Intercept,
+                sni: None,
+                server_san: None,
+                server_cn: None,
+                fingerprints_sha256: Vec::new(),
+                trust_anchors: Vec::new(),
+                tls13_uninspectable: Tls13Uninspectable::Deny,
+                intercept_http: None,
+            }),
+        },
+        action: RuleAction::Allow,
+        mode: RuleMode::Enforce,
+    };
+    let group = SourceGroup {
+        id: "internal".to_string(),
+        priority: 0,
+        sources,
+        rules: vec![rule],
+        default_action: None,
+    };
+    let policy = Arc::new(RwLock::new(PolicySnapshot::new_with_generation(
+        DefaultPolicy::Deny,
+        vec![group],
+        1,
+    )));
+
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::new(203, 0, 113, 1),
+        0,
+    );
+    state.set_service_policy_applied_generation(Arc::new(std::sync::atomic::AtomicU64::new(1)));
+    state.set_intercept_to_host_steering(true);
+    state.dataplane_config.set(DataplaneConfig {
+        ip: fw_ip,
+        prefix: 24,
+        gateway: Ipv4Addr::new(10, 0, 0, 254),
+        mac: fw_mac,
+        lease_expiry: None,
+    });
+
+    let shared_arp = Arc::new(Mutex::new(SharedArpState::default()));
+    let shared_demux = Arc::new(Mutex::new(SharedInterceptDemuxState::default()));
+    let mut ingress = DpdkAdapter::new("dpdk-ingress".to_string())?;
+    let mut egress = DpdkAdapter::new("dpdk-egress".to_string())?;
+    ingress.set_mac(fw_mac);
+    egress.set_mac(fw_mac);
+    ingress.set_shared_arp(shared_arp.clone());
+    egress.set_shared_arp(shared_arp);
+    ingress.set_shared_intercept_demux(shared_demux.clone());
+    egress.set_shared_intercept_demux(shared_demux);
+
+    let arp_req = build_arp_request(client_mac, client_ip, fw_ip);
+    let arp_reply = ingress
+        .process_frame(&arp_req, &mut state)
+        .ok_or_else(|| "expected arp reply".to_string())?;
+    assert_arp_reply(&arp_reply, client_mac, client_ip, fw_mac, fw_ip)?;
+
+    let syn = build_ipv4_tcp_frame(
+        client_mac,
+        fw_mac,
+        client_ip,
+        upstream_ip,
+        client_port,
+        443,
+        1,
+        0,
+        0x02,
+        &[],
+    );
+    if ingress.process_frame(&syn, &mut state).is_some() {
+        return Err("intercept flow should not egress dataplane directly".to_string());
+    }
+    let host_frame = ingress
+        .next_host_frame()
+        .ok_or_else(|| "expected service-lane host frame".to_string())?;
+    let (host_src_ip, host_dst_ip, host_src_port, host_dst_port) = parse_ipv4_tcp(&host_frame)?;
+    if host_src_ip != client_ip || host_src_port != client_port {
+        return Err("service-lane host frame source tuple mismatch".to_string());
+    }
+    if host_dst_ip != Ipv4Addr::new(169, 254, 255, 1) || host_dst_port != 15_443 {
+        return Err("service-lane host frame did not target intercept endpoint".to_string());
+    }
+
+    let service_lane_egress = build_ipv4_tcp_frame(
+        [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+        fw_mac,
+        Ipv4Addr::new(169, 254, 255, 1),
+        client_ip,
+        15_443,
+        client_port,
+        2,
+        2,
+        0x18,
+        b"ok",
+    );
+    let forwarded = egress
+        .process_service_lane_egress_frame(&service_lane_egress, &state)
+        .ok_or_else(|| "service-lane return frame did not forward".to_string())?;
+    let (src_ip, dst_ip, src_port, dst_port) = parse_ipv4_tcp(&forwarded)?;
+    if src_ip != upstream_ip || src_port != 443 {
+        return Err("forwarded frame source tuple mismatch".to_string());
+    }
+    if dst_ip != client_ip || dst_port != client_port {
+        return Err("forwarded frame destination tuple mismatch".to_string());
+    }
+    if forwarded[0..6] != client_mac || forwarded[6..12] != fw_mac {
+        return Err("forwarded frame L2 rewrite mismatch".to_string());
+    }
+    if egress.next_dhcp_frame(&state).is_some() {
+        return Err("unexpected ARP request queued on service-lane return path".to_string());
+    }
+
+    Ok(())
+}
+
 fn api_bootstrap_tls_material(cfg: &TopologyConfig) -> Result<(), String> {
     let tls_dir = cfg.http_tls_dir.clone();
     wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
@@ -1261,7 +1462,7 @@ fn api_audit_policy_listed(cfg: &TopologyConfig) -> Result<(), String> {
     })
 }
 
-fn api_audit_does_not_override(cfg: &TopologyConfig) -> Result<(), String> {
+fn api_audit_passthrough_overrides_deny(cfg: &TopologyConfig) -> Result<(), String> {
     let tls_dir = cfg.http_tls_dir.clone();
     wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
     let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
@@ -1269,17 +1470,17 @@ fn api_audit_does_not_override(cfg: &TopologyConfig) -> Result<(), String> {
     let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
     let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
     let audit_policy = parse_policy(
-        r#"default_policy: deny
+        r#"default_policy: allow
 source_groups:
   - id: "client-primary"
     sources:
       ips: ["192.0.2.2"]
     rules:
-      - id: "audit-allow"
-        mode: audit
-        action: allow
+      - id: "deny-foo"
+        mode: enforce
+        action: deny
         match:
-          dns_hostname: '^baz\.blocked$'
+          dns_hostname: '^foo\.allowed$'
 "#,
     )?;
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -1296,10 +1497,8 @@ source_groups:
             Some(&token),
         )
         .await?;
-        let resp = dns_query_response(client_bind, dns_server, "baz.blocked").await?;
-        if resp.rcode != 3 {
-            return Err("audit policy unexpectedly changed enforcement".to_string());
-        }
+        let resp = dns_query_response(client_bind, dns_server, "foo.allowed").await?;
+        assert_dns_allowed(&resp, cfg.up_dp_ip)?;
         Ok(())
     })
 }
@@ -1376,7 +1575,7 @@ fn api_policy_active_semantics(cfg: &TopologyConfig) -> Result<(), String> {
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
         let baseline = read_active_id(&active_path)?;
-        let _ = http_set_policy(
+        let audited = http_set_policy(
             api_addr,
             &tls_dir,
             audit_policy,
@@ -1385,8 +1584,8 @@ fn api_policy_active_semantics(cfg: &TopologyConfig) -> Result<(), String> {
         )
         .await?;
         let after_audit = read_active_id(&active_path)?;
-        if after_audit != baseline {
-            return Err("audit policy changed active id".to_string());
+        if after_audit != audited.id {
+            return Err("audit policy did not become active".to_string());
         }
         let enforced = http_set_policy(
             api_addr,
@@ -1399,6 +1598,9 @@ fn api_policy_active_semantics(cfg: &TopologyConfig) -> Result<(), String> {
         let after_enforce = read_active_id(&active_path)?;
         if after_enforce != enforced.id {
             return Err("enforce policy did not update active id".to_string());
+        }
+        if after_enforce == baseline {
+            return Err("enforce policy did not replace baseline active id".to_string());
         }
         Ok(())
     })
@@ -1782,6 +1984,19 @@ fn api_metrics_dns_dataplane(cfg: &TopologyConfig) -> Result<(), String> {
         if dns_allow < 1.0 {
             return Err("dns allow metrics did not increment".to_string());
         }
+        let svc_dns_allow = metric_value_with_labels(
+            &body,
+            "svc_dns_queries_total",
+            &[
+                ("result", "allow"),
+                ("reason", "policy_allow"),
+                ("source_group", "client-primary"),
+            ],
+        )
+        .ok_or_else(|| "missing svc dns allow metrics".to_string())?;
+        if svc_dns_allow < 1.0 {
+            return Err("svc dns allow metrics did not increment".to_string());
+        }
 
         let dns_deny = metric_value_with_labels(
             &body,
@@ -1796,12 +2011,31 @@ fn api_metrics_dns_dataplane(cfg: &TopologyConfig) -> Result<(), String> {
         if dns_deny < 1.0 {
             return Err("dns deny metrics did not increment".to_string());
         }
+        let svc_dns_deny = metric_value_with_labels(
+            &body,
+            "svc_dns_queries_total",
+            &[
+                ("result", "deny"),
+                ("reason", "policy_deny"),
+                ("source_group", "client-primary"),
+            ],
+        )
+        .ok_or_else(|| "missing svc dns deny metrics".to_string())?;
+        if svc_dns_deny < 1.0 {
+            return Err("svc dns deny metrics did not increment".to_string());
+        }
 
         let dns_nxdomain =
             metric_value_with_labels(&body, "dns_nxdomain_total", &[("source", "policy")])
                 .ok_or_else(|| "missing dns nxdomain metrics".to_string())?;
         if dns_nxdomain < 1.0 {
             return Err("dns nxdomain metrics did not increment".to_string());
+        }
+        let svc_dns_nxdomain =
+            metric_value_with_labels(&body, "svc_dns_nxdomain_total", &[("source", "policy")])
+                .ok_or_else(|| "missing svc dns nxdomain metrics".to_string())?;
+        if svc_dns_nxdomain < 1.0 {
+            return Err("svc dns nxdomain metrics did not increment".to_string());
         }
 
         let dns_rtt_count = metric_value_with_labels(
@@ -1812,6 +2046,15 @@ fn api_metrics_dns_dataplane(cfg: &TopologyConfig) -> Result<(), String> {
         .ok_or_else(|| "missing dns upstream rtt metrics".to_string())?;
         if dns_rtt_count < 1.0 {
             return Err("dns upstream rtt metrics did not increment".to_string());
+        }
+        let svc_dns_rtt_count = metric_value_with_labels(
+            &body,
+            "svc_dns_upstream_rtt_seconds_count",
+            &[("source_group", "client-primary")],
+        )
+        .ok_or_else(|| "missing svc dns upstream rtt metrics".to_string())?;
+        if svc_dns_rtt_count < 1.0 {
+            return Err("svc dns upstream rtt metrics did not increment".to_string());
         }
 
         let dp_out = metric_value_with_labels(
@@ -2855,6 +3098,29 @@ fn mgmt_api_unreachable_from_dataplane(cfg: &TopologyConfig) -> Result<(), Strin
     })
 }
 
+fn service_lane_svc0_present(cfg: &TopologyConfig) -> Result<(), String> {
+    let output = Command::new("ip")
+        .args([
+            "netns", "exec", &cfg.fw_ns, "ip", "-o", "-4", "addr", "show", "dev", "svc0",
+        ])
+        .output()
+        .map_err(|e| format!("service lane check invocation failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "service lane interface svc0 missing: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.contains("169.254.255.1/30") {
+        return Err(format!(
+            "service lane svc0 missing expected address 169.254.255.1/30: {}",
+            stdout.trim()
+        ));
+    }
+    Ok(())
+}
+
 fn cluster_policy_update_applies(cfg: &TopologyConfig) -> Result<(), String> {
     let tls_dir = cfg.http_tls_dir.clone();
     wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
@@ -3382,7 +3648,7 @@ source_groups:
         priority: 0
         action: allow
         match:
-          dns_hostname: '^spoof\.allowed$'
+          dns_hostname: '^spoof(-fail)?\.allowed$'
 "#
 }
 
@@ -3928,6 +4194,535 @@ fn tls_reassembly_client_hello(cfg: &TopologyConfig) -> Result<(), String> {
     })
 }
 
+fn tls_intercept_http_allow(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let https_addr = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), 443);
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let policy = tls_intercept_policy(cfg)?;
+    let token = api_auth_token(cfg)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_put_tls_intercept_ca_from_http_ca(api_addr, &tls_dir, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
+        let _ = dns_query(client_bind, dns_server, "foo.allowed").await?;
+        let resp = https_get_path(
+            https_addr,
+            "foo.allowed",
+            "/external-secrets/external-secrets",
+        )
+        .await?;
+        if !resp.starts_with("HTTP/1.1 200") {
+            return Err(format!("unexpected https response: {}", first_line(&resp)));
+        }
+        Ok(())
+    })
+}
+
+fn tls_intercept_http_deny_rst(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let https_addr = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), 443);
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let policy = tls_intercept_policy(cfg)?;
+    let token = api_auth_token(cfg)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_put_tls_intercept_ca_from_http_ca(api_addr, &tls_dir, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
+        let _ = dns_query(client_bind, dns_server, "foo.allowed").await?;
+        assert_https_path_denied_with_rst(
+            cfg.client_dp_ip,
+            cfg.up_dp_ip,
+            https_addr,
+            "foo.allowed",
+            "/moolen",
+        )
+        .await
+    })
+}
+
+fn tls_intercept_response_header_deny_rst(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let https_addr = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), 443);
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let policy = tls_intercept_policy_with_response_deny(cfg)?;
+    let token = api_auth_token(cfg)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_put_tls_intercept_ca_from_http_ca(api_addr, &tls_dir, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
+        let _ = dns_query(client_bind, dns_server, "foo.allowed").await?;
+        assert_https_path_denied_with_rst(
+            cfg.client_dp_ip,
+            cfg.up_dp_ip,
+            https_addr,
+            "foo.allowed",
+            "/external-secrets/forbidden-response",
+        )
+        .await
+    })
+}
+
+fn tls_intercept_h2_allow(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let https_addr = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), 443);
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let policy = tls_intercept_policy(cfg)?;
+    let token = api_auth_token(cfg)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_put_tls_intercept_ca_from_http_ca(api_addr, &tls_dir, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
+        let _ = dns_query(client_bind, dns_server, "foo.allowed").await?;
+        let resp = https_h2_get_path(
+            https_addr,
+            "foo.allowed",
+            "/external-secrets/external-secrets?ref=main",
+        )
+        .await?;
+        if !resp.starts_with("HTTP/2 200") {
+            return Err(format!("unexpected h2 response: {}", first_line(&resp)));
+        }
+        Ok(())
+    })
+}
+
+fn tls_intercept_h2_concurrency_smoke(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let https_addr = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), 443);
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let policy = tls_intercept_policy(cfg)?;
+    let token = api_auth_token(cfg)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_put_tls_intercept_ca_from_http_ca(api_addr, &tls_dir, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
+        let _ = dns_query(client_bind, dns_server, "foo.allowed").await?;
+
+        const CONCURRENCY: usize = 8;
+        const ROUNDS: usize = 3;
+        for _round in 0..ROUNDS {
+            let mut workers = Vec::with_capacity(CONCURRENCY);
+            for _idx in 0..CONCURRENCY {
+                workers.push(tokio::spawn(async move {
+                    let mut last_err = String::new();
+                    for _attempt in 0..5 {
+                        match https_h2_get_path(
+                            https_addr,
+                            "foo.allowed",
+                            "/external-secrets/external-secrets?ref=main",
+                        )
+                        .await
+                        {
+                            Ok(resp) => return Ok::<String, String>(resp),
+                            Err(err) if looks_like_reset(&err) => {
+                                last_err = err;
+                                tokio::time::sleep(Duration::from_millis(25)).await;
+                            }
+                            Err(err) => return Err(err),
+                        }
+                    }
+                    Err(format!(
+                        "h2 allow path retries exhausted with reset-like errors: {last_err}"
+                    ))
+                }));
+            }
+            for worker in workers {
+                let resp = worker
+                    .await
+                    .map_err(|e| format!("h2 worker join failed: {e}"))??;
+                if !resp.starts_with("HTTP/2 200") {
+                    return Err(format!(
+                        "unexpected h2 response during concurrency smoke: {}",
+                        first_line(&resp)
+                    ));
+                }
+            }
+        }
+
+        match https_h2_get_path(https_addr, "foo.allowed", "/moolen?ref=main").await {
+            Ok(resp) => Err(format!(
+                "intercept h2 deny expected failure after load, got response: {}",
+                first_line(&resp)
+            )),
+            Err(err) if looks_like_reset(&err) => Ok(()),
+            Err(err) => Err(format!(
+                "intercept h2 deny expected reset/close after load, got different failure: {err}"
+            )),
+        }
+    })
+}
+
+fn tls_intercept_ca_rotation_reloads_runtime(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let https_addr = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), 443);
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let policy = tls_intercept_policy(cfg)?;
+    let token = api_auth_token(cfg)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_put_tls_intercept_ca_from_http_ca(api_addr, &tls_dir, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
+        let _ = dns_query(client_bind, dns_server, "foo.allowed").await?;
+
+        let initial_fingerprint = https_leaf_cert_sha256(https_addr, "foo.allowed").await?;
+        let baseline = https_get_path(
+            https_addr,
+            "foo.allowed",
+            "/external-secrets/external-secrets",
+        )
+        .await?;
+        if !baseline.starts_with("HTTP/1.1 200") {
+            return Err(format!(
+                "unexpected baseline https response: {}",
+                first_line(&baseline)
+            ));
+        }
+
+        http_put_tls_intercept_ca_from_http_ca(api_addr, &tls_dir, Some(&token)).await?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut rotated = false;
+        let mut last = String::new();
+        while Instant::now() < deadline {
+            match https_leaf_cert_sha256(https_addr, "foo.allowed").await {
+                Ok(fingerprint) => {
+                    if fingerprint != initial_fingerprint {
+                        rotated = true;
+                        break;
+                    }
+                }
+                Err(err) => {
+                    last = err;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !rotated {
+            return Err(format!(
+                "tls intercept CA rotation did not change served leaf cert fingerprint within timeout (last error: {last})"
+            ));
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut allow_ok = false;
+        let mut last_allow = String::new();
+        while Instant::now() < deadline {
+            match https_get_path(https_addr, "foo.allowed", "/external-secrets/external-secrets")
+                .await
+            {
+                Ok(resp) if resp.starts_with("HTTP/1.1 200") => {
+                    allow_ok = true;
+                    break;
+                }
+                Ok(resp) => {
+                    last_allow = format!("unexpected response {}", first_line(&resp));
+                }
+                Err(err) => {
+                    last_allow = err;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !allow_ok {
+            return Err(format!(
+                "tls intercept allow path failed after CA rotation: {last_allow}"
+            ));
+        }
+
+        assert_https_path_denied_with_rst(
+            cfg.client_dp_ip,
+            cfg.up_dp_ip,
+            https_addr,
+            "foo.allowed",
+            "/moolen",
+        )
+        .await
+    })
+}
+
+fn tls_intercept_h2_deny_fail_closed(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let https_addr = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), 443);
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let policy = tls_intercept_policy(cfg)?;
+    let token = api_auth_token(cfg)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_put_tls_intercept_ca_from_http_ca(api_addr, &tls_dir, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
+        let _ = dns_query(client_bind, dns_server, "foo.allowed").await?;
+        match https_h2_get_path(https_addr, "foo.allowed", "/moolen?ref=main").await {
+            Ok(resp) => Err(format!(
+                "intercept h2 deny expected failure, got response: {}",
+                first_line(&resp)
+            )),
+            Err(err) => {
+                if looks_like_reset(&err) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "intercept h2 deny expected reset/close, got different failure: {err}"
+                    ))
+                }
+            }
+        }
+    })
+}
+
+fn tls_intercept_service_metrics(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let https_addr = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), 443);
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let policy = tls_intercept_policy(cfg)?;
+    let token = api_auth_token(cfg)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_put_tls_intercept_ca_from_http_ca(api_addr, &tls_dir, Some(&token)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        tokio::time::sleep(cfg.allowlist_eviction_delay()).await;
+        let _ = dns_query(client_bind, dns_server, "foo.allowed").await?;
+        let allow = https_get_path(
+            https_addr,
+            "foo.allowed",
+            "/external-secrets/external-secrets",
+        )
+        .await?;
+        if !allow.starts_with("HTTP/1.1 200") {
+            return Err(format!("unexpected allow response: {}", first_line(&allow)));
+        }
+        match https_get_path(https_addr, "foo.allowed", "/moolen?ref=main").await {
+            Ok(resp) => {
+                return Err(format!(
+                    "intercept deny expected reset/failure, got response: {}",
+                    first_line(&resp)
+                ));
+            }
+            Err(err) if looks_like_reset(&err) => {}
+            Err(err) => {
+                return Err(format!(
+                    "intercept deny expected reset/refused, got different failure: {err}"
+                ));
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let body = http_get_path(metrics_addr, "metrics", "/metrics").await?;
+
+        let tls_allow = metric_value_with_labels(
+            &body,
+            "svc_tls_intercept_flows_total",
+            &[("result", "allow")],
+        )
+        .ok_or_else(|| "missing svc tls allow metrics".to_string())?;
+        if tls_allow < 1.0 {
+            return Err("svc tls allow metrics did not increment".to_string());
+        }
+        let tls_deny = metric_value_with_labels(
+            &body,
+            "svc_tls_intercept_flows_total",
+            &[("result", "deny")],
+        )
+        .ok_or_else(|| "missing svc tls deny metrics".to_string())?;
+        if tls_deny < 1.0 {
+            return Err("svc tls deny metrics did not increment".to_string());
+        }
+        let http_allow = metric_value_with_labels(
+            &body,
+            "svc_http_requests_total",
+            &[("proto", "http1"), ("decision", "allow")],
+        )
+        .ok_or_else(|| "missing svc http allow metrics".to_string())?;
+        if http_allow < 1.0 {
+            return Err("svc http allow metrics did not increment".to_string());
+        }
+        let http_deny = metric_value_with_labels(
+            &body,
+            "svc_http_denies_total",
+            &[
+                ("proto", "http1"),
+                ("phase", "request"),
+                ("reason", "policy"),
+            ],
+        )
+        .ok_or_else(|| "missing svc http deny metrics".to_string())?;
+        if http_deny < 1.0 {
+            return Err("svc http deny metrics did not increment".to_string());
+        }
+        let rst = metric_value_with_labels(
+            &body,
+            "svc_policy_rst_total",
+            &[("reason", "request_policy")],
+        )
+        .ok_or_else(|| "missing svc policy rst metrics".to_string())?;
+        if rst < 1.0 {
+            return Err("svc policy rst metrics did not increment".to_string());
+        }
+        let fail_closed =
+            metric_value_with_labels(&body, "svc_fail_closed_total", &[("component", "tls")])
+                .ok_or_else(|| "missing svc fail-closed metrics".to_string())?;
+        if fail_closed < 1.0 {
+            return Err("svc fail-closed metrics did not increment".to_string());
+        }
+
+        Ok(())
+    })
+}
+
+async fn assert_https_path_denied_with_rst(
+    client_ip: Ipv4Addr,
+    upstream_ip: Ipv4Addr,
+    https_addr: SocketAddr,
+    host: &str,
+    path: &str,
+) -> Result<(), String> {
+    let tcp_fd = open_tcp_raw_socket(client_ip, Duration::from_secs(2))?;
+    let request = https_get_path(https_addr, host, path).await;
+    let rst_capture = wait_for_tcp_rst_on_fd(
+        tcp_fd,
+        upstream_ip,
+        client_ip,
+        Some(443),
+        None,
+        Duration::from_secs(2),
+    );
+    unsafe {
+        libc::close(tcp_fd);
+    }
+    match request {
+        Ok(resp) => Err(format!(
+            "intercept deny expected reset/failure, got response: {}",
+            first_line(&resp)
+        )),
+        Err(err) => {
+            if !looks_like_reset(&err) {
+                return Err(format!(
+                    "intercept deny expected reset/refused, got different failure: {err}"
+                ));
+            }
+            rst_capture.map(|_| ())
+        }
+    }
+}
+
 fn dns_allows_http(cfg: &TopologyConfig) -> Result<(), String> {
     let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
     let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
@@ -4064,6 +4859,49 @@ fn dns_allows_https(cfg: &TopologyConfig) -> Result<(), String> {
     })
 }
 
+fn dns_tcp_allows_https(cfg: &TopologyConfig) -> Result<(), String> {
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let https_addr = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), 443);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+
+    rt.block_on(async {
+        let resp = dns_query_response_tcp(client_bind, dns_server, "foo.allowed").await?;
+        assert_dns_allowed(&resp, cfg.up_dp_ip)?;
+
+        let https = https_get(https_addr, "foo.allowed").await?;
+        if !https.starts_with("HTTP/1.1 200") {
+            return Err(format!("https status unexpected: {}", first_line(&https)));
+        }
+        Ok(())
+    })
+}
+
+fn dns_tcp_blocks_nonmatch(cfg: &TopologyConfig) -> Result<(), String> {
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let http_addr = SocketAddr::new(IpAddr::V4(cfg.up_dp_ip), 80);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+
+    rt.block_on(async {
+        let resp = dns_query_response_tcp(client_bind, dns_server, "bar.allowed").await?;
+        assert_dns_nxdomain(&resp)?;
+
+        match http_get(http_addr, "bar.allowed").await {
+            Ok(_) => Err("http unexpectedly succeeded after dns tcp NXDOMAIN".to_string()),
+            Err(_) => Ok(()),
+        }
+    })
+}
+
 fn dns_regex_allows_example(cfg: &TopologyConfig) -> Result<(), String> {
     let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
     let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
@@ -4144,7 +4982,7 @@ fn dns_case_insensitive_match(cfg: &TopologyConfig) -> Result<(), String> {
     })
 }
 
-fn dns_upstream_mismatch_nxdomain(cfg: &TopologyConfig) -> Result<(), String> {
+fn dns_upstream_failover_allows_secondary(cfg: &TopologyConfig) -> Result<(), String> {
     let tls_dir = cfg.http_tls_dir.clone();
     wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
     let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
@@ -4171,6 +5009,59 @@ fn dns_upstream_mismatch_nxdomain(cfg: &TopologyConfig) -> Result<(), String> {
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         let resp = dns_query_response(client_bind, dns_server, "spoof.allowed").await?;
+        assert_dns_allowed(&resp, cfg.up_dp_ip)?;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let body = http_get_path(metrics_addr, "metrics", "/metrics").await?;
+        let mismatch = metric_value_with_labels(
+            &body,
+            "dns_upstream_mismatch_total",
+            &[("reason", "txid"), ("source_group", "client-primary")],
+        )
+        .ok_or_else(|| "missing dns upstream mismatch metrics".to_string())?;
+        if mismatch < 1.0 {
+            return Err("dns upstream mismatch metrics did not increment".to_string());
+        }
+        let rtt_count = metric_value_with_labels(
+            &body,
+            "dns_upstream_rtt_seconds_count",
+            &[("source_group", "client-primary")],
+        )
+        .ok_or_else(|| "missing dns upstream rtt metrics".to_string())?;
+        if rtt_count < 1.0 {
+            return Err("dns upstream rtt metrics did not increment".to_string());
+        }
+        Ok(())
+    })
+}
+
+fn dns_upstream_mismatch_nxdomain(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+    let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
+    let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
+    let token = api_auth_token(cfg)?;
+    let policy = parse_policy(policy_allow_spoof())?;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let resp = dns_query_response(client_bind, dns_server, "spoof-fail.allowed").await?;
         assert_dns_nxdomain(&resp)?;
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -4189,9 +5080,17 @@ fn dns_upstream_mismatch_nxdomain(cfg: &TopologyConfig) -> Result<(), String> {
 }
 
 fn dns_long_name_match(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
     let client_bind = SocketAddr::new(IpAddr::V4(cfg.client_mgmt_ip), 0);
     let dns_server = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), 53);
     let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
+    let token = api_auth_token(cfg)?;
+    let baseline_policy = parse_policy(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/e2e_policy.yaml"
+    )))?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -4199,6 +5098,15 @@ fn dns_long_name_match(cfg: &TopologyConfig) -> Result<(), String> {
         .map_err(|e| format!("tokio runtime error: {e}"))?;
 
     rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        http_set_policy(
+            api_addr,
+            &tls_dir,
+            baseline_policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
         tokio::time::sleep(Duration::from_millis(150)).await;
         let resp = dns_query_response(
             client_bind,
@@ -4750,8 +5658,78 @@ source_groups:
     serde_yaml::from_str(&yaml).map_err(|e| format!("policy yaml error: {e}"))
 }
 
+fn tls_intercept_policy(cfg: &TopologyConfig) -> Result<PolicyConfig, String> {
+    let yaml = format!(
+        r#"
+default_policy: deny
+source_groups:
+  - id: "tls-intercept"
+    sources:
+      cidrs: ["{internal}/24"]
+    rules:
+      - id: "intercept-http"
+        action: allow
+        match:
+          proto: tcp
+          dst_ports: [443]
+          tls:
+            mode: intercept
+            http:
+              request:
+                host:
+                  exact: ["foo.allowed"]
+                methods: ["GET"]
+                path:
+                  prefix: ["/external-secrets/"]
+"#,
+        internal = cfg.client_dp_ip
+    );
+    serde_yaml::from_str(&yaml).map_err(|e| format!("policy yaml error: {e}"))
+}
+
+fn tls_intercept_policy_with_response_deny(cfg: &TopologyConfig) -> Result<PolicyConfig, String> {
+    let yaml = format!(
+        r#"
+default_policy: deny
+source_groups:
+  - id: "tls-intercept"
+    sources:
+      cidrs: ["{internal}/24"]
+    rules:
+      - id: "intercept-http"
+        action: allow
+        match:
+          proto: tcp
+          dst_ports: [443]
+          tls:
+            mode: intercept
+            http:
+              request:
+                host:
+                  exact: ["foo.allowed"]
+                methods: ["GET"]
+                path:
+                  prefix: ["/external-secrets/"]
+              response:
+                headers:
+                  deny_present: ["x-forbidden"]
+"#,
+        internal = cfg.client_dp_ip
+    );
+    serde_yaml::from_str(&yaml).map_err(|e| format!("policy yaml error: {e}"))
+}
+
 fn first_line(msg: &str) -> &str {
     msg.split("\r\n").next().unwrap_or(msg)
+}
+
+fn looks_like_reset(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("reset")
+        || lower.contains("broken pipe")
+        || lower.contains("refused")
+        || lower.contains("closed")
+        || lower.contains("timed out")
 }
 
 fn indent_lines(value: &str, spaces: usize) -> String {
@@ -4959,6 +5937,26 @@ struct UdpPacketInfo {
     payload: Vec<u8>,
 }
 
+fn open_tcp_raw_socket(bind_ip: Ipv4Addr, timeout: Duration) -> Result<i32, String> {
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_TCP) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    if let Err(err) = bind_raw_socket(fd, bind_ip) {
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(err);
+    }
+    if let Err(err) = set_socket_timeout(fd, timeout) {
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(err);
+    }
+    Ok(fd)
+}
+
 fn open_udp_raw_socket(bind_ip: Ipv4Addr, timeout: Duration) -> Result<i32, String> {
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_UDP) };
     if fd < 0 {
@@ -5039,6 +6037,78 @@ fn wait_for_udp_packet_on_fd(
             }
         }
         return Ok(UdpPacketInfo { src_port, payload });
+    }
+}
+
+fn wait_for_tcp_rst_on_fd(
+    fd: i32,
+    expected_src: Ipv4Addr,
+    expected_dst: Ipv4Addr,
+    expected_src_port: Option<u16>,
+    expected_dst_port: Option<u16>,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let mut buf = vec![0u8; 4096];
+    let mut last_non_rst: Option<(u8, u16, u16)> = None;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(match last_non_rst {
+                Some((flags, src_port, dst_port)) => format!(
+                    "tcp rst capture timed out (last flags=0x{flags:02x}, src_port={src_port}, dst_port={dst_port})"
+                ),
+                None => "tcp rst capture timed out".to_string(),
+            });
+        }
+        let n = unsafe {
+            libc::recv(
+                fd,
+                buf.as_mut_ptr() as *mut _,
+                buf.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            return Err(err.to_string());
+        }
+        let n = n as usize;
+        let (ihl, proto, src, dst) = match parse_ipv4_header(&buf[..n]) {
+            Some(values) => values,
+            None => continue,
+        };
+        if proto != 6 || src != expected_src || dst != expected_dst {
+            continue;
+        }
+        if n < ihl + 20 {
+            continue;
+        }
+        let tcp_off = ihl;
+        let data_offset = ((buf[tcp_off + 12] >> 4) as usize) * 4;
+        if data_offset < 20 || n < tcp_off + data_offset {
+            continue;
+        }
+        let src_port = u16::from_be_bytes([buf[tcp_off], buf[tcp_off + 1]]);
+        let dst_port = u16::from_be_bytes([buf[tcp_off + 2], buf[tcp_off + 3]]);
+        if let Some(port) = expected_src_port {
+            if src_port != port {
+                continue;
+            }
+        }
+        if let Some(port) = expected_dst_port {
+            if dst_port != port {
+                continue;
+            }
+        }
+        let flags = buf[tcp_off + 13];
+        if (flags & 0x04) != 0 {
+            return Ok(());
+        }
+        last_non_rst = Some((flags, src_port, dst_port));
     }
 }
 
@@ -5599,6 +6669,48 @@ fn build_ipv4_udp_frame(
     buf
 }
 
+fn build_ipv4_tcp_frame(
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let total_len = 20 + 20 + payload.len();
+    let mut buf = vec![0u8; 14 + total_len];
+    buf[0..6].copy_from_slice(&dst_mac);
+    buf[6..12].copy_from_slice(&src_mac);
+    buf[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+
+    let ip_off = 14;
+    buf[ip_off] = 0x45;
+    buf[ip_off + 1] = 0;
+    buf[ip_off + 2..ip_off + 4].copy_from_slice(&(total_len as u16).to_be_bytes());
+    buf[ip_off + 8] = 64;
+    buf[ip_off + 9] = 6;
+    buf[ip_off + 12..ip_off + 16].copy_from_slice(&src_ip.octets());
+    buf[ip_off + 16..ip_off + 20].copy_from_slice(&dst_ip.octets());
+
+    let tcp_off = ip_off + 20;
+    buf[tcp_off..tcp_off + 2].copy_from_slice(&src_port.to_be_bytes());
+    buf[tcp_off + 2..tcp_off + 4].copy_from_slice(&dst_port.to_be_bytes());
+    buf[tcp_off + 4..tcp_off + 8].copy_from_slice(&seq.to_be_bytes());
+    buf[tcp_off + 8..tcp_off + 12].copy_from_slice(&ack.to_be_bytes());
+    buf[tcp_off + 12] = 0x50;
+    buf[tcp_off + 13] = flags;
+    buf[tcp_off + 14..tcp_off + 16].copy_from_slice(&64_240u16.to_be_bytes());
+    buf[tcp_off + 20..tcp_off + 20 + payload.len()].copy_from_slice(payload);
+
+    let mut pkt = crate::dataplane::packet::Packet::new(buf);
+    let _ = pkt.recalc_checksums();
+    pkt.buffer().to_vec()
+}
+
 fn parse_ipv4_udp(frame: &[u8]) -> Result<(Ipv4Addr, Ipv4Addr, u16, u16), String> {
     if frame.len() < 14 + 20 + 8 {
         return Err("frame too short".to_string());
@@ -5616,6 +6728,40 @@ fn parse_ipv4_udp(frame: &[u8]) -> Result<(Ipv4Addr, Ipv4Addr, u16, u16), String
     let udp_off = 14 + ihl;
     let src_port = u16::from_be_bytes([frame[udp_off], frame[udp_off + 1]]);
     let dst_port = u16::from_be_bytes([frame[udp_off + 2], frame[udp_off + 3]]);
+    Ok((src, dst, src_port, dst_port))
+}
+
+fn parse_ipv4_tcp(frame: &[u8]) -> Result<(Ipv4Addr, Ipv4Addr, u16, u16), String> {
+    if frame.len() < 14 + 20 + 20 {
+        return Err("frame too short".to_string());
+    }
+    let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+    if ethertype != 0x0800 {
+        return Err("not ipv4".to_string());
+    }
+    let ip_off = 14;
+    let ihl = (frame[ip_off] & 0x0f) as usize * 4;
+    if ihl < 20 || frame.len() < ip_off + ihl + 20 {
+        return Err("invalid ipv4 header".to_string());
+    }
+    if frame[ip_off + 9] != 6 {
+        return Err("not tcp".to_string());
+    }
+    let src = Ipv4Addr::new(
+        frame[ip_off + 12],
+        frame[ip_off + 13],
+        frame[ip_off + 14],
+        frame[ip_off + 15],
+    );
+    let dst = Ipv4Addr::new(
+        frame[ip_off + 16],
+        frame[ip_off + 17],
+        frame[ip_off + 18],
+        frame[ip_off + 19],
+    );
+    let tcp_off = ip_off + ihl;
+    let src_port = u16::from_be_bytes([frame[tcp_off], frame[tcp_off + 1]]);
+    let dst_port = u16::from_be_bytes([frame[tcp_off + 2], frame[tcp_off + 3]]);
     Ok((src, dst, src_port, dst_port))
 }
 

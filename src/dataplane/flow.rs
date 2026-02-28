@@ -23,6 +23,7 @@ pub struct FlowEntry {
     pub tls: Option<TlsFlowState>,
     pub source_group: String,
     pub policy_generation: u64,
+    pub intercept_requires_service: bool,
 }
 
 impl FlowEntry {
@@ -36,6 +37,7 @@ impl FlowEntry {
             tls: None,
             source_group: "default".to_string(),
             policy_generation: 0,
+            intercept_requires_service: false,
         }
     }
 

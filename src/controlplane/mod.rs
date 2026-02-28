@@ -1,11 +1,13 @@
 pub mod allowlist_gc;
 pub mod api_auth;
+pub mod audit;
 pub mod cloud;
 pub mod cluster;
 pub mod dhcp;
 pub mod dns_proxy;
 pub mod http_api;
 pub mod http_tls;
+pub mod intercept_tls;
 pub mod metrics;
 pub mod policy_config;
 pub mod policy_replication;
@@ -13,6 +15,7 @@ pub mod policy_repository;
 pub mod policy_store;
 pub mod ready;
 pub mod service_accounts;
+pub mod trafficd;
 pub mod wiretap;
 
 pub use policy_store::PolicyStore;
