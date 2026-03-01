@@ -231,6 +231,8 @@ variable "upstream_lb_ip" {
 variable "tags" {
   type = map(string)
   default = {
-    "neuwerk.io.env" = "azure-e2e"
+    "neuwerk.io.env"     = "azure-e2e"
+    "neuwerk.io.cluster" = "neuwerk"
+    "neuwerk.io.role"    = "dataplane"
   }
 }

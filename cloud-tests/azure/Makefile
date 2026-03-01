@@ -10,7 +10,7 @@ UI_LOCAL_PORT ?= 9443
 RESOLVE_FW_IPS ?= $(CURDIR)/scripts/resolve-firewall-mgmt-ips.sh
 MINT_API_TOKEN ?= $(CURDIR)/scripts/mint-api-token.sh
 
-.PHONY: ssh.jumpbox ssh.consumer ssh.upstream ssh.firewall ui.port-forward health policy-smoke
+.PHONY: ssh.jumpbox ssh.consumer ssh.upstream ssh.firewall ui.port-forward health policy-smoke lifecycle-rollout lifecycle-termination-drain
 
 ssh.jumpbox:
 	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
@@ -156,3 +156,21 @@ policy-smoke:
 	JUMPBOX_IP=$$jump_ip CONSUMER_IP=$$consumer_ip FW_MGMT_IP=$$fw_mgmt_ip FW_MGMT_IPS="$$fw_mgmt_ips" UPSTREAM_VIP=$$upstream_vip UPSTREAM_IP=$$upstream_ip DNS_SERVER=$$dns_server \
 	DNS_ZONE=$${DNS_ZONE:-upstream.test} KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
 	"$(CURDIR)/../common/run-policy-smoke.sh"
+
+lifecycle-rollout:
+	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
+	@command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
+	@command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+	@command -v az >/dev/null || { echo "az is required" >&2; exit 1; }
+	@if [ ! -f "$(KEY_PATH)" ]; then echo "missing SSH key at $(KEY_PATH)" >&2; exit 1; fi
+	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
+		"$(CURDIR)/scripts/lifecycle-rollout.sh"
+
+lifecycle-termination-drain:
+	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
+	@command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
+	@command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+	@command -v az >/dev/null || { echo "az is required" >&2; exit 1; }
+	@if [ ! -f "$(KEY_PATH)" ]; then echo "missing SSH key at $(KEY_PATH)" >&2; exit 1; fi
+	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
+		"$(CURDIR)/scripts/lifecycle-termination-drain.sh"

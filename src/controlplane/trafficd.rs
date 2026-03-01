@@ -1538,7 +1538,9 @@ fn apply_intercept_steering_rules(
 
     let listen_ip = match listen_addr.ip() {
         IpAddr::V4(ip) => ip,
-        IpAddr::V6(_) => return Err("trafficd intercept steering requires ipv4 listen addr".to_string()),
+        IpAddr::V6(_) => {
+            return Err("trafficd intercept steering requires ipv4 listen addr".to_string())
+        }
     };
     for rule in rules {
         run_iptables(intercept_tproxy_rule_args(
@@ -2142,8 +2144,10 @@ pub async fn run(cfg: TrafficdConfig) -> Result<(), String> {
     } else {
         cfg.service_lane_ip
     };
-    let intercept_listen_addr =
-        SocketAddr::new(IpAddr::V4(intercept_listen_ip), cfg.tls_intercept_listen_port);
+    let intercept_listen_addr = SocketAddr::new(
+        IpAddr::V4(intercept_listen_ip),
+        cfg.tls_intercept_listen_port,
+    );
 
     let intercept_ready = Arc::new(AtomicBool::new(false));
     spawn_tls_intercept_supervisor(

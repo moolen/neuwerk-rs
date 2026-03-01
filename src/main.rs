@@ -2959,6 +2959,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 lease_min_secs: cfg.dhcp_lease_min_secs,
                 hostname: None,
                 update_internal_cidr: cfg.internal_cidr.is_none(),
+                allow_router_fallback_from_subnet: cfg.cloud_provider == CloudProviderKind::Azure,
             },
             mac_rx,
             rx: dp_to_cp_rx.expect("dhcp rx"),

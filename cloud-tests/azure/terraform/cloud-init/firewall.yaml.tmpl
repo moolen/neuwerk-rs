@@ -648,6 +648,8 @@ write_files:
         --snat $${SNAT_MODE} \
         --cloud-provider $${CLOUD_PROVIDER} \
         --integration azure-vmss \
+        --integration-drain-timeout-secs 30 \
+        --integration-reconcile-interval-secs 15 \
         --azure-subscription-id $${AZ_SUBSCRIPTION} \
         --azure-resource-group $${AZ_RESOURCE_GROUP} \
         --azure-vmss-name $${AZ_VMSS_NAME}

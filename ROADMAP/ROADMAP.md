@@ -1,4 +1,34 @@
-## TODOs
+## Small TODOs
+- per-node DNS cache with respect to TTL, figure out how this interacts with the distributed storage.
+
+## Backlog
+
+
+
+### Kubernetes integration
+
+For the firewall i want to extend the policy in the following way:
+
+I want to provide a Kubernetes integration which allows a user to specify node IPs or pod ips using labelSelectors. These IP are then used as source group / network to match traffic for which policy rules are applied.
+
+The user needs to go through the following process in the UI:
+
+1. Create a new Kubernetes integration via the "Integrations" page. In the future we will add more integration types, but for now it's just Kubernetes. To create a new Kubernetes integration the user must provide the following items:
+   - kube-apiserver URL
+   - kube-apiserver CA Certificate
+   - authentication credentials. for now we only want to support service account tokens. In the future we may add Basic Auth or others.
+
+Above items can be autodiscovered with cloud-provider APIs (e.g. EKS/GKE/AKS), but this is out of scope for now, we'll add that later on.
+
+2. In the Policies UI: the user references that particular integration he has just created by name (it must be unique). Then, the user can configure one of two things: (1) namespace + podSelector (select pods by matching their labels) or (2) nodeSelector (used to select nodes by matching labels). Please suggest a yaml schema for configuration.
+
+When such a policy is configured, the firewall does a Kubernetes List/Watch API call to fetch the relevant nodes/pods and extracts their IP. These IPs are used as source group / network to match traffic.
+
+
+I want to have a e2e test which tests the integration end to end. I'm not only interested in the pod / node watching, but also i want to ensure that policies actually apply to pod traffic.
+If possible use a kind (kubernetes in docker) or something else which matches the requirements. I'm open.
+
+Ask questions to clarify. Please go ahead and create a implementation plan once everything is clear and write it to ROADMAP/KUBERNETES.md
 
 ### audit / passthrough mode 
 Problem: when initially setting up the firewall, or creating a new policy, i want it to run in a "audit" mode where no traffic gets dropped. Instead, the firewall monitors/captures metadata of the traffic which violates policies. This audit mode should be configured on a per-policy basis. The policy today has a enabled/disabled enum or bool. Maybe we can change it to a enum such that the mode can be disabled|audit|enabled.
@@ -17,7 +47,6 @@ Let's further explore this topic together and write a implementation plan. Once 
 
 ---
 
-- per-node DNS cache with respect to TTL, figure out how this interacts with the distributed storage.
 
 
 ## Azure Cloud integration

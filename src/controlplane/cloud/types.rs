@@ -97,10 +97,21 @@ pub struct DiscoveryFilter {
 }
 
 impl DiscoveryFilter {
+    fn tag_value<'a>(tags: &'a HashMap<String, String>, key: &str) -> Option<&'a String> {
+        if let Some(value) = tags.get(key) {
+            return Some(value);
+        }
+        if key.contains('/') {
+            let alt = key.replace('/', ".");
+            return tags.get(&alt);
+        }
+        None
+    }
+
     pub fn matches(&self, tags: &HashMap<String, String>) -> bool {
         self.tags
             .iter()
-            .all(|(key, value)| tags.get(key) == Some(value))
+            .all(|(key, value)| Self::tag_value(tags, key) == Some(value))
     }
 }
 
@@ -121,4 +132,25 @@ pub enum IntegrationMode {
     AzureVmss,
     AwsAsg,
     GcpMig,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DiscoveryFilter;
+    use std::collections::HashMap;
+
+    #[test]
+    fn discovery_filter_matches_dot_style_when_slash_requested() {
+        let mut filter_tags = HashMap::new();
+        filter_tags.insert("neuwerk.io/cluster".to_string(), "neuwerk".to_string());
+        filter_tags.insert("neuwerk.io/role".to_string(), "dataplane".to_string());
+        let filter = DiscoveryFilter { tags: filter_tags };
+
+        let mut resource_tags = HashMap::new();
+        resource_tags.insert("neuwerk.io.cluster".to_string(), "neuwerk".to_string());
+        resource_tags.insert("neuwerk.io.role".to_string(), "dataplane".to_string());
+
+        assert!(filter.matches(&resource_tags));
+    }
+
 }

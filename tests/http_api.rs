@@ -1698,6 +1698,138 @@ async fn http_api_audit_findings_cluster_aggregates_and_returns_partial() {
 }
 
 #[tokio::test]
+async fn http_api_audit_findings_persist_across_restart() {
+    ensure_rustls_provider();
+    let dir = TempDir::new().unwrap();
+    let tls_dir = dir.path().join("http-tls");
+    let local_store_dir = dir.path().join("policies");
+    let audit_dir = dir.path().join("audit");
+    let bind_addr = next_addr(Ipv4Addr::LOCALHOST);
+    let metrics_addr = next_addr(Ipv4Addr::LOCALHOST);
+    let token_path = dir.path().join("token.json");
+    let max_bytes = 1024 * 1024;
+
+    let event = AuditEvent {
+        finding_type: AuditFindingType::L4Deny,
+        source_group: "persist".to_string(),
+        hostname: None,
+        dst_ip: Some(Ipv4Addr::new(203, 0, 113, 100)),
+        dst_port: Some(8443),
+        proto: Some(6),
+        fqdn: Some("persist.example.com".to_string()),
+        sni: None,
+        icmp_type: None,
+        icmp_code: None,
+        query_type: None,
+        observed_at: 42,
+    };
+
+    let cfg = HttpApiConfig {
+        bind_addr,
+        advertise_addr: bind_addr,
+        metrics_bind: metrics_addr,
+        tls_dir: tls_dir.clone(),
+        cert_path: None,
+        key_path: None,
+        ca_path: None,
+        san_entries: Vec::new(),
+        management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        token_path: token_path.clone(),
+        cluster_tls_dir: None,
+        tls_intercept_ca_ready: None,
+        tls_intercept_ca_generation: None,
+    };
+
+    let base_cfg = cfg.clone();
+    let start_server = || {
+        let cfg = base_cfg.clone();
+        let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+        let local_store = PolicyDiskStore::new(local_store_dir.clone());
+        let audit_store = AuditStore::new(audit_dir.clone(), max_bytes);
+        let metrics = Metrics::new().unwrap();
+        tokio::spawn(async move {
+            http_api::run_http_api(
+                cfg,
+                policy_store,
+                local_store,
+                None,
+                Some(audit_store),
+                None,
+                None,
+                None,
+                metrics,
+            )
+            .await
+            .map_err(|err| format!("http api error: {err}"))
+        })
+    };
+
+    let seed_store = AuditStore::new(audit_dir.clone(), max_bytes);
+    seed_store.ingest(event, None, "node-a");
+    drop(seed_store);
+
+    let server = start_server();
+    wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(2))
+        .await
+        .unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
+    let auth_path = api_auth::local_keyset_path(&tls_dir);
+    wait_for_file(&auth_path, Duration::from_secs(2))
+        .await
+        .unwrap();
+    let keyset = api_auth::load_keyset_from_file(&auth_path)
+        .unwrap()
+        .expect("missing local api keyset");
+    let token = api_auth::mint_token(&keyset, "audit-restart-test", None, None).unwrap();
+
+    let client = http_api_client(&tls_dir).unwrap();
+    let query = format!(
+        "https://{bind_addr}/api/v1/audit/findings?finding_type=l4_deny&source_group=persist"
+    );
+    let first = client
+        .get(&query)
+        .bearer_auth(&token.token)
+        .send()
+        .await
+        .unwrap();
+    let status = first.status();
+    let body = first.text().await.unwrap();
+    assert!(status.is_success(), "status={status} body={body}");
+    let payload: AuditQueryResponse = serde_json::from_str(&body).unwrap();
+    assert!(!payload.items.is_empty());
+
+    server.abort();
+    let _ = server.await;
+    wait_for_tcp_closed(bind_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
+
+    let server = start_server();
+    wait_for_tcp(bind_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
+    let second = client
+        .get(&query)
+        .bearer_auth(&token.token)
+        .send()
+        .await
+        .unwrap();
+    let status = second.status();
+    let body = second.text().await.unwrap();
+    assert!(status.is_success(), "status={status} body={body}");
+    let payload: AuditQueryResponse = serde_json::from_str(&body).unwrap();
+    assert!(!payload.items.is_empty());
+    assert!(payload
+        .items
+        .iter()
+        .any(|item| item.source_group == "persist" && item.count >= 1));
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn http_api_wiretap_stream_local_cookie_auth_emits_events() {
     ensure_rustls_provider();
     let dir = TempDir::new().unwrap();

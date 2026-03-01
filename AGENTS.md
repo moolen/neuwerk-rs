@@ -137,6 +137,7 @@
 - The e2e harness now includes control-plane cluster checks (mTLS enforcement and leader failover join) inside the firewall netns.
 - Favor e2e coverage over unit tests to preserve freedom to replace internal implementations; unit tests are still valuable for correctness.
 - The e2e harness now runs overlay VXLAN and GENEVE suites after baseline tests using `overlay_vxlan_*` and `overlay_geneve_*` fields in `TopologyConfig`.
+- E2E includes `api_audit_passthrough_overrides_deny` to assert audit mode is pass-through (deny rules do not block DNS traffic while mode is `audit`).
 - TLS intercept fail-closed e2e can manifest as TCP reset/broken pipe or immediate connect refusal (`ECONNREFUSED`); treat both as valid fail-closed outcomes.
 - E2E includes `tls_intercept_h2_concurrency_smoke` to stress HTTP/2 intercept allow-path behavior under concurrent load.
 - E2E includes `tls_intercept_ca_rotation_reloads_runtime` to verify CA rotation updates served intercept leaf certificates while preserving allow/deny policy behavior.
@@ -148,6 +149,7 @@
 - Fragment-forwarding negative test ensures fragments are not forwarded.
 - NAT determinism coverage adds port allocation stability under load.
 - Overlay negative tests cover wrong VNI/UDP port/MTU drop.
+- Audit findings query coverage (`/api/v1/audit/findings`) currently exists in `tests/http_api.rs`; there is no netns e2e case yet that generates live dataplane audit events and verifies end-to-end retrieval.
 
 ## Cloud Tests
 - Azure e2e test bench lives under `cloud-tests/azure` (Terraform + scripts); SSH keys are generated under `cloud-tests/.secrets` and are gitignored.
@@ -162,3 +164,7 @@
 - Azure policy-smoke UDP allow tests require an upstream ILB rule for UDP/5201; without it, allow-case validation fails even when dataplane policy is correct.
 - Azure load balancers do not forward ICMP, so policy-smoke ICMP tests must target `upstream_private_ip` (routed via UDR through the firewall), not the upstream ILB VIP.
 - The common smoke test `tls_intercept_http_path_enforcement` requires a firewall image that serves `GET/PUT/DELETE /api/v1/settings/tls-intercept-ca` and preserves `tls.mode=intercept` + HTTP matchers; older images typically return UI HTML on that settings path and silently drop intercept-specific TLS fields during policy create.
+- Azure lifecycle rollout validation is scripted in `cloud-tests/azure/scripts/lifecycle-rollout.sh`: it runs sustained mixed short-lived traffic from a consumer VM (`dns_udp`, `dns_tcp`, `http`, `https`, `delayed_http`), performs a Flexible-compatible VMSS surge+replace rollout (capacity +1 then delete old instance per step), enforces zero traffic errors, and captures per-instance integration/DPDK metrics snapshots under `cloud-tests/azure/artifacts/`.
+- Azure termination-drain validation is scripted in `cloud-tests/azure/scripts/lifecycle-termination-drain.sh`: it supports `TRIGGER_ACTION=terminate|reboot`, samples target metrics continuously, and asserts streamed max increases for `integration_termination_events_total` and `integration_termination_drain_start_seconds_count` so reboot counter resets do not hide detections.
+- Azure integration identity must use VMSS `instance_id` consistently (not IMDS `vm_id` UUID), otherwise termination keys and drain control will not line up with discovered instances.
+- Azure ARM throttling can spike when reconciliation is too aggressive across all nodes; keep `--integration-reconcile-interval-secs` in a moderate range (for e2e currently 15s).

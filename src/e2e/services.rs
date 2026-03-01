@@ -18,6 +18,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::oneshot;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+use crate::controlplane::audit::AuditQueryResponse;
 use crate::controlplane::dns_proxy::extract_ips_from_dns_response;
 use crate::controlplane::policy_config::{PolicyConfig, PolicyMode};
 use crate::controlplane::policy_repository::{PolicyCreateRequest, PolicyRecord};
@@ -1118,6 +1119,35 @@ pub async fn http_get_stats(
     resp.json::<Value>()
         .await
         .map_err(|e| format!("stats decode failed: {e}"))
+}
+
+pub async fn http_get_audit_findings(
+    addr: SocketAddr,
+    tls_dir: &Path,
+    query: Option<&str>,
+    auth_token: Option<&str>,
+) -> Result<AuditQueryResponse, String> {
+    let client = http_api_client(tls_dir)?;
+    let suffix = query
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("?{value}"))
+        .unwrap_or_default();
+    let mut builder = client.get(format!("https://{addr}/api/v1/audit/findings{suffix}"));
+    if let Some(token) = auth_token {
+        builder = builder.bearer_auth(token);
+    }
+    let resp = builder
+        .send()
+        .await
+        .map_err(|e| format!("audit findings request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("audit findings status {status}: {body}"));
+    }
+    resp.json::<AuditQueryResponse>()
+        .await
+        .map_err(|e| format!("audit findings decode failed: {e}"))
 }
 
 pub async fn http_put_tls_intercept_ca_from_http_ca(

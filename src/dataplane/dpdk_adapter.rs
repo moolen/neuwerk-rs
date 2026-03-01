@@ -1470,9 +1470,13 @@ fn service_lane_tap_readable(tap: &File) -> Result<bool, String> {
     };
     let rc = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, 0) };
     if rc < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            return Ok(false);
+        }
         return Err(format!(
             "dpdk: service lane poll failed: {}",
-            std::io::Error::last_os_error()
+            err
         ));
     }
     if rc == 0 {
@@ -2549,6 +2553,7 @@ mod tests {
     };
     use std::sync::atomic::AtomicU64;
     use std::sync::{Arc, RwLock};
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[derive(Default)]
     struct RecordingIo {
@@ -2585,6 +2590,41 @@ mod tests {
             }
         }
         None
+    }
+
+    fn with_intercept_env<R>(ip: Option<&str>, port: Option<&str>, f: impl FnOnce() -> R) -> R {
+        let _env_guard = ENV_LOCK.lock().expect("env lock");
+        let old_ip = std::env::var("NEUWERK_DPDK_INTERCEPT_SERVICE_IP").ok();
+        let old_port = std::env::var("NEUWERK_DPDK_INTERCEPT_SERVICE_PORT").ok();
+
+        match ip {
+            Some(value) => std::env::set_var("NEUWERK_DPDK_INTERCEPT_SERVICE_IP", value),
+            None => std::env::remove_var("NEUWERK_DPDK_INTERCEPT_SERVICE_IP"),
+        }
+        match port {
+            Some(value) => std::env::set_var("NEUWERK_DPDK_INTERCEPT_SERVICE_PORT", value),
+            None => std::env::remove_var("NEUWERK_DPDK_INTERCEPT_SERVICE_PORT"),
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+        match old_ip {
+            Some(value) => std::env::set_var("NEUWERK_DPDK_INTERCEPT_SERVICE_IP", value),
+            None => std::env::remove_var("NEUWERK_DPDK_INTERCEPT_SERVICE_IP"),
+        }
+        match old_port {
+            Some(value) => std::env::set_var("NEUWERK_DPDK_INTERCEPT_SERVICE_PORT", value),
+            None => std::env::remove_var("NEUWERK_DPDK_INTERCEPT_SERVICE_PORT"),
+        }
+
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    fn with_default_intercept_env<R>(f: impl FnOnce() -> R) -> R {
+        with_intercept_env(None, None, f)
     }
 
     fn build_arp_request(sender_mac: [u8; 6], sender_ip: Ipv4Addr, target_ip: Ipv4Addr) -> Vec<u8> {
@@ -2626,6 +2666,18 @@ mod tests {
         src_port: u16,
         dst_port: u16,
     ) -> Vec<u8> {
+        build_tcp_ipv4_frame_with_flags(src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port, 0x02)
+    }
+
+    fn build_tcp_ipv4_frame_with_flags(
+        src_mac: [u8; 6],
+        dst_mac: [u8; 6],
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
+        src_port: u16,
+        dst_port: u16,
+        flags: u8,
+    ) -> Vec<u8> {
         let total_len = 20 + 20;
         let mut buf = vec![0u8; ETH_HDR_LEN + total_len];
         buf[0..6].copy_from_slice(&dst_mac);
@@ -2650,7 +2702,7 @@ mod tests {
         buf[tcp_off + 4..tcp_off + 8].copy_from_slice(&1u32.to_be_bytes());
         buf[tcp_off + 8..tcp_off + 12].copy_from_slice(&0u32.to_be_bytes());
         buf[tcp_off + 12] = 0x50;
-        buf[tcp_off + 13] = 0x02;
+        buf[tcp_off + 13] = flags;
         buf[tcp_off + 14..tcp_off + 16].copy_from_slice(&64240u16.to_be_bytes());
         buf[tcp_off + 16..tcp_off + 18].copy_from_slice(&0u16.to_be_bytes());
         buf[tcp_off + 18..tcp_off + 20].copy_from_slice(&0u16.to_be_bytes());
@@ -2658,6 +2710,39 @@ mod tests {
         let mut pkt = Packet::new(buf);
         let _ = pkt.recalc_checksums();
         pkt.buffer().to_vec()
+    }
+
+    fn build_vxlan_payload(inner: &[u8], vni: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; 8 + inner.len()];
+        buf[0] = 0x08;
+        buf[4] = ((vni >> 16) & 0xff) as u8;
+        buf[5] = ((vni >> 8) & 0xff) as u8;
+        buf[6] = (vni & 0xff) as u8;
+        buf[8..].copy_from_slice(inner);
+        buf
+    }
+
+    fn parse_vxlan_outer_udp(frame: &[u8]) -> Result<(u16, u16, u32), String> {
+        if frame.len() < ETH_HDR_LEN + 20 + 8 + 8 {
+            return Err("frame too short".to_string());
+        }
+        if u16::from_be_bytes([frame[12], frame[13]]) != ETH_TYPE_IPV4 {
+            return Err("not ipv4 ethernet frame".to_string());
+        }
+        let ipv4 = parse_ipv4(frame, ETH_HDR_LEN).ok_or_else(|| "parse ipv4 failed".to_string())?;
+        if ipv4.proto != 17 {
+            return Err("not udp".to_string());
+        }
+        let udp = parse_udp(frame, ipv4.l4_offset).ok_or_else(|| "parse udp failed".to_string())?;
+        if udp.payload_len < 8 {
+            return Err("vxlan payload too short".to_string());
+        }
+        let payload = &frame[udp.payload_offset..udp.payload_offset + udp.payload_len];
+        if payload[0] & 0x08 == 0 {
+            return Err("vxlan I-bit not set".to_string());
+        }
+        let vni = ((payload[4] as u32) << 16) | ((payload[5] as u32) << 8) | payload[6] as u32;
+        Ok((udp.src_port, udp.dst_port, vni))
     }
 
     fn intercept_policy_snapshot() -> PolicySnapshot {
@@ -2834,6 +2919,613 @@ mod tests {
     }
 
     #[test]
+    fn process_packet_in_place_forward_returns_borrowed_and_rewrites_l2() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let gw_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let gw_ip = Ipv4Addr::new(10, 20, 2, 1);
+        let fw_ip = Ipv4Addr::new(10, 20, 2, 4);
+        adapter.set_mac(fw_mac);
+        adapter.insert_arp(gw_ip, gw_mac);
+
+        let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+            DefaultPolicy::Allow,
+            Vec::new(),
+        )));
+        let mut state = EngineState::new(
+            policy,
+            Ipv4Addr::new(10, 20, 3, 0),
+            24,
+            Ipv4Addr::UNSPECIFIED,
+            0,
+        );
+        state.set_dataplane_config({
+            let store = crate::dataplane::config::DataplaneConfigStore::new();
+            store.set(DataplaneConfig {
+                ip: fw_ip,
+                prefix: 24,
+                gateway: gw_ip,
+                mac: fw_mac,
+                lease_expiry: None,
+            });
+            store
+        });
+
+        let frame = build_udp_ipv4_frame(
+            [0x10, 0x11, 0x12, 0x13, 0x14, 0x15],
+            fw_mac,
+            Ipv4Addr::new(10, 20, 3, 4),
+            Ipv4Addr::new(10, 20, 4, 4),
+            12345,
+            80,
+            b"hello",
+        );
+        let mut pkt = Packet::new(frame);
+
+        match adapter.process_packet_in_place(&mut pkt, &mut state) {
+            Some(FrameOut::Borrowed(out)) => {
+                assert_eq!(out.as_ptr(), pkt.buffer().as_ptr());
+                assert_eq!(&pkt.buffer()[0..6], &gw_mac);
+                assert_eq!(&pkt.buffer()[6..12], &fw_mac);
+            }
+            Some(FrameOut::Owned(_)) => panic!("expected borrowed frame for forward path"),
+            None => panic!("expected forwarded frame"),
+        }
+    }
+
+    #[test]
+    fn process_packet_in_place_arp_returns_owned() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let fw_ip = Ipv4Addr::new(10, 0, 0, 2);
+        adapter.set_mac(fw_mac);
+
+        let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+            DefaultPolicy::Deny,
+            Vec::new(),
+        )));
+        let mut state =
+            EngineState::new(policy, Ipv4Addr::UNSPECIFIED, 0, Ipv4Addr::UNSPECIFIED, 0);
+        state.set_dataplane_config({
+            let store = crate::dataplane::config::DataplaneConfigStore::new();
+            store.set(DataplaneConfig {
+                ip: fw_ip,
+                prefix: 24,
+                gateway: Ipv4Addr::new(10, 0, 0, 1),
+                mac: fw_mac,
+                lease_expiry: None,
+            });
+            store
+        });
+
+        let req = build_arp_request(
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+            Ipv4Addr::new(10, 0, 0, 1),
+            fw_ip,
+        );
+        let mut pkt = Packet::new(req);
+        match adapter.process_packet_in_place(&mut pkt, &mut state) {
+            Some(FrameOut::Owned(reply)) => {
+                assert_eq!(&reply[0..6], &[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+                assert_eq!(&reply[6..12], &fw_mac);
+                assert_eq!(u16::from_be_bytes([reply[20], reply[21]]), 2);
+            }
+            Some(FrameOut::Borrowed(_)) => panic!("expected owned reply for arp path"),
+            None => panic!("expected arp reply"),
+        }
+    }
+
+    #[test]
+    fn process_packet_in_place_health_probe_returns_owned() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let fw_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let client_ip = Ipv4Addr::new(10, 0, 0, 99);
+        adapter.set_mac(fw_mac);
+
+        let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+            DefaultPolicy::Deny,
+            Vec::new(),
+        )));
+        let mut state = EngineState::new(
+            policy,
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            Ipv4Addr::UNSPECIFIED,
+            0,
+        );
+        state.set_dataplane_config({
+            let store = crate::dataplane::config::DataplaneConfigStore::new();
+            store.set(DataplaneConfig {
+                ip: fw_ip,
+                prefix: 24,
+                gateway: Ipv4Addr::new(10, 0, 0, 1),
+                mac: fw_mac,
+                lease_expiry: None,
+            });
+            store
+        });
+
+        let syn = build_tcp_syn_ipv4_frame(
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+            fw_mac,
+            client_ip,
+            fw_ip,
+            40000,
+            HEALTH_PROBE_PORT,
+        );
+        let mut pkt = Packet::new(syn);
+        match adapter.process_packet_in_place(&mut pkt, &mut state) {
+            Some(FrameOut::Owned(reply)) => {
+                let ipv4 = parse_ipv4(&reply, ETH_HDR_LEN).expect("ipv4");
+                let tcp = parse_tcp(&reply, ipv4.l4_offset).expect("tcp");
+                assert_eq!(ipv4.src, fw_ip);
+                assert_eq!(ipv4.dst, client_ip);
+                assert_eq!(tcp.src_port, HEALTH_PROBE_PORT);
+                assert_eq!(tcp.dst_port, 40000);
+                assert_eq!(tcp.flags & 0x12, 0x12);
+            }
+            Some(FrameOut::Borrowed(_)) => panic!("expected owned reply for health probe path"),
+            None => panic!("expected health probe synack"),
+        }
+    }
+
+    #[test]
+    fn process_frame_health_probe_non_syn_is_ignored() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let fw_ip = Ipv4Addr::new(10, 0, 0, 2);
+        adapter.set_mac(fw_mac);
+
+        let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+            DefaultPolicy::Deny,
+            Vec::new(),
+        )));
+        let mut state = EngineState::new(
+            policy,
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            Ipv4Addr::UNSPECIFIED,
+            0,
+        );
+        state.set_dataplane_config({
+            let store = crate::dataplane::config::DataplaneConfigStore::new();
+            store.set(DataplaneConfig {
+                ip: fw_ip,
+                prefix: 24,
+                gateway: Ipv4Addr::new(10, 0, 0, 1),
+                mac: fw_mac,
+                lease_expiry: None,
+            });
+            store
+        });
+
+        let ack = build_tcp_ipv4_frame_with_flags(
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+            fw_mac,
+            Ipv4Addr::new(10, 0, 0, 99),
+            fw_ip,
+            40000,
+            HEALTH_PROBE_PORT,
+            0x10,
+        );
+        assert!(
+            adapter.process_frame(&ack, &mut state).is_none(),
+            "non-SYN packet to health probe port should not trigger SYN-ACK"
+        );
+    }
+
+    #[test]
+    fn build_dhcp_frame_unicast_uses_server_hint_when_ip_matches() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let server_mac = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
+        let fw_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let server_ip = Ipv4Addr::new(10, 0, 0, 254);
+        adapter.set_mac(fw_mac);
+        adapter.dhcp_server_hint = Some(DhcpServerHint {
+            ip: server_ip,
+            mac: server_mac,
+        });
+
+        let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+            DefaultPolicy::Deny,
+            Vec::new(),
+        )));
+        let state = EngineState::new(policy, Ipv4Addr::UNSPECIFIED, 0, Ipv4Addr::UNSPECIFIED, 0);
+        state.dataplane_config.set(DataplaneConfig {
+            ip: fw_ip,
+            prefix: 24,
+            gateway: Ipv4Addr::new(10, 0, 0, 1),
+            mac: fw_mac,
+            lease_expiry: None,
+        });
+
+        let frame = adapter
+            .build_dhcp_frame(
+                &state,
+                DhcpTx::Unicast {
+                    payload: b"renew".to_vec(),
+                    dst_ip: server_ip,
+                },
+            )
+            .expect("dhcp unicast frame");
+        assert_eq!(&frame[0..6], &server_mac);
+        assert_eq!(&frame[6..12], &fw_mac);
+        let ipv4 = parse_ipv4(&frame, ETH_HDR_LEN).expect("ipv4");
+        let udp = parse_udp(&frame, ipv4.l4_offset).expect("udp");
+        assert_eq!(ipv4.src, fw_ip);
+        assert_eq!(ipv4.dst, server_ip);
+        assert_eq!(udp.src_port, DHCP_CLIENT_PORT);
+        assert_eq!(udp.dst_port, DHCP_SERVER_PORT);
+    }
+
+    #[test]
+    fn build_dhcp_frame_unicast_falls_back_to_broadcast_mac_on_hint_miss() {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let fw_ip = Ipv4Addr::new(10, 0, 0, 2);
+        adapter.set_mac(fw_mac);
+        adapter.dhcp_server_hint = Some(DhcpServerHint {
+            ip: Ipv4Addr::new(10, 0, 0, 254),
+            mac: [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+        });
+
+        let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+            DefaultPolicy::Deny,
+            Vec::new(),
+        )));
+        let state = EngineState::new(policy, Ipv4Addr::UNSPECIFIED, 0, Ipv4Addr::UNSPECIFIED, 0);
+        state.dataplane_config.set(DataplaneConfig {
+            ip: fw_ip,
+            prefix: 24,
+            gateway: Ipv4Addr::new(10, 0, 0, 1),
+            mac: fw_mac,
+            lease_expiry: None,
+        });
+
+        let dst_ip = Ipv4Addr::new(10, 0, 0, 200);
+        let frame = adapter
+            .build_dhcp_frame(
+                &state,
+                DhcpTx::Unicast {
+                    payload: b"renew".to_vec(),
+                    dst_ip,
+                },
+            )
+            .expect("dhcp unicast frame");
+        assert_eq!(&frame[0..6], &[0xff; 6]);
+        assert_eq!(&frame[6..12], &fw_mac);
+        let ipv4 = parse_ipv4(&frame, ETH_HDR_LEN).expect("ipv4");
+        assert_eq!(ipv4.src, fw_ip);
+        assert_eq!(ipv4.dst, dst_ip);
+    }
+
+    #[test]
+    fn shared_arp_cooldown_prevents_duplicate_arp_requests_across_adapters() {
+        let shared = Arc::new(Mutex::new(SharedArpState::default()));
+        let mut a = DpdkAdapter::new("data0".to_string()).unwrap();
+        let mut b = DpdkAdapter::new("data0".to_string()).unwrap();
+        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        a.set_mac(fw_mac);
+        b.set_mac(fw_mac);
+        a.set_shared_arp(shared.clone());
+        b.set_shared_arp(shared);
+
+        let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+            DefaultPolicy::Allow,
+            Vec::new(),
+        )));
+        let mut state = EngineState::new(
+            policy,
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            Ipv4Addr::UNSPECIFIED,
+            0,
+        );
+        state.dataplane_config.set(DataplaneConfig {
+            ip: Ipv4Addr::new(10, 0, 0, 1),
+            prefix: 24,
+            gateway: Ipv4Addr::new(10, 0, 0, 254),
+            mac: fw_mac,
+            lease_expiry: None,
+        });
+
+        let frame = build_udp_ipv4_frame(
+            [0x10, 0x11, 0x12, 0x13, 0x14, 0x15],
+            fw_mac,
+            Ipv4Addr::new(10, 0, 0, 42),
+            Ipv4Addr::new(198, 51, 100, 10),
+            12345,
+            80,
+            b"hello",
+        );
+        assert!(a.process_frame(&frame, &mut state).is_none());
+        assert!(b.process_frame(&frame, &mut state).is_none());
+
+        assert!(
+            a.next_dhcp_frame(&state).is_some(),
+            "first adapter should queue ARP request"
+        );
+        assert!(
+            b.next_dhcp_frame(&state).is_none(),
+            "shared cooldown should suppress duplicate ARP request"
+        );
+    }
+
+    #[test]
+    fn lookup_arp_evicts_stale_entries_and_falls_back_to_fresh_shared_cache() {
+        let shared = Arc::new(Mutex::new(SharedArpState::default()));
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        adapter.set_shared_arp(shared.clone());
+
+        let stale_ip = Ipv4Addr::new(10, 0, 0, 99);
+        let stale_mac = [0x00, 0x10, 0x20, 0x30, 0x40, 0x50];
+        adapter.insert_arp(stale_ip, stale_mac);
+
+        let stale_seen = Instant::now() - Duration::from_secs(ARP_CACHE_TTL_SECS + 1);
+        adapter.arp_cache.insert(
+            stale_ip,
+            ArpEntry {
+                mac: stale_mac,
+                last_seen: stale_seen,
+            },
+        );
+        {
+            let mut guard = shared.lock().expect("shared arp lock");
+            guard.cache.insert(
+                stale_ip,
+                ArpEntry {
+                    mac: stale_mac,
+                    last_seen: stale_seen,
+                },
+            );
+        }
+
+        assert_eq!(adapter.lookup_arp(stale_ip), None);
+        assert!(
+            !adapter.arp_cache.contains_key(&stale_ip),
+            "stale local ARP entry should be removed"
+        );
+        assert!(
+            !shared
+                .lock()
+                .expect("shared arp lock")
+                .cache
+                .contains_key(&stale_ip),
+            "stale shared ARP entry should be removed"
+        );
+
+        let fresh_ip = Ipv4Addr::new(10, 0, 0, 100);
+        let stale_local_mac = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01];
+        let fresh_shared_mac = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02];
+        adapter.arp_cache.insert(
+            fresh_ip,
+            ArpEntry {
+                mac: stale_local_mac,
+                last_seen: stale_seen,
+            },
+        );
+        {
+            let mut guard = shared.lock().expect("shared arp lock");
+            guard.cache.insert(
+                fresh_ip,
+                ArpEntry {
+                    mac: fresh_shared_mac,
+                    last_seen: Instant::now(),
+                },
+            );
+        }
+
+        assert_eq!(adapter.lookup_arp(fresh_ip), Some(fresh_shared_mac));
+        assert_eq!(
+            adapter.arp_cache.get(&fresh_ip).map(|entry| entry.mac),
+            Some(fresh_shared_mac),
+            "lookup should refresh local cache from shared cache"
+        );
+    }
+
+    #[test]
+    fn process_frame_intercept_uses_env_overridden_service_endpoint() {
+        with_intercept_env(Some("169.254.200.9"), Some("18080"), || {
+            let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+            let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+            adapter.set_mac(fw_mac);
+
+            let policy = Arc::new(RwLock::new(intercept_policy_snapshot()));
+            let mut state = EngineState::new(
+                policy,
+                Ipv4Addr::new(10, 0, 0, 0),
+                24,
+                Ipv4Addr::new(203, 0, 113, 1),
+                0,
+            );
+            state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+            state.set_intercept_to_host_steering(true);
+            state.set_dataplane_config({
+                let store = crate::dataplane::config::DataplaneConfigStore::new();
+                store.set(DataplaneConfig {
+                    ip: Ipv4Addr::new(10, 0, 0, 2),
+                    prefix: 24,
+                    gateway: Ipv4Addr::new(10, 0, 0, 1),
+                    mac: fw_mac,
+                    lease_expiry: None,
+                });
+                store
+            });
+
+            let outbound = build_tcp_syn_ipv4_frame(
+                [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+                fw_mac,
+                Ipv4Addr::new(10, 0, 0, 42),
+                Ipv4Addr::new(198, 51, 100, 10),
+                40000,
+                443,
+            );
+            assert!(adapter.process_frame(&outbound, &mut state).is_none());
+            let host_frame = adapter.next_host_frame().expect("expected host frame");
+            let ipv4 = parse_ipv4(&host_frame, ETH_HDR_LEN).expect("ipv4");
+            let tcp = parse_tcp(&host_frame, ipv4.l4_offset).expect("tcp");
+            assert_eq!(ipv4.dst, Ipv4Addr::new(169, 254, 200, 9));
+            assert_eq!(tcp.dst_port, 18080);
+        })
+    }
+
+    #[test]
+    fn intercept_demux_removed_on_client_fin_prevents_tuple_restore() {
+        with_default_intercept_env(|| {
+            let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+            let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+            let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+            let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+            adapter.set_mac(fw_mac);
+            adapter.insert_arp(client_ip, client_mac);
+
+            let mut state = EngineState::new(
+                Arc::new(RwLock::new(intercept_policy_snapshot())),
+                Ipv4Addr::new(10, 0, 0, 0),
+                24,
+                Ipv4Addr::new(203, 0, 113, 1),
+                0,
+            );
+            state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+            state.set_intercept_to_host_steering(true);
+            state.set_dataplane_config({
+                let store = crate::dataplane::config::DataplaneConfigStore::new();
+                store.set(DataplaneConfig {
+                    ip: Ipv4Addr::new(10, 0, 0, 2),
+                    prefix: 24,
+                    gateway: Ipv4Addr::new(10, 0, 0, 1),
+                    mac: fw_mac,
+                    lease_expiry: None,
+                });
+                store
+            });
+
+            let syn = build_tcp_syn_ipv4_frame(
+                client_mac,
+                fw_mac,
+                client_ip,
+                Ipv4Addr::new(198, 51, 100, 10),
+                40000,
+                443,
+            );
+            assert!(adapter.process_frame(&syn, &mut state).is_none());
+            let _ = adapter
+                .next_host_frame()
+                .expect("expected initial host frame");
+
+            let fin = build_tcp_ipv4_frame_with_flags(
+                client_mac,
+                fw_mac,
+                client_ip,
+                Ipv4Addr::new(198, 51, 100, 10),
+                40000,
+                443,
+                0x11,
+            );
+            assert!(adapter.process_frame(&fin, &mut state).is_none());
+            let _ = adapter.next_host_frame().expect("expected fin host frame");
+
+            let egress = build_tcp_syn_ipv4_frame(
+                [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+                [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01],
+                INTERCEPT_SERVICE_IP_DEFAULT,
+                client_ip,
+                INTERCEPT_SERVICE_PORT_DEFAULT,
+                40000,
+            );
+            let forwarded = adapter
+                .process_service_lane_egress_frame(&egress, &state)
+                .expect("service-lane frame should still forward");
+            let ipv4 = parse_ipv4(&forwarded, ETH_HDR_LEN).expect("ipv4");
+            let tcp = parse_tcp(&forwarded, ipv4.l4_offset).expect("tcp");
+            assert_eq!(ipv4.src, INTERCEPT_SERVICE_IP_DEFAULT);
+            assert_eq!(tcp.src_port, INTERCEPT_SERVICE_PORT_DEFAULT);
+        });
+    }
+
+    #[test]
+    fn process_frame_overlay_dual_tunnel_swaps_and_forces_src_port() {
+        let _env_guard = ENV_LOCK.lock().expect("env lock");
+        let old_swap = std::env::var("NEUWERK_GWLB_SWAP_TUNNELS").ok();
+        let old_force = std::env::var("NEUWERK_GWLB_TUNNEL_SRC_PORT").ok();
+        std::env::set_var("NEUWERK_GWLB_SWAP_TUNNELS", "1");
+        std::env::set_var("NEUWERK_GWLB_TUNNEL_SRC_PORT", "1");
+
+        let result = (|| {
+            let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+            adapter.set_mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+
+            let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+                DefaultPolicy::Allow,
+                Vec::new(),
+            )));
+            let mut state = EngineState::new(
+                policy,
+                Ipv4Addr::new(10, 0, 0, 0),
+                24,
+                Ipv4Addr::UNSPECIFIED,
+                0,
+            );
+            state.set_snat_mode(crate::dataplane::overlay::SnatMode::None);
+            state.set_overlay_config(crate::dataplane::overlay::OverlayConfig {
+                mode: EncapMode::Vxlan,
+                udp_port: 0,
+                udp_port_internal: Some(10800),
+                udp_port_external: Some(10801),
+                vni: None,
+                vni_internal: Some(800),
+                vni_external: Some(801),
+                mtu: 1500,
+            });
+
+            let inner = build_udp_ipv4_frame(
+                [0x10, 0x11, 0x12, 0x13, 0x14, 0x15],
+                [0x20, 0x21, 0x22, 0x23, 0x24, 0x25],
+                Ipv4Addr::new(10, 0, 0, 42),
+                Ipv4Addr::new(198, 51, 100, 10),
+                40000,
+                80,
+                b"hello",
+            );
+            let payload = build_vxlan_payload(&inner, 800);
+            let outer = build_udp_ipv4_frame(
+                [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+                [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+                Ipv4Addr::new(192, 0, 2, 10),
+                Ipv4Addr::new(192, 0, 2, 11),
+                5555,
+                10800,
+                &payload,
+            );
+
+            let out = adapter
+                .process_frame(&outer, &mut state)
+                .expect("overlay frame should forward");
+            let (src_port, dst_port, vni) =
+                parse_vxlan_outer_udp(&out).expect("parse output vxlan");
+            assert_eq!(dst_port, 10801, "reply should switch to external tunnel");
+            assert_eq!(vni, 801, "reply should switch to external vni");
+            assert_eq!(
+                src_port, 10801,
+                "outer src port should be forced to tunnel port"
+            );
+        })();
+
+        match old_swap {
+            Some(value) => std::env::set_var("NEUWERK_GWLB_SWAP_TUNNELS", value),
+            None => std::env::remove_var("NEUWERK_GWLB_SWAP_TUNNELS"),
+        }
+        match old_force {
+            Some(value) => std::env::set_var("NEUWERK_GWLB_TUNNEL_SRC_PORT", value),
+            None => std::env::remove_var("NEUWERK_GWLB_TUNNEL_SRC_PORT"),
+        }
+
+        result
+    }
+
+    #[test]
     fn process_frame_intercept_fail_closed_returns_rst() {
         let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
         let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
@@ -2890,335 +3582,345 @@ mod tests {
 
     #[test]
     fn process_frame_intercept_ready_queues_service_lane_frame() {
-        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
-        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        adapter.set_mac(fw_mac);
+        with_default_intercept_env(|| {
+            let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+            let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+            adapter.set_mac(fw_mac);
 
-        let policy = Arc::new(RwLock::new(intercept_policy_snapshot()));
-        let mut state = EngineState::new(
-            policy,
-            Ipv4Addr::new(10, 0, 0, 0),
-            24,
-            Ipv4Addr::new(203, 0, 113, 1),
-            0,
-        );
-        state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
-        state.set_intercept_to_host_steering(true);
-        state.set_dataplane_config({
-            let store = crate::dataplane::config::DataplaneConfigStore::new();
-            store.set(DataplaneConfig {
-                ip: Ipv4Addr::new(10, 0, 0, 2),
-                prefix: 24,
-                gateway: Ipv4Addr::new(10, 0, 0, 1),
-                mac: fw_mac,
-                lease_expiry: None,
+            let policy = Arc::new(RwLock::new(intercept_policy_snapshot()));
+            let mut state = EngineState::new(
+                policy,
+                Ipv4Addr::new(10, 0, 0, 0),
+                24,
+                Ipv4Addr::new(203, 0, 113, 1),
+                0,
+            );
+            state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+            state.set_intercept_to_host_steering(true);
+            state.set_dataplane_config({
+                let store = crate::dataplane::config::DataplaneConfigStore::new();
+                store.set(DataplaneConfig {
+                    ip: Ipv4Addr::new(10, 0, 0, 2),
+                    prefix: 24,
+                    gateway: Ipv4Addr::new(10, 0, 0, 1),
+                    mac: fw_mac,
+                    lease_expiry: None,
+                });
+                store
             });
-            store
+
+            let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+            let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+            let outbound = build_tcp_syn_ipv4_frame(
+                client_mac,
+                fw_mac,
+                client_ip,
+                Ipv4Addr::new(198, 51, 100, 10),
+                40000,
+                443,
+            );
+
+            let out = adapter.process_frame(&outbound, &mut state);
+            assert!(
+                out.is_none(),
+                "intercept-eligible flow should not egress dataplane directly"
+            );
+            let host_frame = adapter
+                .next_host_frame()
+                .expect("expected service-lane frame");
+            assert_eq!(host_frame.len(), outbound.len());
+            assert_eq!(&host_frame[0..6], &[0xff; 6]);
+            assert_eq!(
+                u16::from_be_bytes([host_frame[12], host_frame[13]]),
+                ETH_TYPE_IPV4
+            );
+            let ipv4 = parse_ipv4(&host_frame, ETH_HDR_LEN).expect("ipv4");
+            let tcp = parse_tcp(&host_frame, ipv4.l4_offset).expect("tcp");
+            assert_eq!(ipv4.src, client_ip);
+            assert_eq!(ipv4.dst, INTERCEPT_SERVICE_IP_DEFAULT);
+            assert_eq!(tcp.dst_port, INTERCEPT_SERVICE_PORT_DEFAULT);
         });
-
-        let client_ip = Ipv4Addr::new(10, 0, 0, 42);
-        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-        let outbound = build_tcp_syn_ipv4_frame(
-            client_mac,
-            fw_mac,
-            client_ip,
-            Ipv4Addr::new(198, 51, 100, 10),
-            40000,
-            443,
-        );
-
-        let out = adapter.process_frame(&outbound, &mut state);
-        assert!(
-            out.is_none(),
-            "intercept-eligible flow should not egress dataplane directly"
-        );
-        let host_frame = adapter
-            .next_host_frame()
-            .expect("expected service-lane frame");
-        assert_eq!(host_frame.len(), outbound.len());
-        assert_eq!(&host_frame[0..6], &[0xff; 6]);
-        assert_eq!(
-            u16::from_be_bytes([host_frame[12], host_frame[13]]),
-            ETH_TYPE_IPV4
-        );
-        let ipv4 = parse_ipv4(&host_frame, ETH_HDR_LEN).expect("ipv4");
-        let tcp = parse_tcp(&host_frame, ipv4.l4_offset).expect("tcp");
-        assert_eq!(ipv4.src, client_ip);
-        assert_eq!(ipv4.dst, INTERCEPT_SERVICE_IP_DEFAULT);
-        assert_eq!(tcp.dst_port, INTERCEPT_SERVICE_PORT_DEFAULT);
     }
 
     #[test]
     fn process_frame_intercept_ready_targets_service_lane_mac_when_known() {
-        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
-        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let svc_mac = [0x4a, 0x0e, 0x7b, 0x9e, 0x36, 0x7d];
-        adapter.set_mac(fw_mac);
-        adapter.service_lane_mac = Some(svc_mac);
+        with_default_intercept_env(|| {
+            let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+            let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+            let svc_mac = [0x4a, 0x0e, 0x7b, 0x9e, 0x36, 0x7d];
+            adapter.set_mac(fw_mac);
+            adapter.service_lane_mac = Some(svc_mac);
 
-        let policy = Arc::new(RwLock::new(intercept_policy_snapshot()));
-        let mut state = EngineState::new(
-            policy,
-            Ipv4Addr::new(10, 0, 0, 0),
-            24,
-            Ipv4Addr::new(203, 0, 113, 1),
-            0,
-        );
-        state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
-        state.set_intercept_to_host_steering(true);
-        state.set_dataplane_config({
-            let store = crate::dataplane::config::DataplaneConfigStore::new();
-            store.set(DataplaneConfig {
-                ip: Ipv4Addr::new(10, 0, 0, 2),
-                prefix: 24,
-                gateway: Ipv4Addr::new(10, 0, 0, 1),
-                mac: fw_mac,
-                lease_expiry: None,
+            let policy = Arc::new(RwLock::new(intercept_policy_snapshot()));
+            let mut state = EngineState::new(
+                policy,
+                Ipv4Addr::new(10, 0, 0, 0),
+                24,
+                Ipv4Addr::new(203, 0, 113, 1),
+                0,
+            );
+            state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+            state.set_intercept_to_host_steering(true);
+            state.set_dataplane_config({
+                let store = crate::dataplane::config::DataplaneConfigStore::new();
+                store.set(DataplaneConfig {
+                    ip: Ipv4Addr::new(10, 0, 0, 2),
+                    prefix: 24,
+                    gateway: Ipv4Addr::new(10, 0, 0, 1),
+                    mac: fw_mac,
+                    lease_expiry: None,
+                });
+                store
             });
-            store
+
+            let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+            let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+            let outbound = build_tcp_syn_ipv4_frame(
+                client_mac,
+                fw_mac,
+                client_ip,
+                Ipv4Addr::new(198, 51, 100, 10),
+                40000,
+                443,
+            );
+
+            let out = adapter.process_frame(&outbound, &mut state);
+            assert!(
+                out.is_none(),
+                "intercept-eligible flow should not egress dataplane directly"
+            );
+            let host_frame = adapter
+                .next_host_frame()
+                .expect("expected service-lane frame");
+            assert_eq!(host_frame.len(), outbound.len());
+            assert_eq!(&host_frame[0..6], &svc_mac);
+            let ipv4 = parse_ipv4(&host_frame, ETH_HDR_LEN).expect("ipv4");
+            let tcp = parse_tcp(&host_frame, ipv4.l4_offset).expect("tcp");
+            assert_eq!(ipv4.src, client_ip);
+            assert_eq!(ipv4.dst, INTERCEPT_SERVICE_IP_DEFAULT);
+            assert_eq!(tcp.dst_port, INTERCEPT_SERVICE_PORT_DEFAULT);
         });
-
-        let client_ip = Ipv4Addr::new(10, 0, 0, 42);
-        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-        let outbound = build_tcp_syn_ipv4_frame(
-            client_mac,
-            fw_mac,
-            client_ip,
-            Ipv4Addr::new(198, 51, 100, 10),
-            40000,
-            443,
-        );
-
-        let out = adapter.process_frame(&outbound, &mut state);
-        assert!(
-            out.is_none(),
-            "intercept-eligible flow should not egress dataplane directly"
-        );
-        let host_frame = adapter
-            .next_host_frame()
-            .expect("expected service-lane frame");
-        assert_eq!(host_frame.len(), outbound.len());
-        assert_eq!(&host_frame[0..6], &svc_mac);
-        let ipv4 = parse_ipv4(&host_frame, ETH_HDR_LEN).expect("ipv4");
-        let tcp = parse_tcp(&host_frame, ipv4.l4_offset).expect("tcp");
-        assert_eq!(ipv4.src, client_ip);
-        assert_eq!(ipv4.dst, INTERCEPT_SERVICE_IP_DEFAULT);
-        assert_eq!(tcp.dst_port, INTERCEPT_SERVICE_PORT_DEFAULT);
     }
 
     #[test]
     fn process_service_lane_egress_restores_intercept_tuple_and_rewrites_l2() {
-        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
-        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        adapter.set_mac(fw_mac);
-        let client_ip = Ipv4Addr::new(10, 0, 0, 42);
-        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-        adapter.insert_arp(client_ip, client_mac);
+        with_default_intercept_env(|| {
+            let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+            let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+            adapter.set_mac(fw_mac);
+            let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+            let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+            adapter.insert_arp(client_ip, client_mac);
 
-        let mut state = EngineState::new(
-            Arc::new(RwLock::new(intercept_policy_snapshot())),
-            Ipv4Addr::new(10, 0, 0, 0),
-            24,
-            Ipv4Addr::new(203, 0, 113, 1),
-            0,
-        );
-        state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
-        state.set_intercept_to_host_steering(true);
-        state.set_dataplane_config({
-            let store = crate::dataplane::config::DataplaneConfigStore::new();
-            store.set(DataplaneConfig {
-                ip: Ipv4Addr::new(10, 0, 0, 2),
-                prefix: 24,
-                gateway: Ipv4Addr::new(10, 0, 0, 1),
-                mac: fw_mac,
-                lease_expiry: None,
+            let mut state = EngineState::new(
+                Arc::new(RwLock::new(intercept_policy_snapshot())),
+                Ipv4Addr::new(10, 0, 0, 0),
+                24,
+                Ipv4Addr::new(203, 0, 113, 1),
+                0,
+            );
+            state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+            state.set_intercept_to_host_steering(true);
+            state.set_dataplane_config({
+                let store = crate::dataplane::config::DataplaneConfigStore::new();
+                store.set(DataplaneConfig {
+                    ip: Ipv4Addr::new(10, 0, 0, 2),
+                    prefix: 24,
+                    gateway: Ipv4Addr::new(10, 0, 0, 1),
+                    mac: fw_mac,
+                    lease_expiry: None,
+                });
+                store
             });
-            store
+
+            let outbound = build_tcp_syn_ipv4_frame(
+                client_mac,
+                fw_mac,
+                client_ip,
+                Ipv4Addr::new(198, 51, 100, 10),
+                40000,
+                443,
+            );
+            let out = adapter.process_frame(&outbound, &mut state);
+            assert!(
+                out.is_none(),
+                "intercept packet should steer to service lane"
+            );
+            let _ = adapter
+                .next_host_frame()
+                .expect("expected queued service-lane frame");
+
+            let egress = build_tcp_syn_ipv4_frame(
+                [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+                [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01],
+                INTERCEPT_SERVICE_IP_DEFAULT,
+                client_ip,
+                INTERCEPT_SERVICE_PORT_DEFAULT,
+                40000,
+            );
+            let forwarded = adapter
+                .process_service_lane_egress_frame(&egress, &state)
+                .expect("service-lane return frame should forward");
+            assert_eq!(&forwarded[0..6], &client_mac);
+            assert_eq!(&forwarded[6..12], &fw_mac);
+            let ipv4 = parse_ipv4(&forwarded, ETH_HDR_LEN).expect("ipv4");
+            let tcp = parse_tcp(&forwarded, ipv4.l4_offset).expect("tcp");
+            assert_eq!(ipv4.src, Ipv4Addr::new(198, 51, 100, 10));
+            assert_eq!(tcp.src_port, 443);
         });
-
-        let outbound = build_tcp_syn_ipv4_frame(
-            client_mac,
-            fw_mac,
-            client_ip,
-            Ipv4Addr::new(198, 51, 100, 10),
-            40000,
-            443,
-        );
-        let out = adapter.process_frame(&outbound, &mut state);
-        assert!(
-            out.is_none(),
-            "intercept packet should steer to service lane"
-        );
-        let _ = adapter
-            .next_host_frame()
-            .expect("expected queued service-lane frame");
-
-        let egress = build_tcp_syn_ipv4_frame(
-            [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
-            [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01],
-            INTERCEPT_SERVICE_IP_DEFAULT,
-            client_ip,
-            INTERCEPT_SERVICE_PORT_DEFAULT,
-            40000,
-        );
-        let forwarded = adapter
-            .process_service_lane_egress_frame(&egress, &state)
-            .expect("service-lane return frame should forward");
-        assert_eq!(&forwarded[0..6], &client_mac);
-        assert_eq!(&forwarded[6..12], &fw_mac);
-        let ipv4 = parse_ipv4(&forwarded, ETH_HDR_LEN).expect("ipv4");
-        let tcp = parse_tcp(&forwarded, ipv4.l4_offset).expect("tcp");
-        assert_eq!(ipv4.src, Ipv4Addr::new(198, 51, 100, 10));
-        assert_eq!(tcp.src_port, 443);
     }
 
     #[test]
     fn drain_service_lane_egress_reads_tap_rewrites_intercept_tuple_and_sends_dpdk_frame() {
-        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
-        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        adapter.set_mac(fw_mac);
-        let client_ip = Ipv4Addr::new(10, 0, 0, 42);
-        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-        adapter.insert_arp(client_ip, client_mac);
+        with_default_intercept_env(|| {
+            let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+            let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+            adapter.set_mac(fw_mac);
+            let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+            let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+            adapter.insert_arp(client_ip, client_mac);
 
-        let mut state = EngineState::new(
-            Arc::new(RwLock::new(intercept_policy_snapshot())),
-            Ipv4Addr::new(10, 0, 0, 0),
-            24,
-            Ipv4Addr::new(203, 0, 113, 1),
-            0,
-        );
-        state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
-        state.set_intercept_to_host_steering(true);
-        state.set_dataplane_config({
-            let store = crate::dataplane::config::DataplaneConfigStore::new();
-            store.set(DataplaneConfig {
-                ip: Ipv4Addr::new(10, 0, 0, 2),
-                prefix: 24,
-                gateway: Ipv4Addr::new(10, 0, 0, 1),
-                mac: fw_mac,
-                lease_expiry: None,
+            let mut state = EngineState::new(
+                Arc::new(RwLock::new(intercept_policy_snapshot())),
+                Ipv4Addr::new(10, 0, 0, 0),
+                24,
+                Ipv4Addr::new(203, 0, 113, 1),
+                0,
+            );
+            state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+            state.set_intercept_to_host_steering(true);
+            state.set_dataplane_config({
+                let store = crate::dataplane::config::DataplaneConfigStore::new();
+                store.set(DataplaneConfig {
+                    ip: Ipv4Addr::new(10, 0, 0, 2),
+                    prefix: 24,
+                    gateway: Ipv4Addr::new(10, 0, 0, 1),
+                    mac: fw_mac,
+                    lease_expiry: None,
+                });
+                store
             });
-            store
+
+            let outbound = build_tcp_syn_ipv4_frame(
+                client_mac,
+                fw_mac,
+                client_ip,
+                Ipv4Addr::new(198, 51, 100, 10),
+                40000,
+                443,
+            );
+            let out = adapter.process_frame(&outbound, &mut state);
+            assert!(
+                out.is_none(),
+                "intercept packet should steer to service lane"
+            );
+            let _ = adapter
+                .next_host_frame()
+                .expect("expected queued service-lane frame");
+
+            let egress = build_tcp_syn_ipv4_frame(
+                [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+                [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01],
+                INTERCEPT_SERVICE_IP_DEFAULT,
+                client_ip,
+                INTERCEPT_SERVICE_PORT_DEFAULT,
+                40000,
+            );
+
+            let mut fds = [0i32; 2];
+            let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+            assert_eq!(rc, 0, "pipe setup failed");
+            let mut writer = unsafe { File::from_raw_fd(fds[1]) };
+            adapter.service_lane_tap = Some(unsafe { File::from_raw_fd(fds[0]) });
+
+            writer
+                .write_all(&egress)
+                .expect("write service-lane egress frame");
+
+            let mut io = RecordingIo::default();
+            adapter
+                .drain_service_lane_egress(&state, &mut io)
+                .expect("drain service lane egress");
+
+            assert_eq!(io.sent.len(), 1);
+            assert_eq!(&io.sent[0][0..6], &client_mac);
+            assert_eq!(&io.sent[0][6..12], &fw_mac);
+            let ipv4 = parse_ipv4(&io.sent[0], ETH_HDR_LEN).expect("ipv4");
+            let tcp = parse_tcp(&io.sent[0], ipv4.l4_offset).expect("tcp");
+            assert_eq!(ipv4.src, Ipv4Addr::new(198, 51, 100, 10));
+            assert_eq!(tcp.src_port, 443);
         });
-
-        let outbound = build_tcp_syn_ipv4_frame(
-            client_mac,
-            fw_mac,
-            client_ip,
-            Ipv4Addr::new(198, 51, 100, 10),
-            40000,
-            443,
-        );
-        let out = adapter.process_frame(&outbound, &mut state);
-        assert!(
-            out.is_none(),
-            "intercept packet should steer to service lane"
-        );
-        let _ = adapter
-            .next_host_frame()
-            .expect("expected queued service-lane frame");
-
-        let egress = build_tcp_syn_ipv4_frame(
-            [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
-            [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01],
-            INTERCEPT_SERVICE_IP_DEFAULT,
-            client_ip,
-            INTERCEPT_SERVICE_PORT_DEFAULT,
-            40000,
-        );
-
-        let mut fds = [0i32; 2];
-        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
-        assert_eq!(rc, 0, "pipe setup failed");
-        let mut writer = unsafe { File::from_raw_fd(fds[1]) };
-        adapter.service_lane_tap = Some(unsafe { File::from_raw_fd(fds[0]) });
-
-        writer
-            .write_all(&egress)
-            .expect("write service-lane egress frame");
-
-        let mut io = RecordingIo::default();
-        adapter
-            .drain_service_lane_egress(&state, &mut io)
-            .expect("drain service lane egress");
-
-        assert_eq!(io.sent.len(), 1);
-        assert_eq!(&io.sent[0][0..6], &client_mac);
-        assert_eq!(&io.sent[0][6..12], &fw_mac);
-        let ipv4 = parse_ipv4(&io.sent[0], ETH_HDR_LEN).expect("ipv4");
-        let tcp = parse_tcp(&io.sent[0], ipv4.l4_offset).expect("tcp");
-        assert_eq!(ipv4.src, Ipv4Addr::new(198, 51, 100, 10));
-        assert_eq!(tcp.src_port, 443);
     }
 
     #[test]
     fn process_service_lane_egress_uses_shared_intercept_demux_across_adapters() {
-        let shared = Arc::new(Mutex::new(SharedInterceptDemuxState::default()));
-        let mut ingress = DpdkAdapter::new("data0".to_string()).unwrap();
-        let mut egress = DpdkAdapter::new("data0".to_string()).unwrap();
-        ingress.set_shared_intercept_demux(shared.clone());
-        egress.set_shared_intercept_demux(shared);
+        with_default_intercept_env(|| {
+            let shared = Arc::new(Mutex::new(SharedInterceptDemuxState::default()));
+            let mut ingress = DpdkAdapter::new("data0".to_string()).unwrap();
+            let mut egress = DpdkAdapter::new("data0".to_string()).unwrap();
+            ingress.set_shared_intercept_demux(shared.clone());
+            egress.set_shared_intercept_demux(shared);
 
-        let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        ingress.set_mac(fw_mac);
-        egress.set_mac(fw_mac);
+            let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+            ingress.set_mac(fw_mac);
+            egress.set_mac(fw_mac);
 
-        let client_ip = Ipv4Addr::new(10, 0, 0, 42);
-        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-        egress.insert_arp(client_ip, client_mac);
+            let client_ip = Ipv4Addr::new(10, 0, 0, 42);
+            let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+            egress.insert_arp(client_ip, client_mac);
 
-        let mut state = EngineState::new(
-            Arc::new(RwLock::new(intercept_policy_snapshot())),
-            Ipv4Addr::new(10, 0, 0, 0),
-            24,
-            Ipv4Addr::new(203, 0, 113, 1),
-            0,
-        );
-        state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
-        state.set_intercept_to_host_steering(true);
-        state.set_dataplane_config({
-            let store = crate::dataplane::config::DataplaneConfigStore::new();
-            store.set(DataplaneConfig {
-                ip: Ipv4Addr::new(10, 0, 0, 2),
-                prefix: 24,
-                gateway: Ipv4Addr::new(10, 0, 0, 1),
-                mac: fw_mac,
-                lease_expiry: None,
+            let mut state = EngineState::new(
+                Arc::new(RwLock::new(intercept_policy_snapshot())),
+                Ipv4Addr::new(10, 0, 0, 0),
+                24,
+                Ipv4Addr::new(203, 0, 113, 1),
+                0,
+            );
+            state.set_service_policy_applied_generation(Arc::new(AtomicU64::new(1)));
+            state.set_intercept_to_host_steering(true);
+            state.set_dataplane_config({
+                let store = crate::dataplane::config::DataplaneConfigStore::new();
+                store.set(DataplaneConfig {
+                    ip: Ipv4Addr::new(10, 0, 0, 2),
+                    prefix: 24,
+                    gateway: Ipv4Addr::new(10, 0, 0, 1),
+                    mac: fw_mac,
+                    lease_expiry: None,
+                });
+                store
             });
-            store
+
+            let outbound = build_tcp_syn_ipv4_frame(
+                client_mac,
+                fw_mac,
+                client_ip,
+                Ipv4Addr::new(198, 51, 100, 10),
+                40000,
+                443,
+            );
+            assert!(
+                ingress.process_frame(&outbound, &mut state).is_none(),
+                "intercept packet should steer to service lane"
+            );
+            let _ = ingress
+                .next_host_frame()
+                .expect("expected queued service-lane frame");
+
+            let egress_frame = build_tcp_syn_ipv4_frame(
+                [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+                [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01],
+                INTERCEPT_SERVICE_IP_DEFAULT,
+                client_ip,
+                INTERCEPT_SERVICE_PORT_DEFAULT,
+                40000,
+            );
+            let forwarded = egress
+                .process_service_lane_egress_frame(&egress_frame, &state)
+                .expect("service-lane return frame should forward");
+            let ipv4 = parse_ipv4(&forwarded, ETH_HDR_LEN).expect("ipv4");
+            let tcp = parse_tcp(&forwarded, ipv4.l4_offset).expect("tcp");
+            assert_eq!(ipv4.src, Ipv4Addr::new(198, 51, 100, 10));
+            assert_eq!(tcp.src_port, 443);
         });
-
-        let outbound = build_tcp_syn_ipv4_frame(
-            client_mac,
-            fw_mac,
-            client_ip,
-            Ipv4Addr::new(198, 51, 100, 10),
-            40000,
-            443,
-        );
-        assert!(
-            ingress.process_frame(&outbound, &mut state).is_none(),
-            "intercept packet should steer to service lane"
-        );
-        let _ = ingress
-            .next_host_frame()
-            .expect("expected queued service-lane frame");
-
-        let egress_frame = build_tcp_syn_ipv4_frame(
-            [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
-            [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01],
-            INTERCEPT_SERVICE_IP_DEFAULT,
-            client_ip,
-            INTERCEPT_SERVICE_PORT_DEFAULT,
-            40000,
-        );
-        let forwarded = egress
-            .process_service_lane_egress_frame(&egress_frame, &state)
-            .expect("service-lane return frame should forward");
-        let ipv4 = parse_ipv4(&forwarded, ETH_HDR_LEN).expect("ipv4");
-        let tcp = parse_tcp(&forwarded, ipv4.l4_offset).expect("tcp");
-        assert_eq!(ipv4.src, Ipv4Addr::new(198, 51, 100, 10));
-        assert_eq!(tcp.src_port, 443);
     }
 }

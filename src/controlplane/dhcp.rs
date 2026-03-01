@@ -19,6 +19,7 @@ pub struct DhcpClientConfig {
     pub lease_min_secs: u64,
     pub hostname: Option<String>,
     pub update_internal_cidr: bool,
+    pub allow_router_fallback_from_subnet: bool,
 }
 
 #[derive(Debug)]
@@ -268,10 +269,19 @@ fn lease_from_packet(
         .subnet_mask
         .ok_or_else(|| "dhcp ack missing subnet mask".to_string())?;
     let prefix = mask_to_prefix(subnet).ok_or_else(|| "invalid subnet mask".to_string())?;
-    let gateway = pkt
-        .options
-        .router
-        .ok_or_else(|| "dhcp ack missing router".to_string())?;
+    let gateway = match pkt.options.router {
+        Some(router) => router,
+        None if cfg.allow_router_fallback_from_subnet => {
+            let fallback = subnet_gateway(pkt.yiaddr, prefix)
+                .ok_or_else(|| "dhcp ack missing router and gateway fallback failed".to_string())?;
+            eprintln!(
+                "dhcp: ack missing router option; falling back to subnet gateway {}",
+                fallback
+            );
+            fallback
+        }
+        None => return Err("dhcp ack missing router".to_string()),
+    };
     let server_id = pkt
         .options
         .server_id
@@ -506,6 +516,14 @@ fn network_addr(ip: Ipv4Addr, prefix: u8) -> Ipv4Addr {
     Ipv4Addr::from(u32::from(ip) & mask)
 }
 
+fn subnet_gateway(ip: Ipv4Addr, prefix: u8) -> Option<Ipv4Addr> {
+    if prefix >= 31 {
+        return None;
+    }
+    let network = u32::from(network_addr(ip, prefix));
+    Some(Ipv4Addr::from(network.saturating_add(1)))
+}
+
 fn rand_xid() -> u32 {
     let mut rng = rand::thread_rng();
     rng.next_u32()
@@ -534,14 +552,16 @@ mod tests {
         yiaddr: Ipv4Addr,
         server_id: Ipv4Addr,
         subnet: Ipv4Addr,
-        router: Ipv4Addr,
+        router: Option<Ipv4Addr>,
         lease_time: u32,
     ) -> Vec<u8> {
         let mut buf = build_base(2, xid, mac, true, Ipv4Addr::UNSPECIFIED, yiaddr);
         push_option(&mut buf, 53, &[msg_type]);
         push_option(&mut buf, 54, &server_id.octets());
         push_option(&mut buf, 1, &subnet.octets());
-        push_option(&mut buf, 3, &router.octets());
+        if let Some(router) = router {
+            push_option(&mut buf, 3, &router.octets());
+        }
         push_option(&mut buf, 51, &lease_time.to_be_bytes());
         finish_options(&mut buf);
         buf
@@ -570,7 +590,7 @@ mod tests {
             yiaddr,
             server_id,
             subnet,
-            router,
+            Some(router),
             lease_time,
         );
         let pkt = parse_packet(&buf).expect("parse packet");
@@ -580,6 +600,7 @@ mod tests {
             lease_min_secs: 60,
             hostname: None,
             update_internal_cidr: true,
+            allow_router_fallback_from_subnet: false,
         };
         let lease = lease_from_packet(&pkt, &cfg, mac).expect("lease");
         assert_eq!(lease.ip, yiaddr);
@@ -587,6 +608,68 @@ mod tests {
         assert_eq!(lease.gateway, router);
         assert_eq!(lease.server_id, server_id);
         assert_eq!(lease.lease_time_secs, lease_time as u64);
+    }
+
+    #[test]
+    fn parse_ack_missing_router_fails_when_fallback_disabled() {
+        let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let xid = 0x12345678;
+        let yiaddr = Ipv4Addr::new(10, 20, 2, 9);
+        let server_id = Ipv4Addr::new(168, 63, 129, 16);
+        let subnet = Ipv4Addr::new(255, 255, 255, 0);
+        let lease_time = 600;
+        let buf = build_reply(
+            DhcpMessageType::Ack as u8,
+            xid,
+            mac,
+            yiaddr,
+            server_id,
+            subnet,
+            None,
+            lease_time,
+        );
+        let pkt = parse_packet(&buf).expect("parse packet");
+        let cfg = DhcpClientConfig {
+            timeout: Duration::from_secs(5),
+            retry_max: 3,
+            lease_min_secs: 60,
+            hostname: None,
+            update_internal_cidr: true,
+            allow_router_fallback_from_subnet: false,
+        };
+        let err = lease_from_packet(&pkt, &cfg, mac).expect_err("expected missing router error");
+        assert!(err.contains("missing router"));
+    }
+
+    #[test]
+    fn parse_ack_missing_router_derives_subnet_gateway_when_enabled() {
+        let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let xid = 0x12345678;
+        let yiaddr = Ipv4Addr::new(10, 20, 2, 9);
+        let server_id = Ipv4Addr::new(168, 63, 129, 16);
+        let subnet = Ipv4Addr::new(255, 255, 255, 0);
+        let lease_time = 600;
+        let buf = build_reply(
+            DhcpMessageType::Ack as u8,
+            xid,
+            mac,
+            yiaddr,
+            server_id,
+            subnet,
+            None,
+            lease_time,
+        );
+        let pkt = parse_packet(&buf).expect("parse packet");
+        let cfg = DhcpClientConfig {
+            timeout: Duration::from_secs(5),
+            retry_max: 3,
+            lease_min_secs: 60,
+            hostname: None,
+            update_internal_cidr: true,
+            allow_router_fallback_from_subnet: true,
+        };
+        let lease = lease_from_packet(&pkt, &cfg, mac).expect("lease");
+        assert_eq!(lease.gateway, Ipv4Addr::new(10, 20, 2, 1));
     }
 
     fn metric_value(rendered: &str, name: &str) -> Option<f64> {
@@ -618,6 +701,7 @@ mod tests {
                 lease_min_secs: 1,
                 hostname: None,
                 update_internal_cidr: true,
+                allow_router_fallback_from_subnet: false,
             },
             mac_rx,
             rx,

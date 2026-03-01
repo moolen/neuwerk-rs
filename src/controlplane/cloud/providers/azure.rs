@@ -23,6 +23,7 @@ const COMPUTE_API_VERSION: &str = "2023-09-01";
 const NETWORK_API_VERSION: &str = "2023-05-01";
 const TAG_NIC_MANAGEMENT: &[&str] = &["neuwerk.io/management", "neuwerk.io.management"];
 const TAG_NIC_DATAPLANE: &[&str] = &["neuwerk.io/dataplane", "neuwerk.io.dataplane"];
+const TAG_ROLE: &[&str] = &["neuwerk.io/role", "neuwerk.io.role"];
 const TERMINATION_EVENT_TYPES: &[&str] = &[
     "terminate",
     "preempt",
@@ -380,6 +381,26 @@ impl AzureProvider {
             .unwrap_or(0)
     }
 
+    fn is_management_subnet(name: &str, tags: &HashMap<String, String>) -> bool {
+        let lowered = name.to_ascii_lowercase();
+        if lowered.contains("mgmt") || lowered.contains("management") {
+            return true;
+        }
+        if TAG_NIC_MANAGEMENT.iter().any(|key| tags.contains_key(*key)) {
+            return true;
+        }
+        TAG_ROLE
+            .iter()
+            .filter_map(|key| tags.get(*key))
+            .map(|value| value.to_ascii_lowercase())
+            .any(|value| {
+                value == "management"
+                    || value == "mgmt"
+                    || value == "controlplane"
+                    || value == "control-plane"
+            })
+    }
+
     async fn ensure_termination_notifications_enabled(
         &self,
         subscription_id: &str,
@@ -443,6 +464,9 @@ impl CloudProvider for AzureProvider {
             .vm_scale_set_name
             .as_deref()
             .ok_or_else(|| CloudError::InvalidResponse("missing vmScaleSetName".to_string()))?;
+        let instance_id = self
+            .resolve_instance_id(&compute, subscription_id, resource_group, vmss_name)
+            .await?;
         self.ensure_termination_notifications_enabled(subscription_id, resource_group, vmss_name)
             .await?;
         let nics = if let Some(resource_id) = compute.resource_id.as_deref() {
@@ -453,18 +477,12 @@ impl CloudProvider for AzureProvider {
                 .filter(|nic| AzureProvider::resource_id_matches(nic, resource_id))
                 .collect::<Vec<_>>();
             if rg_nics.is_empty() {
-                let instance_id = self
-                    .resolve_instance_id(&compute, subscription_id, resource_group, vmss_name)
-                    .await?;
                 self.list_vmss_nics(subscription_id, resource_group, vmss_name, &instance_id)
                     .await?
             } else {
                 rg_nics
             }
         } else {
-            let instance_id = self
-                .resolve_instance_id(&compute, subscription_id, resource_group, vmss_name)
-                .await?;
             self.list_vmss_nics(subscription_id, resource_group, vmss_name, &instance_id)
                 .await?
         };
@@ -475,7 +493,8 @@ impl CloudProvider for AzureProvider {
             .unwrap_or_else(|| compute.location.clone());
         let tags = AzureProvider::parse_tags(compute.tags.as_deref(), None);
         Ok(InstanceRef {
-            id: compute.vm_id,
+            // Use VMSS instance_id (not VM UUID) so local identity keys match discover_instances.
+            id: instance_id,
             name: compute.name,
             zone,
             created_at_epoch: AzureProvider::parse_time(compute.time_created.as_deref()),
@@ -614,7 +633,11 @@ impl CloudProvider for AzureProvider {
                 .and_then(|props| props.subnets)
                 .unwrap_or_default();
             for subnet in vnet_subnets {
+                let subnet_name = subnet.name.clone().unwrap_or_default();
                 let tags = subnet.tags.clone().unwrap_or_else(|| vnet_tags.clone());
+                if AzureProvider::is_management_subnet(&subnet_name, &tags) {
+                    continue;
+                }
                 if !filter.matches(&tags) {
                     continue;
                 }
@@ -641,7 +664,7 @@ impl CloudProvider for AzureProvider {
                     .unwrap_or_default();
                 subnets.push(SubnetRef {
                     id: subnet.id.unwrap_or_default(),
-                    name: subnet.name.unwrap_or_default(),
+                    name: subnet_name,
                     zone: location.clone(),
                     cidr,
                     route_table_id,
@@ -877,7 +900,6 @@ struct ImdsInstance {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ImdsCompute {
-    vm_id: String,
     instance_id: Option<String>,
     name: String,
     location: String,
@@ -1107,9 +1129,31 @@ impl ScheduledEvent {
         let Some(resources) = &self.resources else {
             return false;
         };
-        resources
-            .iter()
-            .any(|resource| resource == &instance.name || resource == &instance.id)
+        let instance_name = instance.name.to_ascii_lowercase();
+        let instance_id = instance.id.to_ascii_lowercase();
+        let instance_name_suffix = instance_name
+            .rsplit('_')
+            .next()
+            .unwrap_or(instance_name.as_str());
+        resources.iter().any(|resource| {
+            let resource = resource.trim().to_ascii_lowercase();
+            if resource == instance_name
+                || resource == instance_id
+                || resource.ends_with(&format!("/{instance_name}"))
+                || resource.ends_with(&format!("/{instance_id}"))
+            {
+                return true;
+            }
+            let path_tail = resource.rsplit('/').next().unwrap_or(resource.as_str());
+            if path_tail == instance_name
+                || path_tail == instance_id
+                || path_tail == instance_name_suffix
+            {
+                return true;
+            }
+            let underscore_tail = resource.rsplit('_').next().unwrap_or(resource.as_str());
+            underscore_tail == instance_id || underscore_tail == instance_name_suffix
+        })
     }
 }
 
@@ -1170,6 +1214,34 @@ mod tests {
     }
 
     #[test]
+    fn management_subnet_detection_uses_name_and_tags() {
+        let mut role_tags = HashMap::new();
+        role_tags.insert("neuwerk.io.role".to_string(), "management".to_string());
+        assert!(AzureProvider::is_management_subnet(
+            "app-subnet",
+            &role_tags
+        ));
+
+        let mut mgmt_tags = HashMap::new();
+        mgmt_tags.insert("neuwerk.io.management".to_string(), "true".to_string());
+        assert!(AzureProvider::is_management_subnet(
+            "consumer-subnet",
+            &mgmt_tags
+        ));
+
+        let mut data_tags = HashMap::new();
+        data_tags.insert("neuwerk.io.role".to_string(), "dataplane".to_string());
+        assert!(!AzureProvider::is_management_subnet(
+            "consumer-subnet",
+            &data_tags
+        ));
+        assert!(AzureProvider::is_management_subnet(
+            "mgmt-subnet",
+            &data_tags
+        ));
+    }
+
+    #[test]
     fn scheduled_events_parse_and_match_instance() {
         let json = r#"{
             "DocumentIncarnation": 2,
@@ -1195,7 +1267,7 @@ mod tests {
         assert!(event.is_termination());
 
         let instance = InstanceRef {
-            id: "vm-id".to_string(),
+            id: "0".to_string(),
             name: "WestNO_0".to_string(),
             zone: "zone-1".to_string(),
             created_at_epoch: 0,
@@ -1205,6 +1277,27 @@ mod tests {
             active: true,
         };
         assert!(event.applies_to(&instance));
+        let path_resource = ScheduledEvent {
+            event_id: "event-path".to_string(),
+            event_type: "Reboot".to_string(),
+            event_status: Some("Scheduled".to_string()),
+            resources: Some(vec![format!(
+                "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/{}",
+                instance.name
+            )]),
+            not_before: None,
+            duration_in_seconds: None,
+        };
+        assert!(path_resource.applies_to(&instance));
+        let suffix_resource = ScheduledEvent {
+            event_id: "event-suffix".to_string(),
+            event_type: "Reboot".to_string(),
+            event_status: Some("Scheduled".to_string()),
+            resources: Some(vec!["vmss_0".to_string()]),
+            not_before: None,
+            duration_in_seconds: None,
+        };
+        assert!(suffix_resource.applies_to(&instance));
 
         let canceled = ScheduledEvent {
             event_id: "event-cancel".to_string(),

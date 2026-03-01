@@ -1,0 +1,10 @@
+Warning: Permanently added '20.79.249.152' (ED25519) to the list of known hosts.
+Warning: Permanently added '10.20.3.4' (ED25519) to the list of known hosts.
+lifecycle_consumer_class_summary class=dns_udp total=3438 ok=1984 fail=1454
+lifecycle_consumer_class_summary class=dns_tcp total=1528 ok=19 fail=1509
+lifecycle_consumer_class_summary class=http total=4818 ok=4311 fail=507
+lifecycle_consumer_class_summary class=https total=3205 ok=2687 fail=518
+lifecycle_consumer_class_summary class=delayed_http total=538 ok=12 fail=526
+lifecycle_consumer_summary total=16490 ok=11976 fail=4514
+lifecycle_consumer_first_failure:
+fail class=dns_tcp worker=1 latency_ms=2090 rc=9 code=;; Connection to 10.20.4.10#53(10.20.4.10) for upstream.test failed: timed out.

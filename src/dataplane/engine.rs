@@ -610,6 +610,9 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                         &meta,
                         policy,
                         verifier,
+                        audit.as_ref(),
+                        entry.source_group.as_str(),
+                        now,
                         metrics.as_ref(),
                     ) {
                         if let Some(metrics) = &metrics {
@@ -823,6 +826,9 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                             &meta,
                             policy,
                             verifier,
+                            audit.as_ref(),
+                            entry.source_group.as_str(),
+                            now,
                             metrics.as_ref(),
                         ) {
                             if let Some(metrics) = &metrics {
@@ -1120,6 +1126,9 @@ fn handle_outbound_no_snat(
                     &meta,
                     policy,
                     verifier,
+                    audit.as_ref(),
+                    entry.source_group.as_str(),
+                    now,
                     metrics.as_ref(),
                 ) {
                     if let Some(metrics) = &metrics {
@@ -1399,6 +1408,9 @@ fn handle_inbound_no_snat(
                     &meta,
                     policy,
                     verifier,
+                    audit.as_ref(),
+                    entry.source_group.as_str(),
+                    now,
                     metrics.as_ref(),
                 ) {
                     if let Some(metrics) = &metrics {
@@ -2546,6 +2558,9 @@ fn process_tls_packet(
     meta: &PacketMeta,
     policy: &Arc<RwLock<PolicySnapshot>>,
     verifier: &TlsVerifier,
+    audit: Option<&AuditEmitter>,
+    source_group: &str,
+    now: u64,
     metrics: Option<&Metrics>,
 ) -> bool {
     if tls_state.decision == TlsFlowDecision::Denied {
@@ -2573,6 +2588,13 @@ fn process_tls_packet(
         Ok(result) => result,
         Err(_) => {
             tls_state.decision = TlsFlowDecision::Denied;
+            maybe_emit_tls_policy_deny_audit(
+                audit,
+                meta,
+                source_group,
+                tls_state.observation.sni.clone(),
+                now,
+            );
             if let Some(metrics) = metrics {
                 metrics.inc_dp_tls_decision("deny");
             }
@@ -2581,10 +2603,31 @@ fn process_tls_packet(
     };
 
     if tls_state.decision == TlsFlowDecision::Pending {
-        let decision = match policy.read() {
-            Ok(lock) => lock.evaluate(meta, Some(&tls_state.observation), Some(verifier)),
-            Err(_) => PolicyDecision::Deny,
+        let (decision, raw_denied) = match policy.read() {
+            Ok(lock) => {
+                let (effective, _, _) = lock.evaluate_with_source_group_detailed(
+                    meta,
+                    Some(&tls_state.observation),
+                    Some(verifier),
+                );
+                let (raw, _, _) = lock.evaluate_with_source_group_detailed_raw(
+                    meta,
+                    Some(&tls_state.observation),
+                    Some(verifier),
+                );
+                (effective, raw == PolicyDecision::Deny)
+            }
+            Err(_) => (PolicyDecision::Deny, true),
         };
+        if raw_denied {
+            maybe_emit_tls_policy_deny_audit(
+                audit,
+                meta,
+                source_group,
+                tls_state.observation.sni.clone(),
+                now,
+            );
+        }
         match decision {
             PolicyDecision::Allow => {
                 tls_state.decision = TlsFlowDecision::Allowed;
@@ -2604,6 +2647,13 @@ fn process_tls_packet(
 
     if tls_state.decision == TlsFlowDecision::Pending && ingest.saw_application_data {
         tls_state.decision = TlsFlowDecision::Denied;
+        maybe_emit_tls_policy_deny_audit(
+            audit,
+            meta,
+            source_group,
+            tls_state.observation.sni.clone(),
+            now,
+        );
         if let Some(metrics) = metrics {
             metrics.inc_dp_tls_decision("deny_after_data");
         }
@@ -2675,6 +2725,31 @@ fn maybe_emit_policy_deny_audit(
     };
     emitter.try_send(DataplaneAuditEvent {
         event_type,
+        src_ip: meta.src_ip,
+        dst_ip: meta.dst_ip,
+        src_port: meta.src_port,
+        dst_port: meta.dst_port,
+        proto: meta.proto,
+        source_group: source_group.to_string(),
+        sni,
+        icmp_type: meta.icmp_type,
+        icmp_code: meta.icmp_code,
+        observed_at: now,
+    });
+}
+
+fn maybe_emit_tls_policy_deny_audit(
+    emitter: Option<&AuditEmitter>,
+    meta: &PacketMeta,
+    source_group: &str,
+    sni: Option<String>,
+    now: u64,
+) {
+    let Some(emitter) = emitter else {
+        return;
+    };
+    emitter.try_send(DataplaneAuditEvent {
+        event_type: AuditEventType::TlsDeny,
         src_ip: meta.src_ip,
         dst_ip: meta.dst_ip,
         src_port: meta.src_port,
