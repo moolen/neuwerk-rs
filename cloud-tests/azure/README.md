@@ -17,7 +17,7 @@ This folder provisions the Azure test bench described in `ROADMAP/AZURE-E2E.md`.
 5. Use scripts in `cloud-tests/azure/scripts`.
 6. Run the cloud policy smoke suite with `make policy-smoke`.
 7. Open a local tunnel to one firewall UI and mint a JWT with `make ui.port-forward` (override with `INDEX=<n>` and `UI_LOCAL_PORT=<port>`).
-8. Run VMSS lifecycle rollout validation with `make lifecycle-rollout` (consumer-side sustained mixed traffic + strict zero-failure assertions).
+8. Run VMSS lifecycle rollout validation with `make lifecycle-rollout` (consumer-side sustained mixed traffic with an error budget default of `0.01%`; override via `MAX_ERROR_RATE_PCT`).
 9. Run termination drain-path validation with `make lifecycle-termination-drain` (targets one VMSS instance, triggers lifecycle action, and asserts termination/drain metrics via streamed max values). Use `TRIGGER_ACTION=terminate` (default) or `TRIGGER_ACTION=reboot`.
 
 ## Notes

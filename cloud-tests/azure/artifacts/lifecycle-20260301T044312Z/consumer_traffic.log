@@ -1,0 +1,9 @@
+Warning: Permanently added '20.79.249.152' (ED25519) to the list of known hosts.
+Warning: Permanently added '10.20.3.4' (ED25519) to the list of known hosts.
+lifecycle_consumer_class_summary class=dns_udp total=15035 ok=15035 fail=0
+lifecycle_consumer_class_summary class=http total=31790 ok=31790 fail=0
+lifecycle_consumer_class_summary class=https total=20874 ok=20873 fail=1
+lifecycle_consumer_class_summary class=delayed_http total=102 ok=101 fail=1
+lifecycle_consumer_summary total=67801 ok=67799 fail=2 fail_rate_pct=0.002950 allowed_fail_rate_pct=0.01
+lifecycle_consumer_first_failure:
+fail class=delayed_http worker=1 latency_ms=40012 rc=28 code=000 err="curl: (28) Operation timed out after 40002 milliseconds with 0 bytes received "

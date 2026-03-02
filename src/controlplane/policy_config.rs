@@ -4,7 +4,7 @@ use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::dataplane::policy::{
-    CidrV4, DefaultPolicy, HttpHeadersMatcher, HttpPathMatcher, HttpQueryMatcher,
+    CidrV4, DefaultPolicy, DynamicIpSetV4, HttpHeadersMatcher, HttpPathMatcher, HttpQueryMatcher,
     HttpRequestPolicy, HttpResponsePolicy, HttpStringMatcher, IpSetV4, PortRange, Proto, Rule,
     RuleAction, RuleMatch, RuleMode as DataplaneRuleMode, SourceGroup, Tls13Uninspectable,
     TlsInterceptHttpPolicy, TlsMatch, TlsMode, TlsNameMatch,
@@ -16,6 +16,7 @@ pub struct CompiledPolicy {
     pub default_policy: Option<DefaultPolicy>,
     pub groups: Vec<SourceGroup>,
     pub dns_policy: DnsPolicy,
+    pub kubernetes_bindings: Vec<KubernetesSelectorBinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,18 +176,40 @@ impl PolicyConfig {
 
         let mut groups = Vec::with_capacity(self.source_groups.len());
         let mut dns_groups = Vec::with_capacity(self.source_groups.len());
+        let mut kubernetes_bindings = Vec::new();
         for (idx, group) in self.source_groups.into_iter().enumerate() {
-            let (group, dns_group) = group.compile(idx as u32)?;
+            let (group, dns_group, mut group_bindings) = group.compile(idx as u32)?;
             groups.push(group);
             dns_groups.push(dns_group);
+            kubernetes_bindings.append(&mut group_bindings);
         }
 
         Ok(CompiledPolicy {
             default_policy,
             groups,
             dns_policy: DnsPolicy::new(dns_groups),
+            kubernetes_bindings,
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum KubernetesSourceSelector {
+    Pod {
+        namespace: String,
+        match_labels: std::collections::BTreeMap<String, String>,
+    },
+    Node {
+        match_labels: std::collections::BTreeMap<String, String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct KubernetesSelectorBinding {
+    pub source_group_id: String,
+    pub integration: String,
+    pub selector: KubernetesSourceSelector,
+    pub dynamic_set: DynamicIpSetV4,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,9 +223,13 @@ pub struct SourceGroupConfig {
 }
 
 impl SourceGroupConfig {
-    fn compile(self, fallback_priority: u32) -> Result<(SourceGroup, DnsSourceGroup), String> {
+    fn compile(
+        self,
+        fallback_priority: u32,
+    ) -> Result<(SourceGroup, DnsSourceGroup, Vec<KubernetesSelectorBinding>), String> {
         let priority = self.priority.unwrap_or(fallback_priority);
-        let sources = self.sources.compile(&self.id)?;
+        let compiled_sources = self.sources.compile(&self.id)?;
+        let sources = compiled_sources.sources;
         let default_action = match self.default_action {
             Some(value) => Some(parse_rule_action(value)?),
             None => None,
@@ -233,7 +260,7 @@ impl SourceGroupConfig {
             rules: dns_rules,
         };
 
-        Ok((group, dns_group))
+        Ok((group, dns_group, compiled_sources.kubernetes_bindings))
     }
 }
 
@@ -243,11 +270,22 @@ pub struct SourcesConfig {
     pub cidrs: Vec<String>,
     #[serde(default)]
     pub ips: Vec<String>,
+    #[serde(default)]
+    pub kubernetes: Vec<KubernetesSourceConfig>,
 }
 
 impl SourcesConfig {
-    fn compile(self, group_id: &str) -> Result<IpSetV4, String> {
-        let mut sources = IpSetV4::new();
+    fn compile(self, group_id: &str) -> Result<CompiledSourcesConfig, String> {
+        let dynamic_set = if self.kubernetes.is_empty() {
+            None
+        } else {
+            Some(DynamicIpSetV4::new())
+        };
+        let mut sources = match dynamic_set.clone() {
+            Some(dynamic) => IpSetV4::with_dynamic(dynamic),
+            None => IpSetV4::new(),
+        };
+        let mut kubernetes_bindings = Vec::with_capacity(self.kubernetes.len());
 
         for cidr in self.cidrs {
             let cidr = parse_cidr_v4(&cidr).map_err(|err| format!("group {group_id}: {err}"))?;
@@ -259,12 +297,124 @@ impl SourcesConfig {
             sources.add_ip(ip);
         }
 
+        if let Some(dynamic) = dynamic_set {
+            for source in self.kubernetes {
+                let binding = source.compile(group_id, dynamic.clone())?;
+                kubernetes_bindings.push(binding);
+            }
+        }
+
         if sources.is_empty() {
             return Err(format!("group {group_id}: sources cannot be empty"));
         }
 
-        Ok(sources)
+        Ok(CompiledSourcesConfig {
+            sources,
+            kubernetes_bindings,
+        })
     }
+}
+
+#[derive(Debug, Clone)]
+struct CompiledSourcesConfig {
+    sources: IpSetV4,
+    kubernetes_bindings: Vec<KubernetesSelectorBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesSourceConfig {
+    pub integration: String,
+    #[serde(default)]
+    pub pod_selector: Option<KubernetesPodSelectorConfig>,
+    #[serde(default)]
+    pub node_selector: Option<KubernetesNodeSelectorConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesPodSelectorConfig {
+    pub namespace: String,
+    #[serde(default)]
+    pub match_labels: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesNodeSelectorConfig {
+    #[serde(default)]
+    pub match_labels: std::collections::BTreeMap<String, String>,
+}
+
+impl KubernetesSourceConfig {
+    fn compile(
+        self,
+        group_id: &str,
+        dynamic_set: DynamicIpSetV4,
+    ) -> Result<KubernetesSelectorBinding, String> {
+        let integration = self.integration.trim().to_string();
+        if integration.is_empty() {
+            return Err(format!(
+                "group {group_id}: kubernetes source integration is required"
+            ));
+        }
+
+        let selector = match (self.pod_selector, self.node_selector) {
+            (Some(pod), None) => {
+                let namespace = pod.namespace.trim().to_string();
+                if namespace.is_empty() {
+                    return Err(format!(
+                        "group {group_id}: kubernetes pod_selector.namespace is required"
+                    ));
+                }
+                let labels = normalize_match_labels(pod.match_labels, group_id, "pod_selector")?;
+                KubernetesSourceSelector::Pod {
+                    namespace,
+                    match_labels: labels,
+                }
+            }
+            (None, Some(node)) => {
+                let labels =
+                    normalize_match_labels(node.match_labels, group_id, "node_selector")?;
+                KubernetesSourceSelector::Node {
+                    match_labels: labels,
+                }
+            }
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "group {group_id}: kubernetes source must set exactly one of pod_selector or node_selector"
+                ))
+            }
+            (None, None) => {
+                return Err(format!(
+                    "group {group_id}: kubernetes source must set pod_selector or node_selector"
+                ))
+            }
+        };
+
+        Ok(KubernetesSelectorBinding {
+            source_group_id: group_id.to_string(),
+            integration,
+            selector,
+            dynamic_set,
+        })
+    }
+}
+
+fn normalize_match_labels(
+    labels: std::collections::BTreeMap<String, String>,
+    group_id: &str,
+    field: &str,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for (key, value) in labels {
+        let key = key.trim().to_string();
+        let value = value.trim().to_string();
+        if key.is_empty() || value.is_empty() {
+            return Err(format!(
+                "group {group_id}: kubernetes {field}.match_labels entries must have non-empty key and value"
+            ));
+        }
+        out.insert(key, value);
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

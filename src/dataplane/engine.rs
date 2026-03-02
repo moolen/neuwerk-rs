@@ -7,7 +7,7 @@ use crate::controlplane::metrics::Metrics;
 use crate::dataplane::audit::{AuditEmitter, AuditEvent as DataplaneAuditEvent, AuditEventType};
 use crate::dataplane::config::DataplaneConfigStore;
 use crate::dataplane::drain::DrainControl;
-use crate::dataplane::flow::{ExpiredFlow, FlowEntry, FlowKey, FlowTable};
+use crate::dataplane::flow::{ExpiredFlow, FlowEntry, FlowKey, FlowTable, DEFAULT_SOURCE_GROUP};
 use crate::dataplane::nat::{NatTable, ReverseKey};
 use crate::dataplane::overlay::{OverlayConfig, SnatMode};
 use crate::dataplane::packet::Packet;
@@ -44,9 +44,11 @@ pub struct EngineState {
     wiretap: Option<WiretapEmitter>,
     audit: Option<AuditEmitter>,
     now_override_secs: Option<u64>,
+    last_eviction_check_secs: Option<u64>,
     metrics: Option<Metrics>,
     drain_control: Option<DrainControl>,
     shard_id: Option<usize>,
+    policy_applied_generation: Option<Arc<AtomicU64>>,
     service_policy_applied_generation: Option<Arc<AtomicU64>>,
     intercept_to_host_steering: bool,
 }
@@ -94,9 +96,11 @@ impl EngineState {
             wiretap: None,
             audit: None,
             now_override_secs: None,
+            last_eviction_check_secs: None,
             metrics: None,
             drain_control: None,
             shard_id: None,
+            policy_applied_generation: None,
             service_policy_applied_generation: None,
             intercept_to_host_steering: false,
         }
@@ -168,6 +172,10 @@ impl EngineState {
         self.service_policy_applied_generation = Some(tracker);
     }
 
+    pub fn set_policy_applied_generation(&mut self, tracker: Arc<AtomicU64>) {
+        self.policy_applied_generation = Some(tracker);
+    }
+
     pub fn set_intercept_to_host_steering(&mut self, enabled: bool) {
         self.intercept_to_host_steering = enabled;
     }
@@ -200,6 +208,9 @@ impl EngineState {
         }
         if let Some(control) = &self.drain_control {
             state.set_drain_control(control.clone());
+        }
+        if let Some(tracker) = &self.policy_applied_generation {
+            state.set_policy_applied_generation(tracker.clone());
         }
         if let Some(tracker) = &self.service_policy_applied_generation {
             state.set_service_policy_applied_generation(tracker.clone());
@@ -241,6 +252,7 @@ impl EngineState {
 
     pub fn evict_expired_now(&mut self) {
         let now = self.now_secs();
+        self.last_eviction_check_secs = Some(now);
         self.evict_expired(now);
     }
 
@@ -262,6 +274,14 @@ impl EngineState {
         self.update_nat_metrics();
     }
 
+    fn evict_expired_if_needed(&mut self, now: u64) {
+        if self.last_eviction_check_secs == Some(now) {
+            return;
+        }
+        self.last_eviction_check_secs = Some(now);
+        self.evict_expired(now);
+    }
+
     fn note_flow_open(&self, flow: FlowKey, now: u64) {
         if let Some(allowlist) = &self.dns_allowlist {
             allowlist.flow_open(flow.dst_ip, now);
@@ -273,6 +293,16 @@ impl EngineState {
             .as_ref()
             .map(|tracker| tracker.load(Ordering::Acquire) >= generation)
             .unwrap_or(true)
+    }
+
+    fn current_policy_generation(&self) -> u64 {
+        self.policy_applied_generation
+            .as_ref()
+            .map(|tracker| tracker.load(Ordering::Acquire))
+            .unwrap_or_else(|| match self.policy.read() {
+                Ok(lock) => lock.generation(),
+                Err(_) => 0,
+            })
     }
 
     fn note_flow_expired(&self, expired: Vec<ExpiredFlow>) {
@@ -335,7 +365,7 @@ impl EngineState {
 
 pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
     let now = state.now_secs();
-    state.evict_expired(now);
+    state.evict_expired_if_needed(now);
 
     let snat_disabled = matches!(state.snat_mode, SnatMode::None);
     let src_ip = match pkt.src_ip() {
@@ -394,6 +424,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             dst_port: src_port,
             proto,
         };
+        state.flows.prefetch_key(&reverse);
         if state.flows.get_entry(&reverse).is_some() {
             return handle_inbound_no_snat(
                 pkt, state, src_ip, dst_ip, src_port, dst_port, proto, now,
@@ -410,6 +441,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             dst_port,
             proto,
         };
+        state.flows.prefetch_key(&flow);
         let meta = PacketMeta {
             src_ip,
             dst_ip,
@@ -422,10 +454,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
 
         let mut is_new = false;
         let mut source_group = "default".to_string();
-        let mut current_generation = match state.policy.read() {
-            Ok(lock) => lock.generation(),
-            Err(_) => 0,
-        };
+        let mut current_generation = state.current_policy_generation();
         let audit = state.audit.clone();
         if state.flows.get_entry(&flow).is_none() {
             if state.is_draining() {
@@ -575,14 +604,14 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                             policy_drop_intercept_requires_service = true;
                         } else {
                             entry.policy_generation = current_generation;
-                            entry.source_group = next_group;
+                            entry.set_source_group_owned(next_group);
                             entry.intercept_requires_service =
                                 evaluation.intercept_requires_service;
                         }
                     }
                     PolicyDecision::PendingTls => {
                         entry.policy_generation = current_generation;
-                        entry.source_group = next_group;
+                        entry.set_source_group_owned(next_group);
                         entry.intercept_requires_service = false;
                         if let Some(tls_state) = &mut entry.tls {
                             tls_state.decision = TlsFlowDecision::Pending;
@@ -602,6 +631,8 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                 entry.last_seen = now;
                 entry.packets_out = entry.packets_out.saturating_add(1);
                 maybe_emit_wiretap(&wiretap, &flow, entry, now);
+                let source_group = entry.source_group_arc();
+                let source_group_label = source_group.as_deref().unwrap_or(DEFAULT_SOURCE_GROUP);
                 if let Some(tls_state) = &mut entry.tls {
                     if !process_tls_packet(
                         pkt,
@@ -611,7 +642,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                         policy,
                         verifier,
                         audit.as_ref(),
-                        entry.source_group.as_str(),
+                        source_group_label,
                         now,
                         metrics.as_ref(),
                     ) {
@@ -620,7 +651,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                                 "outbound",
                                 proto_label(proto),
                                 "deny",
-                                entry.source_group.as_str(),
+                                source_group_label,
                                 pkt.len(),
                             );
                         }
@@ -629,13 +660,16 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                 }
                 (
                     flow_decision_label(entry),
-                    entry.source_group.clone(),
+                    source_group,
                     entry.intercept_requires_service,
                 )
             } else {
-                ("deny", entry.source_group.clone(), false)
+                ("deny", entry.source_group_arc(), false)
             }
         };
+        let entry_source_group_label = entry_source_group
+            .as_deref()
+            .unwrap_or(DEFAULT_SOURCE_GROUP);
 
         if let Some(drop_group) = policy_drop_group {
             remove_flow_state(state, &flow, now);
@@ -663,15 +697,12 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
         }
 
         if state.intercept_to_host_steering && flow_intercept_requires_service {
-            if !pkt.recalc_checksums() {
-                return Action::Drop;
-            }
             if let Some(metrics) = &metrics {
                 metrics.observe_dp_packet(
                     "outbound",
                     proto_label(proto),
                     decision_label,
-                    entry_source_group.as_str(),
+                    entry_source_group_label,
                     pkt.len(),
                 );
             }
@@ -679,15 +710,12 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
         }
 
         if snat_disabled {
-            if !pkt.recalc_checksums() {
-                return Action::Drop;
-            }
             if let Some(metrics) = &metrics {
                 metrics.observe_dp_packet(
                     "outbound",
                     proto_label(proto),
                     decision_label,
-                    entry_source_group.as_str(),
+                    entry_source_group_label,
                     pkt.len(),
                 );
             }
@@ -696,8 +724,9 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             };
         }
 
-        let external_port = match state.nat.get_or_create(&flow, now) {
-            Ok(port) => port,
+        state.nat.prefetch_flow_key(&flow);
+        let (external_port, nat_created) = match state.nat.get_or_create_with_status(&flow, now) {
+            Ok(result) => result,
             Err(_) => return Action::Drop,
         };
 
@@ -711,20 +740,19 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
         if !pkt.set_src_port(external_port) {
             return Action::Drop;
         }
-        if !pkt.recalc_checksums() {
-            return Action::Drop;
-        }
 
         if let Some(metrics) = &metrics {
             metrics.observe_dp_packet(
                 "outbound",
                 proto_label(proto),
                 decision_label,
-                entry_source_group.as_str(),
+                entry_source_group_label,
                 pkt.len(),
             );
         }
-        state.update_nat_metrics();
+        if nat_created {
+            state.update_nat_metrics();
+        }
         return Action::Forward {
             out_port: state.data_port,
         };
@@ -745,17 +773,16 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             remote_port: src_port,
             proto,
         };
+        state.nat.prefetch_reverse_key(&reverse_key);
         if let Some(flow) = state.nat.reverse_lookup(&reverse_key) {
             state.nat.touch(&flow, now);
+            state.flows.prefetch_key(&flow);
             let policy = &state.policy;
             let verifier = &state.tls_verifier;
             let wiretap = state.wiretap.clone();
             let audit = state.audit.clone();
             let metrics = state.metrics.clone();
-            let current_generation = match state.policy.read() {
-                Ok(lock) => lock.generation(),
-                Err(_) => 0,
-            };
+            let current_generation = state.current_policy_generation();
             let meta = PacketMeta {
                 src_ip: flow.src_ip,
                 dst_ip: flow.dst_ip,
@@ -798,11 +825,11 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                     match evaluation.effective {
                         PolicyDecision::Allow => {
                             entry.policy_generation = current_generation;
-                            entry.source_group = next_group;
+                            entry.set_source_group_owned(next_group);
                         }
                         PolicyDecision::PendingTls => {
                             entry.policy_generation = current_generation;
-                            entry.source_group = next_group;
+                            entry.set_source_group_owned(next_group);
                             if let Some(tls_state) = &mut entry.tls {
                                 tls_state.decision = TlsFlowDecision::Pending;
                             } else {
@@ -818,6 +845,9 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                     entry.last_seen = now;
                     entry.packets_in = entry.packets_in.saturating_add(1);
                     maybe_emit_wiretap(&wiretap, &flow, entry, now);
+                    let source_group = entry.source_group_arc();
+                    let source_group_label =
+                        source_group.as_deref().unwrap_or(DEFAULT_SOURCE_GROUP);
                     if let Some(tls_state) = &mut entry.tls {
                         if !process_tls_packet(
                             pkt,
@@ -827,7 +857,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                             policy,
                             verifier,
                             audit.as_ref(),
-                            entry.source_group.as_str(),
+                            source_group_label,
                             now,
                             metrics.as_ref(),
                         ) {
@@ -836,18 +866,21 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                                     "inbound",
                                     proto_label(proto),
                                     "deny",
-                                    entry.source_group.as_str(),
+                                    source_group_label,
                                     pkt.len(),
                                 );
                             }
                             return Action::Drop;
                         }
                     }
-                    (flow_decision_label(entry), entry.source_group.clone())
+                    (flow_decision_label(entry), source_group)
                 } else {
-                    ("deny", entry.source_group.clone())
+                    ("deny", entry.source_group_arc())
                 }
             };
+            let entry_source_group_label = entry_source_group
+                .as_deref()
+                .unwrap_or(DEFAULT_SOURCE_GROUP);
 
             if let Some(drop_group) = policy_drop_group {
                 remove_flow_state(state, &flow, now);
@@ -873,19 +906,15 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             if !pkt.set_dst_port(flow.src_port) {
                 return Action::Drop;
             }
-            if !pkt.recalc_checksums() {
-                return Action::Drop;
-            }
             if let Some(metrics) = &metrics {
                 metrics.observe_dp_packet(
                     "inbound",
                     proto_label(proto),
                     decision_label,
-                    entry_source_group.as_str(),
+                    entry_source_group_label,
                     pkt.len(),
                 );
             }
-            state.update_nat_metrics();
             return Action::Forward {
                 out_port: state.data_port,
             };
@@ -927,6 +956,7 @@ fn handle_outbound_no_snat(
         dst_port,
         proto,
     };
+    state.flows.prefetch_key(&flow);
     let meta = PacketMeta {
         src_ip,
         dst_ip,
@@ -939,10 +969,7 @@ fn handle_outbound_no_snat(
 
     let mut is_new = false;
     let mut source_group = "default".to_string();
-    let mut current_generation = match state.policy.read() {
-        Ok(lock) => lock.generation(),
-        Err(_) => 0,
-    };
+    let mut current_generation = state.current_policy_generation();
     let audit = state.audit.clone();
     if state.flows.get_entry(&flow).is_none() {
         if state.is_draining() {
@@ -1093,13 +1120,13 @@ fn handle_outbound_no_snat(
                         policy_drop_intercept_requires_service = true;
                     } else {
                         entry.policy_generation = current_generation;
-                        entry.source_group = next_group;
+                        entry.set_source_group_owned(next_group);
                         entry.intercept_requires_service = evaluation.intercept_requires_service;
                     }
                 }
                 PolicyDecision::PendingTls => {
                     entry.policy_generation = current_generation;
-                    entry.source_group = next_group;
+                    entry.set_source_group_owned(next_group);
                     entry.intercept_requires_service = false;
                     if let Some(tls_state) = &mut entry.tls {
                         tls_state.decision = TlsFlowDecision::Pending;
@@ -1118,6 +1145,7 @@ fn handle_outbound_no_snat(
             entry.last_seen = now;
             entry.packets_out = entry.packets_out.saturating_add(1);
             maybe_emit_wiretap(&wiretap, &flow, entry, now);
+            let source_group = entry.source_group().to_string();
             if let Some(tls_state) = &mut entry.tls {
                 if !process_tls_packet(
                     pkt,
@@ -1127,7 +1155,7 @@ fn handle_outbound_no_snat(
                     policy,
                     verifier,
                     audit.as_ref(),
-                    entry.source_group.as_str(),
+                    source_group.as_str(),
                     now,
                     metrics.as_ref(),
                 ) {
@@ -1136,7 +1164,7 @@ fn handle_outbound_no_snat(
                             "outbound",
                             proto_label(proto),
                             "deny",
-                            entry.source_group.as_str(),
+                            source_group.as_str(),
                             pkt.len(),
                         );
                     }
@@ -1145,11 +1173,11 @@ fn handle_outbound_no_snat(
             }
             (
                 flow_decision_label(entry),
-                entry.source_group.clone(),
+                source_group,
                 entry.intercept_requires_service,
             )
         } else {
-            ("deny", entry.source_group.clone(), false)
+            ("deny", entry.source_group().to_string(), false)
         }
     };
 
@@ -1179,9 +1207,6 @@ fn handle_outbound_no_snat(
     }
 
     if state.intercept_to_host_steering && flow_intercept_requires_service {
-        if !pkt.recalc_checksums() {
-            return Action::Drop;
-        }
         if let Some(metrics) = &metrics {
             metrics.observe_dp_packet(
                 "outbound",
@@ -1194,9 +1219,6 @@ fn handle_outbound_no_snat(
         return Action::ToHost;
     }
 
-    if !pkt.recalc_checksums() {
-        return Action::Drop;
-    }
     if let Some(metrics) = &metrics {
         metrics.observe_dp_packet(
             "outbound",
@@ -1247,13 +1269,11 @@ fn handle_outbound_dns_target(
         dst_port,
         proto,
     };
+    state.flows.prefetch_key(&flow);
     let source_group = "dns-intercept";
     if state.flows.get_entry(&flow).is_none() {
         let mut entry = FlowEntry::with_source_group(now, source_group.to_string());
-        entry.policy_generation = match state.policy.read() {
-            Ok(lock) => lock.generation(),
-            Err(_) => 0,
-        };
+        entry.policy_generation = state.current_policy_generation();
         state.flows.insert(flow, entry);
         state.note_flow_open(flow, now);
         if let Some(metrics) = &state.metrics {
@@ -1268,8 +1288,9 @@ fn handle_outbound_dns_target(
 
     let snat_disabled = matches!(state.snat_mode, SnatMode::None);
     if !snat_disabled {
-        let external_port = match state.nat.get_or_create(&flow, now) {
-            Ok(port) => port,
+        state.nat.prefetch_flow_key(&flow);
+        let (external_port, nat_created) = match state.nat.get_or_create_with_status(&flow, now) {
+            Ok(result) => result,
             Err(_) => return Action::Drop,
         };
         let snat_ip = match resolve_snat_ip(state) {
@@ -1282,9 +1303,9 @@ fn handle_outbound_dns_target(
         if !pkt.set_src_port(external_port) {
             return Action::Drop;
         }
-    }
-    if !pkt.recalc_checksums() {
-        return Action::Drop;
+        if nat_created {
+            state.update_nat_metrics();
+        }
     }
     if let Some(metrics) = &state.metrics {
         metrics.observe_dp_packet(
@@ -1295,7 +1316,6 @@ fn handle_outbound_dns_target(
             pkt.len(),
         );
     }
-    state.update_nat_metrics();
     Action::Forward {
         out_port: state.data_port,
     }
@@ -1318,14 +1338,12 @@ fn handle_inbound_no_snat(
         dst_port: src_port,
         proto,
     };
+    state.flows.prefetch_key(&flow);
     let policy = &state.policy;
     let verifier = &state.tls_verifier;
     let wiretap = state.wiretap.clone();
     let metrics = state.metrics.clone();
-    let current_generation = match state.policy.read() {
-        Ok(lock) => lock.generation(),
-        Err(_) => 0,
-    };
+    let current_generation = state.current_policy_generation();
     let audit = state.audit.clone();
     let meta = PacketMeta {
         src_ip: flow.src_ip,
@@ -1380,11 +1398,11 @@ fn handle_inbound_no_snat(
             match evaluation.effective {
                 PolicyDecision::Allow => {
                     entry.policy_generation = current_generation;
-                    entry.source_group = next_group;
+                    entry.set_source_group_owned(next_group);
                 }
                 PolicyDecision::PendingTls => {
                     entry.policy_generation = current_generation;
-                    entry.source_group = next_group;
+                    entry.set_source_group_owned(next_group);
                     if let Some(tls_state) = &mut entry.tls {
                         tls_state.decision = TlsFlowDecision::Pending;
                     } else {
@@ -1400,6 +1418,7 @@ fn handle_inbound_no_snat(
             entry.last_seen = now;
             entry.packets_in = entry.packets_in.saturating_add(1);
             maybe_emit_wiretap(&wiretap, &flow, entry, now);
+            let source_group = entry.source_group().to_string();
             if let Some(tls_state) = &mut entry.tls {
                 if !process_tls_packet(
                     pkt,
@@ -1409,7 +1428,7 @@ fn handle_inbound_no_snat(
                     policy,
                     verifier,
                     audit.as_ref(),
-                    entry.source_group.as_str(),
+                    source_group.as_str(),
                     now,
                     metrics.as_ref(),
                 ) {
@@ -1418,16 +1437,16 @@ fn handle_inbound_no_snat(
                             "inbound",
                             proto_label(proto),
                             "deny",
-                            entry.source_group.as_str(),
+                            source_group.as_str(),
                             pkt.len(),
                         );
                     }
                     return Action::Drop;
                 }
             }
-            (flow_decision_label(entry), entry.source_group.clone())
+            (flow_decision_label(entry), source_group)
         } else {
-            ("deny", entry.source_group.clone())
+            ("deny", entry.source_group().to_string())
         }
     };
 
@@ -1447,10 +1466,6 @@ fn handle_inbound_no_snat(
 
     if let Some(action) = handle_ttl(pkt, state) {
         return action;
-    }
-
-    if !pkt.recalc_checksums() {
-        return Action::Drop;
     }
 
     if let Some(metrics) = &metrics {
@@ -1490,6 +1505,7 @@ fn handle_outbound_icmp(
             dst_port: inner.src_port,
             proto: inner.proto,
         };
+        state.nat.prefetch_flow_key(&flow);
         let external_port = match state.nat.get_entry(&flow) {
             Some(entry) => entry.external_port,
             None => return Action::Drop,
@@ -1606,6 +1622,7 @@ fn handle_outbound_icmp(
         dst_port: 0,
         proto: 1,
     };
+    state.flows.prefetch_key(&flow);
     let meta = PacketMeta {
         src_ip,
         dst_ip,
@@ -1618,10 +1635,7 @@ fn handle_outbound_icmp(
 
     let mut is_new = false;
     let mut source_group = "default".to_string();
-    let mut current_generation = match state.policy.read() {
-        Ok(lock) => lock.generation(),
-        Err(_) => 0,
-    };
+    let mut current_generation = state.current_policy_generation();
     let audit = state.audit.clone();
     if state.flows.get_entry(&flow).is_none() {
         if state.is_draining() {
@@ -1721,7 +1735,7 @@ fn handle_outbound_icmp(
             match evaluation.effective {
                 PolicyDecision::Allow => {
                     entry.policy_generation = current_generation;
-                    entry.source_group = next_group;
+                    entry.set_source_group_owned(next_group);
                 }
                 PolicyDecision::Deny | PolicyDecision::PendingTls => {
                     policy_drop_group = Some(next_group);
@@ -1732,9 +1746,9 @@ fn handle_outbound_icmp(
             entry.last_seen = now;
             entry.packets_out = entry.packets_out.saturating_add(1);
             maybe_emit_wiretap(&wiretap, &flow, entry, now);
-            (flow_decision_label(entry), entry.source_group.clone())
+            (flow_decision_label(entry), entry.source_group().to_string())
         } else {
-            ("deny", entry.source_group.clone())
+            ("deny", entry.source_group().to_string())
         }
     };
 
@@ -1751,8 +1765,9 @@ fn handle_outbound_icmp(
         return action;
     }
 
-    let external_port = match state.nat.get_or_create(&flow, now) {
-        Ok(port) => port,
+    state.nat.prefetch_flow_key(&flow);
+    let (external_port, nat_created) = match state.nat.get_or_create_with_status(&flow, now) {
+        Ok(result) => result,
         Err(_) => return Action::Drop,
     };
     let snat_ip = match resolve_snat_ip(state) {
@@ -1785,7 +1800,9 @@ fn handle_outbound_icmp(
             entry_source_group.as_str(),
         );
     }
-    state.update_nat_metrics();
+    if nat_created {
+        state.update_nat_metrics();
+    }
     Action::Forward {
         out_port: state.data_port,
     }
@@ -1810,6 +1827,7 @@ fn handle_outbound_icmp_no_snat(
         dst_port: 0,
         proto: 1,
     };
+    state.flows.prefetch_key(&flow);
     let meta = PacketMeta {
         src_ip,
         dst_ip,
@@ -1822,10 +1840,7 @@ fn handle_outbound_icmp_no_snat(
 
     let mut is_new = false;
     let mut source_group = "default".to_string();
-    let mut current_generation = match state.policy.read() {
-        Ok(lock) => lock.generation(),
-        Err(_) => 0,
-    };
+    let mut current_generation = state.current_policy_generation();
     let audit = state.audit.clone();
     if state.flows.get_entry(&flow).is_none() {
         if state.is_draining() {
@@ -1925,7 +1940,7 @@ fn handle_outbound_icmp_no_snat(
             match evaluation.effective {
                 PolicyDecision::Allow => {
                     entry.policy_generation = current_generation;
-                    entry.source_group = next_group;
+                    entry.set_source_group_owned(next_group);
                 }
                 PolicyDecision::Deny | PolicyDecision::PendingTls => {
                     policy_drop_group = Some(next_group);
@@ -1936,9 +1951,9 @@ fn handle_outbound_icmp_no_snat(
             entry.last_seen = now;
             entry.packets_out = entry.packets_out.saturating_add(1);
             maybe_emit_wiretap(&wiretap, &flow, entry, now);
-            (flow_decision_label(entry), entry.source_group.clone())
+            (flow_decision_label(entry), entry.source_group().to_string())
         } else {
-            ("deny", entry.source_group.clone())
+            ("deny", entry.source_group().to_string())
         }
     };
 
@@ -1993,10 +2008,7 @@ fn handle_inbound_icmp_no_snat(
     };
     let metrics = state.metrics.clone();
     let audit = state.audit.clone();
-    let current_generation = match state.policy.read() {
-        Ok(lock) => lock.generation(),
-        Err(_) => 0,
-    };
+    let current_generation = state.current_policy_generation();
 
     if icmp_is_error_type(icmp_type) {
         let inner = match pkt.icmp_inner_tuple() {
@@ -2010,6 +2022,7 @@ fn handle_inbound_icmp_no_snat(
             dst_port: inner.dst_port,
             proto: inner.proto,
         };
+        state.flows.prefetch_key(&flow);
         let wiretap = state.wiretap.clone();
         let mut policy_drop_group: Option<String> = None;
         let (decision_label, entry_source_group) = {
@@ -2058,7 +2071,7 @@ fn handle_inbound_icmp_no_snat(
                 match evaluation.effective {
                     PolicyDecision::Allow => {
                         entry.policy_generation = current_generation;
-                        entry.source_group = next_group;
+                        entry.set_source_group_owned(next_group);
                     }
                     PolicyDecision::Deny | PolicyDecision::PendingTls => {
                         policy_drop_group = Some(next_group);
@@ -2069,9 +2082,9 @@ fn handle_inbound_icmp_no_snat(
                 entry.last_seen = now;
                 entry.packets_in = entry.packets_in.saturating_add(1);
                 maybe_emit_wiretap(&wiretap, &flow, entry, now);
-                (flow_decision_label(entry), entry.source_group.clone())
+                (flow_decision_label(entry), entry.source_group().to_string())
             } else {
-                ("deny", entry.source_group.clone())
+                ("deny", entry.source_group().to_string())
             }
         };
 
@@ -2136,6 +2149,7 @@ fn handle_inbound_icmp_no_snat(
         dst_port: 0,
         proto: 1,
     };
+    state.flows.prefetch_key(&flow);
     let wiretap = state.wiretap.clone();
     let mut policy_drop_group: Option<String> = None;
     let (decision_label, entry_source_group) = {
@@ -2184,7 +2198,7 @@ fn handle_inbound_icmp_no_snat(
             match evaluation.effective {
                 PolicyDecision::Allow => {
                     entry.policy_generation = current_generation;
-                    entry.source_group = next_group;
+                    entry.set_source_group_owned(next_group);
                 }
                 PolicyDecision::Deny | PolicyDecision::PendingTls => {
                     policy_drop_group = Some(next_group);
@@ -2195,9 +2209,9 @@ fn handle_inbound_icmp_no_snat(
             entry.last_seen = now;
             entry.packets_in = entry.packets_in.saturating_add(1);
             maybe_emit_wiretap(&wiretap, &flow, entry, now);
-            (flow_decision_label(entry), entry.source_group.clone())
+            (flow_decision_label(entry), entry.source_group().to_string())
         } else {
-            ("deny", entry.source_group.clone())
+            ("deny", entry.source_group().to_string())
         }
     };
 
@@ -2251,10 +2265,7 @@ fn handle_inbound_icmp(
     };
     let metrics = state.metrics.clone();
     let audit = state.audit.clone();
-    let current_generation = match state.policy.read() {
-        Ok(lock) => lock.generation(),
-        Err(_) => 0,
-    };
+    let current_generation = state.current_policy_generation();
 
     if icmp_is_error_type(icmp_type) {
         let inner = match pkt.icmp_inner_tuple() {
@@ -2267,6 +2278,7 @@ fn handle_inbound_icmp(
             remote_port: inner.dst_port,
             proto: inner.proto,
         };
+        state.nat.prefetch_reverse_key(&reverse_key);
         let Some(flow) = state.nat.reverse_lookup(&reverse_key) else {
             if let Some(metrics) = &metrics {
                 metrics.observe_dp_packet("inbound", proto_label(1), "deny", "default", pkt.len());
@@ -2277,6 +2289,7 @@ fn handle_inbound_icmp(
         };
 
         state.nat.touch(&flow, now);
+        state.flows.prefetch_key(&flow);
         let wiretap = state.wiretap.clone();
         let mut policy_drop_group: Option<String> = None;
         let (decision_label, entry_source_group) = {
@@ -2311,7 +2324,7 @@ fn handle_inbound_icmp(
                 match evaluation.effective {
                     PolicyDecision::Allow => {
                         entry.policy_generation = current_generation;
-                        entry.source_group = next_group;
+                        entry.set_source_group_owned(next_group);
                     }
                     PolicyDecision::Deny | PolicyDecision::PendingTls => {
                         policy_drop_group = Some(next_group);
@@ -2322,9 +2335,9 @@ fn handle_inbound_icmp(
                 entry.last_seen = now;
                 entry.packets_in = entry.packets_in.saturating_add(1);
                 maybe_emit_wiretap(&wiretap, &flow, entry, now);
-                (flow_decision_label(entry), entry.source_group.clone())
+                (flow_decision_label(entry), entry.source_group().to_string())
             } else {
-                ("deny", entry.source_group.clone())
+                ("deny", entry.source_group().to_string())
             }
         };
 
@@ -2381,7 +2394,6 @@ fn handle_inbound_icmp(
                 entry_source_group.as_str(),
             );
         }
-        state.update_nat_metrics();
         return Action::Forward {
             out_port: state.data_port,
         };
@@ -2397,6 +2409,7 @@ fn handle_inbound_icmp(
         remote_port: 0,
         proto: 1,
     };
+    state.nat.prefetch_reverse_key(&reverse_key);
     let Some(flow) = state.nat.reverse_lookup(&reverse_key) else {
         if let Some(metrics) = &metrics {
             metrics.observe_dp_packet("inbound", proto_label(1), "deny", "default", pkt.len());
@@ -2406,6 +2419,7 @@ fn handle_inbound_icmp(
     };
 
     state.nat.touch(&flow, now);
+    state.flows.prefetch_key(&flow);
     let wiretap = state.wiretap.clone();
     let mut policy_drop_group: Option<String> = None;
     let (decision_label, entry_source_group) = {
@@ -2440,7 +2454,7 @@ fn handle_inbound_icmp(
             match evaluation.effective {
                 PolicyDecision::Allow => {
                     entry.policy_generation = current_generation;
-                    entry.source_group = next_group;
+                    entry.set_source_group_owned(next_group);
                 }
                 PolicyDecision::Deny | PolicyDecision::PendingTls => {
                     policy_drop_group = Some(next_group);
@@ -2451,9 +2465,9 @@ fn handle_inbound_icmp(
             entry.last_seen = now;
             entry.packets_in = entry.packets_in.saturating_add(1);
             maybe_emit_wiretap(&wiretap, &flow, entry, now);
-            (flow_decision_label(entry), entry.source_group.clone())
+            (flow_decision_label(entry), entry.source_group().to_string())
         } else {
-            ("deny", entry.source_group.clone())
+            ("deny", entry.source_group().to_string())
         }
     };
 
@@ -2495,7 +2509,6 @@ fn handle_inbound_icmp(
             entry_source_group.as_str(),
         );
     }
-    state.update_nat_metrics();
     Action::Forward {
         out_port: state.data_port,
     }

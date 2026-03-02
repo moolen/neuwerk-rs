@@ -190,7 +190,13 @@ impl DhcpClient {
                 return Err("dhcp timeout".to_string());
             }
             let pkt = match tokio::time::timeout(remaining, self.rx.recv()).await {
-                Ok(Some(msg)) => parse_packet(&msg.payload)?,
+                Ok(Some(msg)) => {
+                    let mut pkt = parse_packet(&msg.payload)?;
+                    if pkt.options.server_id.is_none() && msg.src_ip != Ipv4Addr::UNSPECIFIED {
+                        pkt.options.server_id = Some(msg.src_ip);
+                    }
+                    pkt
+                }
                 Ok(None) => return Err("dhcp channel closed".to_string()),
                 Err(_) => return Err("dhcp timeout".to_string()),
             };

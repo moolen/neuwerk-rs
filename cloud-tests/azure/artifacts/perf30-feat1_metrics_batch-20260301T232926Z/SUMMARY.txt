@@ -1,0 +1,42 @@
+iperf_end_sum_sent_bps=6581257204.9399433
+iperf_end_sum_received_bps=6567394970.97553
+----
+host: 10.20.1.4
+hostname: neuwerk-e2e-phg44e-fw11DD5H
+pid: 4612
+cpus_allowed_list: 0
+perf_bin: /usr/lib/linux-azure-6.17-tools-6.17.0-1008/perf
+perf_mode: sudo
+task_clock: 30000811699
+ipc: N/A
+cache_miss_rate_pct: N/A
+branch_miss_rate_pct: N/A
+dpdk_rx_packets_delta_30s: 8010536
+dpdk_tx_packets_delta_30s: 8010456
+----
+host: 10.20.1.5
+hostname: neuwerk-e2e-phg44e-fwIKLLQX
+pid: 1436
+cpus_allowed_list: 0
+perf_bin: /usr/lib/linux-azure-6.17-tools-6.17.0-1008/perf
+perf_mode: sudo
+task_clock: 59341972925
+ipc: N/A
+cache_miss_rate_pct: N/A
+branch_miss_rate_pct: N/A
+dpdk_rx_packets_delta_30s: 5831418
+dpdk_tx_packets_delta_30s: 5831340
+----
+host: 10.20.1.6
+hostname: neuwerk-e2e-phg44e-fwBTBAR8
+pid: 1438
+cpus_allowed_list: 0
+perf_bin: /usr/lib/linux-azure-6.17-tools-6.17.0-1008/perf
+perf_mode: sudo
+task_clock: 59552428527
+ipc: N/A
+cache_miss_rate_pct: N/A
+branch_miss_rate_pct: N/A
+dpdk_rx_packets_delta_30s: 4675235
+dpdk_tx_packets_delta_30s: 4675157
+----

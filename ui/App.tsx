@@ -4,6 +4,7 @@ import { ThemeProvider } from './components/ThemeProvider';
 import { ThemeToggle } from './components/ThemeToggle';
 import { Dashboard } from './pages/Dashboard';
 import { PoliciesPage } from './pages/PoliciesPage';
+import { IntegrationsPage } from './pages/IntegrationsPage';
 import { WiretapPage } from './pages/WiretapPage';
 import { AuditPage } from './pages/AuditPage';
 import { DNSCachePage } from './pages/DNSCachePage';
@@ -12,7 +13,16 @@ import { SettingsPage } from './pages/SettingsPage';
 import { AuthProvider, useAuth } from './components/auth/AuthProvider';
 import { LoginPage } from './components/auth/LoginPage';
 
-const validPages = ['dashboard', 'policies', 'wiretap', 'audit', 'dns', 'service-accounts', 'settings'];
+const validPages = [
+  'dashboard',
+  'policies',
+  'integrations',
+  'wiretap',
+  'audit',
+  'dns',
+  'service-accounts',
+  'settings',
+];
 
 function getPageFromPath(): string {
   const path = window.location.pathname.replace(/^\//, '').replace(/\/$/, '');
@@ -57,6 +67,8 @@ function AuthenticatedApp() {
         return <Dashboard />;
       case 'policies':
         return <PoliciesPage />;
+      case 'integrations':
+        return <IntegrationsPage />;
       case 'wiretap':
         return <WiretapPage />;
       case 'audit':

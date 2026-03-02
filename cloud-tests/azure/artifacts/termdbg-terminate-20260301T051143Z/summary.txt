@@ -1,0 +1,6 @@
+artifact_dir=/home/moritz/dev/neuwerk-rs/firewall/cloud-tests/azure/artifacts/termdbg-terminate-20260301T051143Z
+rg=neuwerk-azure-e2e
+vmss=neuwerk-e2e-ziqsc3-fw
+target_name=neuwerk-e2e-ziqsc3-fw_30930520
+target_ip=10.20.1.6
+imds_pid=485130

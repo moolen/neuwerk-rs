@@ -1,0 +1,1 @@
+/usr/lib/linux-azure-6.17-tools-6.17.0-1008/perf

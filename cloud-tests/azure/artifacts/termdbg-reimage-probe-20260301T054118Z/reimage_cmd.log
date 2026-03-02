@@ -1,0 +1,3 @@
+ERROR: (OperationNotAllowed) Operation 'VirtualMachineScaleSets.ReimageAll.POST' is not allowed on Virtual Machine Scale Set 'neuwerk-e2e-ziqsc3-fw'.
+Code: OperationNotAllowed
+Message: Operation 'VirtualMachineScaleSets.ReimageAll.POST' is not allowed on Virtual Machine Scale Set 'neuwerk-e2e-ziqsc3-fw'.

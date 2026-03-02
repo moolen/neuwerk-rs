@@ -1,0 +1,18 @@
+artifact directory: /home/moritz/dev/neuwerk-rs/firewall/cloud-tests/azure/artifacts/lifecycle-termdrain-20260301T053416Z
+waiting for ready: 10.20.1.4
+waiting for ready: 10.20.1.5
+waiting for ready: 10.20.1.6
+configuring policy from /home/moritz/dev/neuwerk-rs/firewall/cloud-tests/azure/policies/allow-upstream.json
+pushing policy to 10.20.1.4
+Warning: Permanently added '20.79.249.152' (ED25519) to the list of known hosts.
+Warning: Permanently added '10.20.1.4' (ED25519) to the list of known hosts.
+pushing policy to 10.20.1.5
+Warning: Permanently added '20.79.249.152' (ED25519) to the list of known hosts.
+Warning: Permanently added '10.20.1.5' (ED25519) to the list of known hosts.
+pushing policy to 10.20.1.6
+Warning: Permanently added '20.79.249.152' (ED25519) to the list of known hosts.
+Warning: Permanently added '10.20.1.6' (ED25519) to the list of known hosts.
+selected target instance: neuwerk-e2e-ziqsc3-fw_bdb971a7 (instance_id=neuwerk-e2e-ziqsc3-fw_bdb971a7, mgmt_ip=10.20.1.4, trigger=reboot)
+target baseline metrics events=0 complete=0 drain_start_count=1
+restarting target instance neuwerk-e2e-ziqsc3-fw_bdb971a7 (instance_id=neuwerk-e2e-ziqsc3-fw_bdb971a7)
+make: *** [Makefile:175: lifecycle-termination-drain] Terminated

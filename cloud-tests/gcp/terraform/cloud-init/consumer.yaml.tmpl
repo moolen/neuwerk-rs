@@ -1,0 +1,37 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - curl
+  - dnsutils
+  - ethtool
+  - iperf3
+  - socat
+  - wrk
+  - jq
+  - tcpdump
+write_files:
+  - path: /usr/local/bin/consumer-route-init.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      IFACE=$(ip route show default | awk '{print $5}' | head -n1)
+      if [ -z "$IFACE" ]; then
+        IFACE=$(ip -4 -o addr show | awk '$2 != "lo" {print $2; exit}')
+      fi
+      if [ -z "$IFACE" ]; then
+        echo "consumer-route-init: failed to detect primary interface" >&2
+        exit 1
+      fi
+
+  - path: /etc/apt/apt.conf.d/99force-ipv4
+    permissions: "0644"
+    content: |
+      Acquire::ForceIPv4 "true";
+
+runcmd:
+  - /usr/local/bin/consumer-route-init.sh
+  - ethtool -K eth0 rx off tx off gro off gso off tso off lro off || true
+  - IFACE=$(ip route show default | awk '{print $5}' | head -n1); ethtool -K "$${IFACE:-eth0}" rx off tx off gro off gso off tso off lro off || true

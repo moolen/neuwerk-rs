@@ -23,9 +23,14 @@ ENABLE_DNS_TCP="${ENABLE_DNS_TCP:-1}"
 ENABLE_HTTP="${ENABLE_HTTP:-1}"
 ENABLE_HTTPS="${ENABLE_HTTPS:-1}"
 ENABLE_DELAYED_HTTP="${ENABLE_DELAYED_HTTP:-1}"
+MAX_ERROR_RATE_PCT="${MAX_ERROR_RATE_PCT:-0.01}"
 
 if ! [[ "$WORKERS_PER_CLASS" =~ ^[0-9]+$ ]] || [ "$WORKERS_PER_CLASS" -lt 1 ]; then
   echo "WORKERS_PER_CLASS must be >= 1" >&2
+  exit 2
+fi
+if ! [[ "$MAX_ERROR_RATE_PCT" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "MAX_ERROR_RATE_PCT must be numeric (for example 0.01)" >&2
   exit 2
 fi
 
@@ -225,6 +230,7 @@ done <"$PIDS_FILE"
 total="$(wc -l <"$RESULTS_FILE" | tr -d ' ')"
 fails="$(grep -c '^fail ' "$RESULTS_FILE" || true)"
 oks=$((total - fails))
+fail_rate_pct="$(awk -v fails="$fails" -v total="$total" 'BEGIN { if (total == 0) { print "0.000000"; } else { printf "%.6f", (fails * 100.0) / total; } }')"
 
 for class in "${CLASSES[@]}"; do
   class_total="$(grep -c " class=${class} " "$RESULTS_FILE" || true)"
@@ -232,9 +238,12 @@ for class in "${CLASSES[@]}"; do
   class_ok=$((class_total - class_fail))
   echo "lifecycle_consumer_class_summary class=${class} total=${class_total} ok=${class_ok} fail=${class_fail}"
 done
-echo "lifecycle_consumer_summary total=${total} ok=${oks} fail=${fails}"
+echo "lifecycle_consumer_summary total=${total} ok=${oks} fail=${fails} fail_rate_pct=${fail_rate_pct} allowed_fail_rate_pct=${MAX_ERROR_RATE_PCT}"
 if [ "$fails" -gt 0 ]; then
   echo "lifecycle_consumer_first_failure:"
   grep '^fail ' "$RESULTS_FILE" | head -n1
+fi
+if ! awk -v rate="$fail_rate_pct" -v threshold="$MAX_ERROR_RATE_PCT" 'BEGIN { exit !(rate <= threshold) }'; then
+  echo "lifecycle_consumer_error_budget_exceeded fail_rate_pct=${fail_rate_pct} allowed_fail_rate_pct=${MAX_ERROR_RATE_PCT}" >&2
   exit 1
 fi

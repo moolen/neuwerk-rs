@@ -1,0 +1,42 @@
+### instance=10.20.1.4 label=post ts=2026-03-01T04:52:32Z
+dp_active_flows 3777
+dpdk_rx_bytes_total 6749612
+dpdk_tx_bytes_total 6737428
+integration_drain_duration_seconds_sum{result="complete"} 0
+integration_drain_duration_seconds_count{result="complete"} 1
+integration_termination_complete_errors_total 0
+integration_termination_complete_total 0
+integration_termination_drain_start_seconds_sum 0
+integration_termination_drain_start_seconds_count 1
+integration_termination_events_total 0
+integration_termination_poll_errors_total 4
+integration_termination_publish_errors_total 0
+
+### instance=10.20.1.5 label=post ts=2026-03-01T04:52:35Z
+dp_active_flows 11484
+dpdk_rx_bytes_total 31983884
+dpdk_tx_bytes_total 31933680
+integration_drain_duration_seconds_sum{result="complete"} 0
+integration_drain_duration_seconds_count{result="complete"} 1
+integration_termination_complete_errors_total 0
+integration_termination_complete_total 0
+integration_termination_drain_start_seconds_sum 0
+integration_termination_drain_start_seconds_count 1
+integration_termination_events_total 0
+integration_termination_poll_errors_total 1
+integration_termination_publish_errors_total 0
+
+### instance=10.20.1.7 label=post ts=2026-03-01T04:52:39Z
+dp_active_flows 9967
+dpdk_rx_bytes_total 20679101
+dpdk_tx_bytes_total 20646459
+integration_drain_duration_seconds_sum{result="complete"} 0
+integration_drain_duration_seconds_count{result="complete"} 1
+integration_termination_complete_errors_total 0
+integration_termination_complete_total 0
+integration_termination_drain_start_seconds_sum 0
+integration_termination_drain_start_seconds_count 1
+integration_termination_events_total 0
+integration_termination_poll_errors_total 3
+integration_termination_publish_errors_total 0
+

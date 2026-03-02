@@ -1,0 +1,150 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - nginx
+  - unbound
+  - iperf3
+  - socat
+  - openssl
+  - tcpdump
+  - ethtool
+  - iproute2
+
+write_files:
+  - path: /usr/local/bin/upstream-init.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      IFACE=$(ip route show default | awk '{print $5}' | head -n1)
+      if [ -z "$IFACE" ]; then
+        IFACE=$(ip -4 -o addr show | awk '$2 != "lo" {print $2; exit}')
+      fi
+      if [ -z "$IFACE" ]; then
+        echo "upstream-init: failed to detect primary interface" >&2
+        exit 1
+      fi
+
+      cat > /etc/sysctl.d/99-upstream-vip.conf <<EOF_SYSCTL
+      net.ipv4.conf.all.arp_ignore=1
+      net.ipv4.conf.all.arp_announce=2
+      net.ipv4.conf.default.arp_ignore=1
+      net.ipv4.conf.default.arp_announce=2
+      net.ipv4.conf.$IFACE.arp_ignore=1
+      net.ipv4.conf.$IFACE.arp_announce=2
+      EOF_SYSCTL
+
+      cat > /etc/systemd/system/upstream-vip.service <<EOF_SERVICE
+      [Unit]
+      Description=Configure upstream VIP for ILB DSR
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/sbin/ip addr replace ${upstream_ip_addr}/32 dev $IFACE
+      ExecStart=/usr/sbin/ip link set dev $IFACE up
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF_SERVICE
+
+      cat > /etc/unbound/unbound.conf.d/upstream.conf <<EOF_UNBOUND
+      server:
+        interface: 0.0.0.0
+        access-control: 10.30.0.0/16 allow
+        local-zone: "${dns_zone_name}." static
+        local-data: "${dns_zone_name}. 60 IN A ${upstream_ip_addr}"
+      forward-zone:
+        name: "."
+        forward-addr: 169.254.169.254
+      EOF_UNBOUND
+
+      cat > /etc/nginx/sites-available/default <<EOF_NGINX
+      server {
+        listen 80 default_server;
+        listen [::]:80 default_server;
+        server_name ${dns_zone_name};
+        location = /external-secrets/external-secrets {
+          return 200 "allow path ok\\n";
+        }
+        location = /moolen {
+          return 200 "deny path marker\\n";
+        }
+        location / {
+          return 200 "upstream ok\\n";
+        }
+      }
+
+      server {
+        listen 443 ssl http2;
+        listen [::]:443 ssl http2;
+        server_name ${dns_zone_name};
+
+        ssl_certificate /etc/nginx/ssl.crt;
+        ssl_certificate_key /etc/nginx/ssl.key;
+
+        location = /external-secrets/external-secrets {
+          return 200 "allow path tls ok\\n";
+        }
+        location = /moolen {
+          return 200 "deny path tls marker\\n";
+        }
+        location / {
+          return 200 "upstream tls ok\\n";
+        }
+      }
+      EOF_NGINX
+
+      cat > /etc/systemd/system/iperf3.service <<EOF_IPERF
+      [Unit]
+      Description=iperf3 server
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      ExecStart=/usr/bin/iperf3 -s
+      Restart=always
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF_IPERF
+
+      cat > /etc/systemd/system/longtcp.service <<EOF_LONGTCP
+      [Unit]
+      Description=long-lived TCP service
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      ExecStart=/usr/bin/socat -u TCP-LISTEN:9000,reuseaddr,fork OPEN:/dev/null
+      Restart=always
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF_LONGTCP
+
+      mkdir -p /etc/nginx
+      openssl req -x509 -nodes -newkey rsa:2048 -keyout /etc/nginx/ssl.key -out /etc/nginx/ssl.crt -days 365 -subj "/CN=${dns_zone_name}"
+      ethtool -K "$IFACE" rx off tx off gro off gso off tso off lro off || true
+      sysctl --system || true
+      systemctl daemon-reload
+      systemctl enable --now upstream-vip
+      systemctl disable --now systemd-resolved
+      systemctl stop systemd-resolved || true
+      systemctl mask systemd-resolved || true
+      systemctl reset-failed unbound || true
+      for attempt in $(seq 1 10); do systemctl is-active systemd-resolved >/dev/null 2>&1 || break; sleep 1; done
+      rm -f /etc/resolv.conf
+      echo "nameserver 169.254.169.254" > /etc/resolv.conf
+      systemctl enable --now unbound
+      systemctl restart unbound || true
+      systemctl restart nginx
+      systemctl enable --now iperf3
+      systemctl enable --now longtcp
+
+runcmd:
+  - /usr/local/bin/upstream-init.sh

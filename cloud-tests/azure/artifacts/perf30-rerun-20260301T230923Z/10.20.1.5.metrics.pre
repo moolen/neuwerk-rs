@@ -1,0 +1,4 @@
+dpdk_rx_bytes_total 298170
+dpdk_rx_packets_total 5415
+dpdk_tx_bytes_total 24408
+dpdk_tx_packets_total 452

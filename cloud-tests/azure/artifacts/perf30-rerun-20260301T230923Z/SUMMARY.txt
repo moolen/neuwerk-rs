@@ -1,0 +1,39 @@
+iperf_end_sum_sent_bps=6738914963.38478
+iperf_end_sum_received_bps=6719582813.9546738
+----
+host: 10.20.1.4
+hostname: neuwerk-e2e-phg44e-fw11DD5H
+pid: 4612
+cpus_allowed_list: 0
+perf_bin: /usr/bin/perf
+perf_mode: failed
+ipc: N/A
+cache_miss_rate_pct: N/A
+branch_miss_rate_pct: N/A
+dpdk_rx_packets_delta_30s: 6460270
+dpdk_tx_packets_delta_30s: 6460190
+----
+host: 10.20.1.5
+hostname: neuwerk-e2e-phg44e-fwIKLLQX
+pid: 1436
+cpus_allowed_list: 0
+perf_bin: /usr/bin/perf
+perf_mode: failed
+ipc: N/A
+cache_miss_rate_pct: N/A
+branch_miss_rate_pct: N/A
+dpdk_rx_packets_delta_30s: 6502232
+dpdk_tx_packets_delta_30s: 6502153
+----
+host: 10.20.1.6
+hostname: neuwerk-e2e-phg44e-fwBTBAR8
+pid: 1438
+cpus_allowed_list: 0
+perf_bin: /usr/bin/perf
+perf_mode: failed
+ipc: N/A
+cache_miss_rate_pct: N/A
+branch_miss_rate_pct: N/A
+dpdk_rx_packets_delta_30s: 5941822
+dpdk_tx_packets_delta_30s: 5941743
+----

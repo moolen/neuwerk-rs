@@ -71,6 +71,7 @@
 ### UI Notes
 - The React UI lives under `ui/` and is served by the control-plane HTTPS server from `ui/dist`.
 - Control-plane HTTP API routes are rooted at `/api/v1` (UI calls `/api/v1/*`).
+- Policies are now managed via a form-driven builder on `ui/pages/PoliciesPage.tsx` with strict typed models (`ui/utils/policyModel.ts`), backend-parity client validation (`ui/utils/policyValidation.ts`), and a read-only canonical YAML preview tab.
 
 ## Control-Plane Storage Notes
 - Local (non-cluster) policies live in `/var/lib/neuwerk/local-policy-store`.
@@ -110,6 +111,7 @@
 - Token creation defaults to 90d TTL or `eternal: true`; token strings are returned only on create.
 - Prometheus metrics are served over HTTP on `--metrics-bind` (default management IP `:8080`) at `/metrics`.
 - `NEUWERK_DPDK_STATE_SHARDS=<n>` overrides the number of dataplane state shards (defaults to worker count); sharding reduces lock contention in multi-worker DPDK mode.
+- DPDK worker pinning now derives a core list from Linux CPU topology (prefers one logical CPU per physical core first), exports it via `NEUWERK_DPDK_CORE_IDS`, and uses that list for both EAL `-l` and per-worker `pthread_setaffinity_np` pinning.
 - When DPDK has only one effective RX queue, runtime can still use multiple workers via shared-RX software flow demux (single DPDK RX queue with flow-affine worker dispatch); HTTPS/TLS flows on TCP/443 are pinned to worker `0` so service-lane intercept steering remains deterministic.
 - In multi-worker DPDK mode, only worker `0` should drain service-lane egress frames; draining from every worker can create cross-shard lock contention and inflate `dp_state_lock_*` metrics.
 - API auth CLI: `firewall auth key rotate|list|retire <kid>` and `firewall auth token mint --sub <id> [--ttl <dur>] [--kid <kid>]` require `--cluster-addr <ip:port>` and mTLS material in `--cluster-tls-dir` (default `/var/lib/neuwerk/cluster/tls`).
@@ -132,6 +134,9 @@
 
 ## Integration Tests
 - `make test.integration` runs the Rust e2e harness which builds Linux netns/veth topology via netlink; it must be run as root.
+- `make test.integration` now also runs `e2e_kind_harness`, which creates a temporary `kind` cluster and validates Kubernetes List/Watch-driven dynamic source resolution against real cluster objects; this requires working Docker, `kind`, and `kubectl` on the test host.
+- `e2e_kind_harness` now covers pod/node selector enforcement, stale-IP grace expiry/recovery via integration updates, namespace scoping, selector union+dedupe, priority interactions (dynamic deny over static allow), and pod/node churn behavior.
+- Cluster e2e includes `cluster_kubernetes_resolver_leader_failover`, which runs active Kubernetes resolvers on a 3-node control-plane cluster, forces leader failover, and verifies dynamic source updates still drive policy allow/deny decisions afterward.
 - Running integration tests as root can leave `target/` root-owned; if builds fail with permission errors, `sudo chown -R $USER target` or remove `target/`.
 - Every feature that changes control-plane or data-plane behavior must be covered by an integration test.
 - The e2e harness now includes control-plane cluster checks (mTLS enforcement and leader failover join) inside the firewall netns.
@@ -168,3 +173,4 @@
 - Azure termination-drain validation is scripted in `cloud-tests/azure/scripts/lifecycle-termination-drain.sh`: it supports `TRIGGER_ACTION=terminate|reboot`, samples target metrics continuously, and asserts streamed max increases for `integration_termination_events_total` and `integration_termination_drain_start_seconds_count` so reboot counter resets do not hide detections.
 - Azure integration identity must use VMSS `instance_id` consistently (not IMDS `vm_id` UUID), otherwise termination keys and drain control will not line up with discovered instances.
 - Azure ARM throttling can spike when reconciliation is too aggressive across all nodes; keep `--integration-reconcile-interval-secs` in a moderate range (for e2e currently 15s).
+- GCP VPC static routes cannot override subnet-local routes (even `/32` inside another subnet CIDR), so Azure-style UDR steering inside one VPC must use guest-policy routes on consumer/upstream VMs that point to subnet-local internal passthrough ILB VIPs.

@@ -1,0 +1,21 @@
+host: 10.20.1.4
+pid: 1437
+cpus_allowed_list: 0
+ipc: N/A (perf unavailable)
+cache_miss_rate: N/A (perf unavailable)
+branch_miss_rate: N/A (perf unavailable)
+----
+host: 10.20.1.5
+pid: 1436
+cpus_allowed_list: 0
+ipc: N/A (perf unavailable)
+cache_miss_rate: N/A (perf unavailable)
+branch_miss_rate: N/A (perf unavailable)
+----
+host: 10.20.1.6
+pid: 1438
+cpus_allowed_list: 0
+ipc: N/A (perf unavailable)
+cache_miss_rate: N/A (perf unavailable)
+branch_miss_rate: N/A (perf unavailable)
+----

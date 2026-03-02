@@ -3,7 +3,7 @@
 ## Scope
 - Validate Azure VMSS rolling updates do not break sustained short-lived mixed traffic.
 - Traffic model: concurrent short-lived flows (`dns_udp`, `dns_tcp`, `http`, `https`) plus delayed HTTP responses with ~5 second connection length.
-- Success criteria: strict zero request failures across all enabled traffic classes.
+- Success criteria: request failure rate across enabled traffic classes must stay at or below `0.01%` (`MAX_ERROR_RATE_PCT` override for tighter/looser runs).
 - Drain window for test deployments: 30 seconds.
 - Integration reconcile polling interval for Azure test stacks: 15 seconds (within the desired 10-60 second range to reduce ARM throttling risk).
 

@@ -14,6 +14,7 @@ struct Config {
     api_insecure: bool,
     upstream_vip: Ipv4Addr,
     upstream_ip: Ipv4Addr,
+    upstream_udp_target: Ipv4Addr,
     dns_server: SocketAddr,
     dns_zone: String,
     timeout: Duration,
@@ -357,6 +358,8 @@ impl Config {
         let api_insecure = env_bool("NEUWERK_POLICY_API_INSECURE").unwrap_or(false);
         let upstream_vip = require_ipv4("NEUWERK_UPSTREAM_VIP")?;
         let upstream_ip = optional_ipv4("NEUWERK_UPSTREAM_IP")?.unwrap_or(upstream_vip);
+        let upstream_udp_target =
+            optional_ipv4("NEUWERK_UPSTREAM_UDP_TARGET")?.unwrap_or(upstream_vip);
         let dns_server = require_socket_addr("NEUWERK_DNS_SERVER", 53)?;
         let dns_zone = require_env("NEUWERK_DNS_ZONE")?;
         let timeout_secs = env::var("NEUWERK_TEST_TIMEOUT_SECS")
@@ -368,6 +371,7 @@ impl Config {
             api_insecure,
             upstream_vip,
             upstream_ip,
+            upstream_udp_target,
             dns_server,
             dns_zone,
             timeout: Duration::from_secs(timeout_secs),
@@ -916,82 +920,66 @@ fn test_metrics_allow_deny(ctx: &mut Context) -> Result<(), String> {
 }
 
 fn test_udp_allow_5201(ctx: &mut Context) -> Result<(), String> {
+    let udp_target = ctx.cfg.upstream_udp_target;
     let policy = policy_with_rules(
         ctx.consumer_ip,
         vec![
-            rule_tcp(
-                "allow-iperf-control",
-                "allow",
-                ctx.cfg.upstream_vip,
-                &[5201],
-            ),
-            rule_udp("allow-iperf-udp", "allow", ctx.cfg.upstream_vip, &[5201]),
+            rule_tcp("allow-iperf-control", "allow", udp_target, &[5201]),
+            rule_udp("allow-iperf-udp", "allow", udp_target, &[5201]),
         ],
     );
     ctx.apply_policy(policy)?;
-    iperf3_udp_expect_success(ctx.cfg.upstream_vip, 5201)
+    iperf3_udp_expect_success(udp_target, 5201)
 }
 
 fn test_udp_deny_5201(ctx: &mut Context) -> Result<(), String> {
+    let udp_target = ctx.cfg.upstream_udp_target;
     let policy = policy_with_rules(
         ctx.consumer_ip,
         vec![
-            rule_tcp(
-                "allow-iperf-control",
-                "allow",
-                ctx.cfg.upstream_vip,
-                &[5201],
-            ),
-            rule_udp("deny-iperf-udp", "deny", ctx.cfg.upstream_vip, &[5201]),
+            rule_tcp("allow-iperf-control", "allow", udp_target, &[5201]),
+            rule_udp("deny-iperf-udp", "deny", udp_target, &[5201]),
         ],
     );
     ctx.apply_policy(policy)?;
-    iperf3_udp_expect_deny(ctx.cfg.upstream_vip, 5201)
+    iperf3_udp_expect_deny(udp_target, 5201)
 }
 
 fn test_tcp_allow_udp_deny_same_port(ctx: &mut Context) -> Result<(), String> {
+    let udp_target = ctx.cfg.upstream_udp_target;
     let policy = policy_with_rules(
         ctx.consumer_ip,
         vec![
-            rule_tcp("allow-iperf-tcp", "allow", ctx.cfg.upstream_vip, &[5201]),
-            rule_udp("deny-iperf-udp", "deny", ctx.cfg.upstream_vip, &[5201]),
+            rule_tcp("allow-iperf-tcp", "allow", udp_target, &[5201]),
+            rule_udp("deny-iperf-udp", "deny", udp_target, &[5201]),
         ],
     );
     ctx.apply_policy(policy)?;
-    iperf3_tcp_expect_success(ctx.cfg.upstream_vip, 5201)?;
-    iperf3_udp_expect_deny(ctx.cfg.upstream_vip, 5201)
+    iperf3_tcp_expect_success(udp_target, 5201)?;
+    iperf3_udp_expect_deny(udp_target, 5201)
 }
 
 fn test_udp_policy_swap_allow_to_deny(ctx: &mut Context) -> Result<(), String> {
+    let udp_target = ctx.cfg.upstream_udp_target;
     let allow_policy = policy_with_rules(
         ctx.consumer_ip,
         vec![
-            rule_tcp(
-                "allow-iperf-control",
-                "allow",
-                ctx.cfg.upstream_vip,
-                &[5201],
-            ),
-            rule_udp("allow-iperf-udp", "allow", ctx.cfg.upstream_vip, &[5201]),
+            rule_tcp("allow-iperf-control", "allow", udp_target, &[5201]),
+            rule_udp("allow-iperf-udp", "allow", udp_target, &[5201]),
         ],
     );
     ctx.apply_policy(allow_policy)?;
-    iperf3_udp_expect_success(ctx.cfg.upstream_vip, 5201)?;
+    iperf3_udp_expect_success(udp_target, 5201)?;
 
     let deny_policy = policy_with_rules(
         ctx.consumer_ip,
         vec![
-            rule_tcp(
-                "allow-iperf-control",
-                "allow",
-                ctx.cfg.upstream_vip,
-                &[5201],
-            ),
-            rule_udp("deny-iperf-udp", "deny", ctx.cfg.upstream_vip, &[5201]),
+            rule_tcp("allow-iperf-control", "allow", udp_target, &[5201]),
+            rule_udp("deny-iperf-udp", "deny", udp_target, &[5201]),
         ],
     );
     ctx.apply_policy(deny_policy)?;
-    iperf3_udp_expect_deny(ctx.cfg.upstream_vip, 5201)
+    iperf3_udp_expect_deny(udp_target, 5201)
 }
 
 fn test_icmp_echo_allow(ctx: &mut Context) -> Result<(), String> {
@@ -1055,11 +1043,12 @@ fn test_policy_consistency_all_firewalls(ctx: &mut Context) -> Result<(), String
 }
 
 fn test_metrics_protocol_specific_validation(ctx: &mut Context) -> Result<(), String> {
+    let udp_target = ctx.cfg.upstream_udp_target;
     let policy = policy_with_rules(
         ctx.consumer_ip,
         vec![
             rule_tcp("allow-http", "allow", ctx.cfg.upstream_vip, &[80]),
-            rule_udp("deny-iperf-udp", "deny", ctx.cfg.upstream_vip, &[5201]),
+            rule_udp("deny-iperf-udp", "deny", udp_target, &[5201]),
         ],
     );
     ctx.apply_policy(policy)?;
@@ -1084,7 +1073,7 @@ fn test_metrics_protocol_specific_validation(ctx: &mut Context) -> Result<(), St
         false,
         None,
     )?;
-    send_udp_probes(ctx.cfg.upstream_vip, 5201, 16)?;
+    send_udp_probes(udp_target, 5201, 16)?;
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -1126,7 +1115,6 @@ fn policy_with_rules(consumer_ip: Ipv4Addr, rules: Vec<Value>) -> Value {
                 "id": "consumers",
                 "priority": 1,
                 "sources": {"ips": [consumer_ip.to_string()]},
-                "default_action": "deny",
                 "rules": rules
             }
         ]

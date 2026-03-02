@@ -154,10 +154,15 @@ impl Packet {
             Some(off) => off,
             None => return false,
         };
-        if ip_off + 9 > self.buf.len() {
+        if ip_off + 12 > self.buf.len() {
             return false;
         }
+        let old_word = u16::from_be_bytes([self.buf[ip_off + 8], self.buf[ip_off + 9]]);
         self.buf[ip_off + 8] = ttl;
+        let new_word = u16::from_be_bytes([self.buf[ip_off + 8], self.buf[ip_off + 9]]);
+        let old_csum = u16::from_be_bytes([self.buf[ip_off + 10], self.buf[ip_off + 11]]);
+        let new_csum = checksum_update_u16(old_csum, old_word, new_word);
+        self.buf[ip_off + 10..ip_off + 12].copy_from_slice(&new_csum.to_be_bytes());
         true
     }
 
@@ -321,7 +326,16 @@ impl Packet {
         if ip_off + 16 > self.buf.len() {
             return false;
         }
+        let old = u32::from_be_bytes([
+            self.buf[ip_off + 12],
+            self.buf[ip_off + 13],
+            self.buf[ip_off + 14],
+            self.buf[ip_off + 15],
+        ]);
+        let new = u32::from(ip);
         self.buf[ip_off + 12..ip_off + 16].copy_from_slice(&ip.octets());
+        self.update_ipv4_header_checksum_u32(ip_off, old, new);
+        self.update_transport_pseudo_checksum_u32(ip_off, old, new);
         true
     }
 
@@ -333,7 +347,16 @@ impl Packet {
         if ip_off + 20 > self.buf.len() {
             return false;
         }
+        let old = u32::from_be_bytes([
+            self.buf[ip_off + 16],
+            self.buf[ip_off + 17],
+            self.buf[ip_off + 18],
+            self.buf[ip_off + 19],
+        ]);
+        let new = u32::from(ip);
         self.buf[ip_off + 16..ip_off + 20].copy_from_slice(&ip.octets());
+        self.update_ipv4_header_checksum_u32(ip_off, old, new);
+        self.update_transport_pseudo_checksum_u32(ip_off, old, new);
         true
     }
 
@@ -437,7 +460,9 @@ impl Packet {
         if l4_off + 2 > self.buf.len() {
             return false;
         }
+        let old = u16::from_be_bytes([self.buf[l4_off], self.buf[l4_off + 1]]);
         self.buf[l4_off..l4_off + 2].copy_from_slice(&port.to_be_bytes());
+        self.update_transport_checksum_u16(ip_off, l4_off, proto, old, port);
         true
     }
 
@@ -461,8 +486,115 @@ impl Packet {
         if l4_off + 4 > self.buf.len() {
             return false;
         }
+        let old = u16::from_be_bytes([self.buf[l4_off + 2], self.buf[l4_off + 3]]);
         self.buf[l4_off + 2..l4_off + 4].copy_from_slice(&port.to_be_bytes());
+        self.update_transport_checksum_u16(ip_off, l4_off, proto, old, port);
         true
+    }
+
+    fn update_ipv4_header_checksum_u32(&mut self, ip_off: usize, old: u32, new: u32) {
+        if ip_off + 12 > self.buf.len() {
+            return;
+        }
+        let old_csum = u16::from_be_bytes([self.buf[ip_off + 10], self.buf[ip_off + 11]]);
+        let new_csum = checksum_update_u32(old_csum, old, new);
+        self.buf[ip_off + 10..ip_off + 12].copy_from_slice(&new_csum.to_be_bytes());
+    }
+
+    fn update_transport_pseudo_checksum_u32(&mut self, ip_off: usize, old: u32, new: u32) {
+        let proto = match self.protocol() {
+            Some(p) => p,
+            None => return,
+        };
+        if proto != 6 && proto != 17 {
+            return;
+        }
+        let ihl = match self.ipv4_header_len(ip_off) {
+            Some(len) => len,
+            None => return,
+        };
+        let l4_off = ip_off + ihl;
+        self.update_transport_checksum_u32(ip_off, l4_off, proto, old, new);
+    }
+
+    fn update_transport_checksum_u16(
+        &mut self,
+        ip_off: usize,
+        l4_off: usize,
+        proto: u8,
+        old: u16,
+        new: u16,
+    ) {
+        let total_len = match self.ipv4_total_len(ip_off) {
+            Some(len) => len,
+            None => return,
+        };
+        let ihl = match self.ipv4_header_len(ip_off) {
+            Some(len) => len,
+            None => return,
+        };
+        let l4_len = total_len.saturating_sub(ihl);
+        let checksum_off = match proto {
+            6 => {
+                if l4_len < 20 || l4_off + 18 > self.buf.len() {
+                    return;
+                }
+                l4_off + 16
+            }
+            17 => {
+                if l4_len < 8 || l4_off + 8 > self.buf.len() {
+                    return;
+                }
+                l4_off + 6
+            }
+            _ => return,
+        };
+        let old_csum = u16::from_be_bytes([self.buf[checksum_off], self.buf[checksum_off + 1]]);
+        if proto == 17 && old_csum == 0 {
+            return;
+        }
+        let new_csum = checksum_update_u16(old_csum, old, new);
+        self.buf[checksum_off..checksum_off + 2].copy_from_slice(&new_csum.to_be_bytes());
+    }
+
+    fn update_transport_checksum_u32(
+        &mut self,
+        ip_off: usize,
+        l4_off: usize,
+        proto: u8,
+        old: u32,
+        new: u32,
+    ) {
+        let total_len = match self.ipv4_total_len(ip_off) {
+            Some(len) => len,
+            None => return,
+        };
+        let ihl = match self.ipv4_header_len(ip_off) {
+            Some(len) => len,
+            None => return,
+        };
+        let l4_len = total_len.saturating_sub(ihl);
+        let checksum_off = match proto {
+            6 => {
+                if l4_len < 20 || l4_off + 18 > self.buf.len() {
+                    return;
+                }
+                l4_off + 16
+            }
+            17 => {
+                if l4_len < 8 || l4_off + 8 > self.buf.len() {
+                    return;
+                }
+                l4_off + 6
+            }
+            _ => return,
+        };
+        let old_csum = u16::from_be_bytes([self.buf[checksum_off], self.buf[checksum_off + 1]]);
+        if proto == 17 && old_csum == 0 {
+            return;
+        }
+        let new_csum = checksum_update_u32(old_csum, old, new);
+        self.buf[checksum_off..checksum_off + 2].copy_from_slice(&new_csum.to_be_bytes());
     }
 
     pub fn rewrite_as_tcp_rst_reply(&mut self) -> bool {
@@ -784,6 +916,23 @@ fn checksum_finalize(mut sum: u32) -> u16 {
     !(sum as u16)
 }
 
+fn checksum_update_u16(checksum: u16, old: u16, new: u16) -> u16 {
+    let mut sum = (!checksum as u32) + ((!old as u32) & 0xffff) + (new as u32);
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn checksum_update_u32(checksum: u16, old: u32, new: u32) -> u16 {
+    let old_hi = (old >> 16) as u16;
+    let old_lo = (old & 0xffff) as u16;
+    let new_hi = (new >> 16) as u16;
+    let new_lo = (new & 0xffff) as u16;
+    let csum = checksum_update_u16(checksum, old_hi, new_hi);
+    checksum_update_u16(csum, old_lo, new_lo)
+}
+
 fn transport_checksum(src: Ipv4Addr, dst: Ipv4Addr, proto: u8, payload: &[u8]) -> u16 {
     let mut sum = 0u32;
     sum += checksum_sum(&src.octets());
@@ -804,5 +953,47 @@ mod tests {
         let sum = checksum_sum(&data);
         let checksum = checksum_finalize(sum);
         assert_ne!(checksum, 0);
+    }
+
+    #[test]
+    fn incremental_l3_l4_checksum_matches_full_recalc() {
+        let mut base = Packet::new(vec![
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x00, 0x45, 0x00, 0x00, 0x20, 0, 0, 0, 0,
+            64, 17, 0, 0, 10, 0, 0, 2, 1, 1, 1, 1, 156, 64, 0, 53, 0, 12, 0, 0, b't', b'e', b's',
+            b't',
+        ]);
+        assert!(base.recalc_checksums());
+        let mut inc = base.clone();
+        let mut full = base.clone();
+
+        assert!(inc.set_ipv4_ttl(63));
+        assert!(inc.set_src_ip(Ipv4Addr::new(10, 0, 0, 99)));
+        assert!(inc.set_dst_ip(Ipv4Addr::new(8, 8, 8, 8)));
+        assert!(inc.set_src_port(40123));
+        assert!(inc.set_dst_port(5300));
+
+        assert!(full.set_ipv4_ttl(63));
+        assert!(full.set_src_ip(Ipv4Addr::new(10, 0, 0, 99)));
+        assert!(full.set_dst_ip(Ipv4Addr::new(8, 8, 8, 8)));
+        assert!(full.set_src_port(40123));
+        assert!(full.set_dst_port(5300));
+        assert!(full.recalc_checksums());
+
+        assert_eq!(inc.buffer(), full.buffer());
+    }
+
+    #[test]
+    fn udp_zero_checksum_stays_zero_on_rewrite() {
+        let mut pkt = Packet::new(vec![
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x00, 0x45, 0x00, 0x00, 0x1c, 0, 0, 0, 0,
+            64, 17, 0, 0, 10, 0, 0, 2, 1, 1, 1, 1, 156, 64, 0, 53, 0, 8, 0, 0,
+        ]);
+        assert!(pkt.recalc_checksums());
+        pkt.buffer_mut()[40] = 0;
+        pkt.buffer_mut()[41] = 0;
+        assert!(pkt.set_src_ip(Ipv4Addr::new(10, 0, 0, 99)));
+        assert!(pkt.set_src_port(40123));
+        assert_eq!(pkt.buffer()[40], 0);
+        assert_eq!(pkt.buffer()[41], 0);
     }
 }

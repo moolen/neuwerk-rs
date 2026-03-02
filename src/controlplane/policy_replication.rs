@@ -130,11 +130,12 @@ pub async fn run_policy_replication(
                 continue;
             }
         };
-        if let Err(err) = policy_store.rebuild(
+        if let Err(err) = policy_store.rebuild_with_kubernetes_bindings(
             compiled.groups,
             compiled.dns_policy,
             compiled.default_policy,
             enforcement_mode,
+            compiled.kubernetes_bindings,
         ) {
             eprintln!("policy replication: policy update failed: {err}");
             continue;

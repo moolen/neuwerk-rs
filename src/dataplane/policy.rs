@@ -195,6 +195,17 @@ impl DynamicIpSetV4 {
         }
     }
 
+    pub fn ips(&self) -> Vec<Ipv4Addr> {
+        match self.inner.read() {
+            Ok(lock) => {
+                let mut out = lock.keys().copied().collect::<Vec<_>>();
+                out.sort_unstable();
+                out
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub fn clear(&self) {
         if let Ok(mut lock) = self.inner.write() {
             lock.clear();
@@ -261,6 +272,13 @@ impl IpSetV4 {
 
     pub fn has_dynamic(&self) -> bool {
         self.dynamic.is_some()
+    }
+
+    pub fn dynamic_ips(&self) -> Vec<Ipv4Addr> {
+        self.dynamic
+            .as_ref()
+            .map(|dynamic| dynamic.ips())
+            .unwrap_or_default()
     }
 }
 

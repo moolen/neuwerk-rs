@@ -3,6 +3,9 @@ import type {
   DNSCacheResponse,
   PolicyRecord,
   PolicyCreateRequest,
+  IntegrationView,
+  IntegrationCreateRequest,
+  IntegrationUpdateRequest,
   AuthUser,
   ServiceAccount,
   ServiceAccountToken,
@@ -178,6 +181,40 @@ export async function updatePolicy(id: string, req: PolicyCreateRequest): Promis
 
 export async function deletePolicy(id: string): Promise<void> {
   await fetchJSON<void>(`/policies/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// Integrations
+export async function listIntegrations(): Promise<IntegrationView[]> {
+  return fetchJSON<IntegrationView[]>('/integrations');
+}
+
+export async function getIntegration(name: string): Promise<IntegrationView> {
+  return fetchJSON<IntegrationView>(`/integrations/${encodeURIComponent(name)}`);
+}
+
+export async function createIntegration(
+  req: IntegrationCreateRequest
+): Promise<IntegrationView> {
+  return fetchJSON<IntegrationView>('/integrations', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  });
+}
+
+export async function updateIntegration(
+  name: string,
+  req: IntegrationUpdateRequest
+): Promise<IntegrationView> {
+  return fetchJSON<IntegrationView>(`/integrations/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify(req),
+  });
+}
+
+export async function deleteIntegration(name: string): Promise<void> {
+  await fetchJSON<void>(`/integrations/${encodeURIComponent(name)}`, {
     method: 'DELETE',
   });
 }

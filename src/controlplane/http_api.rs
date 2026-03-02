@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::fs;
 use std::net::{IpAddr, SocketAddr};
@@ -44,6 +45,7 @@ use crate::controlplane::cluster::{
     bootstrap::token::TokenStore,
 };
 use crate::controlplane::http_tls::{ensure_http_tls, HttpTlsConfig};
+use crate::controlplane::integrations::{IntegrationKind, IntegrationStore, IntegrationView};
 use crate::controlplane::intercept_tls::{
     load_local_intercept_ca_pair, local_intercept_ca_paths, INTERCEPT_CA_CERT_KEY,
     INTERCEPT_CA_ENVELOPE_KEY,
@@ -98,6 +100,7 @@ struct ApiState {
     policy_store: PolicyStore,
     local_store: PolicyDiskStore,
     service_accounts: ServiceAccountStore,
+    integrations: IntegrationStore,
     audit_store: Option<AuditStore>,
     cluster: Option<HttpApiCluster>,
     metrics: Metrics,
@@ -245,10 +248,15 @@ pub async fn run_http_api(
         Some(cluster) => ServiceAccountStore::cluster(cluster.raft.clone(), cluster.store.clone()),
         None => ServiceAccountStore::local(PathBuf::from("/var/lib/neuwerk/service-accounts")),
     };
+    let integrations = match &cluster {
+        Some(cluster) => IntegrationStore::cluster(cluster.raft.clone(), cluster.store.clone()),
+        None => IntegrationStore::local(PathBuf::from("/var/lib/neuwerk/integrations")),
+    };
     let state = ApiState {
         policy_store,
         local_store,
         service_accounts,
+        integrations,
         audit_store,
         cluster,
         metrics: metrics.clone(),
@@ -281,6 +289,16 @@ pub async fn run_http_api(
         .route(
             "/policies/:id",
             get(get_policy).put(update_policy).delete(delete_policy),
+        )
+        .route(
+            "/integrations",
+            get(list_integrations).post(create_integration),
+        )
+        .route(
+            "/integrations/:name",
+            get(get_integration)
+                .put(update_integration)
+                .delete(delete_integration),
         )
         .route(
             "/service-accounts",
@@ -531,6 +549,22 @@ struct ServiceAccountTokenCreateRequest {
     eternal: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+struct IntegrationCreateRequest {
+    name: String,
+    kind: String,
+    api_server_url: String,
+    ca_cert_pem: String,
+    service_account_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IntegrationUpdateRequest {
+    api_server_url: String,
+    ca_cert_pem: String,
+    service_account_token: String,
+}
+
 #[derive(Debug, Serialize)]
 struct ServiceAccountTokenResponse {
     token: String,
@@ -551,6 +585,9 @@ async fn create_policy(State(state): State<ApiState>, mut request: Request) -> R
         Ok(create) => create,
         Err(err) => return error_response(StatusCode::BAD_REQUEST, format!("invalid json: {err}")),
     };
+    if let Err(err) = validate_policy_integration_refs(&create.policy, &state.integrations).await {
+        return error_response(StatusCode::BAD_REQUEST, err);
+    }
 
     let compiled = match create.policy.clone().compile() {
         Ok(compiled) => compiled,
@@ -567,11 +604,12 @@ async fn create_policy(State(state): State<ApiState>, mut request: Request) -> R
     }
 
     if record.mode.is_active() {
-        let generation = match state.policy_store.rebuild(
+        let generation = match state.policy_store.rebuild_with_kubernetes_bindings(
             compiled.groups,
             compiled.dns_policy,
             compiled.default_policy,
             enforcement_mode_for_policy_mode(record.mode),
+            compiled.kubernetes_bindings,
         ) {
             Ok(generation) => generation,
             Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
@@ -609,6 +647,156 @@ async fn create_policy(State(state): State<ApiState>, mut request: Request) -> R
     Json(record).into_response()
 }
 
+async fn list_integrations(State(state): State<ApiState>, request: Request) -> Response {
+    let _request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    match state.integrations.list_records().await {
+        Ok(records) => {
+            let views = records
+                .iter()
+                .map(IntegrationView::from)
+                .collect::<Vec<_>>();
+            Json(views).into_response()
+        }
+        Err(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+    }
+}
+
+async fn get_integration(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    request: Request,
+) -> Response {
+    let _request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    match state
+        .integrations
+        .get_by_name_kind(&name, IntegrationKind::Kubernetes)
+        .await
+    {
+        Ok(Some(record)) => Json(IntegrationView::from(&record)).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "integration not found".to_string()),
+        Err(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+    }
+}
+
+async fn create_integration(State(state): State<ApiState>, mut request: Request) -> Response {
+    request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let body = match read_body_limited(request.into_body()).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let create: IntegrationCreateRequest = match serde_json::from_slice(&body) {
+        Ok(create) => create,
+        Err(err) => return error_response(StatusCode::BAD_REQUEST, format!("invalid json: {err}")),
+    };
+    if !create.kind.eq_ignore_ascii_case("kubernetes") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "kind must be kubernetes".to_string(),
+        );
+    }
+    match state
+        .integrations
+        .create_kubernetes(
+            create.name,
+            create.api_server_url,
+            create.ca_cert_pem,
+            create.service_account_token,
+        )
+        .await
+    {
+        Ok(record) => Json(IntegrationView::from(&record)).into_response(),
+        Err(err) if err.contains("exists") => error_response(StatusCode::CONFLICT, err),
+        Err(err) => error_response(StatusCode::BAD_REQUEST, err),
+    }
+}
+
+async fn update_integration(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    mut request: Request,
+) -> Response {
+    request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let body = match read_body_limited(request.into_body()).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let update: IntegrationUpdateRequest = match serde_json::from_slice(&body) {
+        Ok(update) => update,
+        Err(err) => return error_response(StatusCode::BAD_REQUEST, format!("invalid json: {err}")),
+    };
+    match state
+        .integrations
+        .update_kubernetes(
+            &name,
+            update.api_server_url,
+            update.ca_cert_pem,
+            update.service_account_token,
+        )
+        .await
+    {
+        Ok(record) => Json(IntegrationView::from(&record)).into_response(),
+        Err(err) if err.contains("not found") => error_response(StatusCode::NOT_FOUND, err),
+        Err(err) => error_response(StatusCode::BAD_REQUEST, err),
+    }
+}
+
+async fn delete_integration(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    request: Request,
+) -> Response {
+    let _request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    match state
+        .integrations
+        .delete_by_name_kind(&name, IntegrationKind::Kubernetes)
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => error_response(StatusCode::NOT_FOUND, "integration not found".to_string()),
+        Err(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+    }
+}
+
+async fn validate_policy_integration_refs(
+    policy: &crate::controlplane::policy_config::PolicyConfig,
+    integrations: &IntegrationStore,
+) -> Result<(), String> {
+    let mut references = BTreeSet::new();
+    for group in &policy.source_groups {
+        for source in &group.sources.kubernetes {
+            let name = source.integration.trim();
+            if !name.is_empty() {
+                references.insert(name.to_string());
+            }
+        }
+    }
+    for name in references {
+        let exists = integrations
+            .get_by_name_kind(&name, IntegrationKind::Kubernetes)
+            .await?
+            .is_some();
+        if !exists {
+            return Err(format!("unknown kubernetes integration: {name}"));
+        }
+    }
+    Ok(())
+}
+
 async fn update_policy(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -635,6 +823,9 @@ async fn update_policy(
         Ok(update) => update,
         Err(err) => return error_response(StatusCode::BAD_REQUEST, format!("invalid json: {err}")),
     };
+    if let Err(err) = validate_policy_integration_refs(&update.policy, &state.integrations).await {
+        return error_response(StatusCode::BAD_REQUEST, err);
+    }
     let compiled = match update.policy.clone().compile() {
         Ok(compiled) => compiled,
         Err(err) => return error_response(StatusCode::BAD_REQUEST, err),
@@ -647,11 +838,12 @@ async fn update_policy(
     }
 
     if record.mode.is_active() {
-        let generation = match state.policy_store.rebuild(
+        let generation = match state.policy_store.rebuild_with_kubernetes_bindings(
             compiled.groups,
             compiled.dns_policy,
             compiled.default_policy,
             enforcement_mode_for_policy_mode(record.mode),
+            compiled.kubernetes_bindings,
         ) {
             Ok(generation) => generation,
             Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
@@ -2135,11 +2327,13 @@ mod tests {
         let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
         let local_store = PolicyDiskStore::new(dir.path().join("policies"));
         let service_accounts = ServiceAccountStore::local(dir.path().join("service-accounts"));
+        let integrations = IntegrationStore::local(dir.path().join("integrations"));
         let metrics = Metrics::new().unwrap();
         let state = ApiState {
             policy_store,
             local_store,
             service_accounts,
+            integrations,
             audit_store: None,
             cluster: None,
             metrics,
@@ -2186,11 +2380,13 @@ mod tests {
         let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
         let local_store = PolicyDiskStore::new(dir.path().join("policies"));
         let service_accounts = ServiceAccountStore::local(dir.path().join("service-accounts"));
+        let integrations = IntegrationStore::local(dir.path().join("integrations"));
         let metrics = Metrics::new().unwrap();
         let state = ApiState {
             policy_store,
             local_store,
             service_accounts,
+            integrations,
             audit_store: None,
             cluster: None,
             metrics: metrics.clone(),

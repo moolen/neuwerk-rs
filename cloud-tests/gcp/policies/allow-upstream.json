@@ -1,0 +1,41 @@
+{
+  "mode": "enforce",
+  "policy": {
+    "default_policy": "deny",
+    "source_groups": [
+      {
+        "id": "consumers",
+        "sources": {
+          "cidrs": ["10.30.3.0/24"]
+        },
+        "default_action": "deny",
+        "rules": [
+          {
+            "id": "allow-dns",
+            "action": "allow",
+            "match": {
+              "proto": "udp",
+              "dst_ports": [53],
+              "dns_hostname": ".*"
+            }
+          },
+          {
+            "id": "allow-http",
+            "action": "allow",
+            "match": {
+              "proto": "tcp",
+              "dst_ports": [80, 443, 9000, 5201, 5202]
+            }
+          },
+          {
+            "id": "allow-icmp",
+            "action": "allow",
+            "match": {
+              "proto": "icmp"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

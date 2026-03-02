@@ -1474,10 +1474,7 @@ fn service_lane_tap_readable(tap: &File) -> Result<bool, String> {
         if err.kind() == std::io::ErrorKind::Interrupted {
             return Ok(false);
         }
-        return Err(format!(
-            "dpdk: service lane poll failed: {}",
-            err
-        ));
+        return Err(format!("dpdk: service lane poll failed: {}", err));
     }
     if rc == 0 {
         return Ok(false);
@@ -1576,9 +1573,10 @@ mod dpdk_io {
     const RX_RING_SIZE: u16 = 1024;
     const TX_RING_SIZE: u16 = 1024;
     const MBUF_CACHE_SIZE: u32 = 250;
-    const MBUF_PER_POOL: u32 = 8192;
+    const MBUF_PER_POOL: u32 = 8191;
     const RX_BURST_SIZE: usize = 32;
     const TX_BURST_SIZE: usize = 32;
+    const METRICS_FLUSH_PACKET_THRESHOLD: u64 = 128;
 
     static EAL_INIT: OnceLock<Result<(), String>> = OnceLock::new();
     static PORT_INIT: OnceLock<Result<PortSetup, String>> = OnceLock::new();
@@ -1594,6 +1592,7 @@ mod dpdk_io {
         mempool: *mut rte_mempool,
         mac: [u8; 6],
         queue_count: u16,
+        tx_csum_offload: TxChecksumOffloadCaps,
     }
 
     // Safety: DPDK mempools are designed for concurrent access across threads.
@@ -1607,6 +1606,7 @@ mod dpdk_io {
         queue_label: String,
         mempool: *mut rte_mempool,
         mac: [u8; 6],
+        tx_csum_offload: TxChecksumOffloadCaps,
         metrics: Option<Metrics>,
         rx_bufs: [*mut rte_mbuf; RX_BURST_SIZE],
         rx_count: u16,
@@ -1614,6 +1614,7 @@ mod dpdk_io {
         tx_bufs: [*mut rte_mbuf; TX_BURST_SIZE],
         tx_lens: [u32; TX_BURST_SIZE],
         tx_count: u16,
+        metric_batch: IoMetricBatch,
     }
 
     // Safety: `DpdkIo` owns raw DPDK pointers that are thread-compatible but not
@@ -1624,6 +1625,44 @@ mod dpdk_io {
     static DPDK_RX_LOGGED: AtomicBool = AtomicBool::new(false);
     static DPDK_RX_OVERSIZE_LOGS: AtomicU32 = AtomicU32::new(0);
     static DPDK_IPV4_LOGS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct IoMetricBatch {
+        rx_packets: u64,
+        rx_bytes: u64,
+        rx_dropped: u64,
+        tx_packets: u64,
+        tx_bytes: u64,
+        tx_dropped: u64,
+    }
+
+    impl IoMetricBatch {
+        fn pending_packets(self) -> u64 {
+            self.rx_packets + self.rx_dropped + self.tx_packets + self.tx_dropped
+        }
+
+        fn is_empty(self) -> bool {
+            self.rx_packets == 0
+                && self.rx_bytes == 0
+                && self.rx_dropped == 0
+                && self.tx_packets == 0
+                && self.tx_bytes == 0
+                && self.tx_dropped == 0
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct TxChecksumOffloadCaps {
+        ipv4: bool,
+        tcp: bool,
+        udp: bool,
+    }
+
+    impl TxChecksumOffloadCaps {
+        fn any(self) -> bool {
+            self.ipv4 || self.tcp || self.udp
+        }
+    }
 
     fn preferred_rss_hf(supported: u64) -> u64 {
         let preferred = (ETH_RSS_NONFRAG_IPV4_TCP as u64)
@@ -1638,6 +1677,41 @@ mod dpdk_io {
         } else {
             supported
         }
+    }
+
+    fn create_mempool(pool_name: &CString, socket_id: i32) -> Result<*mut rte_mempool, String> {
+        let candidates = [MBUF_PER_POOL, 4095, 2047, 1023];
+        let mut last_errno = 0;
+        for count in candidates {
+            if count <= MBUF_CACHE_SIZE + 1 {
+                continue;
+            }
+            let mempool = unsafe {
+                rte_pktmbuf_pool_create(
+                    pool_name.as_ptr(),
+                    count,
+                    MBUF_CACHE_SIZE,
+                    0,
+                    RTE_MBUF_DEFAULT_BUF_SIZE as u16,
+                    socket_id,
+                )
+            };
+            if !mempool.is_null() {
+                if count != MBUF_PER_POOL {
+                    eprintln!("dpdk: mempool fallback size {}", count);
+                }
+                return Ok(mempool);
+            }
+            last_errno = unsafe { rust_rte_errno() };
+            eprintln!(
+                "dpdk: mempool create failed (size={}, rte_errno={})",
+                count, last_errno
+            );
+        }
+        Err(format!(
+            "dpdk: failed to create mempool (rte_errno={})",
+            last_errno
+        ))
     }
 
     fn configure_rss_reta(port_id: u16, queue_count: u16, reta_size: u16) -> Result<(), String> {
@@ -1663,6 +1737,38 @@ mod dpdk_io {
             ));
         }
         Ok(())
+    }
+
+    fn parse_core_id_list(raw: &str) -> Vec<usize> {
+        let mut ids = Vec::new();
+        for token in raw.trim().split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            if let Some((start, end)) = token.split_once('-') {
+                let Ok(start) = start.trim().parse::<usize>() else {
+                    continue;
+                };
+                let Ok(end) = end.trim().parse::<usize>() else {
+                    continue;
+                };
+                if start <= end {
+                    for id in start..=end {
+                        ids.push(id);
+                    }
+                } else {
+                    for id in end..=start {
+                        ids.push(id);
+                    }
+                }
+            } else if let Ok(id) = token.parse::<usize>() {
+                ids.push(id);
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        ids
     }
 
     fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
@@ -1700,19 +1806,32 @@ mod dpdk_io {
             }
             let mut max_rx = dev_info.max_rx_queues;
             let mut max_tx = dev_info.max_tx_queues;
-            if max_rx == 0 {
+            let is_gcp = std::env::var("NEUWERK_CLOUD_PROVIDER")
+                .map(|provider| provider.eq_ignore_ascii_case("gcp"))
+                .unwrap_or(false);
+            if is_gcp && (max_rx == 0 || max_tx == 0) {
                 eprintln!(
-                    "dpdk: max_rx_queues reported 0; assuming at least {}",
-                    queue_count
+                    "dpdk: gcp reported max_rx={} max_tx={}; forcing single queue",
+                    max_rx, max_tx
                 );
-                max_rx = queue_count;
-            }
-            if max_tx == 0 {
-                eprintln!(
-                    "dpdk: max_tx_queues reported 0; assuming at least {}",
-                    queue_count
-                );
-                max_tx = queue_count;
+                queue_count = 1;
+                max_rx = max_rx.max(1);
+                max_tx = max_tx.max(1);
+            } else {
+                if max_rx == 0 {
+                    eprintln!(
+                        "dpdk: max_rx_queues reported 0; assuming at least {}",
+                        queue_count
+                    );
+                    max_rx = queue_count;
+                }
+                if max_tx == 0 {
+                    eprintln!(
+                        "dpdk: max_tx_queues reported 0; assuming at least {}",
+                        queue_count
+                    );
+                    max_tx = queue_count;
+                }
             }
             let max_supported = max_rx.min(max_tx).max(1);
             if queue_count > max_supported {
@@ -1731,24 +1850,42 @@ mod dpdk_io {
             };
             let socket_id_u32 = socket_id as u32;
             let pool_name = CString::new("mbuf_pool").unwrap();
-            let mempool = unsafe {
-                rte_pktmbuf_pool_create(
-                    pool_name.as_ptr(),
-                    MBUF_PER_POOL,
-                    MBUF_CACHE_SIZE,
-                    0,
-                    RTE_MBUF_DEFAULT_BUF_SIZE as u16,
-                    socket_id,
-                )
-            };
-            if mempool.is_null() {
-                return Err(format!(
-                    "dpdk: failed to create mempool (rte_errno={})",
-                    unsafe { rust_rte_errno() }
-                ));
-            }
+            let mempool = create_mempool(&pool_name, socket_id)?;
 
             let mut rss_hf = 0u64;
+            let tx_csum_env_enabled = std::env::var("NEUWERK_DPDK_TX_CSUM_OFFLOAD")
+                .map(|val| !matches!(val.as_str(), "0" | "false" | "FALSE" | "no" | "NO"))
+                .unwrap_or(true);
+            let mut tx_csum_offload = TxChecksumOffloadCaps::default();
+            if tx_csum_env_enabled {
+                tx_csum_offload.ipv4 =
+                    (dev_info.tx_offload_capa & (DEV_TX_OFFLOAD_IPV4_CKSUM as u64)) != 0;
+                tx_csum_offload.tcp =
+                    (dev_info.tx_offload_capa & (DEV_TX_OFFLOAD_TCP_CKSUM as u64)) != 0;
+                tx_csum_offload.udp =
+                    (dev_info.tx_offload_capa & (DEV_TX_OFFLOAD_UDP_CKSUM as u64)) != 0;
+            }
+            let mut tx_offloads = 0u64;
+            if tx_csum_offload.ipv4 {
+                tx_offloads |= DEV_TX_OFFLOAD_IPV4_CKSUM as u64;
+            }
+            if tx_csum_offload.tcp {
+                tx_offloads |= DEV_TX_OFFLOAD_TCP_CKSUM as u64;
+            }
+            if tx_csum_offload.udp {
+                tx_offloads |= DEV_TX_OFFLOAD_UDP_CKSUM as u64;
+            }
+            if (dev_info.tx_offload_capa & (DEV_TX_OFFLOAD_MBUF_FAST_FREE as u64)) != 0 {
+                tx_offloads |= DEV_TX_OFFLOAD_MBUF_FAST_FREE as u64;
+            }
+            eprintln!(
+                "dpdk: tx offload capa=0x{:x} enabled=0x{:x} (ipv4={}, tcp={}, udp={})",
+                dev_info.tx_offload_capa,
+                tx_offloads,
+                tx_csum_offload.ipv4,
+                tx_csum_offload.tcp,
+                tx_csum_offload.udp
+            );
             if queue_count > 1 {
                 rss_hf = preferred_rss_hf(dev_info.flow_type_rss_offloads);
                 if rss_hf == 0 {
@@ -1775,6 +1912,7 @@ mod dpdk_io {
                 port_conf.rx_adv_conf.rss_conf.rss_key = std::ptr::null_mut();
                 port_conf.rx_adv_conf.rss_conf.rss_key_len = 0;
             }
+            port_conf.txmode.offloads = tx_offloads;
             let ret =
                 unsafe { rte_eth_dev_configure(port_id, queue_count, queue_count, &mut port_conf) };
             if ret < 0 {
@@ -1797,13 +1935,9 @@ mod dpdk_io {
                 }
 
                 let ret = unsafe {
-                    rte_eth_tx_queue_setup(
-                        port_id,
-                        queue_id,
-                        TX_RING_SIZE,
-                        socket_id_u32,
-                        ptr::null(),
-                    )
+                    let mut tx_conf = dev_info.default_txconf;
+                    tx_conf.offloads = tx_offloads;
+                    rte_eth_tx_queue_setup(port_id, queue_id, TX_RING_SIZE, socket_id_u32, &tx_conf)
                 };
                 if ret < 0 {
                     return Err(format!("dpdk: tx queue {} setup failed ({ret})", queue_id));
@@ -1837,6 +1971,7 @@ mod dpdk_io {
                 mempool,
                 mac,
                 queue_count,
+                tx_csum_offload,
             })
         });
 
@@ -1853,6 +1988,7 @@ mod dpdk_io {
                     mempool: setup.mempool,
                     mac: setup.mac,
                     queue_count: setup.queue_count,
+                    tx_csum_offload: setup.tx_csum_offload,
                 })
             }
             Err(err) => Err(err.clone()),
@@ -1890,6 +2026,7 @@ mod dpdk_io {
                 queue_label: queue_id.to_string(),
                 mempool: setup.mempool,
                 mac: setup.mac,
+                tx_csum_offload: setup.tx_csum_offload,
                 metrics,
                 rx_bufs: [ptr::null_mut(); RX_BURST_SIZE],
                 rx_count: 0,
@@ -1897,7 +2034,71 @@ mod dpdk_io {
                 tx_bufs: [ptr::null_mut(); TX_BURST_SIZE],
                 tx_lens: [0; TX_BURST_SIZE],
                 tx_count: 0,
+                metric_batch: IoMetricBatch::default(),
             })
+        }
+
+        fn record_rx_packet(&mut self, bytes: u64) {
+            self.metric_batch.rx_packets = self.metric_batch.rx_packets.saturating_add(1);
+            self.metric_batch.rx_bytes = self.metric_batch.rx_bytes.saturating_add(bytes);
+            self.flush_metrics_if_needed(false);
+        }
+
+        fn record_rx_dropped(&mut self, count: u64) {
+            self.metric_batch.rx_dropped = self.metric_batch.rx_dropped.saturating_add(count);
+            self.flush_metrics_if_needed(false);
+        }
+
+        fn record_tx_packet(&mut self, count: u64, bytes: u64) {
+            self.metric_batch.tx_packets = self.metric_batch.tx_packets.saturating_add(count);
+            self.metric_batch.tx_bytes = self.metric_batch.tx_bytes.saturating_add(bytes);
+            self.flush_metrics_if_needed(false);
+        }
+
+        fn record_tx_dropped(&mut self, count: u64) {
+            self.metric_batch.tx_dropped = self.metric_batch.tx_dropped.saturating_add(count);
+            self.flush_metrics_if_needed(false);
+        }
+
+        fn flush_metrics_if_needed(&mut self, force: bool) {
+            if self.metrics.is_none() {
+                self.metric_batch = IoMetricBatch::default();
+                return;
+            }
+            if !force && self.metric_batch.pending_packets() < METRICS_FLUSH_PACKET_THRESHOLD {
+                return;
+            }
+            if self.metric_batch.is_empty() {
+                return;
+            }
+            let Some(metrics) = &self.metrics else {
+                return;
+            };
+            if self.metric_batch.rx_packets > 0 {
+                metrics.inc_dpdk_rx_packets(self.metric_batch.rx_packets);
+                metrics.inc_dpdk_rx_packets_queue(&self.queue_label, self.metric_batch.rx_packets);
+            }
+            if self.metric_batch.rx_bytes > 0 {
+                metrics.add_dpdk_rx_bytes(self.metric_batch.rx_bytes);
+                metrics.add_dpdk_rx_bytes_queue(&self.queue_label, self.metric_batch.rx_bytes);
+            }
+            if self.metric_batch.rx_dropped > 0 {
+                metrics.inc_dpdk_rx_dropped(self.metric_batch.rx_dropped);
+                metrics.inc_dpdk_rx_dropped_queue(&self.queue_label, self.metric_batch.rx_dropped);
+            }
+            if self.metric_batch.tx_packets > 0 {
+                metrics.inc_dpdk_tx_packets(self.metric_batch.tx_packets);
+                metrics.inc_dpdk_tx_packets_queue(&self.queue_label, self.metric_batch.tx_packets);
+            }
+            if self.metric_batch.tx_bytes > 0 {
+                metrics.add_dpdk_tx_bytes(self.metric_batch.tx_bytes);
+                metrics.add_dpdk_tx_bytes_queue(&self.queue_label, self.metric_batch.tx_bytes);
+            }
+            if self.metric_batch.tx_dropped > 0 {
+                metrics.inc_dpdk_tx_dropped(self.metric_batch.tx_dropped);
+                metrics.inc_dpdk_tx_dropped_queue(&self.queue_label, self.metric_batch.tx_dropped);
+            }
+            self.metric_batch = IoMetricBatch::default();
         }
 
         fn flush_tx(&mut self) -> Result<(), String> {
@@ -1913,18 +2114,11 @@ mod dpdk_io {
                 )
             };
             let sent_usize = sent as usize;
-            if let Some(metrics) = &self.metrics {
-                metrics.inc_dpdk_tx_packets(sent as u64);
-                let mut bytes = 0u64;
-                for len in self.tx_lens.iter().take(sent_usize) {
-                    bytes += *len as u64;
-                }
-                if bytes > 0 {
-                    metrics.add_dpdk_tx_bytes(bytes);
-                    metrics.add_dpdk_tx_bytes_queue(&self.queue_label, bytes);
-                }
-                metrics.inc_dpdk_tx_packets_queue(&self.queue_label, sent as u64);
+            let mut bytes = 0u64;
+            for len in self.tx_lens.iter().take(sent_usize) {
+                bytes += *len as u64;
             }
+            self.record_tx_packet(sent as u64, bytes);
             if sent_usize < self.tx_count as usize {
                 let dropped = (self.tx_count as usize).saturating_sub(sent_usize);
                 for idx in sent_usize..self.tx_count as usize {
@@ -1933,10 +2127,7 @@ mod dpdk_io {
                         unsafe { rust_rte_pktmbuf_free(mbuf) };
                     }
                 }
-                if let Some(metrics) = &self.metrics {
-                    metrics.inc_dpdk_tx_dropped(dropped as u64);
-                    metrics.inc_dpdk_tx_dropped_queue(&self.queue_label, dropped as u64);
-                }
+                self.record_tx_dropped(dropped as u64);
             }
             self.tx_count = 0;
             Ok(())
@@ -1956,20 +2147,32 @@ mod dpdk_io {
                         )
                     };
                     if received == 0 {
+                        self.flush_metrics_if_needed(true);
                         return Ok(0);
                     }
                     self.rx_count = received;
                     self.rx_index = 0;
+                    let first = self.rx_bufs[0];
+                    if !first.is_null() {
+                        unsafe { rust_rte_mbuf_prefetch_part1(first) };
+                    }
                 }
                 let mbuf = self.rx_bufs[self.rx_index as usize];
                 self.rx_index += 1;
                 if !mbuf.is_null() {
+                    unsafe {
+                        rust_rte_mbuf_prefetch_part1(mbuf);
+                        rust_rte_mbuf_prefetch_part2(mbuf);
+                    }
+                    if self.rx_index < self.rx_count {
+                        let next = self.rx_bufs[self.rx_index as usize];
+                        if !next.is_null() {
+                            unsafe { rust_rte_mbuf_prefetch_part1(next) };
+                        }
+                    }
                     break mbuf;
                 }
-                if let Some(metrics) = &self.metrics {
-                    metrics.inc_dpdk_rx_dropped(1);
-                    metrics.inc_dpdk_rx_dropped_queue(&self.queue_label, 1);
-                }
+                self.record_rx_dropped(1);
                 if self.rx_index >= self.rx_count {
                     return Ok(0);
                 }
@@ -1991,10 +2194,7 @@ mod dpdk_io {
                     );
                 }
                 unsafe { rust_rte_pktmbuf_free(mbuf) };
-                if let Some(metrics) = &self.metrics {
-                    metrics.inc_dpdk_rx_dropped(1);
-                    metrics.inc_dpdk_rx_dropped_queue(&self.queue_label, 1);
-                }
+                self.record_rx_dropped(1);
                 return Ok(0);
             }
 
@@ -2039,10 +2239,7 @@ mod dpdk_io {
                     "dpdk: rx mbuf had zero-length payload (pkt_len={}, data_len={}, nb_segs={}, data_off={})",
                     pkt_len, data_len, nb_segs, data_off
                 );
-                if let Some(metrics) = &self.metrics {
-                    metrics.inc_dpdk_rx_dropped(1);
-                    metrics.inc_dpdk_rx_dropped_queue(&self.queue_label, 1);
-                }
+                self.record_rx_dropped(1);
             }
             if offset > 0 && !DPDK_RX_LOGGED.swap(true, Ordering::Relaxed) {
                 let head_len = offset.min(32);
@@ -2058,12 +2255,7 @@ mod dpdk_io {
                 );
             }
             if offset > 0 {
-                if let Some(metrics) = &self.metrics {
-                    metrics.inc_dpdk_rx_packets(1);
-                    metrics.add_dpdk_rx_bytes(offset as u64);
-                    metrics.inc_dpdk_rx_packets_queue(&self.queue_label, 1);
-                    metrics.add_dpdk_rx_bytes_queue(&self.queue_label, offset as u64);
-                }
+                self.record_rx_packet(offset as u64);
             }
             Ok(offset)
         }
@@ -2071,32 +2263,24 @@ mod dpdk_io {
         fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
             let mbuf = unsafe { rust_rte_pktmbuf_alloc(self.mempool) };
             if mbuf.is_null() {
-                if let Some(metrics) = &self.metrics {
-                    metrics.inc_dpdk_tx_dropped(1);
-                    metrics.inc_dpdk_tx_dropped_queue(&self.queue_label, 1);
-                }
+                self.record_tx_dropped(1);
                 return Err("dpdk: failed to allocate mbuf".to_string());
             }
             if frame.len() > u16::MAX as usize {
                 unsafe { rust_rte_pktmbuf_free(mbuf) };
-                if let Some(metrics) = &self.metrics {
-                    metrics.inc_dpdk_tx_dropped(1);
-                    metrics.inc_dpdk_tx_dropped_queue(&self.queue_label, 1);
-                }
+                self.record_tx_dropped(1);
                 return Err("dpdk: frame exceeds mbuf max length".to_string());
             }
             let dst = unsafe { rust_rte_pktmbuf_append(mbuf, frame.len() as u16) };
             if dst.is_null() {
                 unsafe { rust_rte_pktmbuf_free(mbuf) };
-                if let Some(metrics) = &self.metrics {
-                    metrics.inc_dpdk_tx_dropped(1);
-                    metrics.inc_dpdk_tx_dropped_queue(&self.queue_label, 1);
-                }
+                self.record_tx_dropped(1);
                 return Err("dpdk: frame exceeds mbuf tailroom".to_string());
             }
             unsafe {
                 ptr::copy_nonoverlapping(frame.as_ptr(), dst as *mut u8, frame.len());
             }
+            maybe_prepare_tx_checksum_offload(mbuf, frame, self.tx_csum_offload);
             let idx = self.tx_count as usize;
             if idx >= TX_BURST_SIZE {
                 self.flush_tx()?;
@@ -2112,7 +2296,9 @@ mod dpdk_io {
         }
 
         fn flush(&mut self) -> Result<(), String> {
-            self.flush_tx()
+            self.flush_tx()?;
+            self.flush_metrics_if_needed(true);
+            Ok(())
         }
 
         fn mac(&self) -> Option<[u8; 6]> {
@@ -2131,12 +2317,26 @@ mod dpdk_io {
                 .and_then(|val| val.parse::<usize>().ok())
                 .unwrap_or(max_cores)
                 .max(1);
-            let core_count = requested.min(max_cores);
-            let core_list = if core_count <= 1 {
+            let requested = requested.min(max_cores);
+            let core_ids = std::env::var("NEUWERK_DPDK_CORE_IDS")
+                .ok()
+                .map(|raw| parse_core_id_list(&raw))
+                .filter(|ids| !ids.is_empty())
+                .map(|mut ids| {
+                    ids.truncate(requested);
+                    ids
+                })
+                .unwrap_or_else(|| (0..requested).collect());
+            let core_list = if core_ids.is_empty() {
                 "0".to_string()
             } else {
-                format!("0-{}", core_count - 1)
+                core_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
             };
+            eprintln!("dpdk: eal lcore list={}", core_list);
             let mut args = vec![
                 "firewall".to_string(),
                 "-l".to_string(),
@@ -2148,6 +2348,9 @@ mod dpdk_io {
                 "--no-telemetry".to_string(),
                 "--in-memory".to_string(),
             ];
+            let cloud_provider = std::env::var("NEUWERK_CLOUD_PROVIDER")
+                .unwrap_or_default()
+                .to_ascii_lowercase();
             let iova_override = std::env::var("NEUWERK_DPDK_IOVA").ok();
             if let Some(mode) = iova_override.as_deref() {
                 let mode = mode.trim().to_ascii_lowercase();
@@ -2164,16 +2367,35 @@ mod dpdk_io {
                 .ok()
                 .as_deref()
                 == Some("1");
-            let cloud_provider = std::env::var("NEUWERK_CLOUD_PROVIDER")
-                .unwrap_or_default()
-                .to_ascii_lowercase();
             let allow_azure_pmds = cloud_provider == "azure";
+            let allow_gcp_autoprobe = cloud_provider == "gcp"
+                && std::env::var("NEUWERK_GCP_DPDK_AUTOPROBE")
+                    .ok()
+                    .as_deref()
+                    == Some("1");
+            if allow_gcp_autoprobe {
+                eprintln!("dpdk: gcp auto-probe override enabled");
+            }
             if let Some(pci) = normalize_pci_arg(iface) {
-                args.push("-a".to_string());
-                args.push(pci);
+                if !allow_gcp_autoprobe {
+                    args.push("-a".to_string());
+                    args.push(pci);
+                } else {
+                    eprintln!(
+                        "dpdk: gcp auto-probe enabled; ignoring explicit pci selector {}",
+                        pci
+                    );
+                }
             } else if let Ok(pci) = pci_addr_for_iface(iface) {
-                args.push("-a".to_string());
-                args.push(pci);
+                if !allow_gcp_autoprobe {
+                    args.push("-a".to_string());
+                    args.push(pci);
+                } else {
+                    eprintln!(
+                        "dpdk: gcp auto-probe enabled; ignoring iface-derived pci selector {}",
+                        pci
+                    );
+                }
             } else if let Some(mac) = normalize_mac_arg(iface) {
                 let mac_str = format_mac(mac);
                 if allow_azure_pmds {
@@ -2196,6 +2418,11 @@ mod dpdk_io {
                         args.push("--vdev".to_string());
                         args.push(format!("net_mana,mac={}", mac_str));
                     }
+                } else if allow_gcp_autoprobe {
+                    eprintln!(
+                        "dpdk: gcp auto-probe enabled; using mac selector {} after probe",
+                        mac_str
+                    );
                 } else if let Some(pci) = pci_addr_for_mac(mac) {
                     args.push("-a".to_string());
                     args.push(pci);
@@ -2529,6 +2756,83 @@ mod dpdk_io {
 
     fn is_hex_len(value: &str, len: usize) -> bool {
         value.len() == len && value.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    fn maybe_prepare_tx_checksum_offload(
+        mbuf: *mut rte_mbuf,
+        frame: &[u8],
+        caps: TxChecksumOffloadCaps,
+    ) {
+        if mbuf.is_null() || !caps.any() {
+            return;
+        }
+        if frame.len() < super::ETH_HDR_LEN + 20 {
+            return;
+        }
+        let ether_type = u16::from_be_bytes([frame[12], frame[13]]);
+        if ether_type != super::ETH_TYPE_IPV4 {
+            return;
+        }
+        let ip_off = super::ETH_HDR_LEN;
+        let ver_ihl = frame[ip_off];
+        if (ver_ihl >> 4) != 4 {
+            return;
+        }
+        let ihl = ((ver_ihl & 0x0f) as usize) * 4;
+        if ihl < 20 || frame.len() < ip_off + ihl {
+            return;
+        }
+        let proto = frame[ip_off + 9];
+        let l4_off = ip_off + ihl;
+        let mut ol_flags = PKT_TX_IPV4;
+        if caps.ipv4 {
+            ol_flags |= PKT_TX_IP_CKSUM;
+        }
+        let l4_cksum_ptr = match proto {
+            6 if caps.tcp => {
+                if frame.len() < l4_off + 20 {
+                    return;
+                }
+                ol_flags |= PKT_TX_TCP_CKSUM;
+                (l4_off + 16) as u16
+            }
+            17 if caps.udp => {
+                if frame.len() < l4_off + 8 {
+                    return;
+                }
+                if frame[l4_off + 6] == 0 && frame[l4_off + 7] == 0 {
+                    return;
+                }
+                ol_flags |= PKT_TX_UDP_CKSUM;
+                (l4_off + 6) as u16
+            }
+            _ => return,
+        };
+        unsafe {
+            let ip_hdr = rust_rte_pktmbuf_mtod_offset(mbuf, ip_off as u16) as *mut ipv4_hdr;
+            if ip_hdr.is_null() {
+                return;
+            }
+            if (ol_flags & PKT_TX_IP_CKSUM) != 0 {
+                std::ptr::write_unaligned(std::ptr::addr_of_mut!((*ip_hdr).hdr_checksum), 0);
+            }
+            let pseudo = rust_rte_ipv4_phdr_cksum(ip_hdr, ol_flags);
+            let l4_cksum = rust_rte_pktmbuf_mtod_offset(mbuf, l4_cksum_ptr) as *mut u16;
+            if l4_cksum.is_null() {
+                return;
+            }
+            std::ptr::write_unaligned(l4_cksum, pseudo);
+
+            let m = &mut *mbuf;
+            m.ol_flags = ol_flags;
+            let tx_offload = m._5._1.as_mut();
+            tx_offload.set_l2_len(super::ETH_HDR_LEN as u64);
+            tx_offload.set_l3_len(ihl as u64);
+            tx_offload.set_l4_len(0);
+            tx_offload.set_tso_segsz(0);
+            tx_offload.set_outer_l2_len(0);
+            tx_offload.set_outer_l3_len(0);
+        }
     }
 }
 

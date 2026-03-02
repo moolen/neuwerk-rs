@@ -1,0 +1,9 @@
+artifact_dir=/home/moritz/dev/neuwerk-rs/firewall/cloud-tests/azure/artifacts/eventprobe-singleton-20260301T112013Z/trigger-seq-20260301T112210Z
+rg=neuwerk-azure-e2e
+vmss=neuwerk-e2e-ziqsc3-fw
+jump=20.79.249.152
+start_capacity=1
+start_count=1
+singleton name=neuwerk-e2e-ziqsc3-fw_49c22ac8 id=neuwerk-e2e-ziqsc3-fw_49c22ac8 ip=10.20.1.4
+trigger=reboot target=neuwerk-e2e-ziqsc3-fw_49c22ac8
+watch_pid_reboot=89033

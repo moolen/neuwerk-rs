@@ -1,0 +1,16 @@
+Running 45s test @ http://10.20.4.10/
+  8 threads and 400 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     5.69ms    3.52ms 220.95ms   98.88%
+    Req/Sec     8.81k   551.00    12.87k    85.64%
+  Latency Distribution
+     50%    5.50ms
+     75%    6.01ms
+     90%    6.61ms
+     99%    8.75ms
+  3160548 requests in 45.07s, 551.57MB read
+Requests/sec:  70120.75
+Transfer/sec:     12.24MB
+---- dpdk delta c400 ----
+10.20.1.4 rx_delta=1619235840 tx_delta=1619229996
+total_rx_delta=1619235840 total_tx_delta=1619229996

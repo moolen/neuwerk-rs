@@ -1,6 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
 use std::env;
-use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -21,6 +19,7 @@ use firewall::controlplane::cloud::{self, IntegrationManager, ReadyChecker, Read
 use firewall::controlplane::cluster::migration;
 use firewall::controlplane::cluster::rpc::{AuthClient, RaftTlsConfig};
 use firewall::controlplane::dhcp::{DhcpClient, DhcpClientConfig};
+use firewall::controlplane::integrations::IntegrationStore;
 use firewall::controlplane::policy_repository::PolicyDiskStore;
 use firewall::controlplane::ready::ReadinessState;
 use firewall::controlplane::wiretap::{load_or_create_node_id, DnsMap, WiretapHub};
@@ -38,7 +37,7 @@ use netlink_packet_route::address::AddressAttribute;
 use netlink_packet_route::link::LinkAttribute;
 use rtnetlink::new_connection;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot, watch};
 
 const DNS_ALLOWLIST_IDLE_SLACK_SECS: u64 = 120;
@@ -46,6 +45,8 @@ const DNS_ALLOWLIST_GC_INTERVAL_SECS: u64 = 30;
 const DHCP_TIMEOUT_SECS: u64 = 5;
 const DHCP_RETRY_MAX: u32 = 5;
 const DHCP_LEASE_MIN_SECS: u64 = 60;
+const KUBERNETES_RECONCILE_INTERVAL_SECS: u64 = 5;
+const KUBERNETES_STALE_GRACE_SECS: u64 = 300;
 
 #[cfg(target_os = "linux")]
 fn cpu_core_count() -> usize {
@@ -81,13 +82,43 @@ fn shard_index_for_packet(pkt: &Packet, shard_count: usize) -> usize {
     let (src_port, dst_port) = pkt.ports().unwrap_or((0, 0));
     let src_u = u32::from(src_ip);
     let dst_u = u32::from(dst_ip);
-    let forward = (src_u, dst_u, src_port, dst_port);
-    let reverse = (dst_u, src_u, dst_port, src_port);
-    let key = if forward <= reverse { forward } else { reverse };
-    let mut hasher = DefaultHasher::new();
-    proto.hash(&mut hasher);
-    key.hash(&mut hasher);
-    (hasher.finish() as usize) % shard_count
+    let forward = ((src_u as u64) << 32) | dst_u as u64;
+    let reverse = ((dst_u as u64) << 32) | src_u as u64;
+    let forward_ports = ((src_port as u64) << 16) | dst_port as u64;
+    let reverse_ports = ((dst_port as u64) << 16) | src_port as u64;
+    let (a, b) = if (forward, forward_ports) <= (reverse, reverse_ports) {
+        (forward, forward_ports)
+    } else {
+        (reverse, reverse_ports)
+    };
+    // Fast, deterministic symmetric flow hash for hot-path sharding.
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    x ^= a.wrapping_mul(0x9ddf_ea08_eb38_2d69);
+    x ^= b.wrapping_mul(0xc2b2_ae35);
+    x ^= (proto as u64).wrapping_mul(0x1656_67b1);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    x ^= x >> 33;
+    (x as usize) % shard_count
+}
+
+fn env_u64_with_default(name: &str, default: u64) -> u64 {
+    match env::var(name) {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(0) => {
+                eprintln!("{name}=0 is invalid, using default {default}");
+                default
+            }
+            Ok(value) => value,
+            Err(_) => {
+                eprintln!("{name}={raw} is invalid, using default {default}");
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -111,6 +142,154 @@ fn pin_thread_to_core(core_id: usize) -> Result<(), String> {
 #[cfg(not(target_os = "linux"))]
 fn pin_thread_to_core(_core_id: usize) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn parse_cpu_list(spec: &str) -> Vec<usize> {
+    let mut cpus = Vec::new();
+    for token in spec.trim().split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if let Some((start, end)) = token.split_once('-') {
+            let Ok(start) = start.trim().parse::<usize>() else {
+                continue;
+            };
+            let Ok(end) = end.trim().parse::<usize>() else {
+                continue;
+            };
+            if start <= end {
+                for cpu in start..=end {
+                    cpus.push(cpu);
+                }
+            } else {
+                for cpu in end..=start {
+                    cpus.push(cpu);
+                }
+            }
+        } else if let Ok(cpu) = token.parse::<usize>() {
+            cpus.push(cpu);
+        }
+    }
+    cpus.sort_unstable();
+    cpus.dedup();
+    cpus
+}
+
+#[cfg(target_os = "linux")]
+fn allowed_cpu_ids(max_workers: usize) -> Vec<usize> {
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        if let Some(line) = status
+            .lines()
+            .find(|line| line.starts_with("Cpus_allowed_list:"))
+        {
+            if let Some((_, list)) = line.split_once(':') {
+                let parsed = parse_cpu_list(list);
+                if !parsed.is_empty() {
+                    return parsed;
+                }
+            }
+        }
+    }
+    (0..max_workers.max(1)).collect()
+}
+
+#[cfg(target_os = "linux")]
+fn thread_siblings(cpu: usize) -> Vec<usize> {
+    let path = format!("/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list");
+    if let Ok(raw) = std::fs::read_to_string(path) {
+        let parsed = parse_cpu_list(&raw);
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+    vec![cpu]
+}
+
+#[cfg(target_os = "linux")]
+fn choose_dpdk_worker_core_ids(requested_workers: usize, max_workers: usize) -> Vec<usize> {
+    let allowed = allowed_cpu_ids(max_workers);
+    if allowed.is_empty() {
+        return vec![0];
+    }
+    let allowed_set: HashSet<usize> = allowed.iter().copied().collect();
+    let mut seen = HashSet::new();
+    let mut slots: Vec<Vec<usize>> = Vec::new();
+    for cpu in &allowed {
+        if seen.contains(cpu) {
+            continue;
+        }
+        let mut siblings = thread_siblings(*cpu);
+        siblings.retain(|id| allowed_set.contains(id));
+        siblings.sort_unstable();
+        siblings.dedup();
+        if siblings.is_empty() {
+            siblings.push(*cpu);
+        }
+        for id in &siblings {
+            seen.insert(*id);
+        }
+        slots.push(siblings);
+    }
+    if slots.is_empty() {
+        return vec![allowed[0]];
+    }
+
+    let target = requested_workers.max(1).min(allowed.len());
+    let mut selected = Vec::with_capacity(target);
+    let mut selected_set = HashSet::new();
+
+    for slot in &slots {
+        let cpu = slot[0];
+        if selected_set.insert(cpu) {
+            selected.push(cpu);
+            if selected.len() == target {
+                return selected;
+            }
+        }
+    }
+
+    let mut level = 1usize;
+    while selected.len() < target {
+        let mut added = false;
+        for slot in &slots {
+            if level < slot.len() {
+                let cpu = slot[level];
+                if selected_set.insert(cpu) {
+                    selected.push(cpu);
+                    added = true;
+                    if selected.len() == target {
+                        return selected;
+                    }
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+        level += 1;
+    }
+
+    for cpu in allowed {
+        if selected_set.insert(cpu) {
+            selected.push(cpu);
+            if selected.len() == target {
+                break;
+            }
+        }
+    }
+
+    if selected.is_empty() {
+        selected.push(0);
+    }
+    selected
+}
+
+#[cfg(not(target_os = "linux"))]
+fn choose_dpdk_worker_core_ids(requested_workers: usize, max_workers: usize) -> Vec<usize> {
+    let target = requested_workers.max(1).min(max_workers.max(1));
+    (0..target).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -588,6 +767,48 @@ fn parse_imds_mac(value: &str) -> Result<[u8; 6], String> {
         bytes[idx] = u8::from_str_radix(part, 16).map_err(|_| "invalid imds mac".to_string())?;
     }
     Ok(bytes)
+}
+
+fn dpdk_static_config_from_env() -> Result<Option<firewall::dataplane::DataplaneConfig>, String> {
+    let ip_raw = match env::var("NEUWERK_DPDK_STATIC_IP") {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let prefix_raw = env::var("NEUWERK_DPDK_STATIC_PREFIX").map_err(|_| {
+        "NEUWERK_DPDK_STATIC_PREFIX is required when NEUWERK_DPDK_STATIC_IP is set".to_string()
+    })?;
+    let gateway_raw = env::var("NEUWERK_DPDK_STATIC_GATEWAY").map_err(|_| {
+        "NEUWERK_DPDK_STATIC_GATEWAY is required when NEUWERK_DPDK_STATIC_IP is set".to_string()
+    })?;
+    let mac_raw = env::var("NEUWERK_DPDK_STATIC_MAC").map_err(|_| {
+        "NEUWERK_DPDK_STATIC_MAC is required when NEUWERK_DPDK_STATIC_IP is set".to_string()
+    })?;
+
+    let ip = ip_raw
+        .trim()
+        .parse::<Ipv4Addr>()
+        .map_err(|_| format!("invalid NEUWERK_DPDK_STATIC_IP={ip_raw}"))?;
+    let prefix = prefix_raw
+        .trim()
+        .parse::<u8>()
+        .map_err(|_| format!("invalid NEUWERK_DPDK_STATIC_PREFIX={prefix_raw}"))?;
+    if prefix == 0 || prefix > 32 {
+        return Err(format!("invalid NEUWERK_DPDK_STATIC_PREFIX={prefix_raw}"));
+    }
+    let gateway = gateway_raw
+        .trim()
+        .parse::<Ipv4Addr>()
+        .map_err(|_| format!("invalid NEUWERK_DPDK_STATIC_GATEWAY={gateway_raw}"))?;
+    let mac = parse_mac(mac_raw.trim())
+        .ok_or_else(|| format!("invalid NEUWERK_DPDK_STATIC_MAC={mac_raw}"))?;
+
+    Ok(Some(firewall::dataplane::DataplaneConfig {
+        ip,
+        prefix,
+        gateway,
+        mac,
+        lease_expiry: None,
+    }))
 }
 
 fn take_flag_value(
@@ -1870,6 +2091,7 @@ fn run_dataplane(
     state.set_dns_allowlist(dns_allowlist);
     state.set_dns_target_ips(dns_target_ips);
     state.set_dataplane_config(dataplane_config);
+    state.set_policy_applied_generation(policy_applied_generation.clone());
     state.set_service_policy_applied_generation(service_policy_applied_generation);
     if let Some(control) = drain_control {
         state.set_drain_control(control);
@@ -1889,18 +2111,37 @@ fn run_dataplane(
             adapter.run(&mut state)
         }
         DataPlaneMode::Dpdk => {
-            let requested_workers = std::env::var("NEUWERK_DPDK_WORKERS")
+            let requested_workers_env = std::env::var("NEUWERK_DPDK_WORKERS")
                 .ok()
                 .and_then(|val| val.parse::<usize>().ok())
                 .unwrap_or(1)
                 .max(1);
             let max_workers = cpu_core_count();
-            let requested_workers = requested_workers.min(max_workers);
+            let mut worker_core_ids =
+                choose_dpdk_worker_core_ids(requested_workers_env, max_workers.max(1));
+            if worker_core_ids.is_empty() {
+                worker_core_ids.push(0);
+            }
+            let requested_workers = requested_workers_env.min(worker_core_ids.len()).max(1);
+            worker_core_ids.truncate(requested_workers);
+            let worker_core_list = worker_core_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            std::env::set_var("NEUWERK_DPDK_CORE_IDS", &worker_core_list);
+            if requested_workers_env > requested_workers {
+                eprintln!(
+                    "dpdk: cpuset limits requested workers {} -> {}",
+                    requested_workers_env, requested_workers
+                );
+            }
             eprintln!(
-                "dpdk: worker config requested={}, cpu_cores={}, using={}",
+                "dpdk: worker config requested={}, cpu_cores={}, using={}, core_ids={}",
                 std::env::var("NEUWERK_DPDK_WORKERS").unwrap_or_else(|_| "unset".to_string()),
                 max_workers,
-                requested_workers
+                requested_workers,
+                worker_core_list
             );
             let effective_queues = if requested_workers > 1 {
                 match DpdkIo::effective_queue_count(&data_plane_iface, requested_workers as u16) {
@@ -1937,6 +2178,15 @@ fn run_dataplane(
             }
             if matches!(plan.mode, DpdkWorkerMode::Single) {
                 let iface = data_plane_iface.clone();
+                let core_id = worker_core_ids.first().copied().unwrap_or(0);
+                if let Err(err) = pin_thread_to_core(core_id) {
+                    eprintln!(
+                        "dpdk: single worker failed to pin to core {}: {}",
+                        core_id, err
+                    );
+                } else {
+                    eprintln!("dpdk: single worker pinned to core {}", core_id);
+                }
                 let mut adapter = DpdkAdapter::new(data_plane_iface)?;
                 if let Some(publisher) = mac_publisher {
                     adapter.set_mac_publisher(publisher);
@@ -2028,8 +2278,10 @@ fn run_dataplane(
                     } else {
                         None
                     };
-                    let core_count = max_workers.max(1);
-                    let core_id = worker_id % core_count;
+                    let core_id = worker_core_ids
+                        .get(worker_id)
+                        .copied()
+                        .unwrap_or(worker_id % max_workers.max(1));
                     let handle = std::thread::Builder::new()
                         .name(format!("dpdk-worker-{worker_id}"))
                         .spawn(move || -> Result<(), String> {
@@ -2405,6 +2657,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if dpdk_enabled && dataplane_config.get().is_none() {
+        match dpdk_static_config_from_env() {
+            Ok(Some(config)) => {
+                eprintln!(
+                    "dpdk static bootstrap: set dataplane config ip={}, prefix={}, gateway={}",
+                    config.ip, config.prefix, config.gateway
+                );
+                dataplane_config.set(config);
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("dpdk static bootstrap failed: {err}"),
+        }
+    }
+
+    if dpdk_enabled && dataplane_config.get().is_none() {
         match imds_dataplane_from_mgmt_ip(management_ip).await {
             Ok((ip, prefix, gateway, mac)) => {
                 dataplane_config.set(firewall::dataplane::DataplaneConfig {
@@ -2696,6 +2962,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    let kubernetes_integration_store = match cluster_runtime.as_ref() {
+        Some(runtime) => IntegrationStore::cluster(runtime.raft.clone(), runtime.store.clone()),
+        None => IntegrationStore::local(PathBuf::from("/var/lib/neuwerk/integrations")),
+    };
+    let kubernetes_reconcile_interval_secs = env_u64_with_default(
+        "NEUWERK_KUBERNETES_RECONCILE_INTERVAL_SECS",
+        KUBERNETES_RECONCILE_INTERVAL_SECS,
+    );
+    let kubernetes_stale_grace_secs = env_u64_with_default(
+        "NEUWERK_KUBERNETES_STALE_GRACE_SECS",
+        KUBERNETES_STALE_GRACE_SECS,
+    );
+    let _kubernetes_resolver_task = {
+        let policy_store = policy_store.clone();
+        let integration_store = kubernetes_integration_store.clone();
+        tokio::spawn(async move {
+            controlplane::kubernetes::run_kubernetes_resolver(
+                policy_store,
+                integration_store,
+                Duration::from_secs(kubernetes_stale_grace_secs),
+                Duration::from_secs(kubernetes_reconcile_interval_secs),
+            )
+            .await;
+        })
+    };
+
     let tls_intercept_ca_present = match controlplane::intercept_tls::has_intercept_ca_material(
         &cfg.http_tls_dir,
         cluster_runtime.as_ref().map(|runtime| &runtime.store),
@@ -2950,7 +3242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (None, None)
     };
 
-    let dhcp_task = if dpdk_enabled {
+    let dhcp_task = if dpdk_enabled && dataplane_config.get().is_none() {
         let mac_rx = mac_rx.as_ref().expect("mac receiver").clone();
         let dhcp_client = DhcpClient {
             config: DhcpClientConfig {
@@ -2959,7 +3251,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 lease_min_secs: cfg.dhcp_lease_min_secs,
                 hostname: None,
                 update_internal_cidr: cfg.internal_cidr.is_none(),
-                allow_router_fallback_from_subnet: cfg.cloud_provider == CloudProviderKind::Azure,
+                allow_router_fallback_from_subnet: matches!(
+                    cfg.cloud_provider,
+                    CloudProviderKind::Azure | CloudProviderKind::Gcp
+                ),
             },
             mac_rx,
             rx: dp_to_cp_rx.expect("dhcp rx"),
@@ -2978,7 +3273,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    if dpdk_enabled {
+    if dpdk_enabled && dataplane_config.get().is_none() {
         let dataplane_config = dataplane_config.clone();
         let mut mac_rx = mac_rx.expect("mac receiver");
         tokio::spawn(async move {

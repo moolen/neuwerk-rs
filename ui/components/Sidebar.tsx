@@ -2,6 +2,7 @@ import React from 'react';
 import {
   LayoutDashboard,
   Shield,
+  Link,
   Radio,
   Search,
   Globe,
@@ -29,6 +30,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'policies', label: 'Policies', icon: Shield },
+    { id: 'integrations', label: 'Integrations', icon: Link },
     { id: 'wiretap', label: 'Wiretap', icon: Radio },
     { id: 'audit', label: 'Audit', icon: Search },
     { id: 'dns', label: 'DNS Cache', icon: Globe },

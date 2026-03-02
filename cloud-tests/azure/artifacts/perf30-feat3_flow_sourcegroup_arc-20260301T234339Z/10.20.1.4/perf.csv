@@ -1,0 +1,11 @@
+30000113284,,task-clock,30000113284,100.00,1.000,CPUs utilized
+14643,,context-switches,30000116990,100.00,488.098,/sec
+0,,cpu-migrations,30000141086,100.00,0.000,/sec
+0,,page-faults,30000144632,100.00,0.000,/sec
+29990890714,,cpu-clock,30000149060,100.00,1.000,CPUs utilized
+<not supported>,,cycles,0,100.00,,
+<not supported>,,instructions,0,100.00,,
+<not supported>,,cache-references,0,100.00,,
+<not supported>,,cache-misses,0,100.00,,
+<not supported>,,branches,0,100.00,,
+<not supported>,,branch-misses,0,100.00,,

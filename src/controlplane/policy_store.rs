@@ -3,7 +3,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::controlplane::policy_config::{DnsPolicy, PolicyConfig, PolicyMode};
+use crate::controlplane::policy_config::{
+    DnsPolicy, KubernetesSelectorBinding, PolicyConfig, PolicyMode,
+};
 use crate::dataplane::config::DataplaneConfigStore;
 use crate::dataplane::policy::{
     CidrV4, DefaultPolicy, DynamicIpSetV4, EnforcementMode, IpSetV4, PolicySnapshot, Proto, Rule,
@@ -20,6 +22,7 @@ struct PolicyStoreState {
     default_policy: DefaultPolicy,
     enforcement_mode: EnforcementMode,
     extra_groups: Vec<SourceGroup>,
+    kubernetes_bindings: Vec<KubernetesSelectorBinding>,
     generation: u64,
     active_policy_id: Option<Uuid>,
 }
@@ -72,6 +75,7 @@ impl PolicyStore {
             extra_groups: Vec::new(),
             generation: 0,
             active_policy_id: None,
+            kubernetes_bindings: Vec::new(),
         }));
 
         Self {
@@ -132,10 +136,27 @@ impl PolicyStore {
 
     pub fn rebuild(
         &self,
+        extra_groups: Vec<SourceGroup>,
+        dns_policy: DnsPolicy,
+        default_policy: Option<DefaultPolicy>,
+        enforcement_mode: EnforcementMode,
+    ) -> Result<u64, String> {
+        self.rebuild_with_kubernetes_bindings(
+            extra_groups,
+            dns_policy,
+            default_policy,
+            enforcement_mode,
+            Vec::new(),
+        )
+    }
+
+    pub fn rebuild_with_kubernetes_bindings(
+        &self,
         mut extra_groups: Vec<SourceGroup>,
         dns_policy: DnsPolicy,
         default_policy: Option<DefaultPolicy>,
         enforcement_mode: EnforcementMode,
+        kubernetes_bindings: Vec<KubernetesSelectorBinding>,
     ) -> Result<u64, String> {
         // Clear DNS allowlist entries so policy changes immediately revoke prior DNS grants.
         self.dns_allowlist.clear();
@@ -147,6 +168,7 @@ impl PolicyStore {
                     }
                     state.enforcement_mode = enforcement_mode;
                     state.extra_groups = extra_groups.clone();
+                    state.kubernetes_bindings = kubernetes_bindings;
                     state.generation = state.generation.wrapping_add(1);
                     (
                         state.internal_net,
@@ -197,7 +219,10 @@ impl PolicyStore {
         internal_net: Ipv4Addr,
         internal_prefix: u8,
     ) -> Result<(), String> {
-        let (extra_groups, default_policy, enforcement_mode) = match self.state.write() {
+        let (extra_groups, default_policy, enforcement_mode, kubernetes_bindings) = match self
+            .state
+            .write()
+        {
             Ok(mut state) => {
                 if state.internal_net == internal_net && state.internal_prefix == internal_prefix {
                     return Ok(());
@@ -208,6 +233,7 @@ impl PolicyStore {
                     state.extra_groups.clone(),
                     state.default_policy,
                     state.enforcement_mode,
+                    state.kubernetes_bindings.clone(),
                 )
             }
             Err(_) => return Err("policy store internal state unavailable".to_string()),
@@ -218,11 +244,12 @@ impl PolicyStore {
             Err(_) => return Err("dns policy unavailable".to_string()),
         };
 
-        self.rebuild(
+        self.rebuild_with_kubernetes_bindings(
             extra_groups,
             dns_policy,
             Some(default_policy),
             enforcement_mode,
+            kubernetes_bindings,
         )?;
         Ok(())
     }
@@ -264,11 +291,12 @@ impl PolicyStore {
         } else {
             EnforcementMode::Enforce
         };
-        self.rebuild(
+        self.rebuild_with_kubernetes_bindings(
             compiled.groups,
             compiled.dns_policy,
             compiled.default_policy,
             enforcement_mode,
+            compiled.kubernetes_bindings,
         )
     }
 
@@ -289,6 +317,13 @@ impl PolicyStore {
         match self.state.read() {
             Ok(state) => state.enforcement_mode,
             Err(_) => EnforcementMode::Enforce,
+        }
+    }
+
+    pub fn kubernetes_bindings(&self) -> Vec<KubernetesSelectorBinding> {
+        match self.state.read() {
+            Ok(state) => state.kubernetes_bindings.clone(),
+            Err(_) => Vec::new(),
         }
     }
 

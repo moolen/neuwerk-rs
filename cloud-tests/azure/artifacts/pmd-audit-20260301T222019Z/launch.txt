@@ -1,0 +1,9 @@
+=== launch 10.20.1.4 ===
+OUT=/tmp/neuwerk-prof-20260301T222021Z
+COLLECTOR_PID=2937
+=== launch 10.20.1.5 ===
+OUT=/tmp/neuwerk-prof-20260301T222022Z
+COLLECTOR_PID=2067
+=== launch 10.20.1.6 ===
+OUT=/tmp/neuwerk-prof-20260301T222024Z
+COLLECTOR_PID=2071

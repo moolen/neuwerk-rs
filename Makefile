@@ -1,4 +1,4 @@
-.PHONY: build test test.integration ha.up ha.down build.dpdk
+.PHONY: build test test.integration test.integration.kind ha.up ha.down build.dpdk
 
 DPDK_VERSION := $(shell cat third_party/dpdk/VERSION 2>/dev/null)
 DPDK_INSTALL := third_party/dpdk/install/$(DPDK_VERSION)
@@ -19,8 +19,13 @@ test:
 
 test.integration: build
 	cargo run --bin e2e_harness
+	cargo run --bin e2e_kind_harness
+
+test.integration.kind: build
+	cargo run --bin e2e_kind_harness
 
 ha.up: build
+	@echo "run with: DEFAULT_POLICY=deny WAN_IFACE=<iface> make ha.up"
 	sudo ./scripts/ha_local.sh up
 
 ha.down:
@@ -29,3 +34,7 @@ ha.down:
 .PHONY: azure.%
 azure.%:
 	$(MAKE) -C cloud-tests/azure $*
+
+.PHONY: gcp.%
+gcp.%:
+	$(MAKE) -C cloud-tests/gcp $*

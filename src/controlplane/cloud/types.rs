@@ -152,5 +152,4 @@ mod tests {
 
         assert!(filter.matches(&resource_tags));
     }
-
 }
