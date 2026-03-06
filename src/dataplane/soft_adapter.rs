@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
+use std::sync::OnceLock;
 
 use crate::dataplane::engine::{Action, EngineState};
 use crate::dataplane::overlay::{self, EncapMode};
@@ -10,6 +11,7 @@ const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
 const IFF_TUN: libc::c_short = 0x0001;
 const IFF_TAP: libc::c_short = 0x0002;
 const IFF_NO_PI: libc::c_short = 0x1000;
+static OVERLAY_SWAP_TUNNELS: OnceLock<bool> = OnceLock::new();
 
 #[repr(C)]
 struct IfReq {
@@ -86,8 +88,7 @@ impl SoftAdapter {
                 continue;
             }
 
-            let metrics = state.metrics().cloned();
-            let overlay_pkt = match overlay::decap(&buf[..n], &state.overlay, metrics.as_ref()) {
+            let overlay_pkt = match overlay::decap(&buf[..n], &state.overlay, state.metrics()) {
                 Ok(pkt) => pkt,
                 Err(_) => continue,
             };
@@ -96,15 +97,16 @@ impl SoftAdapter {
             match crate::dataplane::engine::handle_packet(&mut inner, state) {
                 Action::Drop => {}
                 Action::Forward { .. } | Action::ToHost => {
-                    let out = match overlay::encap(
-                        &inner,
+                    let out_meta = overlay::reply_meta(
                         &overlay_pkt.meta,
                         &state.overlay,
-                        metrics.as_ref(),
-                    ) {
-                        Ok(frame) => frame,
-                        Err(_) => continue,
-                    };
+                        overlay_swap_tunnels(),
+                    );
+                    let out =
+                        match overlay::encap(&inner, &out_meta, &state.overlay, state.metrics()) {
+                            Ok(frame) => frame,
+                            Err(_) => continue,
+                        };
                     self.file
                         .write_all(&out)
                         .map_err(|err| format!("dataplane write failed: {err}"))?;
@@ -112,6 +114,14 @@ impl SoftAdapter {
             }
         }
     }
+}
+
+fn overlay_swap_tunnels() -> bool {
+    *OVERLAY_SWAP_TUNNELS.get_or_init(|| {
+        std::env::var("NEUWERK_GWLB_SWAP_TUNNELS")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false)
+    })
 }
 
 fn open_tun_tap(name: &str, mode: SoftMode) -> Result<File, String> {

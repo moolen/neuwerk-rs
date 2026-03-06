@@ -86,7 +86,7 @@ impl ClusterStore {
     }
 
     pub fn scan_state_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
-        let cf = self.cf(CF_STATE);
+        let cf = self.cf(CF_STATE).map_err(|err| err.to_string())?;
         let mut entries = Vec::new();
         let iter = self
             .db
@@ -101,17 +101,17 @@ impl ClusterStore {
         Ok(entries)
     }
 
-    fn cf(&self, name: &str) -> &rocksdb::ColumnFamily {
+    fn cf(&self, name: &str) -> Result<&rocksdb::ColumnFamily, StorageError<NodeId>> {
         self.db
             .cf_handle(name)
-            .unwrap_or_else(|| panic!("missing column family {name}"))
+            .ok_or_else(|| map_storage_err(format!("missing column family {name}")))
     }
 
     fn get_meta<T: serde::de::DeserializeOwned>(
         &self,
         key: &[u8],
     ) -> Result<Option<T>, StorageError<NodeId>> {
-        let cf = self.cf(CF_META);
+        let cf = self.cf(CF_META)?;
         let raw = self.db.get_cf(cf, key).map_err(map_storage_err)?;
         if let Some(raw) = raw {
             let parsed = bincode::deserialize(&raw).map_err(map_storage_err)?;
@@ -127,14 +127,14 @@ impl ClusterStore {
         value: &T,
         batch: &mut WriteBatch,
     ) -> Result<(), StorageError<NodeId>> {
-        let cf = self.cf(CF_META);
+        let cf = self.cf(CF_META)?;
         let encoded = bincode::serialize(value).map_err(map_storage_err)?;
         batch.put_cf(cf, key, encoded);
         Ok(())
     }
 
     fn get_state(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError<NodeId>> {
-        let cf = self.cf(CF_STATE);
+        let cf = self.cf(CF_STATE)?;
         let raw = self.db.get_cf(cf, key).map_err(map_storage_err)?;
         Ok(raw)
     }
@@ -149,13 +149,13 @@ impl ClusterStore {
         value: &[u8],
         batch: &mut WriteBatch,
     ) -> Result<(), StorageError<NodeId>> {
-        let cf = self.cf(CF_STATE);
+        let cf = self.cf(CF_STATE)?;
         batch.put_cf(cf, key, value);
         Ok(())
     }
 
     fn delete_state(&self, key: &[u8], batch: &mut WriteBatch) -> Result<(), StorageError<NodeId>> {
-        let cf = self.cf(CF_STATE);
+        let cf = self.cf(CF_STATE)?;
         batch.delete_cf(cf, key);
         Ok(())
     }
@@ -168,7 +168,10 @@ impl RaftLogReader<ClusterTypeConfig> for ClusterLogReader {
     ) -> Result<Vec<<ClusterTypeConfig as openraft::RaftTypeConfig>::Entry>, StorageError<NodeId>>
     {
         let (start, end) = bounds_to_range(range);
-        let cf = self.db.cf_handle(CF_LOG).expect("cf log");
+        let cf = self
+            .db
+            .cf_handle(CF_LOG)
+            .ok_or_else(|| map_storage_err("missing column family log"))?;
         let mut entries = Vec::new();
         let iter = self.db.iterator_cf(
             cf,
@@ -240,7 +243,7 @@ impl RaftLogStorage<ClusterTypeConfig> for ClusterStore {
             + OptionalSend,
         I::IntoIter: OptionalSend,
     {
-        let cf = self.cf(CF_LOG);
+        let cf = self.cf(CF_LOG)?;
         let mut batch = WriteBatch::default();
         let mut last_log_id: Option<LogId<NodeId>> = None;
         for entry in entries {
@@ -258,7 +261,7 @@ impl RaftLogStorage<ClusterTypeConfig> for ClusterStore {
     }
 
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
-        let cf = self.cf(CF_LOG);
+        let cf = self.cf(CF_LOG)?;
         let mut batch = WriteBatch::default();
         let last_log = self.get_meta::<LogId<NodeId>>(KEY_LAST_LOG)?;
         let last_index = last_log.as_ref().map(|id| id.index).unwrap_or(0);
@@ -266,7 +269,7 @@ impl RaftLogStorage<ClusterTypeConfig> for ClusterStore {
             batch.delete_cf(cf, encode_u64_be(idx));
         }
         if log_id.index == 0 {
-            batch.delete_cf(self.cf(CF_META), KEY_LAST_LOG);
+            batch.delete_cf(self.cf(CF_META)?, KEY_LAST_LOG);
         } else {
             let new_last = log_id.index.saturating_sub(1);
             if let Some(entry) = self
@@ -278,7 +281,7 @@ impl RaftLogStorage<ClusterTypeConfig> for ClusterStore {
                     bincode::deserialize(&entry).map_err(map_storage_err)?;
                 self.put_meta(KEY_LAST_LOG, &entry.log_id, &mut batch)?;
             } else {
-                batch.delete_cf(self.cf(CF_META), KEY_LAST_LOG);
+                batch.delete_cf(self.cf(CF_META)?, KEY_LAST_LOG);
             }
         }
         self.db.write(batch).map_err(map_storage_err)?;
@@ -286,7 +289,7 @@ impl RaftLogStorage<ClusterTypeConfig> for ClusterStore {
     }
 
     async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
-        let cf = self.cf(CF_LOG);
+        let cf = self.cf(CF_LOG)?;
         let mut batch = WriteBatch::default();
         for idx in 0..=log_id.index {
             batch.delete_cf(cf, encode_u64_be(idx));
@@ -374,7 +377,7 @@ impl RaftStateMachine<ClusterTypeConfig> for ClusterStore {
         let decoded: SnapshotData = bincode::deserialize(&buf).map_err(map_storage_err)?;
 
         let mut batch = WriteBatch::default();
-        let state_cf = self.cf(CF_STATE);
+        let state_cf = self.cf(CF_STATE)?;
         let iter = self.db.iterator_cf(state_cf, IteratorMode::Start);
         for item in iter {
             let (key, _) = item.map_err(map_storage_err)?;
@@ -387,7 +390,7 @@ impl RaftStateMachine<ClusterTypeConfig> for ClusterStore {
         self.put_meta(KEY_LAST_APPLIED, &decoded.last_applied, &mut batch)?;
         self.put_meta(KEY_LAST_MEMBERSHIP, &decoded.last_membership, &mut batch)?;
         self.put_meta(KEY_SNAPSHOT_META, meta, &mut batch)?;
-        let snapshot_cf = self.cf(CF_SNAPSHOT);
+        let snapshot_cf = self.cf(CF_SNAPSHOT)?;
         batch.put_cf(snapshot_cf, KEY_SNAPSHOT_DATA, buf);
         self.db.write(batch).map_err(map_storage_err)?;
         Ok(())
@@ -397,7 +400,7 @@ impl RaftStateMachine<ClusterTypeConfig> for ClusterStore {
         &mut self,
     ) -> Result<Option<Snapshot<ClusterTypeConfig>>, StorageError<NodeId>> {
         let meta: Option<SnapshotMeta<NodeId, Node>> = self.get_meta(KEY_SNAPSHOT_META)?;
-        let cf = self.cf(CF_SNAPSHOT);
+        let cf = self.cf(CF_SNAPSHOT)?;
         let data = self
             .db
             .get_cf(cf, KEY_SNAPSHOT_DATA)
@@ -425,7 +428,7 @@ impl RaftSnapshotBuilder<ClusterTypeConfig> for ClusterSnapshotBuilder {
             .get_meta(KEY_LAST_MEMBERSHIP)?
             .unwrap_or_else(StoredMembership::default);
 
-        let state_cf = store.cf(CF_STATE);
+        let state_cf = store.cf(CF_STATE)?;
         let mut kv = Vec::new();
         let iter = store.db.iterator_cf(state_cf, IteratorMode::Start);
         for item in iter {
@@ -470,7 +473,7 @@ fn apply_command(
         }
         ClusterCommand::Gc { cutoff_unix } => {
             let cutoff = *cutoff_unix;
-            let state_cf = store.cf(CF_STATE);
+            let state_cf = store.cf(CF_STATE)?;
             let prefix = b"dns/last_seen/";
             let iter = store.db.iterator_cf(state_cf, IteratorMode::Start);
             for item in iter {
@@ -541,6 +544,10 @@ fn map_storage_err<E: std::fmt::Display>(err: E) -> StorageError<NodeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controlplane::api_auth::API_KEYS_KEY;
+    use crate::controlplane::integrations::INTEGRATIONS_INDEX_KEY;
+    use crate::controlplane::policy_repository::{POLICY_ACTIVE_KEY, POLICY_INDEX_KEY};
+    use crate::controlplane::service_accounts::SERVICE_ACCOUNTS_INDEX_KEY;
     use tempfile::TempDir;
 
     #[test]
@@ -581,5 +588,152 @@ mod tests {
             .unwrap()
             .is_some());
         assert!(store.get_state(b"dns/map/bar/2.2.2.2").unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn snapshot_restore_preserves_critical_prefixes() {
+        let dir = TempDir::new().unwrap();
+        let source_dir = dir.path().join("source");
+        let restore_dir = dir.path().join("restore");
+        let mut source = ClusterStore::open(&source_dir).unwrap();
+
+        let expected: Vec<(Vec<u8>, Vec<u8>)> = vec![
+            (POLICY_INDEX_KEY.to_vec(), br#"{"policies":[]}"#.to_vec()),
+            (
+                POLICY_ACTIVE_KEY.to_vec(),
+                br#"{"id":"00000000-0000-0000-0000-000000000001"}"#.to_vec(),
+            ),
+            (
+                API_KEYS_KEY.to_vec(),
+                br#"{"active_kid":"kid-1","keys":[]}"#.to_vec(),
+            ),
+            (
+                SERVICE_ACCOUNTS_INDEX_KEY.to_vec(),
+                br#"{"accounts":[]}"#.to_vec(),
+            ),
+            (
+                INTEGRATIONS_INDEX_KEY.to_vec(),
+                br#"{"records":[]}"#.to_vec(),
+            ),
+            (
+                b"integration/termination/i-snapshot".to_vec(),
+                br#"{"id":"evt-1","instance_id":"i-snapshot","deadline_epoch":123}"#.to_vec(),
+            ),
+        ];
+
+        let mut batch = WriteBatch::default();
+        for (key, value) in &expected {
+            source.put_state(key, value, &mut batch).unwrap();
+        }
+        source.db.write(batch).unwrap();
+
+        let mut builder = source.get_snapshot_builder().await;
+        let snapshot = builder.build_snapshot().await.unwrap();
+        let meta = snapshot.meta.clone();
+        let mut reader = snapshot.snapshot;
+        let mut payload = Vec::new();
+        reader.read_to_end(&mut payload).await.unwrap();
+
+        let mut restored = ClusterStore::open(&restore_dir).unwrap();
+        restored
+            .install_snapshot(&meta, Box::new(Cursor::new(payload)))
+            .await
+            .unwrap();
+
+        for (key, value) in &expected {
+            let got = restored.get_state(key).unwrap().unwrap_or_else(|| {
+                panic!("missing restored key {:?}", String::from_utf8_lossy(key))
+            });
+            assert_eq!(
+                got,
+                *value,
+                "restored key mismatch {:?}",
+                String::from_utf8_lossy(key)
+            );
+        }
+
+        let current = restored.get_current_snapshot().await.unwrap();
+        assert!(
+            current.is_some(),
+            "restored snapshot metadata should be present"
+        );
+    }
+
+    #[test]
+    fn gc_compaction_churn_preserves_non_dns_state() {
+        let dir = TempDir::new().unwrap();
+        let store = ClusterStore::open(dir.path()).unwrap();
+
+        let mut batch = WriteBatch::default();
+        store
+            .put_state(
+                POLICY_INDEX_KEY,
+                br#"{"policies":[{"id":"steady"}]}"#,
+                &mut batch,
+            )
+            .unwrap();
+        store
+            .put_state(
+                API_KEYS_KEY,
+                br#"{"active_kid":"steady","keys":[]}"#,
+                &mut batch,
+            )
+            .unwrap();
+        store.db.write(batch).unwrap();
+
+        for round in 0..32i64 {
+            let mut batch = WriteBatch::default();
+            let stale_key = format!("dns/last_seen/stale/{round}");
+            let stale_map = format!("dns/map/stale/{round}");
+            let stale_ts = bincode::serialize(&(round - 200)).unwrap();
+            store
+                .put_state(stale_key.as_bytes(), &stale_ts, &mut batch)
+                .unwrap();
+            store
+                .put_state(stale_map.as_bytes(), b"stale", &mut batch)
+                .unwrap();
+
+            let fresh_key = format!("dns/last_seen/fresh/{round}");
+            let fresh_map = format!("dns/map/fresh/{round}");
+            let fresh_ts = bincode::serialize(&(round + 1000)).unwrap();
+            store
+                .put_state(fresh_key.as_bytes(), &fresh_ts, &mut batch)
+                .unwrap();
+            store
+                .put_state(fresh_map.as_bytes(), b"fresh", &mut batch)
+                .unwrap();
+            store.db.write(batch).unwrap();
+
+            let mut gc_batch = WriteBatch::default();
+            apply_command(
+                &ClusterCommand::Gc {
+                    cutoff_unix: round - 100,
+                },
+                &store,
+                &mut gc_batch,
+            )
+            .unwrap();
+            store.db.write(gc_batch).unwrap();
+
+            let state_cf = store.cf(CF_STATE).unwrap();
+            store
+                .db
+                .compact_range_cf(state_cf, None::<&[u8]>, None::<&[u8]>);
+        }
+
+        assert!(store.get_state(POLICY_INDEX_KEY).unwrap().is_some());
+        assert!(store.get_state(API_KEYS_KEY).unwrap().is_some());
+
+        let stale_entries = store.scan_state_prefix(b"dns/last_seen/stale/").unwrap();
+        assert!(
+            stale_entries.is_empty(),
+            "stale entries should be fully collected"
+        );
+
+        let fresh_entries = store.scan_state_prefix(b"dns/last_seen/fresh/").unwrap();
+        assert!(
+            !fresh_entries.is_empty(),
+            "fresh entries should remain after churn"
+        );
     }
 }

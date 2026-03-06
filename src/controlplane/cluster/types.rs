@@ -58,8 +58,9 @@ pub struct JoinRequest {
 
 #[derive(Debug, Clone)]
 pub struct JoinResponse {
-    pub signed_cert: Vec<u8>,
-    pub ca_cert: Vec<u8>,
+    pub encrypted_payload: Vec<u8>,
+    pub payload_nonce: Vec<u8>,
+    pub response_hmac: Vec<u8>,
 }
 
 impl ClusterResponse {

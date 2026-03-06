@@ -5,6 +5,7 @@ use crate::dataplane::packet::Packet;
 
 const ETH_HDR_LEN: usize = 14;
 const ETH_TYPE_IPV4: u16 = 0x0800;
+const ETH_TYPE_IPV6: u16 = 0x86dd;
 const IPPROTO_UDP: u8 = 17;
 const VXLAN_HDR_LEN: usize = 8;
 const GENEVE_BASE_LEN: usize = 8;
@@ -245,9 +246,23 @@ pub fn encap(
     cfg: &OverlayConfig,
     metrics: Option<&Metrics>,
 ) -> Result<Vec<u8>, OverlayError> {
-    let payload = match meta.mode {
-        EncapMode::Vxlan => build_vxlan_payload(inner.buffer(), meta.vni),
-        EncapMode::Geneve => build_geneve_payload(inner.buffer(), meta)?,
+    let inner_buf = inner.buffer();
+    let geneve = match meta.mode {
+        EncapMode::Geneve => {
+            let geneve = match &meta.geneve {
+                Some(geneve) => geneve,
+                None => return Err(OverlayError::Parse),
+            };
+            if geneve.options.len() % 4 != 0 {
+                return Err(OverlayError::Parse);
+            }
+            Some(geneve)
+        }
+        _ => None,
+    };
+    let overlay_len = match meta.mode {
+        EncapMode::Vxlan => VXLAN_HDR_LEN,
+        EncapMode::Geneve => GENEVE_BASE_LEN + geneve.map(|g| g.options.len()).unwrap_or(0),
         EncapMode::None => {
             if let Some(metrics) = metrics {
                 metrics.inc_overlay_encap_error();
@@ -256,7 +271,7 @@ pub fn encap(
         }
     };
 
-    let outer_len = 20 + 8 + payload.len();
+    let outer_len = 20 + 8 + overlay_len + inner_buf.len();
     if cfg.mtu > 0 && outer_len > cfg.mtu as usize {
         if let Some(metrics) = metrics {
             metrics.inc_overlay_mtu_drop();
@@ -268,16 +283,68 @@ pub fn encap(
     let src_port = meta.outer_src_port;
     let dst_port = cfg.resolve_udp_port(meta.tunnel);
     let has_eth = meta.outer_src_mac.is_some() && meta.outer_dst_mac.is_some();
-    let frame = build_udp_frame(
-        meta.outer_dst_mac,
-        meta.outer_src_mac,
-        src_ip,
-        dst_ip,
-        src_port,
-        dst_port,
-        &payload,
-        has_eth,
-    );
+    let eth_len = if has_eth { ETH_HDR_LEN } else { 0 };
+    let mut buf = vec![0u8; eth_len + outer_len];
+    if has_eth {
+        let src_mac = meta.outer_dst_mac.unwrap_or([0u8; 6]);
+        let dst_mac = meta.outer_src_mac.unwrap_or([0u8; 6]);
+        buf[0..6].copy_from_slice(&dst_mac);
+        buf[6..12].copy_from_slice(&src_mac);
+        buf[12..14].copy_from_slice(&ETH_TYPE_IPV4.to_be_bytes());
+    }
+
+    let ip_off = eth_len;
+    buf[ip_off] = 0x45;
+    buf[ip_off + 1] = 0;
+    buf[ip_off + 2..ip_off + 4].copy_from_slice(&(outer_len as u16).to_be_bytes());
+    buf[ip_off + 4..ip_off + 6].copy_from_slice(&0u16.to_be_bytes());
+    buf[ip_off + 6..ip_off + 8].copy_from_slice(&0u16.to_be_bytes());
+    buf[ip_off + 8] = 64;
+    buf[ip_off + 9] = IPPROTO_UDP;
+    buf[ip_off + 10..ip_off + 12].copy_from_slice(&0u16.to_be_bytes());
+    buf[ip_off + 12..ip_off + 16].copy_from_slice(&src_ip.octets());
+    buf[ip_off + 16..ip_off + 20].copy_from_slice(&dst_ip.octets());
+
+    let udp_off = ip_off + 20;
+    let udp_payload_len = overlay_len + inner_buf.len();
+    buf[udp_off..udp_off + 2].copy_from_slice(&src_port.to_be_bytes());
+    buf[udp_off + 2..udp_off + 4].copy_from_slice(&dst_port.to_be_bytes());
+    buf[udp_off + 4..udp_off + 6].copy_from_slice(&((8 + udp_payload_len) as u16).to_be_bytes());
+    buf[udp_off + 6..udp_off + 8].copy_from_slice(&0u16.to_be_bytes());
+
+    let payload_off = udp_off + 8;
+    let inner_off = match meta.mode {
+        EncapMode::Vxlan => {
+            buf[payload_off] = 0x08;
+            buf[payload_off + 4] = ((meta.vni >> 16) & 0xff) as u8;
+            buf[payload_off + 5] = ((meta.vni >> 8) & 0xff) as u8;
+            buf[payload_off + 6] = (meta.vni & 0xff) as u8;
+            payload_off + VXLAN_HDR_LEN
+        }
+        EncapMode::Geneve => {
+            let geneve = geneve.ok_or(OverlayError::Parse)?;
+            let opt_len_words = (geneve.options.len() / 4) as u8;
+            let header_len = GENEVE_BASE_LEN + geneve.options.len();
+            buf[payload_off] = opt_len_words & 0x3f;
+            buf[payload_off + 1] = geneve.flags;
+            buf[payload_off + 2..payload_off + 4].copy_from_slice(&geneve.protocol.to_be_bytes());
+            buf[payload_off + 4] = ((meta.vni >> 16) & 0xff) as u8;
+            buf[payload_off + 5] = ((meta.vni >> 8) & 0xff) as u8;
+            buf[payload_off + 6] = (meta.vni & 0xff) as u8;
+            buf[payload_off + 7] = 0;
+            if !geneve.options.is_empty() {
+                buf[payload_off + GENEVE_BASE_LEN..payload_off + header_len]
+                    .copy_from_slice(&geneve.options);
+            }
+            payload_off + header_len
+        }
+        EncapMode::None => return Err(OverlayError::Unsupported),
+    };
+    buf[inner_off..inner_off + inner_buf.len()].copy_from_slice(inner_buf);
+
+    let mut pkt = Packet::new(buf);
+    let _ = pkt.recalc_checksums();
+    let frame = pkt.into_vec();
 
     if let Some(metrics) = metrics {
         metrics.observe_overlay_packet(mode_label(meta.mode), "out");
@@ -451,7 +518,7 @@ fn decap_geneve<'a>(
     }
     let flags = payload[1];
     let protocol = u16::from_be_bytes([payload[2], payload[3]]);
-    if protocol != GENEVE_PROTO_ETHERNET {
+    if protocol != GENEVE_PROTO_ETHERNET && protocol != ETH_TYPE_IPV4 && protocol != ETH_TYPE_IPV6 {
         if let Some(metrics) = metrics {
             metrics.inc_overlay_decap_error();
         }
@@ -464,7 +531,11 @@ fn decap_geneve<'a>(
         }
         return Err(OverlayError::Parse);
     }
-    let options = payload[GENEVE_BASE_LEN..header_len].to_vec();
+    let options = if header_len > GENEVE_BASE_LEN {
+        payload[GENEVE_BASE_LEN..header_len].to_vec()
+    } else {
+        Vec::new()
+    };
 
     let meta = OverlayMeta {
         mode: EncapMode::Geneve,
@@ -563,84 +634,6 @@ fn vni_matches(cfg: &OverlayConfig, vni: u32) -> bool {
         }
     }
     true
-}
-
-fn build_vxlan_payload(inner: &[u8], vni: u32) -> Vec<u8> {
-    let mut buf = vec![0u8; VXLAN_HDR_LEN + inner.len()];
-    buf[0] = 0x08;
-    buf[4] = ((vni >> 16) & 0xff) as u8;
-    buf[5] = ((vni >> 8) & 0xff) as u8;
-    buf[6] = (vni & 0xff) as u8;
-    buf[VXLAN_HDR_LEN..].copy_from_slice(inner);
-    buf
-}
-
-fn build_geneve_payload(inner: &[u8], meta: &OverlayMeta) -> Result<Vec<u8>, OverlayError> {
-    let geneve = match &meta.geneve {
-        Some(geneve) => geneve,
-        None => return Err(OverlayError::Parse),
-    };
-    if geneve.options.len() % 4 != 0 {
-        return Err(OverlayError::Parse);
-    }
-    let opt_len_words = (geneve.options.len() / 4) as u8;
-    let header_len = GENEVE_BASE_LEN + geneve.options.len();
-    let mut buf = vec![0u8; header_len + inner.len()];
-    buf[0] = opt_len_words & 0x3f;
-    buf[1] = geneve.flags;
-    buf[2..4].copy_from_slice(&geneve.protocol.to_be_bytes());
-    buf[4] = ((meta.vni >> 16) & 0xff) as u8;
-    buf[5] = ((meta.vni >> 8) & 0xff) as u8;
-    buf[6] = (meta.vni & 0xff) as u8;
-    buf[7] = 0;
-    buf[GENEVE_BASE_LEN..header_len].copy_from_slice(&geneve.options);
-    buf[header_len..].copy_from_slice(inner);
-    Ok(buf)
-}
-
-fn build_udp_frame(
-    src_mac: Option<[u8; 6]>,
-    dst_mac: Option<[u8; 6]>,
-    src_ip: Ipv4Addr,
-    dst_ip: Ipv4Addr,
-    src_port: u16,
-    dst_port: u16,
-    payload: &[u8],
-    include_eth: bool,
-) -> Vec<u8> {
-    let total_len = 20 + 8 + payload.len();
-    let eth_len = if include_eth { ETH_HDR_LEN } else { 0 };
-    let mut buf = vec![0u8; eth_len + total_len];
-    if include_eth {
-        let src_mac = src_mac.unwrap_or([0u8; 6]);
-        let dst_mac = dst_mac.unwrap_or([0u8; 6]);
-        buf[0..6].copy_from_slice(&dst_mac);
-        buf[6..12].copy_from_slice(&src_mac);
-        buf[12..14].copy_from_slice(&ETH_TYPE_IPV4.to_be_bytes());
-    }
-
-    let ip_off = eth_len;
-    buf[ip_off] = 0x45;
-    buf[ip_off + 1] = 0;
-    buf[ip_off + 2..ip_off + 4].copy_from_slice(&(total_len as u16).to_be_bytes());
-    buf[ip_off + 4..ip_off + 6].copy_from_slice(&0u16.to_be_bytes());
-    buf[ip_off + 6..ip_off + 8].copy_from_slice(&0u16.to_be_bytes());
-    buf[ip_off + 8] = 64;
-    buf[ip_off + 9] = IPPROTO_UDP;
-    buf[ip_off + 10..ip_off + 12].copy_from_slice(&0u16.to_be_bytes());
-    buf[ip_off + 12..ip_off + 16].copy_from_slice(&src_ip.octets());
-    buf[ip_off + 16..ip_off + 20].copy_from_slice(&dst_ip.octets());
-
-    let udp_off = ip_off + 20;
-    buf[udp_off..udp_off + 2].copy_from_slice(&src_port.to_be_bytes());
-    buf[udp_off + 2..udp_off + 4].copy_from_slice(&dst_port.to_be_bytes());
-    buf[udp_off + 4..udp_off + 6].copy_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
-    buf[udp_off + 6..udp_off + 8].copy_from_slice(&0u16.to_be_bytes());
-    buf[udp_off + 8..udp_off + 8 + payload.len()].copy_from_slice(payload);
-
-    let mut pkt = Packet::new(buf);
-    let _ = pkt.recalc_checksums();
-    pkt.buffer().to_vec()
 }
 
 fn compute_mss_max(cfg: &OverlayConfig, meta: &OverlayMeta) -> Option<u16> {
@@ -747,6 +740,43 @@ mod tests {
         let decap = decap(&out, &cfg, None).expect("decap");
         let got = decap.meta.geneve.expect("geneve");
         assert_eq!(got.options, options);
+    }
+
+    #[test]
+    fn geneve_accepts_ipv4_inner_protocol() {
+        let cfg = OverlayConfig {
+            mode: EncapMode::Geneve,
+            udp_port: 6081,
+            udp_port_internal: None,
+            udp_port_external: None,
+            vni: None,
+            vni_internal: None,
+            vni_external: None,
+            mtu: 1500,
+        };
+        let inner = build_inner();
+        let inner_l3 = &inner[ETH_HDR_LEN..];
+        let meta = OverlayMeta {
+            mode: EncapMode::Geneve,
+            outer_src_ip: Ipv4Addr::new(10, 0, 0, 2),
+            outer_dst_ip: Ipv4Addr::new(10, 0, 0, 1),
+            outer_src_port: 1234,
+            outer_src_mac: None,
+            outer_dst_mac: None,
+            tunnel: TunnelKind::Default,
+            vni: 99,
+            geneve: Some(GeneveMeta {
+                flags: 0,
+                protocol: ETH_TYPE_IPV4,
+                options: Vec::new(),
+            }),
+        };
+        let pkt = Packet::from_bytes(inner_l3);
+        let out = encap(&pkt, &meta, &cfg, None).expect("encap");
+        let decap = decap(&out, &cfg, None).expect("decap");
+        assert_eq!(decap.inner.buffer(), inner_l3);
+        assert_eq!(decap.inner.src_ip(), Some(Ipv4Addr::new(0, 0, 0, 0)));
+        assert_eq!(decap.inner.dst_ip(), Some(Ipv4Addr::new(0, 0, 0, 0)));
     }
 
     #[test]

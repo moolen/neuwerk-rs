@@ -16,18 +16,25 @@ pub const POLICY_ACTIVE_KEY: &[u8] = b"policies/active";
 pub struct PolicyRecord {
     pub id: Uuid,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub mode: PolicyMode,
     pub policy: PolicyConfig,
 }
 
 impl PolicyRecord {
-    pub fn new(mode: PolicyMode, policy: PolicyConfig) -> Result<Self, String> {
+    pub fn new(
+        mode: PolicyMode,
+        policy: PolicyConfig,
+        name: Option<String>,
+    ) -> Result<Self, String> {
         let created_at = OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .map_err(|err| format!("failed to format created_at: {err}"))?;
         Ok(Self {
             id: Uuid::new_v4(),
             created_at,
+            name: sanitize_policy_name(name),
             mode,
             policy,
         })
@@ -38,6 +45,8 @@ impl PolicyRecord {
 pub struct PolicyMeta {
     pub id: Uuid,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub mode: PolicyMode,
 }
 
@@ -46,6 +55,7 @@ impl From<&PolicyRecord> for PolicyMeta {
         Self {
             id: record.id,
             created_at: record.created_at.clone(),
+            name: record.name.clone(),
             mode: record.mode,
         }
     }
@@ -219,4 +229,9 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<Option<T>>
 
 fn to_io_err(err: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
+}
+
+pub fn sanitize_policy_name(name: Option<String>) -> Option<String> {
+    name.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }

@@ -232,7 +232,14 @@ pub fn mint_token(
     ttl_secs: Option<i64>,
     kid: Option<&str>,
 ) -> Result<MintedToken, String> {
-    mint_token_at(keyset, sub, ttl_secs, kid, OffsetDateTime::now_utc())
+    mint_token_at_with_roles(
+        keyset,
+        sub,
+        ttl_secs,
+        kid,
+        Some(vec!["admin".to_string()]),
+        OffsetDateTime::now_utc(),
+    )
 }
 
 pub fn mint_token_at(
@@ -240,6 +247,34 @@ pub fn mint_token_at(
     sub: &str,
     ttl_secs: Option<i64>,
     kid: Option<&str>,
+    now: OffsetDateTime,
+) -> Result<MintedToken, String> {
+    mint_token_at_with_roles(
+        keyset,
+        sub,
+        ttl_secs,
+        kid,
+        Some(vec!["admin".to_string()]),
+        now,
+    )
+}
+
+pub fn mint_token_with_roles(
+    keyset: &ApiKeySet,
+    sub: &str,
+    ttl_secs: Option<i64>,
+    kid: Option<&str>,
+    roles: Option<Vec<String>>,
+) -> Result<MintedToken, String> {
+    mint_token_at_with_roles(keyset, sub, ttl_secs, kid, roles, OffsetDateTime::now_utc())
+}
+
+pub fn mint_token_at_with_roles(
+    keyset: &ApiKeySet,
+    sub: &str,
+    ttl_secs: Option<i64>,
+    kid: Option<&str>,
+    roles: Option<Vec<String>>,
     now: OffsetDateTime,
 ) -> Result<MintedToken, String> {
     if sub.trim().is_empty() {
@@ -263,6 +298,7 @@ pub fn mint_token_at(
     }
     let iat = now.unix_timestamp();
     let exp = iat + ttl;
+    let roles = normalize_roles(roles);
     let claims = JwtClaims {
         iss: DEFAULT_ISSUER.to_string(),
         aud: DEFAULT_AUDIENCE.to_string(),
@@ -272,7 +308,7 @@ pub fn mint_token_at(
         jti: uuid::Uuid::new_v4().to_string(),
         sa_id: None,
         scope: None,
-        roles: None,
+        roles,
     };
     let token = sign_jwt(&key.kid, private_key, &claims)?;
     Ok(MintedToken {
@@ -280,6 +316,22 @@ pub fn mint_token_at(
         kid: key.kid.clone(),
         exp,
     })
+}
+
+fn normalize_roles(roles: Option<Vec<String>>) -> Option<Vec<String>> {
+    let mut normalized = Vec::new();
+    for role in roles.unwrap_or_default() {
+        let role = role.trim().to_ascii_lowercase();
+        if role.is_empty() || normalized.iter().any(|existing| existing == &role) {
+            continue;
+        }
+        normalized.push(role);
+    }
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
 }
 
 pub fn validate_token(token: &str, keyset: &ApiKeySet) -> Result<JwtClaims, String> {

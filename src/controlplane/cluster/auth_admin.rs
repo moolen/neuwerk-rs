@@ -1,5 +1,6 @@
 use crate::controlplane::api_auth::{
-    list_summaries, mint_token, retire_key, rotate_key, ApiKeySet, ApiKeyStatus, ApiKeySummary,
+    list_summaries, mint_token_with_roles, retire_key, rotate_key, ApiKeySet, ApiKeyStatus,
+    ApiKeySummary,
 };
 use crate::controlplane::cluster::rpc::AuthHandler;
 use crate::controlplane::cluster::store::ClusterStore;
@@ -67,9 +68,10 @@ impl AuthHandler for AuthService {
         sub: String,
         ttl_secs: Option<i64>,
         kid: Option<String>,
+        roles: Option<Vec<String>>,
     ) -> Result<(String, String, i64), String> {
         let keyset = self.load_keyset()?;
-        let minted = mint_token(&keyset, &sub, ttl_secs, kid.as_deref())?;
+        let minted = mint_token_with_roles(&keyset, &sub, ttl_secs, kid.as_deref(), roles)?;
         Ok((minted.token, minted.kid, minted.exp))
     }
 }

@@ -9,11 +9,14 @@ use std::os::unix::process::CommandExt;
 use firewall::controlplane::api_auth;
 use firewall::controlplane::cluster::store::ClusterStore;
 use firewall::controlplane::policy_config::{PolicyConfig, PolicyMode};
+use firewall::controlplane::policy_repository::PolicyActive;
 use firewall::e2e::cluster_tests;
 use firewall::e2e::services::{
     generate_upstream_tls_material, http_set_policy, http_wait_for_health, UpstreamServices,
 };
-use firewall::e2e::tests::{cases, overlay_cases_geneve, overlay_cases_vxlan, TestCase};
+use firewall::e2e::tests::{
+    cases, overlay_cases_geneve, overlay_cases_vxlan, overlay_cases_vxlan_dual_tunnel, TestCase,
+};
 use firewall::e2e::topology::{Topology, TopologyConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -53,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tls_material,
     )?;
 
-    let mut firewall = FirewallProcess::new(spawn_firewall(&topology, &cfg, &[])?);
+    let mut firewall = FirewallProcess::new(spawn_firewall(&topology, &cfg, &[], &[])?);
     topology.configure_fw_dataplane(&cfg)?;
 
     let mut result = run_cases(&cfg, &topology, &upstream_services);
@@ -118,6 +121,29 @@ fn run_overlay_suites(cfg: &TopologyConfig, topology: &Topology) -> Result<(), S
             "--encap-mtu".to_string(),
             "1200".to_string(),
         ],
+        vec![],
+    )?;
+    run_overlay_suite(
+        cfg,
+        topology,
+        overlay_cases_vxlan_dual_tunnel(),
+        vec![
+            "--snat".to_string(),
+            "none".to_string(),
+            "--encap".to_string(),
+            "vxlan".to_string(),
+            "--encap-vni-internal".to_string(),
+            cfg.overlay_vxlan_vni.to_string(),
+            "--encap-vni-external".to_string(),
+            cfg.overlay_vxlan_vni.wrapping_add(1).to_string(),
+            "--encap-udp-port-internal".to_string(),
+            cfg.overlay_vxlan_port.to_string(),
+            "--encap-udp-port-external".to_string(),
+            cfg.overlay_vxlan_port.wrapping_add(1).to_string(),
+            "--encap-mtu".to_string(),
+            "1200".to_string(),
+        ],
+        vec![("NEUWERK_GWLB_SWAP_TUNNELS".to_string(), "1".to_string())],
     )?;
     run_overlay_suite(
         cfg,
@@ -135,6 +161,7 @@ fn run_overlay_suites(cfg: &TopologyConfig, topology: &Topology) -> Result<(), S
             "--encap-mtu".to_string(),
             "1200".to_string(),
         ],
+        vec![],
     )?;
     Ok(())
 }
@@ -144,8 +171,10 @@ fn run_overlay_suite(
     topology: &Topology,
     cases: Vec<TestCase>,
     extra_args: Vec<String>,
+    extra_env: Vec<(String, String)>,
 ) -> Result<(), String> {
-    let mut firewall = FirewallProcess::new(spawn_firewall(topology, cfg, &extra_args)?);
+    let mut firewall =
+        FirewallProcess::new(spawn_firewall(topology, cfg, &extra_args, &extra_env)?);
     topology.configure_fw_dataplane(cfg)?;
     for case in cases {
         run_case(cfg, topology, &case)?;
@@ -183,7 +212,7 @@ fn provision_baseline_policy(cfg: &TopologyConfig, topology: &Topology) -> Resul
             rt.block_on(async {
                 http_wait_for_health(api_addr, &tls_dir, std::time::Duration::from_secs(10))
                     .await?;
-                http_set_policy(
+                let record = http_set_policy(
                     api_addr,
                     &tls_dir,
                     policy.clone(),
@@ -191,7 +220,27 @@ fn provision_baseline_policy(cfg: &TopologyConfig, topology: &Topology) -> Resul
                     Some(&token),
                 )
                 .await?;
-                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                let active_path =
+                    std::path::PathBuf::from("/var/lib/neuwerk/local-policy-store/active.json");
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                loop {
+                    match std::fs::read(&active_path)
+                        .ok()
+                        .and_then(|payload| serde_json::from_slice::<PolicyActive>(&payload).ok())
+                    {
+                        Some(active) if active.id == record.id => break,
+                        _ => {
+                            if std::time::Instant::now() >= deadline {
+                                return Err(format!(
+                                    "timed out waiting for baseline active id {}; last active path={}",
+                                    record.id,
+                                    active_path.display()
+                                ));
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
+                    }
+                }
                 Ok(())
             })
         })
@@ -230,6 +279,7 @@ fn spawn_firewall(
     topology: &Topology,
     cfg: &TopologyConfig,
     extra_args: &[String],
+    extra_env: &[(String, String)],
 ) -> Result<Child, String> {
     let bin = firewall_binary_path().map_err(|e| format!("{e}"))?;
     let ns_file = topology
@@ -276,8 +326,16 @@ fn spawn_firewall(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
+    // E2E uses RFC5737 test-net addresses inside isolated netns. Treat metrics bind as safe here.
+    cmd.env("NEUWERK_ALLOW_PUBLIC_METRICS_BIND", "1");
+    // E2E upstream TLS is backed by generated non-public CA material.
+    cmd.env("NEUWERK_TLS_INTERCEPT_UPSTREAM_VERIFY", "insecure");
+
     for arg in extra_args {
         cmd.arg(arg);
+    }
+    for (key, value) in extra_env {
+        cmd.env(key, value);
     }
 
     if !cfg.http_tls_sans.is_empty() {
@@ -357,5 +415,12 @@ fn write_token_file(path: &PathBuf) -> Result<(), String> {
   ]
 }"#;
     std::fs::write(path, json).map_err(|e| format!("write token file failed: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(path, perms)
+            .map_err(|e| format!("set token file permissions failed: {e}"))?;
+    }
     Ok(())
 }

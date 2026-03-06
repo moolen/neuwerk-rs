@@ -31,8 +31,8 @@ pub struct ControlPlaneConfig {
 impl Default for ControlPlaneConfig {
     fn default() -> Self {
         Self {
-            dns_bind: "0.0.0.0:53".parse().unwrap(),
-            dns_upstream: "1.1.1.1:53".parse().unwrap(),
+            dns_bind: std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 53)),
+            dns_upstream: std::net::SocketAddr::from((std::net::Ipv4Addr::new(1, 1, 1, 1), 53)),
         }
     }
 }

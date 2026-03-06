@@ -2,13 +2,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use std::collections::BTreeSet;
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
+use crate::controlplane::cluster::bootstrap::auth::{
+    build_join_response_hmac, encrypt_join_response_payload, verify_join_request_hmac,
+};
 use crate::controlplane::cluster::bootstrap::ca::{decrypt_ca_key, encrypt_ca_key, CaSigner};
 use crate::controlplane::cluster::bootstrap::token::TokenStore;
 use crate::controlplane::cluster::config::RetryConfig;
@@ -56,13 +57,11 @@ impl JoinHandler for JoinService {
         let joiner_token = token_store
             .get(&req.kid)
             .ok_or_else(|| "unknown kid".to_string())?;
-        if let Some(until) = joiner_token.valid_until {
-            if until < now {
-                return Err("token expired".to_string());
-            }
+        if !joiner_token.is_valid_at(now) {
+            return Err("token not active".to_string());
         }
 
-        verify_hmac(&joiner_token.token, &req)?;
+        verify_join_request_hmac(&joiner_token.token, &req)?;
 
         let node_id = req.node_id.as_u128();
         let node = Node {
@@ -78,6 +77,15 @@ impl JoinHandler for JoinService {
             .as_ref()
             .ok_or_else(|| "signer unavailable".to_string())?;
         let signed_cert = signer.sign_csr(&req.csr).map_err(|err| err.to_string())?;
+        let ca_cert = signer.cert_pem().to_vec();
+        let (encrypted_payload, payload_nonce) =
+            encrypt_join_response_payload(&joiner_token.token, &req, &signed_cert, &ca_cert)?;
+        let response_hmac = build_join_response_hmac(
+            &joiner_token.token,
+            &req,
+            &encrypted_payload,
+            &payload_nonce,
+        )?;
 
         let envelope = encrypt_ca_key(&req.kid, &joiner_token.token, signer.key_der())
             .map_err(|err| err.to_string())?;
@@ -90,8 +98,9 @@ impl JoinHandler for JoinService {
         });
 
         Ok(JoinResponse {
-            signed_cert,
-            ca_cert: signer.cert_pem().to_vec(),
+            encrypted_payload,
+            payload_nonce: payload_nonce.to_vec(),
+            response_hmac,
         })
     }
 }
@@ -131,16 +140,6 @@ fn backoff_delay(attempt: u32, base: Duration, max: Duration, jitter_ms: u64) ->
     }
     let jitter = rand::random::<u64>() % (jitter_ms + 1);
     delay + Duration::from_millis(jitter)
-}
-
-fn verify_hmac(psk: &[u8], req: &JoinRequest) -> Result<(), String> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(psk).map_err(|_| "invalid hmac key")?;
-    mac.update(req.node_id.as_bytes());
-    mac.update(req.endpoint.to_string().as_bytes());
-    mac.update(&req.nonce);
-    mac.update(&req.csr);
-    mac.verify_slice(&req.psk_hmac)
-        .map_err(|_| "invalid psk hmac".to_string())
 }
 
 fn load_signer(

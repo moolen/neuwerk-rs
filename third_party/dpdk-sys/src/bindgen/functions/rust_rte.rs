@@ -29,6 +29,8 @@ extern "C"
 	pub fn rust_rte_eth_tx_burst(port_id: u16, queue_id: u16, tx_pkts: *mut *mut rte_mbuf, nb_pkts: u16) -> u16;
 	pub fn rust_rte_eth_tx_descriptor_status(port_id: u16, queue_id: u16, offset: u16) -> c_int;
 	pub fn rust_rte_eth_tx_prepare(port_id: u16, queue_id: u16, tx_pkts: *mut *mut rte_mbuf, nb_pkts: u16) -> u16;
+	pub fn rust_rte_eth_dev_info_caps_get(port_id: u16, max_rx_queues: *mut u16, max_tx_queues: *mut u16, reta_size: *mut u16, flow_type_rss_offloads: *mut u64, tx_offload_capa: *mut u64, rx_offload_capa: *mut u64, max_rx_pktlen: *mut u32, driver_name: *mut *const c_char) -> c_int;
+	pub fn rust_rte_eth_dev_configure_basic(port_id: u16, rx_queues: u16, tx_queues: u16, enable_rss: c_int, rss_hf: u64, tx_offloads: u64) -> c_int;
 	pub fn rust_rte_event_dequeue_burst(dev_id: u8, port_id: u8, ev: *mut rte_event, nb_events: u16, timeout_ticks: u64) -> u16;
 	pub fn rust_rte_event_enqueue_burst(dev_id: u8, port_id: u8, ev: *const rte_event, nb_events: u16) -> u16;
 	pub fn rust_rte_event_enqueue_forward_burst(dev_id: u8, port_id: u8, ev: *const rte_event, nb_events: u16) -> u16;

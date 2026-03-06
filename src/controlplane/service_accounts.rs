@@ -1,5 +1,11 @@
 use std::fs;
+use std::fs::OpenOptions;
 use std::io;
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -485,8 +491,33 @@ fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension(format!("tmp-{}", Uuid::new_v4()));
-    fs::write(&tmp, contents)?;
+    write_with_mode(&tmp, contents, 0o600)?;
     fs::rename(&tmp, path)?;
+    ensure_permissions(path, 0o600)?;
+    Ok(())
+}
+
+fn write_with_mode(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        options.mode(mode);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    ensure_permissions(path, mode)?;
+    Ok(())
+}
+
+fn ensure_permissions(path: &Path, mode: u32) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(mode);
+        fs::set_permissions(path, perms)?;
+    }
     Ok(())
 }
 
@@ -508,6 +539,8 @@ fn to_io_err<E: std::fmt::Display>(err: E) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     #[test]
@@ -538,5 +571,36 @@ mod tests {
         let tokens = store.list_tokens(account.id).unwrap();
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].kid, "kid");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disk_store_files_use_600_permissions() {
+        let dir = TempDir::new().unwrap();
+        let store = ServiceAccountDiskStore::new(dir.path().join("sa"));
+
+        let account = ServiceAccount::new("svc".to_string(), None, "creator".to_string()).unwrap();
+        store.write_account(&account).unwrap();
+        let token = TokenMeta::new(
+            account.id,
+            Some("tok".to_string()),
+            "creator".to_string(),
+            "kid".to_string(),
+            None,
+            Uuid::new_v4(),
+        )
+        .unwrap();
+        store.write_token(&token).unwrap();
+
+        let paths = [
+            store.index_path(),
+            store.account_path(account.id),
+            store.token_index_path(account.id),
+            store.token_path(token.id),
+        ];
+        for path in paths {
+            let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
     }
 }

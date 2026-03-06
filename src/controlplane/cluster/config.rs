@@ -36,7 +36,7 @@ impl RetryConfig {
 
 impl ClusterConfig {
     pub fn disabled() -> Self {
-        let bind_addr: SocketAddr = "127.0.0.1:9600".parse().expect("valid socket");
+        let bind_addr = SocketAddr::from(([127, 0, 0, 1], 9600));
         let join_bind_addr = default_join_bind(bind_addr);
         Self {
             enabled: false,
@@ -55,4 +55,18 @@ impl ClusterConfig {
 pub fn default_join_bind(bind: SocketAddr) -> SocketAddr {
     let next_port = bind.port().saturating_add(1);
     SocketAddr::new(bind.ip(), next_port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_config_uses_expected_addresses() {
+        let cfg = ClusterConfig::disabled();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.bind_addr, SocketAddr::from(([127, 0, 0, 1], 9600)));
+        assert_eq!(cfg.join_bind_addr, SocketAddr::from(([127, 0, 0, 1], 9601)));
+        assert_eq!(cfg.advertise_addr, cfg.bind_addr);
+    }
 }

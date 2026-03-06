@@ -1,16 +1,21 @@
+mod auth;
 pub mod ca;
 pub mod join;
 pub mod token;
 
 use std::fs;
+use std::fs::OpenOptions;
 use std::io;
+use std::io::Write;
 use std::net::SocketAddr;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use hmac::{Hmac, Mac};
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DistinguishedName, IsCa, SanType};
-use sha2::Sha256;
 use tokio::time::sleep;
 use uuid::Uuid;
 
@@ -18,6 +23,9 @@ use tokio::sync::Mutex;
 
 use crate::controlplane::api_auth;
 use crate::controlplane::cluster::auth_admin::AuthService;
+use crate::controlplane::cluster::bootstrap::auth::{
+    build_join_request_hmac, decrypt_join_response_payload, verify_join_response_hmac,
+};
 use crate::controlplane::cluster::bootstrap::ca::CaSigner;
 use crate::controlplane::cluster::bootstrap::join::JoinService;
 use crate::controlplane::cluster::config::{ClusterConfig, RetryConfig};
@@ -79,8 +87,8 @@ pub async fn run_cluster(
 
     let store = ClusterStore::open(cfg.data_dir.join("raft"))
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-    let tls =
-        RaftTlsConfig::load(tls_dir).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    let tls = RaftTlsConfig::load(tls_dir.clone())
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
     let raft_config = openraft::Config {
         cluster_name: "neuwerk".to_string(),
         ..Default::default()
@@ -114,25 +122,25 @@ pub async fn run_cluster(
         .map(WiretapGrpcService::new)
         .map(WiretapServer::new);
 
+    let mut raft_builder = Server::builder()
+        .tls_config(tls.server_config())
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("raft tls config: {err}")))?
+        .add_service(crate::controlplane::cluster::rpc::proto::raft_service_server::RaftServiceServer::new(raft_service))
+        .add_service(crate::controlplane::cluster::rpc::proto::policy_management_server::PolicyManagementServer::new(policy_service))
+        .add_service(crate::controlplane::cluster::rpc::proto::auth_management_server::AuthManagementServer::new(auth_service))
+        .add_service(crate::controlplane::cluster::rpc::proto::integration_management_server::IntegrationManagementServer::new(integration_service));
+    if let Some(wiretap_service) = wiretap_service {
+        raft_builder = raft_builder.add_service(
+            crate::controlplane::cluster::rpc::proto::wiretap_server::WiretapServer::new(
+                wiretap_service,
+            ),
+        );
+    }
     let bind_addr = cfg.bind_addr;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let server_handle = tokio::spawn(async move {
         let mut raft_shutdown = shutdown_rx.clone();
         let mut join_shutdown = shutdown_rx.clone();
-        let mut raft_builder = Server::builder()
-            .tls_config(tls.server_config())
-            .expect("tls config")
-            .add_service(crate::controlplane::cluster::rpc::proto::raft_service_server::RaftServiceServer::new(raft_service))
-            .add_service(crate::controlplane::cluster::rpc::proto::policy_management_server::PolicyManagementServer::new(policy_service))
-            .add_service(crate::controlplane::cluster::rpc::proto::auth_management_server::AuthManagementServer::new(auth_service))
-            .add_service(crate::controlplane::cluster::rpc::proto::integration_management_server::IntegrationManagementServer::new(integration_service));
-        if let Some(wiretap_service) = wiretap_service {
-            raft_builder = raft_builder.add_service(
-                crate::controlplane::cluster::rpc::proto::wiretap_server::WiretapServer::new(
-                    wiretap_service,
-                ),
-            );
-        }
         let raft_server = raft_builder.serve_with_shutdown(bind_addr, async {
             let _ = raft_shutdown.changed().await;
         });
@@ -233,7 +241,7 @@ async fn join_cluster(
         attempt += 1;
         match try_join(node_id, seed, advertise, current, data_dir).await {
             Ok(resp) => return Ok(resp),
-            Err(err) if attempt < retry.max_attempts => {
+            Err(_err) if attempt < retry.max_attempts => {
                 let delay =
                     backoff_delay(attempt, retry.base_delay, retry.max_delay, retry.jitter_ms);
                 sleep(delay).await;
@@ -254,28 +262,27 @@ async fn try_join(
     let mut client = JoinClient::connect(seed).await?;
     let nonce = rand::random::<[u8; 16]>();
     let (csr, key_pem) = build_csr(advertise)?;
-    let hmac = join_hmac(&token.token, node_id, advertise, &nonce, &csr);
+    let psk_hmac = build_join_request_hmac(&token.token, node_id, advertise, &nonce, &csr)?;
     let req = JoinRequest {
         node_id,
         endpoint: advertise,
         csr,
         kid: token.kid.clone(),
         nonce: nonce.to_vec(),
-        psk_hmac: hmac,
+        psk_hmac,
     };
 
+    let req_for_verify = req.clone();
     let resp = client.join(req).await?;
-    persist_tls_material(data_dir, &key_pem, &resp.signed_cert, &resp.ca_cert)?;
+    verify_join_response_hmac(&token.token, &req_for_verify, &resp)?;
+    let (signed_cert, ca_cert) = decrypt_join_response_payload(
+        &token.token,
+        &req_for_verify,
+        &resp.encrypted_payload,
+        &resp.payload_nonce,
+    )?;
+    persist_tls_material(data_dir, &key_pem, &signed_cert, &ca_cert)?;
     Ok(resp)
-}
-
-fn join_hmac(psk: &[u8], node_id: Uuid, endpoint: SocketAddr, nonce: &[u8], csr: &[u8]) -> Vec<u8> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(psk).expect("hmac key");
-    mac.update(node_id.as_bytes());
-    mac.update(endpoint.to_string().as_bytes());
-    mac.update(nonce);
-    mac.update(csr);
-    mac.finalize().into_bytes().to_vec()
 }
 
 fn backoff_delay(attempt: u32, base: Duration, max: Duration, jitter_ms: u64) -> Duration {
@@ -310,9 +317,35 @@ fn persist_tls_material(
 ) -> Result<(), String> {
     let tls_dir = data_dir.join("tls");
     fs::create_dir_all(&tls_dir).map_err(|err| err.to_string())?;
-    fs::write(tls_dir.join("node.key"), key_pem).map_err(|err| err.to_string())?;
-    fs::write(tls_dir.join("node.crt"), cert_pem).map_err(|err| err.to_string())?;
-    fs::write(tls_dir.join("ca.crt"), ca_pem).map_err(|err| err.to_string())?;
+    write_with_mode(&tls_dir.join("node.key"), key_pem, 0o600)?;
+    write_with_mode(&tls_dir.join("node.crt"), cert_pem, 0o644)?;
+    write_with_mode(&tls_dir.join("ca.crt"), ca_pem, 0o644)?;
+    Ok(())
+}
+
+fn write_with_mode(path: &Path, contents: &[u8], mode: u32) -> Result<(), String> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        options.mode(mode);
+    }
+    let mut file = options.open(path).map_err(|err| err.to_string())?;
+    file.write_all(contents).map_err(|err| err.to_string())?;
+    file.sync_all().map_err(|err| err.to_string())?;
+    ensure_permissions(path, mode)?;
+    Ok(())
+}
+
+fn ensure_permissions(path: &Path, mode: u32) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(path)
+            .map_err(|err| err.to_string())?
+            .permissions();
+        perms.set_mode(mode);
+        fs::set_permissions(path, perms).map_err(|err| err.to_string())?;
+    }
     Ok(())
 }
 
@@ -393,4 +426,113 @@ fn build_ca_signer() -> Result<CaSigner, String> {
     params.distinguished_name = DistinguishedName::new();
     let cert = Certificate::from_params(params).map_err(|err| err.to_string())?;
     CaSigner::new(cert).map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    #[test]
+    fn join_request_hmac_is_deterministic() {
+        let node_id = Uuid::parse_str("aab25366-9cc6-4955-ba56-9556ca1d1225").unwrap();
+        let endpoint = SocketAddr::from(([10, 0, 0, 10], 9600));
+        let nonce = b"0123456789abcdef";
+        let csr = b"fake-csr";
+
+        let a = build_join_request_hmac(b"psk", node_id, endpoint, nonce, csr).unwrap();
+        let b = build_join_request_hmac(b"psk", node_id, endpoint, nonce, csr).unwrap();
+        let c = build_join_request_hmac(b"psk-2", node_id, endpoint, nonce, csr).unwrap();
+
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(a.len(), 32);
+    }
+
+    #[test]
+    fn join_response_hmac_verification_rejects_tamper() {
+        let node_id = Uuid::parse_str("aab25366-9cc6-4955-ba56-9556ca1d1225").unwrap();
+        let endpoint = SocketAddr::from(([10, 0, 0, 10], 9600));
+        let req = JoinRequest {
+            node_id,
+            endpoint,
+            csr: b"csr".to_vec(),
+            kid: "k1".to_string(),
+            nonce: b"nonce".to_vec(),
+            psk_hmac: vec![1, 2, 3],
+        };
+        let signed_cert = b"signed-cert".to_vec();
+        let ca_cert = b"ca-cert".to_vec();
+        let (encrypted_payload, payload_nonce) =
+            super::auth::encrypt_join_response_payload(b"psk", &req, &signed_cert, &ca_cert)
+                .unwrap();
+        let response_hmac =
+            super::auth::build_join_response_hmac(b"psk", &req, &encrypted_payload, &payload_nonce)
+                .unwrap();
+        let mut resp = JoinResponse {
+            encrypted_payload,
+            payload_nonce: payload_nonce.to_vec(),
+            response_hmac,
+        };
+        verify_join_response_hmac(b"psk", &req, &resp).expect("valid response hmac");
+
+        resp.encrypted_payload.push(0xff);
+        let err = verify_join_response_hmac(b"psk", &req, &resp).unwrap_err();
+        assert!(err.contains("invalid join response hmac"));
+    }
+
+    #[test]
+    fn join_response_payload_decrypt_rejects_tamper() {
+        let node_id = Uuid::parse_str("aab25366-9cc6-4955-ba56-9556ca1d1225").unwrap();
+        let endpoint = SocketAddr::from(([10, 0, 0, 10], 9600));
+        let req = JoinRequest {
+            node_id,
+            endpoint,
+            csr: b"csr".to_vec(),
+            kid: "k1".to_string(),
+            nonce: b"nonce".to_vec(),
+            psk_hmac: vec![1, 2, 3],
+        };
+        let (mut encrypted_payload, payload_nonce) =
+            super::auth::encrypt_join_response_payload(b"psk", &req, b"signed-cert", b"ca-cert")
+                .unwrap();
+        encrypted_payload[0] ^= 0x01;
+        let err = super::auth::decrypt_join_response_payload(
+            b"psk",
+            &req,
+            &encrypted_payload,
+            &payload_nonce,
+        )
+        .unwrap_err();
+        assert!(err.contains("decrypt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_tls_material_sets_private_key_to_600() {
+        let dir = TempDir::new().unwrap();
+        persist_tls_material(dir.path(), b"node-key", b"node-cert", b"ca-cert").unwrap();
+
+        let key_mode = fs::metadata(dir.path().join("tls/node.key"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let cert_mode = fs::metadata(dir.path().join("tls/node.crt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let ca_mode = fs::metadata(dir.path().join("tls/ca.crt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(key_mode, 0o600);
+        assert_eq!(cert_mode, 0o644);
+        assert_eq!(ca_mode, 0o644);
+    }
 }

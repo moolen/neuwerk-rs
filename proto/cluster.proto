@@ -26,8 +26,9 @@ message JoinRequest {
 }
 
 message JoinResponse {
-  bytes signed_cert = 1;
-  bytes ca_cert = 2;
+  bytes encrypted_payload = 1;
+  bytes payload_nonce = 2;
+  bytes response_hmac = 3;
 }
 
 service ClusterManagement {
@@ -97,6 +98,7 @@ message AuthTokenMintRequest {
   string sub = 1;
   int64 ttl_secs = 2;
   string kid = 3;
+  repeated string roles = 4;
 }
 
 message AuthTokenMintResponse {
