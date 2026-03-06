@@ -531,6 +531,7 @@ write_files:
       CLOUD_PROVIDER=${cloud_provider}
       NEUWERK_DPDK_NETVSC=$${USE_NETVSC_PMD}
       NEUWERK_DPDK_WORKERS=$${DPDK_WORKERS}
+      NEUWERK_DPDK_TX_CSUM_OFFLOAD=0
       NEUWERK_AZURE_GATEWAY_MAC=12:34:56:78:9a:bc
       NEUWERK_GWLB_SWAP_TUNNELS=0
       NEUWERK_GWLB_TUNNEL_SRC_PORT=0
@@ -643,7 +644,7 @@ write_files:
         --dns-upstream ${dns_upstream} \
 %{ endfor ~}
         --http-bind $${MGMT_IP}:8443 \
-        --metrics-bind 0.0.0.0:8080 \
+        --metrics-bind $${MGMT_IP}:8080 \
         --default-policy allow \
         --snat $${SNAT_MODE} \
         --cloud-provider $${CLOUD_PROVIDER} \

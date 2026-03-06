@@ -108,7 +108,7 @@ collect_metrics_snapshot() {
   for ip in $ips; do
     {
       echo "### instance=${ip} label=${label} ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      metrics="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "curl -fsS http://127.0.0.1:8080/metrics" || true)"
+      metrics="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" || true)"
       if [ -z "$metrics" ]; then
         echo "metrics_unavailable=1"
       else

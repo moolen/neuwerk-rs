@@ -10,7 +10,7 @@ UI_LOCAL_PORT ?= 9443
 RESOLVE_FW_IPS ?= $(CURDIR)/scripts/resolve-firewall-mgmt-ips.sh
 MINT_API_TOKEN ?= $(CURDIR)/scripts/mint-api-token.sh
 
-.PHONY: ssh.jumpbox ssh.consumer ssh.upstream ssh.firewall ui.port-forward health policy-smoke lifecycle-rollout lifecycle-termination-drain
+.PHONY: ssh.jumpbox ssh.consumer ssh.upstream ssh.firewall ui.port-forward health policy-smoke lifecycle-rollout lifecycle-termination-drain http-perf.setup http-perf.run http-perf.quick
 
 ssh.jumpbox:
 	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
@@ -174,3 +174,32 @@ lifecycle-termination-drain:
 	@if [ ! -f "$(KEY_PATH)" ]; then echo "missing SSH key at $(KEY_PATH)" >&2; exit 1; fi
 	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
 		"$(CURDIR)/scripts/lifecycle-termination-drain.sh"
+
+http-perf.setup:
+	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
+	@command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
+	@command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+	@command -v az >/dev/null || { echo "az is required" >&2; exit 1; }
+	@if [ ! -f "$(KEY_PATH)" ]; then echo "missing SSH key at $(KEY_PATH)" >&2; exit 1; fi
+	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
+		"$(CURDIR)/scripts/http-perf-setup.sh"
+
+http-perf.run:
+	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
+	@command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
+	@command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+	@command -v az >/dev/null || { echo "az is required" >&2; exit 1; }
+	@if [ ! -f "$(KEY_PATH)" ]; then echo "missing SSH key at $(KEY_PATH)" >&2; exit 1; fi
+	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
+		"$(CURDIR)/scripts/http-perf-matrix.sh"
+
+http-perf.quick:
+	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
+	@command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
+	@command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+	@command -v az >/dev/null || { echo "az is required" >&2; exit 1; }
+	@if [ ! -f "$(KEY_PATH)" ]; then echo "missing SSH key at $(KEY_PATH)" >&2; exit 1; fi
+	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
+		HTTP_PERF_SCENARIOS="$${HTTP_PERF_SCENARIOS:-l34_allow_webhooks}" \
+		RPS_TIERS="$${RPS_TIERS:-500}" \
+		"$(CURDIR)/scripts/http-perf-matrix.sh"

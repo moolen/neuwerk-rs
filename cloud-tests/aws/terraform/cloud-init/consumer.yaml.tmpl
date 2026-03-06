@@ -1,0 +1,35 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - curl
+  - dnsutils
+  - ethtool
+  - iperf3
+  - socat
+  - wrk
+  - jq
+  - tcpdump
+write_files:
+  - path: /etc/apt/apt.conf.d/99force-ipv4
+    permissions: "0644"
+    content: |
+      Acquire::ForceIPv4 "true";
+  - path: /usr/local/bin/consumer-deps.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      for _ in $(seq 1 10); do
+        if apt-get update -y && apt-get install -y curl dnsutils ethtool iperf3 socat wrk jq tcpdump; then
+          exit 0
+        fi
+        sleep 10
+      done
+      echo "consumer dependency install failed" >&2
+      exit 1
+runcmd:
+  - /usr/local/bin/consumer-deps.sh
+  - IFACE=$(ip route show default | awk '{print $5}' | head -n1); ip link set dev "$${IFACE:-eth0}" mtu ${endpoint_mtu} || true
+  - IFACE=$(ip route show default | awk '{print $5}' | head -n1); ethtool -K "$${IFACE:-eth0}" rx off tx off gro off gso off tso off lro off || true

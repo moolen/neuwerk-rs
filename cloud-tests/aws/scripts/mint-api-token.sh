@@ -9,7 +9,7 @@ fi
 JUMPBOX_IP="$1"
 KEY_PATH="$2"
 FIREWALL_IP="$3"
-SUBJECT="${4:-azure-ui-port-forward}"
+SUBJECT="${4:-aws-ui-port-forward}"
 SSH_USER="${SSH_USER:-ubuntu}"
 
 if [ ! -f "$KEY_PATH" ]; then
@@ -56,7 +56,6 @@ claims = {
     "exp": now + 3600,
     "iat": now,
     "jti": str(uuid.uuid4()),
-    "roles": ["admin"],
 }
 
 def b64url(payload: bytes) -> str:

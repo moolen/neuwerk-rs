@@ -125,7 +125,7 @@ collect_dpdk_detail_metrics() {
   for ip in $FW_MGMT_IPS; do
     metrics=$(ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY_PATH" \
       "${SSH_USER:-ubuntu}@${JUMPBOX_IP}" \
-      "curl -s http://${ip}:8080/metrics | egrep '^(dpdk_(rx|tx)_(bytes|packets)_queue_total|dp_state_lock_(wait_seconds_sum|wait_seconds_count|contended_total))'") || true
+      "curl -s http://${ip}:8080/metrics | egrep '^(dpdk_(rx|tx)_(bytes|packets)_queue_total|dpdk_health_probe_packets_total|dp_state_lock_(wait_seconds_sum|wait_seconds_count|contended_total))'") || true
     if [ -n "$metrics" ]; then
       while IFS= read -r line; do
         [ -z "$line" ] && continue

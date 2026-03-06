@@ -287,7 +287,7 @@ stop_consumer_traffic() {
 read_target_metrics_local() {
   local ip="$1"
   local out
-  out="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "curl -fsS http://127.0.0.1:8080/metrics" 2>/dev/null || true)"
+  out="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" 2>/dev/null || true)"
   if [ -z "$out" ]; then
     return 1
   fi
@@ -309,9 +309,11 @@ start_target_metric_stream() {
   : >"$TARGET_METRIC_STREAM_LOG"
   ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -s" <<'EOF' >"$TARGET_METRIC_STREAM_LOG" 2>&1 &
 set -euo pipefail
+METRICS_HOST="$(grep "^MGMT_IP=" /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2)"
+[ -z "$METRICS_HOST" ] && METRICS_HOST="127.0.0.1"
 while true; do
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  metrics="$(curl -fsS http://127.0.0.1:8080/metrics 2>/dev/null || true)"
+  metrics="$(curl -fsS http://${METRICS_HOST}:8080/metrics 2>/dev/null || true)"
   if [ -z "$metrics" ]; then
     echo "ts=${ts} metrics_unavailable=1"
     sleep 1

@@ -5,13 +5,14 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 POLICY_FILE="${1:-${ROOT_DIR}/policies/allow-upstream.json}"
-KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/azure_e2e}"
+KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/aws_e2e}"
 RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
 
 source "${ROOT_DIR}/../common/lib.sh"
+USER_KNOWN_HOSTS="${SSH_USER_KNOWN_HOSTS_FILE:-/dev/null}"
 
 require_bin terraform
-require_bin az
+require_bin aws
 require_bin jq
 require_bin curl
 require_bin ssh
@@ -23,15 +24,8 @@ if [ ! -f "$POLICY_FILE" ]; then
   exit 1
 fi
 
-pushd "$TF_DIR" >/dev/null
-RG=$(terraform output -raw resource_group)
-JUMPBOX_IP=$(terraform output -raw jumpbox_public_ip)
-FW_VMSS=$(terraform output -json firewall_vmss | jq -r '.name')
-CONSUMER_PUBLIC_IPS=$(terraform output -json consumer_public_ips 2>/dev/null | jq -r '.[]?' || true)
-popd >/dev/null
-
-if [ -z "$JUMPBOX_IP" ]; then
-  echo "missing jumpbox_public_ip output" >&2
+if ! aws sts get-caller-identity >/dev/null 2>&1; then
+  echo "aws credentials are required (aws sts get-caller-identity failed)" >&2
   exit 1
 fi
 
@@ -40,41 +34,16 @@ if [ ! -f "$KEY_PATH" ]; then
   exit 1
 fi
 
-FW_MGMT_IPS=$(TF_DIR="$TF_DIR" "$RESOLVE_FW_IPS")
+pushd "$TF_DIR" >/dev/null
+JUMPBOX_IP=$(terraform output -raw jumpbox_public_ip)
+popd >/dev/null
 
-POLICY_PAYLOAD="$POLICY_FILE"
-TEMP_POLICY=""
-if [ -n "$CONSUMER_PUBLIC_IPS" ]; then
-  TEMP_POLICY=$(mktemp)
-  CONSUMER_PUBLIC_IPS="$CONSUMER_PUBLIC_IPS" python3 - <<'PY' "$POLICY_FILE" "$TEMP_POLICY"
-import json
-import os
-import sys
-
-src = sys.argv[1]
-dst = sys.argv[2]
-ips = [line.strip() for line in os.environ.get("CONSUMER_PUBLIC_IPS", "").splitlines() if line.strip()]
-with open(src, "r", encoding="utf-8") as fh:
-    data = json.load(fh)
-
-groups = data.get("policy", {}).get("source_groups", [])
-for group in groups:
-    if group.get("id") != "consumers":
-        continue
-    sources = group.setdefault("sources", {})
-    cidrs = sources.setdefault("cidrs", [])
-    for addr in ips:
-        cidr = f"{addr}/32"
-        if cidr not in cidrs:
-            cidrs.append(cidr)
-    cidrs.sort()
-
-with open(dst, "w", encoding="utf-8") as fh:
-    json.dump(data, fh)
-    fh.write("\n")
-PY
-  POLICY_PAYLOAD="$TEMP_POLICY"
+if [ -z "$JUMPBOX_IP" ]; then
+  echo "missing jumpbox_public_ip output" >&2
+  exit 1
 fi
+
+FW_MGMT_IPS=$(TF_DIR="$TF_DIR" "$RESOLVE_FW_IPS")
 
 for ip in $FW_MGMT_IPS; do
   echo "pushing policy to ${ip}"
@@ -101,11 +70,10 @@ header = {"alg": "EdDSA", "kid": kid, "typ": "JWT"}
 claims = {
     "iss": "neuwerk-api",
     "aud": "neuwerk-api",
-    "sub": "azure-e2e",
+    "sub": "aws-e2e",
     "exp": now + 3600,
     "iat": now,
     "jti": str(uuid.uuid4()),
-    "roles": ["admin"],
 }
 
 def b64url(payload: bytes) -> str:
@@ -140,14 +108,11 @@ print(token)
 PY
 )
   ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY_PATH" \
+    -o UserKnownHostsFile="$USER_KNOWN_HOSTS" \
     "${SSH_USER:-ubuntu}@${JUMPBOX_IP}" \
     "curl -skf --connect-timeout 5 --max-time 15 --retry 5 --retry-delay 2 \
       -X POST https://${ip}:8443/api/v1/policies \
       -H 'Content-Type: application/json' \
       -H 'Authorization: Bearer ${TOKEN}' \
-      --data-binary @-" < "$POLICY_PAYLOAD" >/dev/null
- done
-
-if [ -n "$TEMP_POLICY" ]; then
-  rm -f "$TEMP_POLICY"
-fi
+      --data-binary @-" < "$POLICY_FILE" >/dev/null
+done

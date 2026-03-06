@@ -5,14 +5,19 @@ resource "random_string" "suffix" {
 }
 
 locals {
-  name_suffix    = random_string.suffix.result
-  name_prefix    = "${var.name_prefix}-${local.name_suffix}"
-  firewall_igm   = "${local.name_prefix}-fw-mig"
-  bucket_name    = substr(replace(replace(lower("${var.name_prefix}-${local.name_suffix}"), "_", "-"), ".", "-"), 0, 63)
-  ssh_public_key = file(var.ssh_public_key_path)
-  ssh_metadata   = "${var.admin_username}:${local.ssh_public_key}"
-  dns_target_ips = length(var.dns_target_ips) > 0 ? var.dns_target_ips : ["$${MGMT_IP}"]
-  dns_upstreams  = length(var.dns_upstreams) > 0 ? var.dns_upstreams : ["${var.upstream_vm_ip}:53"]
+  name_suffix               = random_string.suffix.result
+  name_prefix               = "${var.name_prefix}-${local.name_suffix}"
+  firewall_igm              = "${local.name_prefix}-fw-mig"
+  bucket_name               = substr(replace(replace(lower("${var.name_prefix}-${local.name_suffix}"), "_", "-"), ".", "-"), 0, 63)
+  ssh_public_key            = file(var.ssh_public_key_path)
+  ssh_metadata              = "${var.admin_username}:${local.ssh_public_key}"
+  dns_target_ips            = length(var.dns_target_ips) > 0 ? var.dns_target_ips : ["$${MGMT_IP}"]
+  dns_upstreams             = length(var.dns_upstreams) > 0 ? var.dns_upstreams : ["${var.upstream_vm_ip}:53"]
+  firewall_mgmt_queue_count = max(1, var.firewall_mgmt_queue_count)
+  firewall_dataplane_queue_count = max(
+    1,
+    var.firewall_total_nic_queue_count - local.firewall_mgmt_queue_count
+  )
 }
 
 resource "google_compute_network" "main" {
@@ -175,13 +180,15 @@ resource "google_compute_instance_template" "firewall" {
   }
 
   network_interface {
-    subnetwork = google_compute_subnetwork.dataplane.id
-    nic_type   = "GVNIC"
+    subnetwork  = google_compute_subnetwork.dataplane.id
+    nic_type    = "GVNIC"
+    queue_count = local.firewall_dataplane_queue_count
   }
 
   network_interface {
-    subnetwork = google_compute_subnetwork.mgmt.id
-    nic_type   = "GVNIC"
+    subnetwork  = google_compute_subnetwork.mgmt.id
+    nic_type    = "GVNIC"
+    queue_count = local.firewall_mgmt_queue_count
   }
 
   metadata = {
@@ -322,7 +329,7 @@ resource "google_network_connectivity_policy_based_route" "consumer_to_upstream"
   name            = "${local.name_prefix}-pbr-consumer-upstream"
   network         = google_compute_network.main.id
   priority        = 100
-  next_hop_ilb_ip = google_compute_address.dataplane_ilb.address
+  next_hop_ilb_ip = google_compute_address.dataplane_consumer_ilb.address
 
   filter {
     protocol_version = "IPV4"
@@ -335,10 +342,11 @@ resource "google_network_connectivity_policy_based_route" "consumer_to_upstream"
 }
 
 resource "google_compute_instance" "upstream" {
-  name           = "${local.name_prefix}-upstream"
-  zone           = var.zone
-  machine_type   = var.upstream_machine_type
-  can_ip_forward = false
+  name                      = "${local.name_prefix}-upstream"
+  zone                      = var.zone
+  machine_type              = var.upstream_machine_type
+  allow_stopping_for_update = true
+  can_ip_forward            = false
 
   boot_disk {
     initialize_params {
@@ -373,7 +381,7 @@ resource "google_network_connectivity_policy_based_route" "upstream_to_consumers
   name            = "${local.name_prefix}-pbr-upstream-consumers"
   network         = google_compute_network.main.id
   priority        = 100
-  next_hop_ilb_ip = google_compute_address.dataplane_ilb.address
+  next_hop_ilb_ip = google_compute_address.dataplane_upstream_ilb.address
 
   filter {
     protocol_version = "IPV4"
@@ -435,11 +443,12 @@ resource "google_compute_forwarding_rule" "upstream" {
 }
 
 resource "google_compute_instance" "consumer" {
-  count          = var.consumer_count
-  name           = "${local.name_prefix}-consumer-${count.index}"
-  zone           = var.zone
-  machine_type   = var.consumer_machine_type
-  can_ip_forward = false
+  count                     = var.consumer_count
+  name                      = "${local.name_prefix}-consumer-${count.index}"
+  zone                      = var.zone
+  machine_type              = var.consumer_machine_type
+  allow_stopping_for_update = true
+  can_ip_forward            = false
 
   boot_disk {
     initialize_params {
@@ -465,10 +474,11 @@ resource "google_compute_instance" "consumer" {
 }
 
 resource "google_compute_instance" "jumpbox" {
-  name           = "${local.name_prefix}-jumpbox"
-  zone           = var.zone
-  machine_type   = var.jumpbox_machine_type
-  can_ip_forward = false
+  name                      = "${local.name_prefix}-jumpbox"
+  zone                      = var.zone
+  machine_type              = var.jumpbox_machine_type
+  allow_stopping_for_update = true
+  can_ip_forward            = false
 
   boot_disk {
     initialize_params {

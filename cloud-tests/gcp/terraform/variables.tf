@@ -168,6 +168,18 @@ variable "firewall_dpdk_workers" {
   description = "Override DPDK worker count (0 = auto via nproc)."
 }
 
+variable "firewall_total_nic_queue_count" {
+  type        = number
+  default     = 8
+  description = "Total gVNIC queue budget on firewall VMs; dataplane uses total minus management queues."
+}
+
+variable "firewall_mgmt_queue_count" {
+  type        = number
+  default     = 1
+  description = "Queue count reserved for the management NIC on firewall VMs."
+}
+
 variable "cloud_provider" {
   type        = string
   default     = "gcp"

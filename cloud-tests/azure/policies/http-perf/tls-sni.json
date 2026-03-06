@@ -1,0 +1,40 @@
+{
+  "mode": "enforce",
+  "policy": {
+    "default_policy": "deny",
+    "source_groups": [
+      {
+        "id": "consumers",
+        "sources": {
+          "cidrs": ["10.20.3.0/24"]
+        },
+        "default_action": "deny",
+        "rules": [
+          {
+            "id": "allow-dns",
+            "action": "allow",
+            "match": {
+              "proto": "udp",
+              "dst_ports": [53],
+              "dns_hostname": ".*"
+            }
+          },
+          {
+            "id": "allow-webhook-sni",
+            "action": "allow",
+            "match": {
+              "proto": "tcp",
+              "dst_ports": [443, 8443, 9443],
+              "tls": {
+                "sni": {
+                  "exact": ["upstream.test"]
+                },
+                "tls13_uninspectable": "allow"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

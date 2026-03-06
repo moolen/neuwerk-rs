@@ -137,6 +137,20 @@ write_files:
         fi
       }
 
+      ensure_mgmt_default_route() {
+        local gw=""
+        gw=$(ip -4 route show dev mgmt0 | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+$/ && $3 ~ /^[0-9]+\./ {print $3; exit}')
+        if [ -z "$gw" ]; then
+          gw=$(ip -4 route show dev mgmt0 | awk '$1 == "default" && $3 ~ /^[0-9]+\./ {print $3; exit}')
+        fi
+        if [ -n "$gw" ]; then
+          # Keep management/control-plane reachability after dataplane NIC is moved to VFIO.
+          ip route replace default via "$gw" dev mgmt0 metric 50 || true
+        else
+          log "failed to derive management gateway; skipping default route pin"
+        fi
+      }
+
       iface_for_cidr() {
         local cidr="$1"
         python3 - "$cidr" <<'PY'
@@ -315,6 +329,7 @@ write_files:
       ensure_dataplane_dhcp "$MGMT_MAC" "$DATA_MAC"
       ip link set data0 up || true
       ensure_mgmt_vpc_route "${vpc_cidr}"
+      ensure_mgmt_default_route
       disable_rp_filter
       ensure_metadata_route || log "metadata route not ready yet; will retry during token fetch"
 
@@ -448,7 +463,6 @@ write_files:
       fi
       GCP_IOVA_MODE=""
       if [ "${cloud_provider}" = "gcp" ]; then
-        DPDK_WORKERS=1
         GCP_IOVA_MODE="pa"
       fi
 

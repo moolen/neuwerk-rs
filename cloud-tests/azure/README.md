@@ -5,20 +5,23 @@ This folder provisions the Azure test bench described in `ROADMAP/AZURE-E2E.md`.
 ## Requirements
 - Terraform and Azure CLI.
 - Logged in via `az login`.
-- Built firewall binary with `--features dpdk` (use `make build.dpdk`).
+- Built firewall binary with `--features dpdk` (use `make build`).
 - SSH keypair at `cloud-tests/.secrets/ssh/azure_e2e`.
 - Default image is Ubuntu 24.04 (Noble). Override `image_offer`/`image_sku` if you switch regions or use a custom image.
 
 ## Quick Start
 1. `cd cloud-tests/azure/terraform`
 2. `terraform init`
-3. `make build.dpdk`
+3. `make build`
 4. `terraform apply -var 'firewall_binary_path=../../../target/release/firewall'`
 5. Use scripts in `cloud-tests/azure/scripts`.
 6. Run the cloud policy smoke suite with `make policy-smoke`.
 7. Open a local tunnel to one firewall UI and mint a JWT with `make ui.port-forward` (override with `INDEX=<n>` and `UI_LOCAL_PORT=<port>`).
 8. Run VMSS lifecycle rollout validation with `make lifecycle-rollout` (consumer-side sustained mixed traffic with an error budget default of `0.01%`; override via `MAX_ERROR_RATE_PCT`).
 9. Run termination drain-path validation with `make lifecycle-termination-drain` (targets one VMSS instance, triggers lifecycle action, and asserts termination/drain metrics via streamed max values). Use `TRIGGER_ACTION=terminate` (default) or `TRIGGER_ACTION=reboot`.
+10. Run HTTP webhook perf setup with `make http-perf.setup`.
+11. Run a quick single-scenario HTTP webhook perf run with `make http-perf.quick`.
+12. Run the full HTTP webhook perf matrix with `make http-perf.run` (override with `HTTP_PERF_SCENARIOS` and `RPS_TIERS`).
 
 ## Notes
 - Readiness checks use `https://<mgmt-ip>:8443/ready`.
@@ -31,3 +34,4 @@ This folder provisions the Azure test bench described in `ROADMAP/AZURE-E2E.md`.
 - Azure load balancers do not forward ICMP; policy-smoke ICMP tests target the upstream VM private IP (still routed through the firewall by UDR) instead of the upstream ILB VIP.
 - DNS service args now use repeated `--dns-target-ip` and `--dns-upstream`; Terraform inputs are `dns_target_ips` and `dns_upstreams` (both lists). Empty values default to management IP target and upstream VM `:53`.
 - `scripts/run-tests.sh` now validates both UDP and TCP DNS queries and enforces strict TLS intercept allow/deny behavior (`/external-secrets/*` allowed, `/moolen` reset/refused).
+- HTTP webhook perf scripts live under `scripts/http-perf-*.sh`, use k6 from consumer VMs, and store JSON artifacts under `cloud-tests/azure/artifacts/http-perf-*`.

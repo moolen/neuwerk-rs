@@ -80,6 +80,7 @@ claims = {
     "exp": now + 3600,
     "iat": now,
     "jti": str(uuid.uuid4()),
+    "roles": ["admin"],
 }
 
 def b64url(payload: bytes) -> str:
@@ -152,7 +153,7 @@ fi
 
 RUNNER_DIR="${RUNNER_DIR:-${ROOT_DIR}/runner}"
 RUNNER_BIN="${RUNNER_BIN:-${RUNNER_DIR}/target/release/cloud-policy-smoke}"
-REMOTE_BIN="${REMOTE_BIN:-/tmp/cloud-policy-smoke}"
+REMOTE_BIN="${REMOTE_BIN:-/tmp/cloud-policy-smoke-$$}"
 SKIP_RUNNER_BUILD="${SKIP_RUNNER_BUILD:-0}"
 RUNNER_ARGS="${RUNNER_ARGS:-}"
 
@@ -163,6 +164,12 @@ fi
 
 ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$CONSUMER_IP" "cat > ${REMOTE_BIN}" < "$RUNNER_BIN"
 ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$CONSUMER_IP" "chmod +x ${REMOTE_BIN}"
+
+# Clean up per-run remote copy to avoid stale binary collisions between concurrent runs.
+cleanup_remote_runner() {
+  ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$CONSUMER_IP" "rm -f ${REMOTE_BIN}" >/dev/null 2>&1 || true
+}
+trap cleanup_remote_runner EXIT
 
 ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$CONSUMER_IP" \
   "NEUWERK_POLICY_API_BASE='${NEUWERK_POLICY_API_BASE}' \
