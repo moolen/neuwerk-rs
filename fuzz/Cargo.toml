@@ -1,0 +1,36 @@
+[package]
+name = "firewall-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+firewall = { path = ".." }
+
+[[bin]]
+name = "packet_parse"
+path = "fuzz_targets/packet_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "overlay_decap"
+path = "fuzz_targets/overlay_decap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls_reassembly"
+path = "fuzz_targets/tls_reassembly.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

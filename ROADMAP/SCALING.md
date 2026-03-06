@@ -11,6 +11,38 @@
   - `NEUWERK_DPDK_WORKERS=2`: ~4.58 Gbps
 - `lscpu -e` indicates both vCPUs are SMT siblings of one physical core on this SKU.
 - Existing dataplane behavior includes queue-per-worker mode and single-queue shared-RX software demux fallback.
+- Larger-instance validation target (`Standard_D4as_v5`) exercised with captured artifacts.
+
+## Status
+
+- Phase 0: partial complete
+  - Existing startup logs already emit worker configuration and mode selection details.
+  - Benchmark artifact capture standardization remains ongoing (follow-up task).
+- Phase 1: complete
+  - Dataplane runtime launch moved from Tokio `spawn_blocking` to a dedicated OS thread (`dataplane-runtime`) with explicit result signaling into main orchestration.
+  - Fatal dataplane error propagation semantics preserved.
+- Phase 2: complete (opt-in toggle delivered)
+  - Added `NEUWERK_DPDK_SINGLE_QUEUE_MODE=demux|single`.
+  - Default remains `demux` (behavior-preserving).
+  - `single` forces single worker when `effective_queues == 1`.
+  - Worker-plan unit tests updated and expanded.
+- Phase 3: partial complete
+  - Worker core selection now uses process-wide task affinity union (not only `/proc/self/status`) to avoid false single-core clamping.
+  - Added unit tests for CPU allowed-list parsing and union behavior.
+- Phase 4: complete (with platform caveat)
+  - D4 validation ran smoke + iperf for `workers=1` and `workers=2`.
+  - Platform caveat: Azure MANA on this setup reports `flow_type_rss_offloads=0x0`, so runtime falls back to single RX queue and shared-RX demux for multi-worker mode.
+
+Latest validation after implementation:
+
+- Targeted unit tests: pass (`choose_dpdk_worker_plan*`)
+- Extended unit tests (CPU allowed-list parsing): pass
+- Integration suite: pass (`make test.integration`, `exit 0`) before and after affinity-selection change
+- D4 throughput validation (post-fix):
+  - `workers=1`: ~10.548 Gbps receive (`iperf3 -t 60 -P 16`)
+  - `workers=2`: ~11.861 Gbps receive (`iperf3 -t 60 -P 16`)
+  - delta: ~+1.313 Gbps (~12.5%)
+  - smoke tests: pass in both modes
 
 ## Goals
 
@@ -62,6 +94,11 @@ Exit criteria:
 - No functional diffs.
 - Integration tests pass.
 
+Progress notes:
+
+- Existing logs already include worker config and mode.
+- Further artifact normalization (automated benchmark packaging) is deferred.
+
 ### Phase 1 - PMD as Dedicated OS Thread (Keep Semantics)
 
 Purpose: remove Tokio scheduler ownership of the dataplane execution thread while preserving lifecycle behavior.
@@ -90,6 +127,11 @@ Exit criteria:
 - DPDK smoke/integration tests pass.
 - No regressions in readiness or policy activation behavior.
 
+Progress notes:
+
+- Implemented with `std::thread::Builder::spawn` and oneshot result signaling.
+- Main orchestrator now awaits dataplane thread result channel instead of Tokio blocking task join handle.
+
 ### Phase 2 - Single-Queue Performance Mode (Opt-In)
 
 Purpose: avoid known overhead of shared-RX software demux when only one effective RX queue exists.
@@ -116,6 +158,11 @@ Exit criteria:
 - Unit tests for planning logic pass.
 - `make test.integration` passes.
 - On single-queue environments, opt-in mode shows equal or better throughput with stable retransmits.
+
+Progress notes:
+
+- Delivered via `NEUWERK_DPDK_SINGLE_QUEUE_MODE`.
+- Default path unchanged (`demux`), preserving prior behavior.
 
 ### Phase 3 - Fast-Path Cross-Thread Interaction Audit (Selective, Optional)
 
@@ -185,6 +232,16 @@ Acceptance criteria:
 1. On real multi-core + multi-queue setups, `workers=2` outperforms `workers=1`.
 2. Retransmits do not increase disproportionately.
 3. No integration/regression test failures.
+
+Progress notes:
+
+1. Validation artifacts captured under `cloud-tests/azure/artifacts/scaling-d4-validate-20260302T082538Z`.
+2. Initial D4 run showed no scaling because worker planning was clamped by thread-local `Cpus_allowed_list`.
+3. After affinity-selection fix, startup logs show:
+   - `using=2, core_ids=0,2`
+   - `starting 2 worker threads (mode=SharedRxDemux)`
+   - worker pinning on distinct physical cores (`0` and `2`).
+4. RSS remains unavailable on this setup (`flow_type_rss_offloads=0x0`), so queue-per-worker mode is still not available; multi-worker gain comes from shared-RX demux over two physical cores.
 
 ## Test and Release Gates
 

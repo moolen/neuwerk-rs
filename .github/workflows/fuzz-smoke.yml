@@ -1,0 +1,32 @@
+name: Fuzz Smoke
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+jobs:
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEUWERK_FUZZ_REQUIRED: "1"
+      NEUWERK_FUZZ_SMOKE_RUNS: "250"
+      NEUWERK_FUZZ_SEED: "1337"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz harness compile check
+        run: make fuzz.check
+
+      - name: Fuzz smoke run
+        run: make fuzz.smoke

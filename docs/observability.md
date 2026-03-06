@@ -89,4 +89,5 @@ receivers:
 
 ## Notes
 - Throughput (MiB/s, PPS) should be computed in PromQL from counters.
-- A Grafana dashboard is not shipped yet.
+- A Grafana dashboard is available at `docs/grafana/firewall-operations-dashboard.json`.
+- Import it via Grafana: Dashboards -> New -> Import -> Upload JSON file.
