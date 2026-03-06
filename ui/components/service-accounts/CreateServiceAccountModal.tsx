@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
 import type { CreateServiceAccountRequest } from '../../types';
+import { CreateServiceAccountModalActions } from './CreateServiceAccountModalActions';
+import { CreateServiceAccountModalFields } from './CreateServiceAccountModalFields';
+import { buildCreateServiceAccountRequest } from './createForm';
 
 interface CreateServiceAccountModalProps {
   onSubmit: (req: CreateServiceAccountRequest) => Promise<void>;
@@ -26,17 +29,15 @@ export const CreateServiceAccountModal: React.FC<CreateServiceAccountModalProps>
     e.preventDefault();
     setError(null);
 
-    if (!name.trim()) {
-      setError('Name is required');
+    const result = buildCreateServiceAccountRequest(name, description);
+    if (!result.request) {
+      setError(result.error ?? 'Invalid request');
       return;
     }
 
     try {
       setLoading(true);
-      await onSubmit({
-        name: name.trim(),
-        description: description.trim() ? description.trim() : undefined,
-      });
+      await onSubmit(result.request);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create service account');
     } finally {
@@ -59,39 +60,15 @@ export const CreateServiceAccountModal: React.FC<CreateServiceAccountModalProps>
         <h3 className="text-lg font-semibold mb-4" style={{ color: 'var(--text)' }}>Create Service Account</h3>
 
         <form onSubmit={handleSubmit}>
-          <div className="space-y-4 mb-6">
-            <div>
-              <label htmlFor="name" className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>
-                Name
-              </label>
-              <input
-                id="name"
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                disabled={loading}
-                placeholder="ci-deployer"
-                className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text)' }}
-              />
-            </div>
+          <CreateServiceAccountModalFields
+            name={name}
+            description={description}
+            loading={loading}
+            onNameChange={setName}
+            onDescriptionChange={setDescription}
+          />
 
-            <div>
-              <label htmlFor="description" className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>
-                Description (optional)
-              </label>
-              <textarea
-                id="description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                disabled={loading}
-                rows={3}
-                placeholder="Used by CI pipeline"
-                className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text)' }}
-              />
-            </div>
-
+          <div className="mb-6">
             {error && (
               <div className="p-3 rounded-lg" style={{ background: 'var(--red-bg)', border: '1px solid var(--red-border)' }}>
                 <p className="text-sm" style={{ color: 'var(--red)' }}>{error}</p>
@@ -99,25 +76,7 @@ export const CreateServiceAccountModal: React.FC<CreateServiceAccountModalProps>
             )}
           </div>
 
-          <div className="flex justify-end space-x-3">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={loading}
-              className="px-4 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)' }}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              style={{ background: 'var(--accent)' }}
-            >
-              {loading ? 'Creating...' : 'Create'}
-            </button>
-          </div>
+          <CreateServiceAccountModalActions loading={loading} onClose={onClose} />
         </form>
       </div>
     </div>

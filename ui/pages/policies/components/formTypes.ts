@@ -1,0 +1,24 @@
+import type { Dispatch, SetStateAction } from 'react';
+
+import type { IntegrationView, PolicyCreateRequest } from '../../../types';
+
+export type UpdateDraft = (mutator: (next: PolicyCreateRequest) => void) => void;
+export type SetDraft = Dispatch<SetStateAction<PolicyCreateRequest>>;
+
+export interface PolicyBuilderFormMutations {
+  addGroup: () => void;
+  duplicateGroup: (groupIndex: number) => void;
+  moveGroup: (groupIndex: number, direction: -1 | 1) => void;
+  deleteGroup: (groupIndex: number) => void;
+  addRule: (groupIndex: number) => void;
+  duplicateRule: (groupIndex: number, ruleIndex: number) => void;
+  moveRule: (groupIndex: number, ruleIndex: number, direction: -1 | 1) => void;
+  deleteRule: (groupIndex: number, ruleIndex: number) => void;
+}
+
+export interface PolicyBuilderFormSharedProps extends PolicyBuilderFormMutations {
+  draft: PolicyCreateRequest;
+  integrations: IntegrationView[];
+  setDraft: SetDraft;
+  updateDraft: UpdateDraft;
+}

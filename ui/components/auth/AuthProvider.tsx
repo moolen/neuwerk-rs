@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import type { AuthUser } from '../../types';
-import { getAuthToken, clearAuthToken, whoAmI, logout as apiLogout } from '../../services/api';
+import { APIError, whoAmI, logout as apiLogout } from '../../services/api';
+import { clearLocalPreviewAuthUser, readLocalPreviewAuthUser } from './loginHelpers';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -25,9 +26,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, []);
 
   async function checkAuth() {
-    const token = getAuthToken();
-    if (!token) {
-      setUser(null);
+    const previewBypassUser = readLocalPreviewAuthUser();
+    if (previewBypassUser) {
+      setUser(previewBypassUser);
+      setError(null);
       setLoading(false);
       return;
     }
@@ -35,10 +37,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
     try {
       const data = await whoAmI();
       setUser(data);
+      setError(null);
     } catch (err) {
-      clearAuthToken();
       setUser(null);
-      if (err instanceof Error) {
+      if (err instanceof APIError && (err.status === 401 || err.status === 403)) {
+        setError(null);
+      } else if (err instanceof Error) {
         setError(err.message);
       } else {
         setError('Failed to check authentication');
@@ -54,6 +58,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } catch {
       // ignore
     } finally {
+      clearLocalPreviewAuthUser();
       setUser(null);
     }
   }
