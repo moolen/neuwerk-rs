@@ -384,10 +384,6 @@ fn spawn_tls_intercept_supervisor(
                     }
                     intercept_ready.store(false, Ordering::Release);
                     runtime_ca_generation = None;
-                    if enable_kernel_intercept_steering && applied_steering_rules.is_some() {
-                        service_lane::clear_intercept_steering_rules(&service_lane_iface);
-                        applied_steering_rules = None;
-                    }
                 } else if runtime_ca_generation != Some(desired_ca_generation) {
                     if let Some(task) = runtime_task.take() {
                         task.abort();
@@ -395,10 +391,6 @@ fn spawn_tls_intercept_supervisor(
                     }
                     intercept_ready.store(false, Ordering::Release);
                     runtime_ca_generation = None;
-                    if enable_kernel_intercept_steering && applied_steering_rules.is_some() {
-                        service_lane::clear_intercept_steering_rules(&service_lane_iface);
-                        applied_steering_rules = None;
-                    }
                 }
             }
 
