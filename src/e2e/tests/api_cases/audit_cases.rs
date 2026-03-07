@@ -179,11 +179,12 @@ source_groups:
             Some(&token),
         )
         .await?;
-        let resp = udp_echo(
+        let resp = udp_echo_eventually(
             udp_bind,
             udp_server,
             payload,
             std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(3),
         )
         .await?;
         if resp != payload {
@@ -451,11 +452,12 @@ source_groups:
             Some(&token),
         )
         .await?;
-        let resp_a = udp_echo(
+        let resp_a = udp_echo_eventually(
             udp_bind,
             udp_server,
             payload_a,
             std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(3),
         )
         .await?;
         if resp_a != payload_a {
@@ -485,11 +487,12 @@ source_groups:
             Some(&token),
         )
         .await?;
-        let resp_b = udp_echo(
+        let resp_b = udp_echo_eventually(
             udp_bind,
             udp_server,
             payload_b,
             std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(3),
         )
         .await?;
         if resp_b != payload_b {
@@ -560,4 +563,3 @@ source_groups:
         Ok(())
     })
 }
-

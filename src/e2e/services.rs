@@ -50,7 +50,7 @@ pub use tls::{
     https_get, https_get_path, https_get_tls12, https_get_tls13, https_h2_get_path,
     https_h2_preface, https_leaf_cert_sha256, tls_client_hello_raw,
 };
-pub use udp::udp_echo;
+pub use udp::{udp_echo, udp_echo_eventually};
 pub use upstream::{generate_upstream_tls_material, UpstreamServices, UpstreamTlsMaterial};
 
 #[cfg(test)]
