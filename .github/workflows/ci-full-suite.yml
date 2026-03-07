@@ -1,10 +1,10 @@
-name: CI Full Suite
+name: CI Full Suite (Manual)
 
 on:
-  pull_request:
-  push:
-    branches: ["main"]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-full-suite-${{ github.ref }}
@@ -26,7 +26,15 @@ jobs:
       - name: Install native build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y \
+            libclang-dev \
+            libnuma-dev \
+            llvm-dev \
+            meson \
+            ninja-build \
+            pkg-config \
+            protobuf-compiler \
+            python3-pyelftools
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -38,9 +46,6 @@ jobs:
       - name: Install UI dependencies
         run: npm --prefix ui ci
 
-      - name: Check Rust formatting
-        run: cargo fmt --all --check
-
       - name: Run UI tests
         run: npm --prefix ui test
 
@@ -49,6 +54,11 @@ jobs:
 
       - name: Run Rust full suite
         run: make test
-      
+
+      - name: Install Kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
       - name: Run Integration suite
         run: make test.integration

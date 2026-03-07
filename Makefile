@@ -3,7 +3,9 @@
 DPDK_VERSION := $(shell cat third_party/dpdk/VERSION 2>/dev/null)
 DPDK_INSTALL := third_party/dpdk/install/$(DPDK_VERSION)
 DPDK_DIR_ABS := $(abspath $(DPDK_INSTALL))
-DPDK_PKG_CONFIG_PATH := $(DPDK_DIR_ABS)/lib/pkgconfig:$(DPDK_DIR_ABS)/lib64/pkgconfig
+DPDK_PKG_CONFIG_PATH := $(DPDK_DIR_ABS)/lib/pkgconfig:$(DPDK_DIR_ABS)/lib/x86_64-linux-gnu/pkgconfig:$(DPDK_DIR_ABS)/lib64/pkgconfig
+DPDK_LD_LIBRARY_PATH := $(DPDK_DIR_ABS)/lib:$(DPDK_DIR_ABS)/lib/x86_64-linux-gnu:$(DPDK_DIR_ABS)/lib64
+SUDO := $(shell if [ "$$(id -u)" -eq 0 ]; then printf ""; else printf "sudo"; fi)
 
 build: build.ui dpdk.prepare
 	DPDK_DIR=$(DPDK_DIR_ABS) PKG_CONFIG_PATH=$(DPDK_PKG_CONFIG_PATH) cargo build --all-features
@@ -23,8 +25,9 @@ test:
 	cargo test
 
 test.integration: build
-	cargo run --bin e2e_harness
-	cargo run --bin e2e_kind_harness
+	DPDK_DIR=$(DPDK_DIR_ABS) PKG_CONFIG_PATH=$(DPDK_PKG_CONFIG_PATH) cargo build --bin e2e_harness --all-features
+	$(SUDO) env PATH="$(PATH)" LD_LIBRARY_PATH="$(DPDK_LD_LIBRARY_PATH)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" target/debug/e2e_harness
+	DPDK_DIR=$(DPDK_DIR_ABS) PKG_CONFIG_PATH=$(DPDK_PKG_CONFIG_PATH) LD_LIBRARY_PATH="$(DPDK_LD_LIBRARY_PATH)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" cargo run --bin e2e_kind_harness --all-features
 
 fuzz.check:
 	cargo check --manifest-path fuzz/Cargo.toml

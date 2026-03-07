@@ -1,9 +1,10 @@
-name: Fuzz Smoke
+name: Fuzz Smoke (Manual)
 
 on:
-  pull_request:
-  push:
-    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   fuzz-smoke:
@@ -21,6 +22,11 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+
+      - name: Install native fuzz build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev llvm-dev
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked

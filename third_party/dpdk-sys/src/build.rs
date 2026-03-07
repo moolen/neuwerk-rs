@@ -31,12 +31,15 @@ fn main() {
     if let Some(prefix) = dpdk_dir.clone() {
         include_dirs.push(prefix.join("include"));
         include_dirs.push(prefix.join("include").join("dpdk"));
-        let libdir = if prefix.join("lib").exists() {
-            prefix.join("lib")
-        } else {
-            prefix.join("lib64")
-        };
-        lib_dirs.push(libdir);
+        for libdir in [
+            prefix.join("lib"),
+            prefix.join("lib").join("x86_64-linux-gnu"),
+            prefix.join("lib64"),
+        ] {
+            if libdir.exists() {
+                lib_dirs.push(libdir);
+            }
+        }
     } else if let Some(libdir) = pkg_config_var("libdpdk", "libdir") {
         lib_dirs.push(PathBuf::from(libdir));
         if let Some(includedir) = pkg_config_var("libdpdk", "includedir") {

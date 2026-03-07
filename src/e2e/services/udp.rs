@@ -20,3 +20,24 @@ pub async fn udp_echo(
         Err(_) => Err("udp client recv timed out".to_string()),
     }
 }
+
+pub async fn udp_echo_eventually(
+    bind: SocketAddr,
+    server: SocketAddr,
+    payload: &[u8],
+    per_attempt_timeout: std::time::Duration,
+    overall_timeout: std::time::Duration,
+) -> Result<Vec<u8>, String> {
+    let deadline = std::time::Instant::now() + overall_timeout;
+    loop {
+        match udp_echo(bind, server, payload, per_attempt_timeout).await {
+            Ok(resp) => return Ok(resp),
+            Err(err) if std::time::Instant::now() >= deadline => {
+                return Err(format!("udp echo did not succeed before timeout: {err}"));
+            }
+            Err(_) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
