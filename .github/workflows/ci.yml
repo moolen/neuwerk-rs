@@ -72,4 +72,4 @@ jobs:
         run: cargo build --all-features
 
       - name: Run Rust tests
-        run: cargo test
+        run: cargo test -- --test-threads=1
