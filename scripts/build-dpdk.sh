@@ -17,8 +17,25 @@ tarball="$src_base/dpdk-$version.tar.xz"
 build_dir="$dpdk_root/build/$version"
 install_dir="$dpdk_root/install/$version"
 
+normalize_shared_links() {
+  for lib_root in "$install_dir/lib" "$install_dir/lib64"; do
+    if [[ -d "$lib_root" ]]; then
+      while IFS= read -r -d '' versioned_lib; do
+        base_name="$(basename "$versioned_lib")"
+        if [[ "$base_name" =~ ^(lib.+\.so)\.[0-9].*$ ]]; then
+          unversioned="${BASH_REMATCH[1]}"
+          if [[ ! -e "$lib_root/$unversioned" ]]; then
+            ln -sf "$base_name" "$lib_root/$unversioned"
+          fi
+        fi
+      done < <(find "$lib_root" -maxdepth 1 -type f -name 'lib*.so.*' -print0)
+    fi
+  done
+}
+
 if [[ -d "$install_dir/lib" || -d "$install_dir/lib64" ]]; then
   if [[ "${DPDK_FORCE_REBUILD:-0}" != "1" ]]; then
+    normalize_shared_links
     echo "DPDK already installed at $install_dir (set DPDK_FORCE_REBUILD=1 to rebuild)"
     exit 0
   fi
@@ -121,5 +138,7 @@ fi
 
 ninja -C "$build_dir"
 ninja -C "$build_dir" install
+
+normalize_shared_links
 
 echo "DPDK installed at $install_dir"

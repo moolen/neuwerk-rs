@@ -60,13 +60,16 @@ jobs:
       - name: Prepare vendored DPDK
         run: make dpdk.prepare
 
-      - name: Build firewall with all features
+      - name: Export vendored DPDK environment
         run: |
           DPDK_VERSION=$(cat third_party/dpdk/VERSION)
-          DPDK_DIR="$PWD/third_party/dpdk/install/$DPDK_VERSION"
-          export DPDK_DIR
-          export PKG_CONFIG_PATH="$DPDK_DIR/lib/pkgconfig:$DPDK_DIR/lib64/pkgconfig"
-          cargo build --all-features
+          DPDK_INSTALL="$PWD/third_party/dpdk/install/$DPDK_VERSION"
+          echo "DPDK_DIR=$DPDK_INSTALL" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$DPDK_INSTALL/lib/pkgconfig:$DPDK_INSTALL/lib/x86_64-linux-gnu/pkgconfig:$DPDK_INSTALL/lib64/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$DPDK_INSTALL/lib:$DPDK_INSTALL/lib/x86_64-linux-gnu:$DPDK_INSTALL/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      - name: Build firewall with all features
+        run: cargo build --all-features
 
       - name: Run Rust tests
         run: cargo test

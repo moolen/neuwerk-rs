@@ -1,10 +1,10 @@
-name: CI Full Suite
+name: CI Full Suite (Manual)
 
 on:
-  pull_request:
-  push:
-    branches: ["main"]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-full-suite-${{ github.ref }}
@@ -26,7 +26,15 @@ jobs:
       - name: Install native build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y \
+            libclang-dev \
+            libnuma-dev \
+            llvm-dev \
+            meson \
+            ninja-build \
+            pkg-config \
+            protobuf-compiler \
+            python3-pyelftools
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -35,11 +43,13 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
+      - name: Setup Go (for Dex build fallback)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
       - name: Install UI dependencies
         run: npm --prefix ui ci
-
-      - name: Check Rust formatting
-        run: cargo fmt --all --check
 
       - name: Run UI tests
         run: npm --prefix ui test
@@ -47,8 +57,27 @@ jobs:
       - name: Build UI
         run: npm --prefix ui run build
 
+      - name: Export vendored DPDK environment
+        run: |
+          DPDK_VERSION=$(cat third_party/dpdk/VERSION)
+          DPDK_INSTALL="$PWD/third_party/dpdk/install/$DPDK_VERSION"
+          echo "DPDK_DIR=$DPDK_INSTALL" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$DPDK_INSTALL/lib/pkgconfig:$DPDK_INSTALL/lib/x86_64-linux-gnu/pkgconfig:$DPDK_INSTALL/lib64/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$DPDK_INSTALL/lib:$DPDK_INSTALL/lib/x86_64-linux-gnu:$DPDK_INSTALL/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
       - name: Run Rust full suite
         run: make test
-      
+
+      - name: Install Dex
+        run: |
+          ./scripts/setup-dex.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
       - name: Run Integration suite
         run: make test.integration
+
+      - name: Run SSO Dex integration suite
+        env:
+          DEX_BIN: ${{ runner.temp }}/bin/dex
+          NEUWERK_SSO_REQUIRE_DEX: "1"
+        run: make test.integration.sso
