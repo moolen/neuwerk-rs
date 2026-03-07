@@ -25,6 +25,7 @@
 - Integration tests in `tests/integration_nat.rs`.
 - DPDK is isolated behind `dpdk_adapter.rs` and currently runs as a no-op dataplane.
 - CI must run without NIC hardware or hugepages.
+- SSO OIDC integration tests live in `tests/http_api/sso_oidc_cases.rs`; `make test.integration.sso` runs them, and `NEUWERK_SSO_REQUIRE_DEX=1` enforces fail-on-missing Dex instead of skip.
 
 ## Build Notes
 - DPDK builds use a pinned, vendored DPDK source build (`third_party/dpdk/VERSION`) via `scripts/build-dpdk.sh` and `make build` (installs into `third_party/dpdk/install/<version>`).
@@ -40,6 +41,7 @@
 - Azure Germany West Central now offers Ubuntu 24.04 via `publisher=Canonical`, `offer=ubuntu-24_04-lts`, `sku=server` for the e2e stack.
 - Azure MANA DPDK uses devargs `mac=` to select the NIC; kernel MANA drivers remain bound (no vfio binding). The dataplane can accept `--data-plane-interface mac:aa:bb:cc:dd:ee:ff` and map the DPDK port by MAC.
 - Azure DPDK on NetVSC may miss ARP replies for the gateway in multiqueue mode; when `NEUWERK_CLOUD_PROVIDER=azure` the dataplane now falls back to `NEUWERK_AZURE_GATEWAY_MAC` (default `12:34:56:78:9a:bc`) to seed the gateway ARP entry.
+- `scripts/setup-dex.sh` installs Dex for SSO tests; recent Dex releases may not publish prebuilt tarballs, so the script falls back to cloning the release tag and building `cmd/dex` (requires `go` and `git`).
 
 ## Design Constraints
 - Favor correctness and deterministic behavior over micro-optimizations.
@@ -51,6 +53,7 @@
 - DPDK dataplane is the target deployment mode for AWS/GCP/Azure.
 - Dataplane IPv4 config (IP/prefix/gateway) is obtained via DHCP on the dataplane NIC; DHCP is mandatory.
 - All policy source groups are treated as internal networks; the DHCP-derived prefix is the default internal group.
+- In lifecycle-only integrations behind LB steering (AWS ASG / GCP MIG), do not keep scale-in protection enabled on active nodes; it can deadlock managed rollouts before termination hooks fire.
 - VXLAN GWLB deployments with internal/external tunnels swap the tunnel/VNI on replies (internal -> external, external -> internal) when both tunnel configs are present.
 - Dataplane answers ARP only for its dataplane IPv4 address (no public IP ARP).
 - IPv4 fragments are dropped with metrics only (no logging).
@@ -66,6 +69,10 @@
 - Dataplane TLS validation is policy-driven per flow, uses TCP reassembly, and is fail-closed for TLS-constrained rules.
 - TLS 1.3 certificates are uninspectable; policy must configure allow/deny behavior for those flows.
 - Trust anchors for TLS validation come from the system store plus policy-embedded anchors; skip certificate time validity checks.
+- AWS ASG integration now uses IMDSv2 role credentials + SigV4 AWS Query API calls (EC2 + Auto Scaling) for ASG member discovery, local identity lookup, instance protection, and termination lifecycle completion. In GWLB/NLB deployments this integration is lifecycle-only and does not modify VPC route tables. During drain it renews ASG terminating lifecycle hooks via `RecordLifecycleActionHeartbeat` near heartbeat expiry. IAM role permissions: `ec2:DescribeInstances`, `ec2:DescribeNetworkInterfaces`, `autoscaling:Describe*`, `autoscaling:SetInstanceProtection`, `autoscaling:RecordLifecycleActionHeartbeat`, and `autoscaling:CompleteLifecycleAction`.
+- Azure VMSS integration and GCP MIG integration are now lifecycle-only in externally steered topologies (ILB/NLB/GWLB): they do not discover/manage route tables, and only handle instance discovery/readiness, termination drain signaling, and (where supported) instance protection.
+- GCP MIG integration normalizes label keys like `neuwerk-io-cluster`/`neuwerk-io-role` into `neuwerk.io/cluster`/`neuwerk.io/role` for discovery-tag matching compatibility.
+- `IntegrationCapabilities.lifecycle_hook` is currently informational only; integration runtime behavior is gated by `instance_protection` and `termination_notice`.
 
 ## Self-Improving Prompt
 - If you learn something important about this repository, its constraints, or workflows, add it to this `AGENTS.md` so future work benefits from it.
@@ -103,15 +110,16 @@
 - `ui/components/service-accounts/ServiceAccountTable.tsx` is now a shell over `ServiceAccountTableRow.tsx`, `ServiceAccountStatusBadge.tsx`, and `ServiceAccountTableEmptyState.tsx`; shared formatting/status helpers live in `ui/components/service-accounts/helpers.ts`.
 - `ui/components/service-accounts/CreateServiceAccountModal.tsx` is now a shell over `CreateServiceAccountModalFields.tsx` and `CreateServiceAccountModalActions.tsx`; request normalization/validation lives in `ui/components/service-accounts/createForm.ts`.
 - Login UI is now split: `ui/components/auth/LoginPage.tsx` is a shell, submit/state logic lives in `ui/components/auth/useTokenLogin.ts`, token form rendering is in `ui/components/auth/LoginTokenForm.tsx`, and input/error helpers live in `ui/components/auth/loginHelpers.ts`.
+- Login page SSO is now backend-driven: provider buttons render from `GET /api/v1/auth/sso/providers` via `ui/components/auth/useSsoProviders.ts`, and clicking a provider redirects via `buildSsoStartPath(...)` to `/api/v1/auth/sso/:id/start`.
 - Local UI preview auth bypass: on localhost (`localhost`, `127.0.0.1`, `::1`), clicking Sign in with an empty token writes a local preview auth user to `localStorage` so `npm run preview` can reach the dashboard without backend auth; `AuthProvider` reads this state and `logout` clears it.
 - App routing/navigation metadata is centralized in `ui/navigation.ts` (canonical page IDs + nav items + path helpers), and page rendering is mapped in `ui/app/renderPage.tsx`; `App.tsx` and `Sidebar.tsx` should consume those shared definitions.
 - Dashboard UI is now split: `ui/pages/Dashboard.tsx` is a shell, polling/state logic lives in `ui/pages/dashboard/useDashboardStats.ts`, and render/layout logic lives in `ui/pages/dashboard/components/`.
 - Dashboard stats rendering is now further sectioned: `DashboardStatsView.tsx` is a thin shell over `DashboardHeader.tsx`, `DashboardOverviewCards.tsx`, `DashboardDataplaneSection.tsx`, `DashboardControlPlaneSection.tsx`, `DashboardBytesSection.tsx`, `DashboardSystemSection.tsx`, and `DashboardRaftCatchupSection.tsx`, with shared card frame styles in `DashboardSectionCard.tsx`.
 - Audit UI is now split: `ui/pages/AuditPage.tsx` is a shell, query/filter state and loading logic live in `ui/pages/audit/useAuditPage.ts`, and table/filter/error rendering lives in `ui/pages/audit/components/`.
 - DNS cache UI is now split: `ui/pages/DNSCachePage.tsx` is a shell, data load/filter state lives in `ui/pages/dns-cache/useDNSCachePage.ts`, and rendering/controls are split into `ui/pages/dns-cache/components/`.
-- Settings UI is now split: `ui/pages/SettingsPage.tsx` is a shell, TLS intercept CA load/update orchestration lives in `ui/pages/settings/useSettingsPage.ts`, and rendering is split into `ui/pages/settings/components/`.
+- Settings UI is now split: `ui/pages/SettingsPage.tsx` is a shell, TLS intercept CA + SSO provider orchestration lives in `ui/pages/settings/useSettingsPage.ts`, and rendering is split into `ui/pages/settings/components/` (including `SsoProvidersForm.tsx`).
 - Settings includes a one-click DPI/TLS intercept CA generator in `ui/pages/settings/components/TlsInterceptCaForm.tsx` wired through `useSettingsPage.ts` to `POST /api/v1/settings/tls-intercept-ca/generate`; generation persists material through the same backend storage path as manual Save.
-- UI API client is now domain-split: `ui/services/api.ts` is a compatibility barrel, shared fetch/error transport lives in `ui/services/apiClient/transport.ts`, and domain clients live in `ui/services/apiClient/{auth,policies,integrations,dns,audit,wiretap,serviceAccounts,settings}.ts`.
+- UI API client is now domain-split: `ui/services/api.ts` is a compatibility barrel, shared fetch/error transport lives in `ui/services/apiClient/transport.ts`, and domain clients live in `ui/services/apiClient/{auth,policies,integrations,dns,audit,wiretap,serviceAccounts,settings,sso}.ts`.
 - UI shared types are now domain-split: `ui/types.ts` is a compatibility barrel, and feature type domains live under `ui/types/` (`policy`, `integrations`, `stats`, `dns`, `wiretap`, `audit`, `auth`, `serviceAccounts`, `settings`).
 - UI API error parsing in `ui/services/api.ts` now prioritizes backend `{ error: "..." }`, falls back to `{ message: "..." }`, then status text.
 - UI auth is cookie-backed only: legacy in-memory token cache helpers were removed from `ui/services/api.ts`.
@@ -206,10 +214,14 @@
 - `src/controlplane/metrics.rs` now keeps registry construction plus snapshot/render logic; high-frequency observe/inc/set methods live in `src/controlplane/metrics/methods.rs`.
 - `src/controlplane/policy_config.rs` now keeps core policy/group/rule config wiring; TLS/HTTP intercept policy schema+compile logic lives in `src/controlplane/policy_config/tls_http.rs`, parsing helpers remain in `src/controlplane/policy_config/parse.rs`, and tests live in `src/controlplane/policy_config/tests.rs`.
 - Policy management is via HTTPS API on `--http-bind` (default management IP `:8443`) using `POST /api/v1/policies` and `GET /api/v1/policies`; `/ready` is available for readiness checks.
+- `/ready` now returns not-ready while integration drain mode is active (so LBs can stop new scheduling), but dataplane flow admission itself is not drain-blocked and can still accept new flows until instance termination.
 - `POST`/`PUT`/`DELETE /api/v1/policies` block until the dataplane observes the new policy generation when the dataplane is running (2s timeout; returns `503` on activation timeout). When no dataplane is running (e.g., control-plane-only cluster tests), they return immediately.
 - Service-lane runtime ensures `svc0` (TAP) exists with `169.254.255.1/30`. In DPDK mode, TLS intercept steering uses dataplane packet demux: intercept-eligible client flows are rewritten to `169.254.255.1:15443` on `svc0` and mapped by `(client_ip,client_port)` so service-lane egress packets can be rewritten back to the original upstream tuple before DPDK TX.
-- TLS intercept HTTP/2 handling now caps client-side concurrent streams to `1` and enforces timeout-bound request/upstream body reads in `intercept_runtime.rs`; this avoids large-body H2 flow-control stalls that can otherwise surface as long client-side request timeouts under load.
-- TLS intercept HTTP/2 request-body handling must keep polling the `h2` connection while reading stream data; `intercept_runtime.rs` now reads request bodies with a `tokio::select!` that combines `RecvStream::data()` with `client_conn.accept()` progress and releases per-chunk flow-control capacity.
+- TLS intercept HTTP/2 handling in `intercept_runtime.rs` uses bounded stream concurrency and timeout-bound request/upstream body reads to keep browser fan-out responsive while remaining fail-closed under stalls.
+- TLS intercept HTTP/2 request-body handling must release `RecvStream` flow-control capacity per chunk; missing release can stall large uploads and eventually fail-closed.
+- TLS intercept HTTP/2 upstream-response handling must release `RecvStream` flow-control capacity for each chunk; missing `release_capacity` causes long responses (e.g., `github.com`) to stall and fail-closed with `tls intercept: h2 upstream body read timed out`.
+- TLS intercept HTTP/2 now uses bounded stream concurrency (env `NEUWERK_TLS_H2_MAX_CONCURRENT_STREAMS`, default `64`) instead of single-stream serialization; browsers like GitHub can issue hundreds of concurrent H2 asset requests and otherwise accumulate multi-second `blocked` queueing.
+- TLS intercept HTTP/2 upstream requests must forward browser headers (e.g., `Accept`, `X-Requested-With`, `Sec-Fetch-*`) while stripping hop-by-hop headers; rebuilding H2 requests with only method/path/host can trigger GitHub async endpoint failures (`400/406`) and partial page render.
 - TLS intercept H2 request-body idle timeout is configurable via `NEUWERK_TLS_H2_BODY_TIMEOUT_SECS` (default 10s in `trafficd.rs`); use this only for controlled perf troubleshooting because larger values trade fail-closed speed for tolerance under upstream/client saturation.
 - In DPDK mode, the adapter now drains egress packets from `svc0` and emits them on DPDK TX after standard L2 rewrite/ARP resolution; service-lane return-path packets can trigger ARP requests when neighbor MAC is not cached.
 - DPDK intercept steering foundation: when `svc0` TAP is attachable, the dataplane can emit `Action::ToHost` for intercept-eligible flows and the DPDK adapter writes those frames to `svc0` (env override: `NEUWERK_DPDK_SERVICE_LANE_IFACE`, default `svc0`).
@@ -383,5 +395,6 @@
 - GCP policy-based routes must use subnet-local dataplane ILB next hops per source subnet (`consumer -> consumer dataplane ILB`, `upstream -> upstream dataplane ILB`); pointing both directions to the dataplane-subnet ILB can blackhole traffic.
 - On GCP net_gve, `rte_eth_dev_info` queue caps can be unreliable (`max_rx_queues` very large, `max_tx_queues=0`), so queue setup should be probe-driven instead of hard-clamped from those fields.
 - On current GCP Ubuntu 24.04 images with net_gve and DPDK, n2-standard-8 accepted up to 2 RX/TX queues in this bench, while n2-standard-4 rejected `nb_rx_queues>1` (`rte_eth_dev_configure` returned `-22`).
+- For GCP internal passthrough ILB + DPDK dataplane tests, backend health checks must use TCP on dataplane `:8080` (DPDK health-probe path). HTTPS `/ready` on `:8443` is management-plane only and is not reachable via the dataplane NIC once it is bound to VFIO.
 - In `cloud-tests/gcp`, running plain `terraform apply` without explicit machine-type vars will revert instances to defaults from `variables.tf`, which can invalidate n2-standard-8 perf baselines.
 - Replacing all four GCP bench instances to `n2-standard-8` can hit regional CPU quota (`CPUS_ALL_REGIONS=32`) during MIG surge replacement; avoid by planning capacity for temporary surge or using a non-surge replacement strategy.

@@ -270,3 +270,99 @@ async fn reconcile_preserves_routes_when_no_ready_instances() {
     assert_eq!(routes.get(&route_key), Some(&instance.dataplane_ip));
 }
 
+#[tokio::test]
+async fn reconcile_lifecycle_only_mode_keeps_ready_nodes_active() {
+    let tags = tagged(&[
+        ("neuwerk.io/cluster", "demo"),
+        ("neuwerk.io/role", "dataplane"),
+    ]);
+    let instance_a = tagged_instance(
+        "i-a",
+        "zone-1",
+        Ipv4Addr::new(10, 0, 0, 1),
+        Ipv4Addr::new(10, 1, 0, 1),
+        tags.clone(),
+    );
+    let instance_b = tagged_instance(
+        "i-b",
+        "zone-1",
+        Ipv4Addr::new(10, 0, 0, 2),
+        Ipv4Addr::new(10, 1, 0, 2),
+        tags.clone(),
+    );
+
+    let provider = MockProvider::new(
+        vec![instance_a.clone(), instance_b.clone()],
+        Vec::new(),
+        IntegrationCapabilities {
+            instance_protection: true,
+            termination_notice: false,
+            lifecycle_hook: true,
+        },
+        "i-a",
+    );
+    let ready = Arc::new(MockReady {
+        readiness: vec![(instance_a.mgmt_ip, true), (instance_b.mgmt_ip, true)]
+            .into_iter()
+            .collect(),
+    }) as Arc<dyn ReadyChecker>;
+
+    let metrics = Metrics::new().unwrap();
+    let drain_control = DrainControl::new();
+    let cfg = IntegrationConfig {
+        cluster_name: "demo".to_string(),
+        route_name: "neuwerk-default".to_string(),
+        drain_timeout_secs: 300,
+        reconcile_interval_secs: 1,
+        tag_filter: DiscoveryFilter { tags },
+        http_ready_port: 8443,
+        cluster_tls_dir: None,
+    };
+    let mut manager = IntegrationManager::new(
+        cfg,
+        Arc::new(provider.clone()),
+        None,
+        None,
+        metrics,
+        drain_control.clone(),
+        ready,
+    )
+    .await
+    .expect("manager");
+
+    manager.local_cache.terminations.insert(
+        "i-b".to_string(),
+        TerminationEvent {
+            id: "t-1".to_string(),
+            instance_id: "i-b".to_string(),
+            deadline_epoch: unix_now() + 120,
+        },
+    );
+
+    manager.reconcile_once().await.unwrap();
+
+    let routes = provider.routes.lock().await;
+    assert!(routes.is_empty());
+
+    let protections = provider.protections.lock().await;
+    let mut latest = HashMap::new();
+    for (id, enabled) in protections.iter().cloned() {
+        latest.insert(id, enabled);
+    }
+    assert_eq!(latest.get("i-a"), Some(&false));
+    assert_eq!(latest.get("i-b"), None);
+
+    assert!(!drain_control.is_draining());
+    let local_state = manager
+        .local_cache
+        .drains
+        .get("i-a")
+        .expect("local drain state");
+    assert_eq!(local_state.state, DrainStatus::Active);
+    let terminating_state = manager
+        .local_cache
+        .drains
+        .get("i-b")
+        .expect("terminating drain state");
+    assert_eq!(terminating_state.state, DrainStatus::Draining);
+}
