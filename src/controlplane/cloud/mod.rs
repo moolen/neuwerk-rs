@@ -26,6 +26,7 @@ const ASSIGNMENT_PREFIX: &[u8] = b"integration/assignments/";
 const DRAIN_PREFIX: &[u8] = b"integration/drain/";
 const OBSERVED_PREFIX: &[u8] = b"integration/observed/";
 const TERMINATION_PREFIX: &[u8] = b"integration/termination/";
+const TERMINATION_HEARTBEAT_LEAD_SECS: i64 = 30;
 
 #[derive(Clone)]
 pub struct ReadyClient {
@@ -211,7 +212,7 @@ impl IntegrationManager {
         if !self.provider.capabilities().termination_notice {
             return;
         }
-        let event = if let Some(event) = &self.local_termination_event {
+        let mut event = if let Some(event) = &self.local_termination_event {
             event.clone()
         } else {
             match self.load_termination_events().await {
@@ -230,6 +231,8 @@ impl IntegrationManager {
             }
         };
         if !self.is_drained_local(now, &drains) {
+            self.refresh_local_termination_heartbeat(&mut event, now)
+                .await;
             return;
         }
         match self.provider.complete_termination_action(&event).await {
@@ -248,6 +251,39 @@ impl IntegrationManager {
                 eprintln!("integration termination completion failed: {err}");
             }
         }
+    }
+
+    async fn refresh_local_termination_heartbeat(
+        &mut self,
+        event: &mut TerminationEvent,
+        now: i64,
+    ) {
+        if !self.provider.capabilities().lifecycle_hook {
+            return;
+        }
+        if now + TERMINATION_HEARTBEAT_LEAD_SECS < event.deadline_epoch {
+            return;
+        }
+        let next_deadline = match self.provider.record_termination_heartbeat(event).await {
+            Ok(next_deadline) => next_deadline,
+            Err(err) => {
+                eprintln!("integration termination heartbeat failed: {err}");
+                return;
+            }
+        };
+        let Some(next_deadline) = next_deadline else {
+            return;
+        };
+        if next_deadline <= event.deadline_epoch {
+            return;
+        }
+        event.deadline_epoch = next_deadline;
+        if let Err(err) = self.persist_termination_event(event).await {
+            eprintln!("integration termination heartbeat persist failed: {err}");
+            return;
+        }
+        self.local_termination_event = Some(event.clone());
+        self.local_termination_published_id = Some(event.id.clone());
     }
 
     async fn refresh_local_drain_control(&mut self, now: i64) -> Result<(), String> {
@@ -343,8 +379,12 @@ impl IntegrationManager {
             })
             .collect();
 
-        let assignments =
-            compute_assignments_with_fallback(&subnets, &eligible_instances, &fallback_instances);
+        let lifecycle_only_mode = subnets.is_empty();
+        let assignments = if lifecycle_only_mode {
+            HashMap::new()
+        } else {
+            compute_assignments_with_fallback(&subnets, &eligible_instances, &fallback_instances)
+        };
         let assignment_changes = assignment_change_count(&previous_assignments, &assignments);
         if assignment_changes > 0 {
             self.metrics
@@ -352,10 +392,28 @@ impl IntegrationManager {
         }
         self.persist_assignments(&assignments).await?;
 
-        let mut assigned_instances: HashSet<String> = HashSet::new();
-        for instance_id in assignments.values() {
-            assigned_instances.insert(instance_id.clone());
-        }
+        let assigned_instances: HashSet<String> = if lifecycle_only_mode {
+            eligible_instances
+                .iter()
+                .map(|instance| instance.id.clone())
+                .collect()
+        } else {
+            assignments.values().cloned().collect()
+        };
+        let protected_instances: HashSet<String> = if lifecycle_only_mode {
+            HashSet::new()
+        } else {
+            assigned_instances.clone()
+        };
+        let protection_candidates: Vec<InstanceRef> = if lifecycle_only_mode {
+            instances
+                .iter()
+                .filter(|instance| !terminating.contains(&instance.id))
+                .cloned()
+                .collect()
+        } else {
+            fallback_instances.clone()
+        };
 
         for subnet in &subnets {
             let Some(target_id) = assignments.get(&subnet.id) else {
@@ -391,9 +449,11 @@ impl IntegrationManager {
             }
         }
 
-        if !fallback_instances.is_empty() {
-            self.update_instance_protection(&fallback_instances, &assigned_instances)
+        if !protection_candidates.is_empty() {
+            self.update_instance_protection(&protection_candidates, &protected_instances)
                 .await;
+        }
+        if !fallback_instances.is_empty() {
             self.update_drains(&instances, &assigned_instances, now)
                 .await?;
         }

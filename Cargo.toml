@@ -20,6 +20,7 @@ serde_yaml = "0.9"
 regex = "1"
 serde_json = "1"
 serde_urlencoded = "0.7"
+roxmltree = "0.20"
 uuid = { version = "1", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["parsing", "formatting"] }
 base64 = "0.22"
@@ -38,7 +39,7 @@ async-trait = "0.1"
 thiserror = "1"
 axum = "0.7"
 axum-server = { version = "0.8", features = ["tls-rustls"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "cookies"] }
 prometheus = "0.13"
 x509-parser = { version = "0.15", features = ["verify"] }
 rustls-native-certs = "0.7"
@@ -57,6 +58,7 @@ tower = "0.4"
 proptest = "1"
 
 [build-dependencies]
+protoc-bin-vendored = "3.2.0"
 tonic-build = "0.12"
 
 [features]
