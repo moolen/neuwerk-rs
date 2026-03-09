@@ -53,6 +53,12 @@ pub trait CloudProvider: Send + Sync {
         &self,
         event: &TerminationEvent,
     ) -> Result<CapabilityResult, CloudError>;
+    async fn record_termination_heartbeat(
+        &self,
+        _event: &TerminationEvent,
+    ) -> Result<Option<i64>, CloudError> {
+        Ok(None)
+    }
 
     fn capabilities(&self) -> IntegrationCapabilities;
 }
