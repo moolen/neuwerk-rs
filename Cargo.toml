@@ -57,6 +57,7 @@ tower = "0.4"
 proptest = "1"
 
 [build-dependencies]
+protoc-bin-vendored = "3.2.0"
 tonic-build = "0.12"
 
 [features]
