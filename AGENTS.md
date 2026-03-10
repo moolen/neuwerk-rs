@@ -26,6 +26,7 @@
 - DPDK is isolated behind `dpdk_adapter.rs` and currently runs as a no-op dataplane.
 - CI must run without NIC hardware or hugepages.
 - SSO OIDC integration tests live in `tests/http_api/sso_oidc_cases.rs`; `make test.integration.sso` runs them, and `NEUWERK_SSO_REQUIRE_DEX=1` enforces fail-on-missing Dex instead of skip.
+- `target/debug/e2e_harness` now supports focused runs via `NEUWERK_E2E_CASE_FILTER=<comma-separated case names>`, `NEUWERK_E2E_SKIP_CLUSTER=1`, and `NEUWERK_E2E_SKIP_OVERLAY=1` to isolate flaky/non-target suites during local repro.
 
 ## Build Notes
 - DPDK builds use a pinned, vendored DPDK source build (`third_party/dpdk/VERSION`) via `scripts/build-dpdk.sh` and `make build` (installs into `third_party/dpdk/install/<version>`).
