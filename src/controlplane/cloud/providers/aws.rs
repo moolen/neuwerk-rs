@@ -184,12 +184,11 @@ impl AwsProvider {
             let health_status = lifecycle.map(|value| value.health_status.as_str());
             match self.to_instance_ref(&instance, lifecycle_state, health_status, &interface_map) {
                 Ok(item) => instances.push(item),
-                Err(CloudError::InvalidResponse(msg)) if is_transient_missing_nic_error(&msg) =>
-                {
+                Err(CloudError::InvalidResponse(msg)) if is_transient_missing_nic_error(&msg) => {
                     // During ASG terminating transitions, ENIs can be detached between
                     // autoscaling and EC2 describe calls. Skip those transient entries
                     // instead of failing the full reconcile cycle.
-                    eprintln!("aws discover instances: skipping {}: {msg}", instance.id);
+                    tracing::warn!("aws discover instances: skipping {}: {msg}", instance.id);
                 }
                 Err(err) => return Err(err),
             }

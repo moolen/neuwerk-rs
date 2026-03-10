@@ -436,7 +436,7 @@ fn spawn_tls_intercept_supervisor(
                 let signer = match load_intercept_ca_signer(&tls_intercept_ca_source) {
                     Ok(signer) => signer,
                     Err(err) => {
-                        eprintln!("trafficd: intercept ca load failed: {err}");
+                        tracing::warn!(error = %err, "trafficd intercept ca load failed");
                         intercept_ready.store(false, Ordering::Release);
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         continue;
@@ -461,21 +461,24 @@ fn spawn_tls_intercept_supervisor(
                         runtime_ca_generation = Some(desired_ca_generation);
                     }
                     Ok(Ok(Err(err))) => {
-                        eprintln!("trafficd: tls intercept runtime startup failed: {err}");
+                        tracing::error!(
+                            error = %err,
+                            "trafficd tls intercept runtime startup failed"
+                        );
                         task.abort();
                         intercept_ready.store(false, Ordering::Release);
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         continue;
                     }
                     Ok(Err(_)) => {
-                        eprintln!("trafficd: tls intercept runtime startup channel dropped");
+                        tracing::error!("trafficd tls intercept runtime startup channel dropped");
                         task.abort();
                         intercept_ready.store(false, Ordering::Release);
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         continue;
                     }
                     Err(_) => {
-                        eprintln!("trafficd: tls intercept runtime startup timed out");
+                        tracing::error!("trafficd tls intercept runtime startup timed out");
                         task.abort();
                         intercept_ready.store(false, Ordering::Release);
                         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -506,7 +509,7 @@ fn spawn_tls_intercept_supervisor(
                         listen_addr,
                         &service_lane_iface,
                     ) {
-                        eprintln!("trafficd: intercept steering apply failed: {err}");
+                        tracing::error!(error = %err, "trafficd intercept steering apply failed");
                         service_lane::clear_intercept_steering_rules(&service_lane_iface);
                         applied_steering_rules = None;
                         intercept_ready.store(false, Ordering::Release);

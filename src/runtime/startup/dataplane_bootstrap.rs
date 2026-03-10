@@ -96,7 +96,7 @@ pub fn bootstrap_dataplane_runtime(
                     break current;
                 }
                 if mac_rx.changed().await.is_err() {
-                    eprintln!("dpdk imds fallback: mac channel closed");
+                    tracing::warn!("dpdk imds fallback mac channel closed");
                     return;
                 }
             };
@@ -122,13 +122,15 @@ pub fn bootstrap_dataplane_runtime(
                         mac,
                         lease_expiry: None,
                     });
-                    eprintln!(
-                        "dpdk imds fallback: set dataplane config ip={}, prefix={}, gateway={}",
-                        ip, prefix, gateway
+                    tracing::info!(
+                        dataplane_ip = %ip,
+                        dataplane_prefix = prefix,
+                        dataplane_gateway = %gateway,
+                        "dpdk imds fallback configured dataplane address"
                     );
                 }
                 Err(err) => {
-                    eprintln!("dpdk imds fallback failed: {err}");
+                    tracing::warn!(error = %err, "dpdk imds fallback failed");
                 }
             }
         });

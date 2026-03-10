@@ -220,7 +220,7 @@ pub fn run_dataplane(
     };
     let perf_aggressive = matches!(dpdk_perf_mode, DpdkPerfMode::Aggressive);
     if perf_aggressive {
-        eprintln!(
+        tracing::info!(
             "dpdk: perf mode aggressive enabled; disabling dataplane state metrics/audit/wiretap"
         );
     } else {
@@ -239,7 +239,7 @@ pub fn run_dataplane(
             adapter.run(&mut state)
         }
         DataPlaneMode::Dpdk => {
-            eprintln!("dpdk: perf mode {:?}", dpdk_perf_mode);
+            tracing::info!("dpdk: perf mode {:?}", dpdk_perf_mode);
             let max_workers = cpu_core_count();
             let requested_workers_raw = std::env::var("NEUWERK_DPDK_WORKERS")
                 .ok()
@@ -267,7 +267,7 @@ pub fn run_dataplane(
                     .as_deref()
                     != Some("1");
             if azure_reliability_guard {
-                eprintln!(
+                tracing::warn!(
                     "dpdk: azure reliability guard active; forcing single worker (set NEUWERK_DPDK_ALLOW_AZURE_MULTIWORKER=1 to override)"
                 );
                 requested_workers = 1;
@@ -280,12 +280,13 @@ pub fn run_dataplane(
                 .join(",");
             std::env::set_var("NEUWERK_DPDK_CORE_IDS", &worker_core_list);
             if requested_workers_target > requested_workers {
-                eprintln!(
+                tracing::info!(
                     "dpdk: cpuset limits requested workers {} -> {}",
-                    requested_workers_target, requested_workers
+                    requested_workers_target,
+                    requested_workers
                 );
             }
-            eprintln!(
+            tracing::info!(
                 "dpdk: worker config requested={}, cpu_cores={}, using={}, core_ids={}",
                 std::env::var("NEUWERK_DPDK_WORKERS").unwrap_or_else(|_| "unset".to_string()),
                 max_workers,
@@ -294,7 +295,7 @@ pub fn run_dataplane(
             );
             let force_shared_rx_demux = dpdk_force_shared_rx_demux();
             if force_shared_rx_demux && requested_workers > 1 {
-                eprintln!(
+                tracing::info!(
                     "dpdk: NEUWERK_DPDK_FORCE_SHARED_RX_DEMUX enabled; skipping queue probe and forcing single shared rx queue"
                 );
             }
@@ -334,19 +335,21 @@ pub fn run_dataplane(
                     DpdkSingleQueueStrategy::SharedDemux => "demux",
                     DpdkSingleQueueStrategy::SingleWorker => "single",
                 };
-                eprintln!(
+                tracing::info!(
                     "dpdk: single-queue strategy={} (requested_workers={}, worker_count={})",
-                    strategy_label, requested_workers, plan.worker_count
+                    strategy_label,
+                    requested_workers,
+                    plan.worker_count
                 );
             }
             if plan.worker_count < plan.requested {
-                eprintln!(
+                tracing::info!(
                     "dpdk: reducing worker threads to {} (device queue limit)",
                     plan.worker_count
                 );
             }
             if matches!(plan.mode, DpdkWorkerMode::SharedRxDemux) {
-                eprintln!(
+                tracing::info!(
                     "dpdk: single rx queue detected (effective_queues={}), enabling shared-rx software demux across {} workers",
                     plan.effective_queues, plan.worker_count
                 );
@@ -355,12 +358,13 @@ pub fn run_dataplane(
                 let iface = data_plane_iface.clone();
                 let core_id = worker_core_ids.first().copied().unwrap_or(0);
                 if let Err(err) = pin_thread_to_core(core_id) {
-                    eprintln!(
+                    tracing::warn!(
                         "dpdk: single worker failed to pin to core {}: {}",
-                        core_id, err
+                        core_id,
+                        err
                     );
                 } else {
-                    eprintln!("dpdk: single worker pinned to core {}", core_id);
+                    tracing::info!("dpdk: single worker pinned to core {}", core_id);
                 }
                 let mut adapter = DpdkAdapter::new(data_plane_iface)?;
                 if let Some(publisher) = mac_publisher {
@@ -392,15 +396,18 @@ pub fn run_dataplane(
                 let service_lane_enabled = !perf_aggressive;
                 let lockless_qpw =
                     perf_aggressive && queue_per_worker && dpdk_lockless_queue_per_worker_enabled();
-                eprintln!(
+                tracing::info!(
                     "dpdk: starting {} worker threads (mode={:?})",
-                    worker_count, plan.mode
+                    worker_count,
+                    plan.mode
                 );
                 if !service_lane_enabled {
-                    eprintln!("dpdk: perf mode disables service-lane steering/drain");
+                    tracing::info!("dpdk: perf mode disables service-lane steering/drain");
                 }
                 if lockless_qpw {
-                    eprintln!("dpdk: lockless queue-per-worker enabled (per-worker owned state)");
+                    tracing::info!(
+                        "dpdk: lockless queue-per-worker enabled (per-worker owned state)"
+                    );
                 }
                 let housekeeping_interval_packets =
                     std::env::var("NEUWERK_DPDK_HOUSEKEEPING_INTERVAL_PACKETS")
@@ -415,9 +422,10 @@ pub fn run_dataplane(
                         .filter(|val| *val > 0)
                         .unwrap_or(250);
                 let housekeeping_interval = Duration::from_micros(housekeeping_interval_us);
-                eprintln!(
+                tracing::info!(
                     "dpdk: housekeeping interval packets={} time_us={}",
-                    housekeeping_interval_packets, housekeeping_interval_us
+                    housekeeping_interval_packets,
+                    housekeeping_interval_us
                 );
                 let pin_state_shard_guard = std::env::var("NEUWERK_DPDK_PIN_STATE_SHARD_GUARD")
                     .map(|val| !matches!(val.as_str(), "0" | "false" | "FALSE" | "no" | "NO"))
@@ -427,9 +435,10 @@ pub fn run_dataplane(
                     .and_then(|val| val.parse::<u32>().ok())
                     .filter(|val| *val > 0)
                     .unwrap_or(64);
-                eprintln!(
+                tracing::info!(
                     "dpdk: state shard guard pinning={} burst={}",
-                    pin_state_shard_guard, pin_state_shard_burst
+                    pin_state_shard_guard,
+                    pin_state_shard_burst
                 );
                 let shard_count = if lockless_qpw {
                     worker_count
@@ -440,7 +449,7 @@ pub fn run_dataplane(
                         .unwrap_or(worker_count)
                         .max(1)
                 };
-                eprintln!("dpdk: state shards={}", shard_count);
+                tracing::info!("dpdk: state shards={}", shard_count);
                 let base_state = state;
                 let (shared_state, mut worker_local_states): (
                     Option<std::sync::Arc<Vec<std::sync::Mutex<EngineState>>>>,
@@ -532,12 +541,18 @@ pub fn run_dataplane(
                                 .map(|s| worker_id % s.len())
                                 .unwrap_or(0);
                             if let Err(err) = pin_thread_to_core(core_id) {
-                                eprintln!(
+                                tracing::warn!(
                                     "dpdk: worker {} failed to pin to core {}: {}",
-                                    worker_id, core_id, err
+                                    worker_id,
+                                    core_id,
+                                    err
                                 );
                             } else {
-                                eprintln!("dpdk: worker {} pinned to core {}", worker_id, core_id);
+                                tracing::info!(
+                                    "dpdk: worker {} pinned to core {}",
+                                    worker_id,
+                                    core_id
+                                );
                             }
                             let mut adapter = DpdkAdapter::new(iface.clone())?;
                             if let Some(publisher) = mac_publisher {

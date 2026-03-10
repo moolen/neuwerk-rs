@@ -55,7 +55,7 @@ impl RaftNetworkFactory<ClusterTypeConfig> for RaftGrpcNetworkFactory {
         let endpoint = match raft_client_endpoint(&addr, &self.tls) {
             Ok(endpoint) => endpoint,
             Err(err) => {
-                eprintln!(
+                tracing::warn!(
                     "cluster rpc: failed to build raft endpoint for peer {} ({addr}): {err}; using unreachable fallback",
                     target
                 );

@@ -135,7 +135,7 @@ impl IntegrationManager {
         loop {
             ticker.tick().await;
             if let Err(err) = self.tick().await {
-                eprintln!("integration reconcile error: {err}");
+                tracing::warn!(error = %err, "integration reconcile error");
             }
         }
     }
@@ -180,7 +180,7 @@ impl IntegrationManager {
             Ok(event) => event,
             Err(err) => {
                 self.metrics.inc_integration_termination_poll_error();
-                eprintln!("integration termination notice error: {err}");
+                tracing::warn!(error = %err, "integration termination notice poll failed");
                 return;
             }
         };
@@ -202,7 +202,7 @@ impl IntegrationManager {
                 Ok(_) => self.local_termination_published_id = Some(event.id.clone()),
                 Err(err) => {
                     self.metrics.inc_integration_termination_publish_error();
-                    eprintln!("integration termination publish error: {err}");
+                    tracing::warn!(error = %err, "integration termination publish failed");
                 }
             }
         }
@@ -226,7 +226,7 @@ impl IntegrationManager {
         let drains = match self.load_drains().await {
             Ok(drains) => drains,
             Err(err) => {
-                eprintln!("integration drain load error: {err}");
+                tracing::warn!(error = %err, "integration drain load failed");
                 return;
             }
         };
@@ -239,7 +239,7 @@ impl IntegrationManager {
             Ok(_) => {
                 self.metrics.inc_integration_termination_complete();
                 if let Err(err) = self.clear_termination_event(&event.instance_id).await {
-                    eprintln!("integration termination clear error: {err}");
+                    tracing::warn!(error = %err, "integration termination event clear failed");
                     return;
                 }
                 self.local_termination_event = None;
@@ -248,7 +248,7 @@ impl IntegrationManager {
             }
             Err(err) => {
                 self.metrics.inc_integration_termination_complete_error();
-                eprintln!("integration termination completion failed: {err}");
+                tracing::error!(error = %err, "integration termination completion failed");
             }
         }
     }
@@ -267,7 +267,7 @@ impl IntegrationManager {
         let next_deadline = match self.provider.record_termination_heartbeat(event).await {
             Ok(next_deadline) => next_deadline,
             Err(err) => {
-                eprintln!("integration termination heartbeat failed: {err}");
+                tracing::warn!(error = %err, "integration termination heartbeat failed");
                 return;
             }
         };
@@ -279,7 +279,7 @@ impl IntegrationManager {
         }
         event.deadline_epoch = next_deadline;
         if let Err(err) = self.persist_termination_event(event).await {
-            eprintln!("integration termination heartbeat persist failed: {err}");
+            tracing::warn!(error = %err, "integration termination heartbeat persist failed");
             return;
         }
         self.local_termination_event = Some(event.clone());
@@ -488,7 +488,7 @@ impl IntegrationManager {
                 .await
             {
                 self.metrics.inc_integration_protection_error();
-                eprintln!("integration protection error: {err}");
+                tracing::warn!(error = %err, "integration protection error");
             }
         }
     }

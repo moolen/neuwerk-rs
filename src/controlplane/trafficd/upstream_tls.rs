@@ -101,7 +101,7 @@ pub(super) fn upstream_tls_verify_mode_from_env() -> UpstreamTlsVerificationMode
     let mode = parse_upstream_tls_verify_mode(raw.as_deref());
     if let Some(value) = raw {
         if !value.eq_ignore_ascii_case("strict") && !value.eq_ignore_ascii_case("insecure") {
-            eprintln!(
+            tracing::warn!(
                 "trafficd tls intercept: unknown NEUWERK_TLS_INTERCEPT_UPSTREAM_VERIFY='{value}', defaulting to strict"
             );
         }

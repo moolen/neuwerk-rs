@@ -41,8 +41,8 @@ use crate::controlplane::http_tls::{ensure_http_tls, HttpTlsConfig};
 use crate::controlplane::integrations::{IntegrationKind, IntegrationStore, IntegrationView};
 use crate::controlplane::metrics::Metrics;
 use crate::controlplane::policy_repository::{
-    policy_item_key, PolicyActive, PolicyDiskStore, PolicyIndex, PolicyMeta,
-    PolicyRecord, POLICY_ACTIVE_KEY, POLICY_INDEX_KEY,
+    policy_item_key, PolicyActive, PolicyDiskStore, PolicyIndex, PolicyMeta, PolicyRecord,
+    POLICY_ACTIVE_KEY, POLICY_INDEX_KEY,
 };
 use crate::controlplane::ready::ReadinessState;
 use crate::controlplane::service_accounts::{
@@ -170,11 +170,11 @@ pub async fn run_http_api(
     readiness: Option<ReadinessState>,
     metrics: Metrics,
 ) -> Result<(), String> {
-    eprintln!(
-        "http api: starting (bind={}, metrics={}, tls_dir={})",
-        cfg.bind_addr,
-        cfg.metrics_bind,
-        cfg.tls_dir.display()
+    tracing::info!(
+        bind = %cfg.bind_addr,
+        metrics_bind = %cfg.metrics_bind,
+        tls_dir = %cfg.tls_dir.display(),
+        "http api starting"
     );
     if metrics_bind_requires_guardrail(cfg.metrics_bind) && !allow_public_metrics_bind_override() {
         return Err(format!(
@@ -341,10 +341,10 @@ pub async fn run_http_api(
             .await
         {
             Ok(()) => {
-                eprintln!("metrics server exited on {metrics_bind}");
+                tracing::info!(bind = %metrics_bind, "metrics server exited");
             }
             Err(err) => {
-                eprintln!("metrics server failed on {metrics_bind}: {err}");
+                tracing::error!(bind = %metrics_bind, error = %err, "metrics server failed");
             }
         }
     });
@@ -354,13 +354,13 @@ pub async fn run_http_api(
             .await
             .map_err(|err| format!("http tls config: {err}"))?;
 
-    eprintln!("http api: serving https on {}", cfg.bind_addr);
+    tracing::info!(bind = %cfg.bind_addr, "http api serving https");
     match axum_server::bind_rustls(cfg.bind_addr, tls_config)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await
     {
         Ok(()) => {
-            eprintln!("http api: server exited on {}", cfg.bind_addr);
+            tracing::info!(bind = %cfg.bind_addr, "http api server exited");
             Ok(())
         }
         Err(err) => Err(format!("http api serve: {err}")),

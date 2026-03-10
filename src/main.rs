@@ -39,6 +39,9 @@ fn boxed_error(msg: impl Into<String>) -> Box<dyn std::error::Error> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if let Err(err) = firewall::logging::init_logging() {
+        eprintln!("{err}");
+    }
     let bin = env::args().next().unwrap_or_else(|| "firewall".to_string());
     let args: Vec<String> = env::args().skip(1).collect();
     if args.first().map(|arg| arg.as_str()) == Some("auth") {
@@ -94,9 +97,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_advertise = bindings.http_advertise;
     let metrics_bind = bindings.metrics_bind;
 
-    println!("http bind: {http_bind}");
-    println!("http advertise: {http_advertise}");
-    println!("metrics bind: {metrics_bind}");
+    tracing::info!(
+        http_bind = %http_bind,
+        http_advertise = %http_advertise,
+        metrics_bind = %metrics_bind,
+        "resolved control-plane listener addresses"
+    );
 
     // TODO: wire dataplane network parameters via CLI or config.
     let (internal_net, internal_prefix) = cfg.internal_cidr.unwrap_or((Ipv4Addr::UNSPECIFIED, 32));
@@ -136,14 +142,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if dpdk_enabled && dataplane_config.get().is_none() {
         match dpdk_static_config_from_env() {
             Ok(Some(config)) => {
-                eprintln!(
-                    "dpdk static bootstrap: set dataplane config ip={}, prefix={}, gateway={}",
-                    config.ip, config.prefix, config.gateway
+                tracing::info!(
+                    dataplane_ip = %config.ip,
+                    dataplane_prefix = config.prefix,
+                    dataplane_gateway = %config.gateway,
+                    "dpdk static bootstrap configured dataplane address"
                 );
                 dataplane_config.set(config);
             }
             Ok(None) => {}
-            Err(err) => eprintln!("dpdk static bootstrap failed: {err}"),
+            Err(err) => tracing::warn!(error = %err, "dpdk static bootstrap failed"),
         }
     }
 
@@ -157,13 +165,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     mac,
                     lease_expiry: None,
                 });
-                eprintln!(
-                    "dpdk imds bootstrap: set dataplane config ip={}, prefix={}, gateway={}",
-                    ip, prefix, gateway
+                tracing::info!(
+                    dataplane_ip = %ip,
+                    dataplane_prefix = prefix,
+                    dataplane_gateway = %gateway,
+                    "dpdk imds bootstrap configured dataplane address"
                 );
             }
             Err(err) => {
-                eprintln!("dpdk imds bootstrap failed: {err}");
+                tracing::warn!(error = %err, "dpdk imds bootstrap failed");
             }
         }
     }
@@ -174,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             let _ = policy_store.update_internal_cidr(ip, prefix);
         } else {
-            eprintln!("warning: internal CIDR not detected; rely on policy source groups");
+            tracing::warn!("internal CIDR not detected; relying on policy source groups");
         }
     }
 
@@ -209,11 +219,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match firewall::dataplane::preinit_dpdk_eal(&cfg.data_plane_iface) {
             Ok(()) => {
                 metrics.set_dpdk_init_ok(true);
+                tracing::info!("dpdk preinit complete");
             }
             Err(err) => {
                 metrics.set_dpdk_init_ok(false);
                 metrics.inc_dpdk_init_failure();
-                eprintln!("dpdk preinit failed: {err}");
+                tracing::error!(error = %err, "dpdk preinit failed");
                 std::process::exit(2);
             }
         }
@@ -237,7 +248,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match start_cluster_runtime(&cfg, Some(wiretap_hub.clone()), metrics.clone()).await {
             Ok(runtime) => runtime,
             Err(err) => {
-                eprintln!("cluster error: {err}");
+                tracing::error!(error = %err, "cluster runtime failed");
                 std::process::exit(2);
             }
         };

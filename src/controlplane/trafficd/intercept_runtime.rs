@@ -41,7 +41,7 @@ pub async fn run_tls_intercept_runtime(cfg: TlsInterceptRuntimeConfig) -> Result
         let (stream, _peer) = match listener.accept().await {
             Ok(conn) => conn,
             Err(err) => {
-                eprintln!("trafficd tls intercept accept failed: {err}");
+                tracing::warn!(error = %err, "trafficd tls intercept accept failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 continue;
             }
@@ -81,12 +81,12 @@ pub async fn run_tls_intercept_runtime(cfg: TlsInterceptRuntimeConfig) -> Result
                     {
                         metrics.inc_svc_fail_closed("tls");
                     }
-                    eprintln!("trafficd tls intercept connection error: {err}");
+                    tracing::warn!(error = %err, "trafficd tls intercept connection error");
                 }
                 Err(_) => {
                     metrics.inc_svc_tls_intercept_flow("deny");
                     metrics.inc_svc_fail_closed("tls");
-                    eprintln!("trafficd tls intercept task panicked");
+                    tracing::warn!("trafficd tls intercept task panicked");
                 }
             }
         });

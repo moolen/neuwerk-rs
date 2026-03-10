@@ -151,9 +151,11 @@ pub async fn run_kubernetes_resolver(
                         if !runtimes.contains_key(&key) {
                             continue;
                         }
-                        eprintln!(
-                            "kubernetes resolver: source_group={} integration={} error={}",
-                            key.source_group_id, key.integration, error
+                        tracing::warn!(
+                            source_group_id = %key.source_group_id,
+                            integration = %key.integration,
+                            error = %error,
+                            "kubernetes resolver refresh failed"
                         );
                     }
                 }

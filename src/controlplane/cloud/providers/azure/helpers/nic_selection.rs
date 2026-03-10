@@ -95,7 +95,7 @@ impl AzureProvider {
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    eprintln!("azure integration: nic name={nic_name}, ipcfgs={:?}", cfgs);
+                    tracing::debug!("azure integration: nic name={nic_name}, ipcfgs={:?}", cfgs);
                 }
                 Err(CloudError::InvalidResponse(
                     "missing mgmt/data nic by name (mgmt-ipcfg/data-ipcfg or mgmt0/data0)"
@@ -109,7 +109,9 @@ impl AzureProvider {
         match AzureProvider::select_tagged_ips(nics) {
             Ok(pair) => Ok(pair),
             Err(err) => {
-                eprintln!("azure integration: {err}; falling back to name-based NIC selection");
+                tracing::warn!(
+                    "azure integration: {err}; falling back to name-based NIC selection"
+                );
                 AzureProvider::select_named_ips(nics)
             }
         }

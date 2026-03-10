@@ -52,7 +52,7 @@ pub async fn run_policy_replication(
         let active = match store.get_state_value(POLICY_ACTIVE_KEY) {
             Ok(value) => value,
             Err(err) => {
-                eprintln!("policy replication: failed to read active policy: {err}");
+                tracing::warn!(error = %err, "policy replication failed to read active policy");
                 continue;
             }
         };
@@ -61,7 +61,10 @@ pub async fn run_policy_replication(
                 || local_store.active_id().ok().flatten().is_some();
             if needs_clear {
                 if let Err(err) = clear_active_policy(&policy_store, &local_store) {
-                    eprintln!("policy replication: failed to clear inactive policy: {err}");
+                    tracing::error!(
+                        error = %err,
+                        "policy replication failed to clear inactive policy"
+                    );
                     continue;
                 }
                 last_record = None;
@@ -74,7 +77,7 @@ pub async fn run_policy_replication(
         let active: PolicyActive = match serde_json::from_slice(&active) {
             Ok(active) => active,
             Err(err) => {
-                eprintln!("policy replication: invalid active policy: {err}");
+                tracing::warn!(error = %err, "policy replication active policy record invalid");
                 continue;
             }
         };
@@ -82,7 +85,11 @@ pub async fn run_policy_replication(
         let record = match store.get_state_value(&record_key) {
             Ok(value) => value,
             Err(err) => {
-                eprintln!("policy replication: failed to read policy record: {err}");
+                tracing::warn!(
+                    error = %err,
+                    policy_id = %active.id,
+                    "policy replication failed to read policy record"
+                );
                 continue;
             }
         };
@@ -96,15 +103,23 @@ pub async fn run_policy_replication(
         let record: PolicyRecord = match serde_json::from_slice(&record_bytes) {
             Ok(record) => record,
             Err(err) => {
-                eprintln!("policy replication: invalid policy record: {err}");
+                tracing::warn!(error = %err, "policy replication policy record invalid");
                 continue;
             }
         };
         if !record.mode.is_active() {
-            eprintln!("policy replication: active policy is disabled");
+            tracing::info!(
+                policy_id = %record.id,
+                mode = ?record.mode,
+                "policy replication observed disabled active policy"
+            );
             if policy_store.active_policy_id() == Some(record.id) {
                 if let Err(err) = clear_active_policy(&policy_store, &local_store) {
-                    eprintln!("policy replication: failed to clear disabled active policy: {err}");
+                    tracing::error!(
+                        error = %err,
+                        policy_id = %record.id,
+                        "policy replication failed to clear disabled active policy"
+                    );
                     continue;
                 }
                 last_record = None;
@@ -126,7 +141,11 @@ pub async fn run_policy_replication(
         let compiled = match record.policy.clone().compile() {
             Ok(compiled) => compiled,
             Err(err) => {
-                eprintln!("policy replication: policy compile failed: {err}");
+                tracing::error!(
+                    error = %err,
+                    policy_id = %record.id,
+                    "policy replication compile failed"
+                );
                 continue;
             }
         };
@@ -137,16 +156,28 @@ pub async fn run_policy_replication(
             enforcement_mode,
             compiled.kubernetes_bindings,
         ) {
-            eprintln!("policy replication: policy update failed: {err}");
+            tracing::error!(
+                error = %err,
+                policy_id = %record.id,
+                "policy replication update failed"
+            );
             continue;
         }
         policy_store.set_active_policy_id(Some(record.id));
         if let Err(err) = local_store.write_record(&record) {
-            eprintln!("policy replication: failed to persist policy: {err}");
+            tracing::error!(
+                error = %err,
+                policy_id = %record.id,
+                "policy replication failed to persist policy"
+            );
             continue;
         }
         if let Err(err) = local_store.set_active(Some(record.id)) {
-            eprintln!("policy replication: failed to persist active policy: {err}");
+            tracing::error!(
+                error = %err,
+                policy_id = %record.id,
+                "policy replication failed to persist active policy"
+            );
             continue;
         }
         last_record = Some(record_bytes);

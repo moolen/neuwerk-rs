@@ -137,7 +137,7 @@ impl DpdkIo {
         };
         if ret < 0 {
             if DPDK_XSTATS_LOGS.fetch_add(1, Ordering::Relaxed) < 5 {
-                eprintln!(
+                tracing::warn!(
                     "dpdk: rte_eth_xstats_get_by_id failed ret={} port={}",
                     ret, self.port_id
                 );
@@ -289,7 +289,7 @@ impl FrameIo for DpdkIo {
 
         if pkt_len > buf.len() {
             if DPDK_RX_OVERSIZE_LOGS.fetch_add(1, Ordering::Relaxed) < 10 {
-                eprintln!(
+                tracing::warn!(
                     "dpdk: rx frame too large (pkt_len={}, buf_len={}, nb_segs={}, data_len={})",
                     pkt_len,
                     buf.len(),
@@ -322,7 +322,7 @@ impl FrameIo for DpdkIo {
                     };
                     offset = fallback_len;
                 } else {
-                    eprintln!(
+                    tracing::warn!(
                             "dpdk: rte_pktmbuf_read returned null (pkt_len={}, data_len={}, nb_segs={}, data_off={})",
                             pkt_len, data_len, nb_segs, data_off
                         );
@@ -339,7 +339,7 @@ impl FrameIo for DpdkIo {
 
         unsafe { rust_rte_pktmbuf_free(mbuf) };
         if offset == 0 {
-            eprintln!(
+            tracing::warn!(
                     "dpdk: rx mbuf had zero-length payload (pkt_len={}, data_len={}, nb_segs={}, data_off={})",
                     pkt_len, data_len, nb_segs, data_off
                 );
@@ -352,7 +352,7 @@ impl FrameIo for DpdkIo {
                 use std::fmt::Write;
                 let _ = write!(&mut hex, "{:02x} ", byte);
             }
-            eprintln!(
+            tracing::debug!(
                 "dpdk: first rx frame len={} head={}",
                 offset,
                 hex.trim_end()
@@ -418,7 +418,7 @@ impl FrameIo for DpdkIo {
 
         if rx_len > MAX_RX_PACKET_LEN {
             if DPDK_RX_OVERSIZE_LOGS.fetch_add(1, Ordering::Relaxed) < 10 {
-                eprintln!(
+                tracing::warn!(
                     "dpdk: rx frame too large (pkt_len={}, buf_len={}, nb_segs={}, data_len={})",
                     pkt_len, MAX_RX_PACKET_LEN, nb_segs, data_len
                 );
@@ -442,7 +442,7 @@ impl FrameIo for DpdkIo {
                             use std::fmt::Write;
                             let _ = write!(&mut hex, "{:02x} ", byte);
                         }
-                        eprintln!(
+                        tracing::debug!(
                             "dpdk: first rx frame len={} head={}",
                             buf.len(),
                             hex.trim_end()
@@ -469,7 +469,7 @@ impl FrameIo for DpdkIo {
                     };
                     offset = fallback_len;
                 } else {
-                    eprintln!(
+                    tracing::warn!(
                             "dpdk: rte_pktmbuf_read returned null (pkt_len={}, data_len={}, nb_segs={}, data_off={})",
                             pkt_len, data_len, nb_segs, data_off
                         );
@@ -485,7 +485,7 @@ impl FrameIo for DpdkIo {
         unsafe { rust_rte_pktmbuf_free(mbuf) };
         pkt.truncate(offset);
         if offset == 0 {
-            eprintln!(
+            tracing::warn!(
                     "dpdk: rx mbuf had zero-length payload (pkt_len={}, data_len={}, nb_segs={}, data_off={})",
                     pkt_len, data_len, nb_segs, data_off
                 );
@@ -499,7 +499,7 @@ impl FrameIo for DpdkIo {
                     use std::fmt::Write;
                     let _ = write!(&mut hex, "{:02x} ", byte);
                 }
-                eprintln!(
+                tracing::debug!(
                     "dpdk: first rx frame len={} head={}",
                     buf.len(),
                     hex.trim_end()

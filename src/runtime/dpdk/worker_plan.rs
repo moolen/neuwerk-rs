@@ -60,7 +60,7 @@ impl DpdkSingleQueueStrategy {
             "" | "demux" | "shared-demux" | "shared_rx_demux" => Self::SharedDemux,
             "single" | "single-worker" | "single_worker" => Self::SingleWorker,
             _ => {
-                eprintln!(
+                tracing::warn!(
                     "dpdk: unknown NEUWERK_DPDK_SINGLE_QUEUE_MODE='{}' (expected demux|single); defaulting to demux",
                     raw
                 );
@@ -143,7 +143,7 @@ impl DpdkPerfMode {
             "" | "standard" | "default" | "off" => Self::Standard,
             "aggressive" | "on" | "1" | "true" | "yes" => Self::Aggressive,
             _ => {
-                eprintln!(
+                tracing::warn!(
                     "dpdk: unknown NEUWERK_DPDK_PERF_MODE='{}' (expected standard|aggressive); defaulting to standard",
                     raw
                 );

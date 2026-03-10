@@ -34,7 +34,7 @@ impl DpdkAdapter {
                         0
                     };
                     let head_len = buf.len().min(32);
-                    eprintln!(
+                    tracing::debug!(
                         "dpdk: overlay inner parse failed (len={}, ethertype=0x{:04x}, head={:02x?}, meta={:?})",
                         buf.len(),
                         ethertype,
@@ -47,7 +47,7 @@ impl DpdkAdapter {
                 let src = inner.src_ip();
                 let dst = inner.dst_ip();
                 let proto = inner.protocol();
-                eprintln!(
+                tracing::debug!(
                     "dpdk: overlay inner sample src={:?} dst={:?} proto={:?} len={} meta={:?}",
                     src,
                     dst,
@@ -59,7 +59,7 @@ impl DpdkAdapter {
             if overlay_debug && OVERLAY_INTERNAL_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
                 if let (Some(src), Some(dst)) = (inner.src_ip(), inner.dst_ip()) {
                     if state.is_internal(src) || state.is_internal(dst) {
-                        eprintln!(
+                        tracing::debug!(
                             "dpdk: overlay internal flow src={} dst={} proto={:?} meta={:?}",
                             src,
                             dst,
@@ -80,7 +80,7 @@ impl DpdkAdapter {
                 && overlay_pkt.meta.tunnel_label() != out_meta.tunnel_label()
                 && OVERLAY_TUNNEL_LOGS.fetch_add(1, Ordering::Relaxed) < 10
             {
-                eprintln!(
+                tracing::debug!(
                     "dpdk: overlay tunnel swap {} -> {}",
                     overlay_pkt.meta.tunnel_label(),
                     out_meta.tunnel_label()
@@ -89,7 +89,7 @@ impl DpdkAdapter {
             let action = crate::dataplane::engine::handle_packet(&mut inner, state);
             if overlay_debug && OVERLAY_ACTION_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
                 let ports = inner.ports();
-                eprintln!(
+                tracing::debug!(
                     "dpdk: overlay action={:?} src={:?} dst={:?} ports={:?} meta={:?}",
                     action,
                     inner.src_ip(),
@@ -106,7 +106,7 @@ impl DpdkAdapter {
                             if overlay_debug
                                 && OVERLAY_ENCAP_LOGS.fetch_add(1, Ordering::Relaxed) < 20
                             {
-                                eprintln!(
+                                tracing::debug!(
                                     "dpdk: overlay encap failed err={:?} src={:?} dst={:?} meta={:?}",
                                     err,
                                     inner.src_ip(),
@@ -187,12 +187,12 @@ impl DpdkAdapter {
             Err(_) => return None,
         };
         let frame = self.build_dhcp_frame(state, msg)?;
-        eprintln!("dpdk: sending dhcp frame len={}", frame.len());
+        tracing::debug!("dpdk: sending dhcp frame len={}", frame.len());
         Some(frame)
     }
 
     pub fn run(&mut self, _state: &mut EngineState) -> Result<(), String> {
-        println!(
+        tracing::info!(
             "dataplane started (dpdk), data-plane-interface={}",
             self.data_iface
         );
@@ -204,7 +204,7 @@ impl DpdkAdapter {
         state: &mut EngineState,
         io: &mut I,
     ) -> Result<(), String> {
-        println!(
+        tracing::info!(
             "dataplane started (dpdk), data-plane-interface={}",
             self.data_iface
         );
@@ -276,7 +276,7 @@ impl DpdkAdapter {
         // DHCP replies come from a valid L2 peer; seed ARP for the sender so
         // early forwarded traffic after lease acquisition can resolve gateway MAC.
         self.insert_arp(ipv4.src, eth.src_mac);
-        eprintln!("dpdk: received dhcp frame from {}", ipv4.src);
+        tracing::debug!("dpdk: received dhcp frame from {}", ipv4.src);
         self.dhcp_server_hint = Some(DhcpServerHint {
             ip: ipv4.src,
             mac: eth.src_mac,
@@ -288,7 +288,7 @@ impl DpdkAdapter {
         if let Some(reply) = parse_arp_reply(frame) {
             self.insert_arp(reply.sender_ip, reply.sender_mac);
             if ARP_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-                eprintln!(
+                tracing::debug!(
                     "dpdk: arp reply sender_ip={} sender_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                     reply.sender_ip,
                     reply.sender_mac[0],
@@ -377,7 +377,7 @@ impl DpdkAdapter {
         }
         self.arp_last_request.insert(target_ip, now);
         if ARP_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-            eprintln!(
+            tracing::debug!(
                 "dpdk: arp request src_ip={} target_ip={}",
                 src_ip, target_ip
             );
@@ -428,7 +428,7 @@ impl DpdkAdapter {
                 if next_hop == cfg.gateway {
                     if let Some(mac) = azure_gateway_mac() {
                         if ARP_LOGS.fetch_add(1, Ordering::Relaxed) < 5 {
-                            eprintln!(
+                            tracing::debug!(
                                 "dpdk: using azure gateway mac for next_hop={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                                 next_hop,
                                 mac[0],
@@ -447,7 +447,7 @@ impl DpdkAdapter {
                         }
                     } else {
                         if ARP_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-                            eprintln!(
+                            tracing::debug!(
                                 "dpdk: arp miss next_hop={} src_ip={} dst_ip={}",
                                 next_hop, cfg.ip, dst_ip
                             );
@@ -457,7 +457,7 @@ impl DpdkAdapter {
                     }
                 } else {
                     if ARP_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-                        eprintln!(
+                        tracing::debug!(
                             "dpdk: arp miss next_hop={} src_ip={} dst_ip={}",
                             next_hop, cfg.ip, dst_ip
                         );
@@ -526,14 +526,14 @@ impl DpdkAdapter {
                 metrics.inc_dpdk_health_probe("synack_sent");
             }
             if probe_debug && HEALTH_PROBE_DEBUG_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
-                eprintln!(
+                tracing::debug!(
                     "dpdk: health probe syn src={}:{} dst={}:{} seq={} ack={} flags=0x{:02x}",
                     ipv4.src, tcp.src_port, cfg.ip, HEALTH_PROBE_PORT, tcp.seq, tcp.ack, tcp.flags
                 );
             }
             let ack = tcp.seq.wrapping_add(1);
             if !HEALTH_PROBE_LOGGED.swap(true, Ordering::Relaxed) {
-                eprintln!(
+                tracing::debug!(
                     "dpdk: health probe response src={} dst={} port={}",
                     ipv4.src, cfg.ip, tcp.dst_port
                 );
@@ -556,7 +556,7 @@ impl DpdkAdapter {
                 metrics.inc_dpdk_health_probe("finack_sent");
             }
             if probe_debug && HEALTH_PROBE_DEBUG_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
-                eprintln!(
+                tracing::debug!(
                     "dpdk: health probe fin src={}:{} dst={}:{} seq={} ack={} flags=0x{:02x}",
                     ipv4.src, tcp.src_port, cfg.ip, HEALTH_PROBE_PORT, tcp.seq, tcp.ack, tcp.flags
                 );
@@ -579,7 +579,7 @@ impl DpdkAdapter {
                 metrics.inc_dpdk_health_probe("ack_seen");
             }
             if probe_debug && HEALTH_PROBE_DEBUG_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
-                eprintln!(
+                tracing::debug!(
                     "dpdk: health probe ack src={}:{} dst={}:{} seq={} ack={} flags=0x{:02x}",
                     ipv4.src, tcp.src_port, cfg.ip, HEALTH_PROBE_PORT, tcp.seq, tcp.ack, tcp.flags
                 );

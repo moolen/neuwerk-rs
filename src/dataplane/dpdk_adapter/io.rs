@@ -244,9 +244,10 @@ fn parse_mbuf_data_room_size() -> u16 {
     let parsed = match raw.trim().parse::<u32>() {
         Ok(value) => value,
         Err(_) => {
-            eprintln!(
+            tracing::warn!(
                 "dpdk: invalid NEUWERK_DPDK_MBUF_DATA_ROOM='{}'; using default {}",
-                raw, default_size
+                raw,
+                default_size
             );
             return default_size;
         }
@@ -255,9 +256,10 @@ fn parse_mbuf_data_room_size() -> u16 {
     let bounded_u32 = parsed.max(min_size).min(u16::MAX as u32);
     let bounded = bounded_u32 as u16;
     if bounded_u32 != parsed {
-        eprintln!(
+        tracing::warn!(
             "dpdk: clamped NEUWERK_DPDK_MBUF_DATA_ROOM={} to {}",
-            parsed, bounded
+            parsed,
+            bounded
         );
     }
     bounded
@@ -268,7 +270,7 @@ fn parse_u16_env(name: &str) -> Option<u16> {
     match raw.trim().parse::<u16>() {
         Ok(value) => Some(value),
         Err(_) => {
-            eprintln!("dpdk: invalid {}='{}'; ignoring", name, raw);
+            tracing::warn!("dpdk: invalid {}='{}'; ignoring", name, raw);
             None
         }
     }
@@ -277,7 +279,7 @@ fn parse_u16_env(name: &str) -> Option<u16> {
 fn parse_queue_cap_override() -> Option<u16> {
     let value = parse_u16_env("NEUWERK_DPDK_QUEUE_OVERRIDE")?;
     if value == 0 {
-        eprintln!("dpdk: NEUWERK_DPDK_QUEUE_OVERRIDE=0; ignoring");
+        tracing::warn!("dpdk: NEUWERK_DPDK_QUEUE_OVERRIDE=0; ignoring");
         return None;
     }
     Some(value)
@@ -286,9 +288,10 @@ fn parse_queue_cap_override() -> Option<u16> {
 fn parse_port_mtu_override() -> Option<u16> {
     let value = parse_u16_env("NEUWERK_DPDK_PORT_MTU")?;
     if value < MIN_VALID_MTU {
-        eprintln!(
+        tracing::warn!(
             "dpdk: NEUWERK_DPDK_PORT_MTU={} below minimum {}; ignoring",
-            value, MIN_VALID_MTU
+            value,
+            MIN_VALID_MTU
         );
         return None;
     }
@@ -317,7 +320,7 @@ fn discover_ena_allowance_xstats(port_id: u16) -> Vec<EnaXstatId> {
             .map(|x| x.label.as_str())
             .collect::<Vec<_>>()
             .join(",");
-        eprintln!("dpdk: ena allowance xstats enabled [{}]", labels);
+        tracing::info!("dpdk: ena allowance xstats enabled [{}]", labels);
         return out;
     }
 
@@ -364,7 +367,7 @@ fn discover_ena_allowance_xstats(port_id: u16) -> Vec<EnaXstatId> {
             .map(|x| x.label.as_str())
             .collect::<Vec<_>>()
             .join(",");
-        eprintln!("dpdk: discovered allowance-like xstats [{}]", labels);
+        tracing::info!("dpdk: discovered allowance-like xstats [{}]", labels);
     }
     out
 }
@@ -389,15 +392,17 @@ fn create_mempool(pool_name: &CString, socket_id: i32) -> Result<*mut rte_mempoo
         };
         if !mempool.is_null() {
             if count != MBUF_PER_POOL {
-                eprintln!("dpdk: mempool fallback size {}", count);
+                tracing::warn!("dpdk: mempool fallback size {}", count);
             }
-            eprintln!("dpdk: mbuf data room size {}", data_room_size);
+            tracing::info!("dpdk: mbuf data room size {}", data_room_size);
             return Ok(mempool);
         }
         last_errno = unsafe { rust_rte_errno() };
-        eprintln!(
+        tracing::warn!(
             "dpdk: mempool create failed (size={}, data_room={}, rte_errno={})",
-            count, data_room_size, last_errno
+            count,
+            data_room_size,
+            last_errno
         );
     }
     Err(format!(

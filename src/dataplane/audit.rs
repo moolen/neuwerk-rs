@@ -49,7 +49,7 @@ impl AuditEmitter {
     pub fn try_send(&self, event: AuditEvent) {
         if let Err(err) = self.sender.try_send(event) {
             if AUDIT_SEND_FAIL_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-                eprintln!("audit: failed to enqueue event: {err}");
+                tracing::warn!(error = %err, "audit event enqueue failed");
             }
         }
     }
