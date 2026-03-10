@@ -17,13 +17,13 @@ impl DpdkAdapter {
             Ok(file) => {
                 match read_interface_mac(&iface) {
                     Ok(mac) => self.service_lane_mac = Some(mac),
-                    Err(err) => eprintln!("dpdk: service lane mac unavailable on {iface}: {err}"),
+                    Err(err) => tracing::debug!("dpdk: service lane mac unavailable on {iface}: {err}"),
                 }
                 self.service_lane_tap = Some(file);
                 true
             }
             Err(err) => {
-                eprintln!("dpdk: service lane tap unavailable on {iface}: {err}");
+                tracing::debug!("dpdk: service lane tap unavailable on {iface}: {err}");
                 false
             }
         }

@@ -29,7 +29,11 @@ pub fn maybe_spawn_soft_dataplane_autoconfig_task(
                     }
                     Err(err) => {
                         if Instant::now() >= deadline {
-                            eprintln!("dataplane interface ip error: {err}");
+                            tracing::warn!(
+                                iface = %iface,
+                                error = %err,
+                                "dataplane interface IP discovery failed"
+                            );
                             break;
                         }
                         tokio::time::sleep(Duration::from_millis(200)).await;

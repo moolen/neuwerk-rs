@@ -570,7 +570,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             };
         }
         if NAT_MISS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-            eprintln!(
+            tracing::debug!(
                 "dp: nat miss src={} dst={} sport={} dport={} proto={} snat_ip={}",
                 src_ip,
                 dst_ip,

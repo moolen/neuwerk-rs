@@ -61,9 +61,10 @@ impl SoftAdapter {
     }
 
     pub fn run(&mut self, state: &mut EngineState) -> Result<(), String> {
-        println!(
+        tracing::info!(
             "dataplane started (software), mode={:?}, data-plane-interface={}",
-            self.mode, self.iface
+            self.mode,
+            self.iface
         );
         let mut buf = vec![0u8; 65535];
         loop {

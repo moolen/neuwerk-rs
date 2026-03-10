@@ -28,7 +28,7 @@ pub(super) fn init_eal(iface: &str) -> Result<(), String> {
                     .collect::<Vec<_>>()
                     .join(",")
             };
-            eprintln!("dpdk: eal lcore list={}", core_list);
+            tracing::info!("dpdk: eal lcore list={}", core_list);
             let mut args = vec![
                 "firewall".to_string(),
                 "-l".to_string(),
@@ -46,7 +46,7 @@ pub(super) fn init_eal(iface: &str) -> Result<(), String> {
             if !disable_in_memory {
                 args.push("--in-memory".to_string());
             } else {
-                eprintln!("dpdk: NEUWERK_DPDK_DISABLE_IN_MEMORY enabled; omitting --in-memory");
+                tracing::info!("dpdk: NEUWERK_DPDK_DISABLE_IN_MEMORY enabled; omitting --in-memory");
             }
             let cloud_provider = std::env::var("NEUWERK_CLOUD_PROVIDER")
                 .unwrap_or_default()
@@ -57,11 +57,11 @@ pub(super) fn init_eal(iface: &str) -> Result<(), String> {
                 if mode == "va" || mode == "pa" {
                     args.push(format!("--iova-mode={}", mode));
                 } else {
-                    eprintln!("dpdk: invalid NEUWERK_DPDK_IOVA={}, ignoring", mode);
+                    tracing::info!("dpdk: invalid NEUWERK_DPDK_IOVA={}, ignoring", mode);
                 }
             } else if !iommu_groups_present() {
                 args.push("--iova-mode=va".to_string());
-                eprintln!("dpdk: no iommu groups detected; forcing iova=va");
+                tracing::info!("dpdk: no iommu groups detected; forcing iova=va");
             }
             let force_netvsc = std::env::var("NEUWERK_DPDK_NETVSC")
                 .ok()
@@ -74,14 +74,14 @@ pub(super) fn init_eal(iface: &str) -> Result<(), String> {
                     .as_deref()
                     == Some("1");
             if allow_gcp_autoprobe {
-                eprintln!("dpdk: gcp auto-probe override enabled");
+                tracing::info!("dpdk: gcp auto-probe override enabled");
             }
             if let Some(pci) = normalize_pci_arg(iface) {
                 if !allow_gcp_autoprobe {
                     args.push("-a".to_string());
                     args.push(pci);
                 } else {
-                    eprintln!(
+                    tracing::info!(
                         "dpdk: gcp auto-probe enabled; ignoring explicit pci selector {}",
                         pci
                     );
@@ -91,7 +91,7 @@ pub(super) fn init_eal(iface: &str) -> Result<(), String> {
                     args.push("-a".to_string());
                     args.push(pci);
                 } else {
-                    eprintln!(
+                    tracing::info!(
                         "dpdk: gcp auto-probe enabled; ignoring iface-derived pci selector {}",
                         pci
                     );
@@ -119,7 +119,7 @@ pub(super) fn init_eal(iface: &str) -> Result<(), String> {
                         args.push(format!("net_mana,mac={}", mac_str));
                     }
                 } else if allow_gcp_autoprobe {
-                    eprintln!(
+                    tracing::info!(
                         "dpdk: gcp auto-probe enabled; using mac selector {} after probe",
                         mac_str
                     );
@@ -133,7 +133,7 @@ pub(super) fn init_eal(iface: &str) -> Result<(), String> {
                     ));
                 }
             }
-            eprintln!("dpdk: eal args: {}", args.join(" "));
+            tracing::info!("dpdk: eal args: {}", args.join(" "));
             let cstrings: Vec<CString> = args
                 .iter()
                 .map(|arg| {
@@ -179,7 +179,7 @@ fn port_id_for_iface_or_pci(iface: &str, ports: &[PortInfo]) -> Result<u16, Stri
             Ok(port) => return Ok(port),
             Err(err) => {
                 if ports.len() == 1 {
-                    eprintln!(
+                    tracing::info!(
                         "dpdk: {} (single port available, falling back to port {})",
                         err, ports[0].id
                     );
@@ -230,7 +230,7 @@ fn port_id_for_mac(mac: [u8; 6], ports: &[PortInfo]) -> Result<u16, String> {
             .iter()
             .find(|port| port_name_is_pci(port.name.as_deref()))
         {
-            eprintln!(
+            tracing::info!(
                 "dpdk: NEUWERK_DPDK_PREFER_PCI=1 selecting pci port {}",
                 port.id
             );

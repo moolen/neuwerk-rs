@@ -48,7 +48,7 @@ impl AzureProvider {
                             .await
                         {
                             Ok(nics) => nic_resources = nics,
-                            Err(err) => eprintln!(
+                            Err(err) => tracing::warn!(
                                 "azure integration: vmss nic list failed for {} ({instance_id}): {err}",
                                 entry.name
                             ),
@@ -58,7 +58,7 @@ impl AzureProvider {
             }
             if nic_resources.is_empty() {
                 let Some(resource_id) = entry.id.as_deref() else {
-                    eprintln!(
+                    tracing::warn!(
                         "azure integration: instance {} missing resource id; cannot match rg nics",
                         entry.name
                     );

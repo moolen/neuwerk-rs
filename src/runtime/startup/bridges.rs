@@ -35,7 +35,7 @@ pub fn spawn_event_bridges(
                 );
                 hub_for_wiretap.publish(enriched);
             }
-            eprintln!("wiretap: bridge stopped (all senders dropped)");
+            tracing::warn!("wiretap bridge stopped because all senders dropped");
         })
         .map_err(|err| format!("wiretap bridge thread failed to start: {err}"))?;
 
@@ -69,7 +69,7 @@ pub fn spawn_event_bridges(
                     &node_id_for_audit,
                 );
             }
-            eprintln!("audit: bridge stopped (all senders dropped)");
+            tracing::warn!("audit bridge stopped because all senders dropped");
         })
         .map_err(|err| format!("audit bridge thread failed to start: {err}"))?;
 

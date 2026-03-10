@@ -41,12 +41,17 @@ fn env_u64_with_default(name: &str, default: u64) -> u64 {
     match env::var(name) {
         Ok(raw) => match raw.trim().parse::<u64>() {
             Ok(0) => {
-                eprintln!("{name}=0 is invalid, using default {default}");
+                tracing::warn!(env_var = %name, value = 0, default, "invalid zero value; using default");
                 default
             }
             Ok(value) => value,
             Err(_) => {
-                eprintln!("{name}={raw} is invalid, using default {default}");
+                tracing::warn!(
+                    env_var = %name,
+                    raw = %raw,
+                    default,
+                    "invalid numeric value; using default"
+                );
                 default
             }
         },

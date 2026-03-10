@@ -52,7 +52,11 @@ pub async fn ensure_http_tls(cfg: HttpTlsConfig) -> Result<HttpTlsMaterial, Stri
     let mut cert_exists = paths.cert_path.exists();
     let mut key_exists = paths.key_path.exists();
     if cert_exists != key_exists {
-        eprintln!("warning: http tls cert/key mismatch; removing and regenerating");
+        tracing::warn!(
+            cert_path = %paths.cert_path.display(),
+            key_path = %paths.key_path.display(),
+            "http tls cert/key mismatch detected; regenerating"
+        );
         if cert_exists {
             fs::remove_file(&paths.cert_path).map_err(|err| err.to_string())?;
         }
@@ -71,7 +75,10 @@ pub async fn ensure_http_tls(cfg: HttpTlsConfig) -> Result<HttpTlsMaterial, Stri
         ensure_permissions(&paths.key_path, 0o600)?;
         if cfg.raft.is_none() && cfg.store.is_none() {
             if paths.ca_path.exists() && !paths.ca_key_path.exists() {
-                eprintln!("warning: http tls ca.key missing; migration to cluster will require regenerating the HTTP CA");
+                tracing::warn!(
+                    ca_key_path = %paths.ca_key_path.display(),
+                    "http tls CA key missing; cluster migration will require HTTP CA regeneration"
+                );
             }
         }
         return Ok(HttpTlsMaterial {

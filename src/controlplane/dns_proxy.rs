@@ -49,11 +49,11 @@ pub async fn run_dns_proxy(
         ));
     }
     let upstream_addrs = std::sync::Arc::new(upstream_addrs);
-    eprintln!("dns proxy: binding udp {}", bind_addr);
+    tracing::info!("dns proxy: binding udp {}", bind_addr);
     let listen = match UdpSocket::bind(bind_addr).await {
         Ok(sock) => sock,
         Err(err) => {
-            eprintln!("dns proxy: bind {} failed: {err}", bind_addr);
+            tracing::error!("dns proxy: bind {} failed: {err}", bind_addr);
             report_startup(&mut startup_status_tx, Err(err.to_string()));
             return Err(err);
         }
@@ -65,7 +65,7 @@ pub async fn run_dns_proxy(
             return Err(err);
         }
     };
-    eprintln!("dns proxy: listening on {}", bind_addr);
+    tracing::info!("dns proxy: listening on {}", bind_addr);
     report_startup(&mut startup_status_tx, Ok(()));
 
     let tcp_policy = policy.clone();
@@ -90,7 +90,7 @@ pub async fn run_dns_proxy(
         )
         .await
         {
-            eprintln!("dns proxy: tcp listener failed: {err}");
+            tracing::error!(error = %err, "dns proxy tcp listener failed");
         }
     });
 
@@ -130,9 +130,13 @@ pub async fn run_dns_proxy(
         };
 
         if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-            eprintln!(
+            tracing::debug!(
                 "dns proxy: query from={} name={} allowed={} would_deny={} group={}",
-                peer, question.name, allowed, would_deny, source_group
+                peer,
+                question.name,
+                allowed,
+                would_deny,
+                source_group
             );
         }
 
@@ -258,9 +262,11 @@ async fn forward_dns_query_udp(
         };
 
         if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-            eprintln!(
+            tracing::debug!(
                 "dns proxy: upstream response from={} bytes={} group={}",
-                resp_peer, resp_len, source_group
+                resp_peer,
+                resp_len,
+                source_group
             );
         }
 
@@ -320,7 +326,7 @@ async fn run_dns_proxy_tcp(
             )
             .await
             {
-                eprintln!("dns proxy: tcp client {} failed: {err}", peer);
+                tracing::debug!(peer = %peer, error = %err, "dns proxy tcp client failed");
             }
         });
     }
@@ -385,9 +391,13 @@ async fn handle_dns_tcp_client(
         };
 
         if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-            eprintln!(
+            tracing::debug!(
                 "dns proxy: tcp query from={} name={} allowed={} would_deny={} group={}",
-                peer, question.name, allowed, would_deny, source_group
+                peer,
+                question.name,
+                allowed,
+                would_deny,
+                source_group
             );
         }
 

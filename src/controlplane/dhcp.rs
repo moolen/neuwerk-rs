@@ -77,7 +77,7 @@ pub struct DhcpLease {
 
 impl DhcpClient {
     pub async fn run(mut self) -> Result<(), String> {
-        eprintln!("dhcp: client starting");
+        tracing::info!("dhcp client starting");
         loop {
             let mac = self.await_mac().await?;
             if let Some(metrics) = &self.metrics {
@@ -106,7 +106,7 @@ impl DhcpClient {
             if attempt > self.config.retry_max.max(1) {
                 return Err("dhcp discovery retries exceeded".to_string());
             }
-            eprintln!(
+            tracing::debug!(
                 "dhcp: discover attempt {}/{}",
                 attempt,
                 self.config.retry_max.max(1)
@@ -119,7 +119,7 @@ impl DhcpClient {
             let offer = match self.await_message(xid, DhcpMessageType::Offer, mac).await {
                 Ok(pkt) => pkt,
                 Err(err) => {
-                    eprintln!("dhcp: offer wait failed: {err}");
+                    tracing::warn!(error = %err, "dhcp offer wait failed");
                     continue;
                 }
             };
@@ -140,7 +140,7 @@ impl DhcpClient {
             let ack = match self.await_message(xid, DhcpMessageType::Ack, mac).await {
                 Ok(pkt) => pkt,
                 Err(err) => {
-                    eprintln!("dhcp: ack wait failed: {err}");
+                    tracing::warn!(error = %err, "dhcp ack wait failed");
                     continue;
                 }
             };
@@ -148,9 +148,12 @@ impl DhcpClient {
                 continue;
             }
             let lease = lease_from_packet(&ack, &self.config, mac)?;
-            eprintln!(
+            tracing::info!(
                 "dhcp: lease acquired ip={}, prefix={}, gateway={}, lease_secs={}",
-                lease.ip, lease.prefix, lease.gateway, lease.lease_time_secs
+                lease.ip,
+                lease.prefix,
+                lease.gateway,
+                lease.lease_time_secs
             );
             self.apply_lease(&lease, mac)?;
             return Ok(lease);
@@ -248,7 +251,7 @@ impl DhcpClient {
                 return Ok(mac);
             }
             if !logged {
-                eprintln!("dhcp: waiting for dataplane mac");
+                tracing::debug!("dhcp waiting for dataplane mac");
                 logged = true;
             }
             self.mac_rx
@@ -280,7 +283,7 @@ fn lease_from_packet(
         None if cfg.allow_router_fallback_from_subnet => {
             let fallback = subnet_gateway(pkt.yiaddr, prefix)
                 .ok_or_else(|| "dhcp ack missing router and gateway fallback failed".to_string())?;
-            eprintln!(
+            tracing::warn!(
                 "dhcp: ack missing router option; falling back to subnet gateway {}",
                 fallback
             );

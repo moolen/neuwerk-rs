@@ -42,11 +42,17 @@ pub fn spawn_integration_manager_task(
     let ready_client = match ReadyClient::new(http_advertise.port(), load_http_ca(cfg)) {
         Ok(client) => Arc::new(client) as Arc<dyn ReadyChecker>,
         Err(err) => {
-            eprintln!("integration ready client error: {err}");
+            tracing::warn!(
+                error = %err,
+                "integration ready client init failed; falling back to insecure client"
+            );
             match ReadyClient::new(http_advertise.port(), None) {
                 Ok(client) => Arc::new(client) as Arc<dyn ReadyChecker>,
                 Err(fallback_err) => {
-                    eprintln!("integration ready client fallback error: {fallback_err}");
+                    tracing::error!(
+                        error = %fallback_err,
+                        "integration ready client fallback init failed"
+                    );
                     return Err("integration ready client init failed".to_string());
                 }
             }
@@ -70,7 +76,7 @@ pub fn spawn_integration_manager_task(
         .await
         {
             Ok(manager) => manager.run(integration_mode).await,
-            Err(err) => eprintln!("integration init error: {err}"),
+            Err(err) => tracing::warn!(error = %err, "integration manager init failed"),
         }
     })))
 }
