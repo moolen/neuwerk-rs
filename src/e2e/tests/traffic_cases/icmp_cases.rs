@@ -58,6 +58,7 @@ pub(super) fn icmp_type_filtering(cfg: &TopologyConfig) -> Result<(), String> {
     let tls_dir = cfg.http_tls_dir.clone();
     wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
     let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let metrics_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.metrics_port);
     let token = api_auth_token(cfg)?;
     let policy_yaml = format!(
         r#"
@@ -126,7 +127,7 @@ source_groups:
     let expected_src = cfg.dp_public_ip;
     let expected_dst = cfg.up_dp_ip;
     let expected_dst_port = cfg.up_udp_port;
-    let listen_timeout = Duration::from_secs(2);
+    let listen_timeout = Duration::from_secs(3);
     let handle = std::thread::spawn(move || {
         let res = upstream_ns.run(|_| {
             let fd = open_udp_raw_socket(expected_dst, listen_timeout)?;
@@ -160,14 +161,35 @@ source_groups:
         cfg.up_udp_port,
         &payload,
     )?;
-    let ext_port_result = result_rx
-        .recv_timeout(Duration::from_secs(2))
-        .map_err(|e| format!("upstream capture timed out: {e}"))?;
-    let ext_port = ext_port_result.map_err(|e| format!("{e}"))??;
+    let ext_port_result = result_rx.recv_timeout(Duration::from_secs(3)).map_err(|e| {
+        let debug = overlay_debug_snapshot(cfg);
+        let metrics = overlay_metrics_snapshot(metrics_addr);
+        format!(
+            "upstream capture timed out: {e}\n-- metrics --\n{metrics}\n-- dataplane debug --\n{debug}"
+        )
+    })?;
+    let ext_port = match ext_port_result {
+        Ok(Ok(ext_port)) => ext_port,
+        Ok(Err(err)) => {
+            let debug = overlay_debug_snapshot(cfg);
+            let metrics = overlay_metrics_snapshot(metrics_addr);
+            return Err(format!(
+                "upstream capture failed: {err}\n-- metrics --\n{metrics}\n-- dataplane debug --\n{debug}"
+            ));
+        }
+        Err(err) => {
+            let debug = overlay_debug_snapshot(cfg);
+            let metrics = overlay_metrics_snapshot(metrics_addr);
+            return Err(format!(
+                "upstream capture netns error: {err}\n-- metrics --\n{metrics}\n-- dataplane debug --\n{debug}"
+            ));
+        }
+    };
     let _ = handle.join();
 
+    let icmp_fd = open_icmp_socket(cfg.client_dp_ip, Duration::from_secs(3))?;
     let upstream_ns_sender = netns_rs::NetNs::get(&cfg.upstream_ns).map_err(|e| format!("{e}"))?;
-    upstream_ns_sender
+    let send_result = upstream_ns_sender
         .run(|_| {
             send_icmp_time_exceeded(
                 cfg.up_dp_ip,
@@ -178,16 +200,26 @@ source_groups:
                 cfg.up_udp_port,
             )
         })
-        .map_err(|e| format!("{e}"))??;
-    let icmp_fd = open_icmp_socket(cfg.client_dp_ip, Duration::from_secs(2))?;
-    let icmp_result = wait_for_icmp_time_exceeded_on_fd(
-        icmp_fd,
-        cfg.client_dp_ip,
-        cfg.up_dp_ip,
-        internal_port,
-        cfg.up_udp_port,
-        Some(cfg.up_dp_ip),
-    );
+        .map_err(|e| format!("{e}"));
+    let icmp_result = match send_result {
+        Ok(Ok(())) => wait_for_icmp_time_exceeded_on_fd(
+            icmp_fd,
+            cfg.client_dp_ip,
+            cfg.up_dp_ip,
+            internal_port,
+            cfg.up_udp_port,
+            Some(cfg.up_dp_ip),
+        ),
+        Ok(Err(err)) => Err(format!("send icmp time exceeded failed: {err}")),
+        Err(err) => Err(format!("upstream netns send failed: {err}")),
+    };
+    let icmp_result = icmp_result.map_err(|err| {
+        let debug = overlay_debug_snapshot(cfg);
+        let metrics = overlay_metrics_snapshot(metrics_addr);
+        format!(
+            "icmp time exceeded validation failed: {err}\n-- metrics --\n{metrics}\n-- dataplane debug --\n{debug}"
+        )
+    });
     unsafe {
         libc::close(icmp_fd);
     }

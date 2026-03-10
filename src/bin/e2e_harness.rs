@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -22,6 +23,9 @@ use firewall::e2e::topology::{Topology, TopologyConfig};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_root()?;
     let _ = rustls::crypto::ring::default_provider().install_default();
+    let case_filter = selected_case_names();
+    let skip_cluster = env_flag("NEUWERK_E2E_SKIP_CLUSTER");
+    let skip_overlay = env_flag("NEUWERK_E2E_SKIP_OVERLAY");
 
     let mut cfg = TopologyConfig::default();
     cleanup_stale_netns(&cfg)?;
@@ -37,7 +41,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let topology = Topology::create(&cfg)?;
     topology.setup(&cfg)?;
 
-    cluster_tests::run(&topology)?;
+    if !skip_cluster {
+        cluster_tests::run(&topology)?;
+    }
 
     let upstream_ns = netns_rs::NetNs::get(&cfg.upstream_ns).map_err(|e| format!("{e}"))?;
     let tls_material = generate_upstream_tls_material()?;
@@ -59,11 +65,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut firewall = FirewallProcess::new(spawn_firewall(&topology, &cfg, &[], &[])?);
     topology.configure_fw_dataplane(&cfg)?;
 
-    let mut result = run_cases(&cfg, &topology, &upstream_services);
+    let mut result = run_cases(&cfg, &topology, &upstream_services, case_filter.as_ref());
 
     firewall.kill();
 
-    if result.is_ok() {
+    if result.is_ok() && !skip_overlay {
         result = run_overlay_suites(&cfg, &topology);
     }
 
@@ -96,12 +102,41 @@ fn run_cases(
     cfg: &TopologyConfig,
     topology: &Topology,
     _services: &UpstreamServices,
+    case_filter: Option<&HashSet<String>>,
 ) -> Result<(), String> {
     for case in cases() {
+        if case_filter.is_some_and(|selected| !selected.contains(case.name)) {
+            continue;
+        }
         provision_baseline_policy(cfg, topology)?;
         run_case(cfg, topology, &case)?;
     }
     Ok(())
+}
+
+fn selected_case_names() -> Option<HashSet<String>> {
+    let raw = std::env::var("NEUWERK_E2E_CASE_FILTER").ok()?;
+    let selected = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<HashSet<_>>();
+    if selected.is_empty() {
+        None
+    } else {
+        Some(selected)
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
 }
 
 fn run_overlay_suites(cfg: &TopologyConfig, topology: &Topology) -> Result<(), String> {
