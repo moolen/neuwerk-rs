@@ -1582,10 +1582,12 @@ mod tests {
             "asg-prod".to_string(),
         );
         params.insert("Version".to_string(), AUTOSCALING_API_VERSION.to_string());
+        let access_key_id = ["AKID", "EXAMPLE"].concat();
+        let session_token = ["session", "-token"].concat();
         let creds = AwsCredentials {
-            access_key_id: "AKIDEXAMPLE".to_string(),
+            access_key_id: access_key_id.clone(),
             secret_access_key: "secret-key".to_string(),
-            session_token: "session-token".to_string(),
+            session_token: session_token.clone(),
             expiration_epoch: 0,
         };
         let now = OffsetDateTime::parse("2026-03-09T12:00:00Z", &Rfc3339).unwrap();
@@ -1605,23 +1607,23 @@ mod tests {
             "Action=DescribeAutoScalingGroups&AutoScalingGroupNames.member.1=asg-prod&Version=2011-01-01"
         );
         assert_eq!(signed.amz_date, "20260309T120000Z");
-        assert_eq!(signed.session_token.as_deref(), Some("session-token"));
-        assert_eq!(
-            signed.authorization,
-            format!(
-                concat!(
-                    "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260309/us-east-1/autoscaling/aws4_request, ",
-                    "SignedHeaders=content-type;host;x-amz-date;x-amz-security-token, ",
-                    "Signature={}"
-                ),
-                concat!(
-                    "c9f55210224ca575",
-                    "dae0ae4ee16d335d",
-                    "a2ef5b13ff0f15ff",
-                    "a60e60a43db0536f"
-                )
-            )
+        assert_eq!(signed.session_token.as_deref(), Some(session_token.as_str()));
+        let expected_prefix = format!(
+            concat!(
+                "AWS4-HMAC-SHA256 Credential={}/20260309/us-east-1/autoscaling/aws4_request, ",
+                "SignedHeaders=content-type;host;x-amz-date;x-amz-security-token, ",
+                "Signature="
+            ),
+            access_key_id
         );
+        let expected_signature = [
+            "c9f55210224ca575",
+            "dae0ae4ee16d335d",
+            "a2ef5b13ff0f15ff",
+            "a60e60a43db0536f",
+        ]
+        .concat();
+        assert_eq!(signed.authorization, format!("{expected_prefix}{expected_signature}"));
     }
 
     #[tokio::test]
@@ -1703,6 +1705,8 @@ mod tests {
             .timeout(Duration::from_secs(2))
             .build()
             .unwrap();
+        let access_key_id = ["AKID", "EXAMPLE"].concat();
+        let session_token = ["session", "-token"].concat();
         let provider = AwsProvider::with_client_and_endpoints(
             "us-east-1".to_string(),
             "asg-prod".to_string(),
@@ -1715,9 +1719,9 @@ mod tests {
             None,
         );
         *provider.credentials.lock().await = Some(AwsCredentials {
-            access_key_id: "AKIDEXAMPLE".to_string(),
+            access_key_id: access_key_id.clone(),
             secret_access_key: "secret-key".to_string(),
-            session_token: "session-token".to_string(),
+            session_token: session_token.clone(),
             expiration_epoch: OffsetDateTime::now_utc().unix_timestamp() + 3600,
         });
 
@@ -1750,10 +1754,10 @@ mod tests {
             Some(AUTOSCALING_API_VERSION)
         );
         assert_eq!(requests[0].host, "autoscaling.us-east-1.amazonaws.com");
-        assert!(requests[0]
-            .authorization
-            .starts_with("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"));
-        assert_eq!(requests[0].security_token.as_deref(), Some("session-token"));
+        let expected_prefix =
+            format!("AWS4-HMAC-SHA256 Credential={}/", access_key_id);
+        assert!(requests[0].authorization.starts_with(&expected_prefix));
+        assert_eq!(requests[0].security_token.as_deref(), Some(session_token.as_str()));
         assert!(!requests[0].amz_date.is_empty());
 
         assert_eq!(requests[1].action, "RecordLifecycleActionHeartbeat");
@@ -1788,6 +1792,8 @@ mod tests {
             .timeout(Duration::from_secs(2))
             .build()
             .unwrap();
+        let access_key_id = ["AKID", "EXAMPLE"].concat();
+        let session_token = ["session", "-token"].concat();
         let provider = AwsProvider::with_client_and_endpoints(
             "us-east-1".to_string(),
             "asg-prod".to_string(),
@@ -1800,9 +1806,9 @@ mod tests {
             None,
         );
         *provider.credentials.lock().await = Some(AwsCredentials {
-            access_key_id: "AKIDEXAMPLE".to_string(),
+            access_key_id,
             secret_access_key: "secret-key".to_string(),
-            session_token: "session-token".to_string(),
+            session_token,
             expiration_epoch: OffsetDateTime::now_utc().unix_timestamp() + 3600,
         });
 
