@@ -32,6 +32,7 @@ pub struct CliConfig {
     pub encap_mtu: u16,
     pub http_bind: Option<SocketAddr>,
     pub http_advertise: Option<SocketAddr>,
+    pub http_external_url: Option<String>,
     pub http_tls_dir: PathBuf,
     pub http_cert_path: Option<PathBuf>,
     pub http_key_path: Option<PathBuf>,
