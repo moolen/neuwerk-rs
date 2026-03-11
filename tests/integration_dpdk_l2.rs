@@ -49,6 +49,7 @@ fn build_udp_ipv4_frame(
     buf
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_tcp_ipv4_frame(
     src_mac: [u8; 6],
     dst_mac: [u8; 6],
@@ -213,7 +214,7 @@ fn integration_dpdk_l2_azure_gateway_mac_fallback_uses_env_mac() {
     std::env::set_var("NEUWERK_CLOUD_PROVIDER", "azure");
     std::env::set_var("NEUWERK_AZURE_GATEWAY_MAC", "12:34:56:78:9a:bc");
 
-    let result = (|| {
+    {
         let policy = Arc::new(RwLock::new(PolicySnapshot::new(
             DefaultPolicy::Allow,
             Vec::new(),
@@ -255,7 +256,7 @@ fn integration_dpdk_l2_azure_gateway_mac_fallback_uses_env_mac() {
             adapter.next_dhcp_frame(&state).is_none(),
             "azure fallback should avoid ARP request queueing"
         );
-    })();
+    }
 
     match old_provider {
         Some(v) => std::env::set_var("NEUWERK_CLOUD_PROVIDER", v),
@@ -265,8 +266,6 @@ fn integration_dpdk_l2_azure_gateway_mac_fallback_uses_env_mac() {
         Some(v) => std::env::set_var("NEUWERK_AZURE_GATEWAY_MAC", v),
         None => std::env::remove_var("NEUWERK_AZURE_GATEWAY_MAC"),
     }
-
-    result
 }
 
 #[test]

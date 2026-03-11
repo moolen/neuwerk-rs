@@ -140,6 +140,10 @@ impl DynamicIpSetV4 {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn ips(&self) -> Vec<Ipv4Addr> {
         match self.inner.read() {
             Ok(lock) => {

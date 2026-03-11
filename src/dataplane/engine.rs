@@ -324,15 +324,19 @@ impl EngineState {
     }
 
     fn note_flow_expired(&self, expired: Vec<ExpiredFlow>) {
-        if let Some(metrics) = &self.metrics {
-            if !expired.is_empty() {
-                metrics.inc_dp_flow_close("idle_timeout", expired.len() as u64);
-            }
-        }
         if let Some(allowlist) = &self.dns_allowlist {
             for flow in &expired {
                 allowlist.flow_close(flow.key.dst_ip, flow.last_seen);
             }
+        }
+        for flow in &expired {
+            let source_group = flow.source_group.as_deref().unwrap_or(DEFAULT_SOURCE_GROUP);
+            self.observe_flow_close(
+                source_group,
+                "idle_timeout",
+                flow.first_seen,
+                flow.last_seen,
+            );
         }
         if let Some(emitter) = &self.wiretap {
             for flow in expired {
@@ -350,6 +354,24 @@ impl EngineState {
                 });
             }
         }
+    }
+
+    fn observe_entry_flow_close(&self, entry: &FlowEntry, reason: &str, now: u64) {
+        self.observe_flow_close(entry.source_group(), reason, entry.first_seen, now);
+    }
+
+    fn observe_flow_close(
+        &self,
+        source_group: &str,
+        reason: &str,
+        first_seen: u64,
+        last_seen: u64,
+    ) {
+        let Some(metrics) = &self.metrics else {
+            return;
+        };
+        let lifetime = last_seen.saturating_sub(first_seen) as f64;
+        metrics.observe_dp_flow_close(source_group, reason, lifetime);
     }
 
     fn update_flow_metrics(&self) {

@@ -1,5 +1,5 @@
 import type { TlsInterceptCaStatus } from '../../types';
-import { fetchJSON, fetchText } from './transport';
+import { fetchBlob, fetchJSON, fetchText } from './transport';
 
 export async function getTlsInterceptCaStatus(): Promise<TlsInterceptCaStatus> {
   return fetchJSON<TlsInterceptCaStatus>('/settings/tls-intercept-ca');
@@ -26,4 +26,13 @@ export async function generateTlsInterceptCa(): Promise<TlsInterceptCaStatus> {
 
 export async function getTlsInterceptCaCertPem(): Promise<string> {
   return fetchText('/settings/tls-intercept-ca/cert');
+}
+
+export async function downloadClusterSysdump(): Promise<{
+  blob: Blob;
+  filename: string | null;
+}> {
+  return fetchBlob('/support/sysdump/cluster', {
+    method: 'POST',
+  });
 }

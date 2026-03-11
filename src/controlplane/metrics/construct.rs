@@ -21,6 +21,19 @@ impl Metrics {
             &["outcome", "reason"],
         )
         .map_err(|err| err.to_string())?;
+        let http_auth_sso = CounterVec::new(
+            Opts::new("http_auth_sso_total", "HTTP SSO auth outcomes"),
+            &["outcome", "reason", "provider"],
+        )
+        .map_err(|err| err.to_string())?;
+        let http_auth_sso_latency = HistogramVec::new(
+            HistogramOpts::new(
+                "http_auth_sso_latency_seconds",
+                "HTTP SSO auth stage latency seconds",
+            ),
+            &["provider", "stage"],
+        )
+        .map_err(|err| err.to_string())?;
         let dns_queries = CounterVec::new(
             Opts::new("dns_queries_total", "DNS proxy queries"),
             &["result", "reason", "source_group"],
@@ -185,6 +198,25 @@ impl Metrics {
         let dp_active_flows_shard = GaugeVec::new(
             Opts::new("dp_active_flows_shard", "Dataplane active flows per shard"),
             &["shard"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_active_flows_source_group = GaugeVec::new(
+            Opts::new(
+                "dp_active_flows_by_source_group",
+                "Dataplane active flows by source group",
+            ),
+            &["source_group"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_flow_lifetime_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "dp_flow_lifetime_seconds",
+                "Dataplane flow lifetime seconds",
+            )
+            .buckets(vec![
+                0.001, 0.01, 0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0,
+            ]),
+            &["source_group", "reason"],
         )
         .map_err(|err| err.to_string())?;
         let dp_active_nat_entries = Gauge::with_opts(Opts::new(
@@ -402,6 +434,12 @@ impl Metrics {
             .register(Box::new(http_auth.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(http_auth_sso.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(http_auth_sso_latency.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dns_queries.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -493,6 +531,12 @@ impl Metrics {
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dp_active_flows_shard.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_active_flows_source_group.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_flow_lifetime_seconds.clone()))
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dp_active_nat_entries.clone()))
@@ -632,6 +676,9 @@ impl Metrics {
         http_auth
             .with_label_values(&["deny", "missing_token"])
             .inc_by(0.0);
+        http_auth_sso
+            .with_label_values(&["deny", "missing_state", "unknown"])
+            .inc_by(0.0);
         dns_queries
             .with_label_values(&["allow", "policy_allow", "default"])
             .inc_by(0.0);
@@ -678,6 +725,12 @@ impl Metrics {
         dp_flow_closes
             .with_label_values(&["idle_timeout"])
             .inc_by(0.0);
+        dp_active_flows_source_group
+            .with_label_values(&["default"])
+            .set(0.0);
+        dp_flow_lifetime_seconds
+            .with_label_values(&["default", "idle_timeout"])
+            .observe(0.0);
         dp_tls_decisions.with_label_values(&["pending"]).inc_by(0.0);
         dp_icmp_decisions
             .with_label_values(&["outbound", "0", "0", "deny", "default"])
@@ -788,6 +841,8 @@ impl Metrics {
             http_requests,
             http_duration,
             http_auth,
+            http_auth_sso,
+            http_auth_sso_latency,
             dns_queries,
             dns_upstream_rtt,
             dns_nxdomain,
@@ -823,6 +878,8 @@ impl Metrics {
             dp_flow_closes,
             dp_active_flows,
             dp_active_flows_shard,
+            dp_active_flows_source_group,
+            dp_flow_lifetime_seconds,
             dp_active_nat_entries,
             dp_active_nat_entries_shard,
             dp_nat_port_utilization_ratio,
@@ -867,6 +924,7 @@ impl Metrics {
             integration_drain_duration,
             integration_termination_drain_start,
             dp_active_flows_counts: Arc::new(Mutex::new(HashMap::new())),
+            dp_active_flows_source_group_counts: Arc::new(Mutex::new(HashMap::new())),
             dp_active_nat_counts: Arc::new(Mutex::new(HashMap::new())),
         })
     }

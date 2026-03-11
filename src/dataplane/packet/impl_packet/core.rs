@@ -11,8 +11,10 @@ impl Packet {
         }
     }
 
-    // Safety: caller must ensure the pointer remains valid and uniquely writable while
-    // the returned packet is used.
+    /// # Safety
+    ///
+    /// The caller must ensure `ptr` remains valid and uniquely writable for `len`
+    /// bytes for the full lifetime of the returned packet view.
     pub unsafe fn from_borrowed_mut(ptr: *mut u8, len: usize) -> Option<Self> {
         Some(Self {
             buf: PacketBuf::borrowed(ptr, len)?,
@@ -53,13 +55,15 @@ impl Packet {
         self.buf.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.buf.len() == 0
+    }
+
     fn ipv4_offset(&self) -> Option<usize> {
         if self.buf.len() >= ETH_HDR_LEN + 20 {
             let ethertype = u16::from_be_bytes([self.buf[12], self.buf[13]]);
-            if ethertype == ETH_TYPE_IPV4 {
-                if (self.buf[ETH_HDR_LEN] >> 4) == 4 {
-                    return Some(ETH_HDR_LEN);
-                }
+            if ethertype == ETH_TYPE_IPV4 && (self.buf[ETH_HDR_LEN] >> 4) == 4 {
+                return Some(ETH_HDR_LEN);
             }
         }
 

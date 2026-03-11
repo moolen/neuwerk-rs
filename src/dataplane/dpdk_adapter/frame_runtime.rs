@@ -25,23 +25,24 @@ impl DpdkAdapter {
                 Err(_) => return None,
             };
             let mut inner = overlay_pkt.inner;
-            if overlay_debug && (inner.src_ip().is_none() || inner.dst_ip().is_none()) {
-                if OVERLAY_PARSE_LOGS.fetch_add(1, Ordering::Relaxed) < 5 {
-                    let buf = inner.buffer();
-                    let ethertype = if buf.len() >= ETH_HDR_LEN {
-                        u16::from_be_bytes([buf[12], buf[13]])
-                    } else {
-                        0
-                    };
-                    let head_len = buf.len().min(32);
-                    tracing::debug!(
-                        "dpdk: overlay inner parse failed (len={}, ethertype=0x{:04x}, head={:02x?}, meta={:?})",
-                        buf.len(),
-                        ethertype,
-                        &buf[..head_len],
-                        overlay_pkt.meta
-                    );
-                }
+            if overlay_debug
+                && (inner.src_ip().is_none() || inner.dst_ip().is_none())
+                && OVERLAY_PARSE_LOGS.fetch_add(1, Ordering::Relaxed) < 5
+            {
+                let buf = inner.buffer();
+                let ethertype = if buf.len() >= ETH_HDR_LEN {
+                    u16::from_be_bytes([buf[12], buf[13]])
+                } else {
+                    0
+                };
+                let head_len = buf.len().min(32);
+                tracing::debug!(
+                    "dpdk: overlay inner parse failed (len={}, ethertype=0x{:04x}, head={:02x?}, meta={:?})",
+                    buf.len(),
+                    ethertype,
+                    &buf[..head_len],
+                    overlay_pkt.meta
+                );
             }
             if overlay_debug && OVERLAY_SAMPLE_LOGS.fetch_add(1, Ordering::Relaxed) < 5 {
                 let src = inner.src_ip();
@@ -193,8 +194,8 @@ impl DpdkAdapter {
 
     pub fn run(&mut self, _state: &mut EngineState) -> Result<(), String> {
         tracing::info!(
-            "dataplane started (dpdk), data-plane-interface={}",
-            self.data_iface
+            data_plane_interface = %self.data_iface,
+            "dataplane started (dpdk)"
         );
         Err("dpdk adapter io not wired".to_string())
     }
@@ -205,8 +206,8 @@ impl DpdkAdapter {
         io: &mut I,
     ) -> Result<(), String> {
         tracing::info!(
-            "dataplane started (dpdk), data-plane-interface={}",
-            self.data_iface
+            data_plane_interface = %self.data_iface,
+            "dataplane started (dpdk)"
         );
         if let Some(mac) = io.mac() {
             self.set_mac(mac);
@@ -511,11 +512,20 @@ impl DpdkAdapter {
         }
         let eth = parse_eth(frame)?;
         let ipv4 = parse_ipv4(frame, eth.payload_offset)?;
-        if ipv4.proto != 6 || ipv4.dst != cfg.ip {
+        if ipv4.proto != 6 {
             return None;
         }
+        // Passthrough ILBs can probe a frontend VIP rather than the backend NIC
+        // address. Reply using the packet destination IP so TCP health checks
+        // succeed in both direct and VIP probe modes.
+        let probe_dst_ip = ipv4.dst;
         let tcp = parse_tcp(frame, ipv4.l4_offset)?;
-        if tcp.dst_port != HEALTH_PROBE_PORT {
+        let probe_port = tcp.dst_port;
+        let is_health_probe = probe_port == HEALTH_PROBE_PORT
+            || (probe_port == GCP_BACKEND_HEALTH_PROBE_PORT
+                && probe_dst_ip == cfg.ip
+                && is_gcp_health_checker_source(ipv4.src));
+        if !is_health_probe {
             return None;
         }
         let metrics = state.metrics();
@@ -528,22 +538,28 @@ impl DpdkAdapter {
             if probe_debug && HEALTH_PROBE_DEBUG_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
                 tracing::debug!(
                     "dpdk: health probe syn src={}:{} dst={}:{} seq={} ack={} flags=0x{:02x}",
-                    ipv4.src, tcp.src_port, cfg.ip, HEALTH_PROBE_PORT, tcp.seq, tcp.ack, tcp.flags
+                    ipv4.src,
+                    tcp.src_port,
+                    probe_dst_ip,
+                    probe_port,
+                    tcp.seq,
+                    tcp.ack,
+                    tcp.flags
                 );
             }
             let ack = tcp.seq.wrapping_add(1);
             if !HEALTH_PROBE_LOGGED.swap(true, Ordering::Relaxed) {
                 tracing::debug!(
                     "dpdk: health probe response src={} dst={} port={}",
-                    ipv4.src, cfg.ip, tcp.dst_port
+                    ipv4.src, probe_dst_ip, tcp.dst_port
                 );
             }
             return Some(build_tcp_control(
                 cfg.mac,
                 eth.src_mac,
-                cfg.ip,
+                probe_dst_ip,
                 ipv4.src,
-                HEALTH_PROBE_PORT,
+                probe_port,
                 tcp.src_port,
                 0,
                 ack,
@@ -558,16 +574,22 @@ impl DpdkAdapter {
             if probe_debug && HEALTH_PROBE_DEBUG_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
                 tracing::debug!(
                     "dpdk: health probe fin src={}:{} dst={}:{} seq={} ack={} flags=0x{:02x}",
-                    ipv4.src, tcp.src_port, cfg.ip, HEALTH_PROBE_PORT, tcp.seq, tcp.ack, tcp.flags
+                    ipv4.src,
+                    tcp.src_port,
+                    probe_dst_ip,
+                    probe_port,
+                    tcp.seq,
+                    tcp.ack,
+                    tcp.flags
                 );
             }
             let ack = tcp.seq.wrapping_add(1);
             return Some(build_tcp_control(
                 cfg.mac,
                 eth.src_mac,
-                cfg.ip,
+                probe_dst_ip,
                 ipv4.src,
-                HEALTH_PROBE_PORT,
+                probe_port,
                 tcp.src_port,
                 1,
                 ack,
@@ -581,7 +603,13 @@ impl DpdkAdapter {
             if probe_debug && HEALTH_PROBE_DEBUG_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
                 tracing::debug!(
                     "dpdk: health probe ack src={}:{} dst={}:{} seq={} ack={} flags=0x{:02x}",
-                    ipv4.src, tcp.src_port, cfg.ip, HEALTH_PROBE_PORT, tcp.seq, tcp.ack, tcp.flags
+                    ipv4.src,
+                    tcp.src_port,
+                    probe_dst_ip,
+                    probe_port,
+                    tcp.seq,
+                    tcp.ack,
+                    tcp.flags
                 );
             }
             return None;
@@ -597,4 +625,9 @@ impl DpdkAdapter {
         }
         None
     }
+}
+
+fn is_gcp_health_checker_source(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    (a == 35 && b == 191) || (a == 130 && b == 211 && c <= 3)
 }

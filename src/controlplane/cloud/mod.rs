@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use tokio::time::MissedTickBehavior;
+use tracing::{error, warn};
 
 use crate::controlplane::cluster::rpc::{IntegrationClient, RaftTlsConfig};
 use crate::controlplane::cluster::store::ClusterStore;
@@ -135,7 +136,7 @@ impl IntegrationManager {
         loop {
             ticker.tick().await;
             if let Err(err) = self.tick().await {
-                tracing::warn!(error = %err, "integration reconcile error");
+                warn!(error = %err, "integration reconcile error");
             }
         }
     }
@@ -180,7 +181,7 @@ impl IntegrationManager {
             Ok(event) => event,
             Err(err) => {
                 self.metrics.inc_integration_termination_poll_error();
-                tracing::warn!(error = %err, "integration termination notice poll failed");
+                warn!(error = %err, "integration termination notice poll failed");
                 return;
             }
         };
@@ -202,7 +203,7 @@ impl IntegrationManager {
                 Ok(_) => self.local_termination_published_id = Some(event.id.clone()),
                 Err(err) => {
                     self.metrics.inc_integration_termination_publish_error();
-                    tracing::warn!(error = %err, "integration termination publish failed");
+                    warn!(error = %err, "integration termination publish failed");
                 }
             }
         }
@@ -226,7 +227,7 @@ impl IntegrationManager {
         let drains = match self.load_drains().await {
             Ok(drains) => drains,
             Err(err) => {
-                tracing::warn!(error = %err, "integration drain load failed");
+                warn!(error = %err, "integration drain load failed");
                 return;
             }
         };
@@ -239,7 +240,7 @@ impl IntegrationManager {
             Ok(_) => {
                 self.metrics.inc_integration_termination_complete();
                 if let Err(err) = self.clear_termination_event(&event.instance_id).await {
-                    tracing::warn!(error = %err, "integration termination event clear failed");
+                    warn!(error = %err, "integration termination event clear failed");
                     return;
                 }
                 self.local_termination_event = None;
@@ -248,7 +249,7 @@ impl IntegrationManager {
             }
             Err(err) => {
                 self.metrics.inc_integration_termination_complete_error();
-                tracing::error!(error = %err, "integration termination completion failed");
+                error!(error = %err, "integration termination completion failed");
             }
         }
     }
@@ -267,7 +268,7 @@ impl IntegrationManager {
         let next_deadline = match self.provider.record_termination_heartbeat(event).await {
             Ok(next_deadline) => next_deadline,
             Err(err) => {
-                tracing::warn!(error = %err, "integration termination heartbeat failed");
+                warn!(error = %err, "integration termination heartbeat failed");
                 return;
             }
         };
@@ -279,7 +280,7 @@ impl IntegrationManager {
         }
         event.deadline_epoch = next_deadline;
         if let Err(err) = self.persist_termination_event(event).await {
-            tracing::warn!(error = %err, "integration termination heartbeat persist failed");
+            warn!(error = %err, "integration termination heartbeat persist failed");
             return;
         }
         self.local_termination_event = Some(event.clone());
@@ -488,7 +489,7 @@ impl IntegrationManager {
                 .await
             {
                 self.metrics.inc_integration_protection_error();
-                tracing::warn!(error = %err, "integration protection error");
+                warn!(error = %err, "integration protection error");
             }
         }
     }
@@ -830,7 +831,7 @@ fn compute_drain_state(
             state.deadline_epoch = now + timeout;
         }
         DrainStatus::Draining => {
-            if (active_flows >= 0 && active_flows <= 0) || now >= state.deadline_epoch {
+            if active_flows == 0 || now >= state.deadline_epoch {
                 state.state = DrainStatus::Drained;
             }
         }

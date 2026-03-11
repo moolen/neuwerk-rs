@@ -124,16 +124,11 @@ pub struct HttpHeadersMatcher {
     pub regex: BTreeMap<String, Regex>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tls13Uninspectable {
     Allow,
+    #[default]
     Deny,
-}
-
-impl Default for Tls13Uninspectable {
-    fn default() -> Self {
-        Tls13Uninspectable::Deny
-    }
 }
 
 #[derive(Debug, Clone)]

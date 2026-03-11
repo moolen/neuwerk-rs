@@ -46,6 +46,7 @@ pub(super) fn maybe_emit_wiretap(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn process_tls_packet(
     pkt: &Packet,
     direction: TlsDirection,
@@ -256,11 +257,15 @@ pub(super) fn remove_flow_state(
     state: &mut EngineState,
     flow: &FlowKey,
     now: u64,
+    reason: &str,
 ) -> Option<FlowEntry> {
     let entry = state.flows.remove(flow);
     if entry.is_some() {
         if let Some(allowlist) = &state.dns_allowlist {
             allowlist.flow_close(flow.dst_ip, now);
+        }
+        if let Some(entry_ref) = entry.as_ref() {
+            state.observe_entry_flow_close(entry_ref, reason, now);
         }
     }
     state.nat.remove(flow);

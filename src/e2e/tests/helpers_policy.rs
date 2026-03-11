@@ -1,3 +1,5 @@
+#![allow(clippy::format_in_format_args)]
+
 use super::*;
 
 pub(in crate::e2e::tests) fn policy_allow_cluster_deny_foo() -> &'static str {
@@ -217,7 +219,10 @@ pub(in crate::e2e::tests) fn label_matches(labels: &str, key: &str, expected: &s
 }
 
 pub(in crate::e2e::tests) fn http_body(response: &str) -> &str {
-    response.splitn(2, "\r\n\r\n").nth(1).unwrap_or("")
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("")
 }
 
 pub(in crate::e2e::tests) async fn http_get_path_bound(

@@ -109,12 +109,14 @@ struct NicList {
     value: Vec<NicResource>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VnetList {
     value: Vec<VnetResource>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VnetResource {
@@ -123,12 +125,14 @@ struct VnetResource {
     properties: Option<VnetProperties>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VnetProperties {
     subnets: Option<Vec<SubnetResource>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SubnetResource {
@@ -138,6 +142,7 @@ struct SubnetResource {
     properties: Option<SubnetProperties>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SubnetProperties {
@@ -146,12 +151,14 @@ struct SubnetProperties {
     route_table: Option<RouteTableRef>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RouteTableRef {
     id: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RouteResource {
@@ -160,18 +167,21 @@ struct RouteResource {
     properties: Option<RouteProperties>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RouteProperties {
     next_hop_ip_address: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RouteRequest {
     properties: RouteRequestProperties,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RouteRequestProperties {

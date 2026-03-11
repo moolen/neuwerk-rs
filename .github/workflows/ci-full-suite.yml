@@ -11,7 +11,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install native build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Run strict Clippy
+        run: make test.clippy
+
   full-suite:
+    needs: clippy
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -43,6 +64,11 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
+      - name: Setup Go (for Dex build fallback)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
       - name: Install UI dependencies
         run: npm --prefix ui ci
 
@@ -60,5 +86,16 @@ jobs:
         with:
           install_only: true
 
+      - name: Install Dex
+        run: |
+          bash ./scripts/setup-dex.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
       - name: Run Integration suite
         run: make test.integration
+
+      - name: Run SSO Dex integration suite
+        env:
+          DEX_BIN: ${{ runner.temp }}/bin/dex
+          NEUWERK_SSO_REQUIRE_DEX: "1"
+        run: make test.integration.sso

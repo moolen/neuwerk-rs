@@ -41,7 +41,7 @@ pub async fn run_tls_intercept_runtime(cfg: TlsInterceptRuntimeConfig) -> Result
         let (stream, _peer) = match listener.accept().await {
             Ok(conn) => conn,
             Err(err) => {
-                tracing::warn!(error = %err, "trafficd tls intercept accept failed");
+                warn!(error = %err, "trafficd tls intercept accept failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 continue;
             }
@@ -81,18 +81,19 @@ pub async fn run_tls_intercept_runtime(cfg: TlsInterceptRuntimeConfig) -> Result
                     {
                         metrics.inc_svc_fail_closed("tls");
                     }
-                    tracing::warn!(error = %err, "trafficd tls intercept connection error");
+                    warn!(error = %err, "trafficd tls intercept connection error");
                 }
                 Err(_) => {
                     metrics.inc_svc_tls_intercept_flow("deny");
                     metrics.inc_svc_fail_closed("tls");
-                    tracing::warn!("trafficd tls intercept task panicked");
+                    warn!("trafficd tls intercept task panicked");
                 }
             }
         });
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_tls_intercept_client(
     stream: TcpStream,
     acceptor: TlsAcceptor,
@@ -315,6 +316,7 @@ async fn handle_tls_intercept_http1(
     Ok(())
 }
 
+#[cfg(test)]
 async fn read_h2_request_body_with_conn_progress(
     client_conn: &mut server::Connection<tokio_rustls::server::TlsStream<TcpStream>, Bytes>,
     mut body: h2::RecvStream,
@@ -354,7 +356,7 @@ async fn read_h2_request_body_with_conn_progress(
                 next = client_conn.accept() => {
                     match next {
                         Some(Ok((_request, mut respond))) => {
-                            let _ = respond.send_reset(h2::Reason::REFUSED_STREAM);
+                            respond.send_reset(h2::Reason::REFUSED_STREAM);
                             Ok(ReadProgress::Continue)
                         }
                         Some(Err(err)) => Err(format!(
@@ -385,6 +387,156 @@ async fn read_h2_request_body_with_conn_progress(
     Ok(out)
 }
 
+async fn read_h2_request_body(mut body: h2::RecvStream) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let body_idle_timeout = tls_h2_body_idle_timeout();
+    while let Some(next) = tokio::time::timeout(body_idle_timeout, body.data())
+        .await
+        .map_err(|_| {
+            format!(
+                "tls intercept: h2 request body read timed out after {}s with {} bytes buffered",
+                body_idle_timeout.as_secs(),
+                out.len()
+            )
+        })?
+    {
+        let chunk = next.map_err(|err| format!("tls intercept: h2 request body read failed: {err}"))?;
+        out.extend_from_slice(&chunk);
+        body.flow_control().release_capacity(chunk.len()).map_err(|err| {
+            format!("tls intercept: h2 request body flow control release failed: {err}")
+        })?;
+        if out.len() > http_match::HTTP_MAX_BODY_BYTES {
+            return Err("tls intercept: h2 request body exceeds max size".to_string());
+        }
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_tls_intercept_h2_stream(
+    request: axum::http::Request<h2::RecvStream>,
+    mut respond: h2::server::SendResponse<Bytes>,
+    connector_h2: TlsConnector,
+    metrics: Metrics,
+    policy: Option<TlsInterceptHttpPolicy>,
+    enforce_http_policy: bool,
+    orig_dst: SocketAddr,
+    upstream_override: Option<SocketAddr>,
+) -> Result<(), String> {
+    let parsed_request = http_match::parsed_request_from_h2(&request);
+    let request_target = request
+        .uri()
+        .path_and_query()
+        .map(|value| value.as_str().to_string())
+        .unwrap_or_else(|| "/".to_string());
+    let request_headers = request.headers().clone();
+    let request_body = read_h2_request_body(request.into_body()).await?;
+
+    let mut request_denied = false;
+    if let Some(req_policy) = policy.as_ref().and_then(|policy| policy.request.as_ref()) {
+            if !http_match::request_allowed(req_policy, &parsed_request) {
+                request_denied = true;
+                metrics.inc_svc_http_request("h2", "deny");
+                metrics.inc_svc_http_deny("h2", "request", "policy");
+                if enforce_http_policy {
+                    metrics.inc_svc_policy_rst("request_policy");
+                    metrics.inc_svc_fail_closed("tls");
+                    respond.send_reset(h2::Reason::REFUSED_STREAM);
+                    return Ok(());
+                }
+            }
+        }
+    if !request_denied {
+        metrics.inc_svc_http_request("h2", "allow");
+    }
+
+    let upstream_addr = upstream_override.unwrap_or(orig_dst);
+    let upstream_host = if parsed_request.host.is_empty() {
+        upstream_addr.ip().to_string()
+    } else {
+        parsed_request.host.clone()
+    };
+    let upstream_tls = connect_upstream_tls(connector_h2, upstream_addr, &upstream_host).await?;
+    let (mut send_request, upstream_conn) =
+        tokio::time::timeout(TLS_IO_TIMEOUT, client::handshake(upstream_tls))
+            .await
+            .map_err(|_| "tls intercept: h2 upstream handshake timed out".to_string())?
+            .map_err(|err| format!("tls intercept: h2 upstream handshake failed: {err}"))?;
+    tokio::spawn(async move {
+        let _ = upstream_conn.await;
+    });
+
+    let upstream_req = http_match::request_for_upstream_h2(
+        &parsed_request.method,
+        &request_target,
+        &upstream_host,
+        &request_headers,
+    )?;
+    let end_of_stream = request_body.is_empty();
+    let (response_fut, mut upstream_send_stream) = send_request
+        .send_request(upstream_req, end_of_stream)
+        .map_err(|err| format!("tls intercept: h2 upstream send failed: {err}"))?;
+    if !request_body.is_empty() {
+        upstream_send_stream
+            .send_data(Bytes::from(request_body), true)
+            .map_err(|err| format!("tls intercept: h2 upstream body send failed: {err}"))?;
+    }
+
+    let upstream_response = tokio::time::timeout(TLS_IO_TIMEOUT, response_fut)
+        .await
+        .map_err(|_| "tls intercept: h2 upstream response timed out".to_string())?
+        .map_err(|err| format!("tls intercept: h2 upstream response failed: {err}"))?;
+    let (upstream_parts, mut upstream_body) = upstream_response.into_parts();
+    let upstream_header_response = Response::from_parts(upstream_parts, ());
+    let parsed_response = http_match::parsed_response_from_h2(&upstream_header_response);
+        if let Some(resp_policy) = policy.as_ref().and_then(|policy| policy.response.as_ref()) {
+            if !http_match::response_allowed(resp_policy, &parsed_response) {
+                metrics.inc_svc_http_deny("h2", "response", "policy");
+                if enforce_http_policy {
+                    metrics.inc_svc_policy_rst("response_policy");
+                    metrics.inc_svc_fail_closed("tls");
+                    respond.send_reset(h2::Reason::REFUSED_STREAM);
+                    return Ok(());
+                }
+            }
+        }
+
+    let downstream_response = http_match::response_from_upstream_h2(&upstream_header_response)?;
+    let mut downstream_send = respond
+        .send_response(downstream_response, upstream_body.is_end_stream())
+        .map_err(|err| format!("tls intercept: h2 downstream send failed: {err}"))?;
+    let body_idle_timeout = tls_h2_body_idle_timeout();
+    let mut body_bytes = 0usize;
+    while let Some(next) = tokio::time::timeout(body_idle_timeout, upstream_body.data())
+        .await
+        .map_err(|_| {
+            format!(
+                "tls intercept: h2 upstream body read timed out after {}s",
+                body_idle_timeout.as_secs()
+            )
+        })?
+    {
+        let chunk =
+            next.map_err(|err| format!("tls intercept: h2 upstream body read failed: {err}"))?;
+        body_bytes = body_bytes.saturating_add(chunk.len());
+        upstream_body
+            .flow_control()
+            .release_capacity(chunk.len())
+            .map_err(|err| {
+                format!(
+                    "tls intercept: h2 upstream body flow control release failed: {err}"
+                )
+            })?;
+        if body_bytes > http_match::HTTP_MAX_BODY_BYTES {
+            return Err("tls intercept: h2 response body exceeds max size".to_string());
+        }
+        downstream_send
+            .send_data(chunk, upstream_body.is_end_stream())
+            .map_err(|err| format!("tls intercept: h2 downstream body send failed: {err}"))?;
+    }
+    Ok(())
+}
+
 async fn handle_tls_intercept_h2(
     client_tls: tokio_rustls::server::TlsStream<TcpStream>,
     connector_h2: TlsConnector,
@@ -394,140 +546,98 @@ async fn handle_tls_intercept_h2(
     orig_dst: SocketAddr,
     upstream_override: Option<SocketAddr>,
 ) -> Result<(), String> {
-    // Process one active stream per h2 connection.
-    //
-    // The intercept path performs full request/response inspection before
-    // completing a stream. Allowing high stream concurrency can create flow
-    // control stalls under load when large request bodies are in flight.
     let mut h2_builder = server::Builder::new();
-    h2_builder.max_concurrent_streams(1);
+    h2_builder.max_concurrent_streams(tls_h2_max_concurrent_streams());
     let mut client_conn = tokio::time::timeout(TLS_IO_TIMEOUT, h2_builder.handshake(client_tls))
         .await
         .map_err(|_| "tls intercept: h2 server handshake timed out".to_string())?
         .map_err(|err| format!("tls intercept: h2 server handshake failed: {err}"))?;
     let mut saw_request = false;
+    let mut client_closed = false;
+    let mut stream_tasks: tokio::task::JoinSet<Result<(), String>> = tokio::task::JoinSet::new();
     loop {
-        let next = if saw_request {
-            match tokio::time::timeout(TLS_IO_TIMEOUT, client_conn.accept()).await {
-                Ok(next) => next,
-                Err(_) => {
-                    // No additional streams arrived before timeout; close this
-                    // intercept connection after the completed exchange.
-                    client_conn.graceful_shutdown();
-                    return Ok(());
+        if client_closed {
+            match stream_tasks.join_next().await {
+                Some(Ok(Ok(()))) => continue,
+                Some(Ok(Err(err))) => return Err(err),
+                Some(Err(err)) => {
+                    return Err(format!("tls intercept: h2 stream task join failed: {err}"));
+                }
+                None => {
+                    return if saw_request {
+                        Ok(())
+                    } else {
+                        Err("tls intercept: h2 client closed before request".to_string())
+                    };
                 }
             }
-        } else {
-            tokio::time::timeout(TLS_IO_TIMEOUT, client_conn.accept())
-                .await
-                .map_err(|_| "tls intercept: h2 client request timed out".to_string())?
-        };
+        }
 
-        let Some(next) = next else {
-            return if saw_request {
-                Ok(())
+        if stream_tasks.is_empty() {
+            let next = if saw_request {
+                match tokio::time::timeout(TLS_IO_TIMEOUT, client_conn.accept()).await {
+                    Ok(next) => next,
+                    Err(_) => {
+                        client_conn.graceful_shutdown();
+                        return Ok(());
+                    }
+                }
             } else {
-                Err("tls intercept: h2 client closed before request".to_string())
+                tokio::time::timeout(TLS_IO_TIMEOUT, client_conn.accept())
+                    .await
+                    .map_err(|_| "tls intercept: h2 client request timed out".to_string())?
             };
-        };
+            let Some(next) = next else {
+                return if saw_request {
+                    Ok(())
+                } else {
+                    Err("tls intercept: h2 client closed before request".to_string())
+                };
+            };
+            let (request, respond) =
+                next.map_err(|err| format!("tls intercept: h2 accept failed: {err}"))?;
+            saw_request = true;
+            stream_tasks.spawn(handle_tls_intercept_h2_stream(
+                request,
+                respond,
+                connector_h2.clone(),
+                metrics.clone(),
+                policy.clone(),
+                enforce_http_policy,
+                orig_dst,
+                upstream_override,
+            ));
+            continue;
+        }
 
-        saw_request = true;
-        let (request, mut respond) =
-            next.map_err(|err| format!("tls intercept: h2 accept failed: {err}"))?;
-        let parsed_request = http_match::parsed_request_from_h2(&request);
-        let request_target = request
-            .uri()
-            .path_and_query()
-            .map(|value| value.as_str().to_string())
-            .unwrap_or_else(|| "/".to_string());
-        let request_body =
-            read_h2_request_body_with_conn_progress(&mut client_conn, request.into_body()).await?;
-
-        let mut request_denied = false;
-        if let Some(req_policy) = policy.as_ref().and_then(|policy| policy.request.as_ref()) {
-            if !http_match::request_allowed(req_policy, &parsed_request) {
-                request_denied = true;
-                metrics.inc_svc_http_request("h2", "deny");
-                metrics.inc_svc_http_deny("h2", "request", "policy");
-                if enforce_http_policy {
-                    metrics.inc_svc_policy_rst("request_policy");
-                    metrics.inc_svc_fail_closed("tls");
-                    return Err("tls intercept: h2 request denied by policy".to_string());
+        tokio::select! {
+            joined = stream_tasks.join_next() => {
+                match joined {
+                    Some(Ok(Ok(()))) => {}
+                    Some(Ok(Err(err))) => return Err(err),
+                    Some(Err(err)) => return Err(format!("tls intercept: h2 stream task join failed: {err}")),
+                    None => {}
                 }
             }
-        }
-        if !request_denied {
-            metrics.inc_svc_http_request("h2", "allow");
-        }
-
-        let upstream_addr = upstream_override.unwrap_or(orig_dst);
-        let upstream_host = if parsed_request.host.is_empty() {
-            upstream_addr.ip().to_string()
-        } else {
-            parsed_request.host.clone()
-        };
-        let upstream_tls =
-            connect_upstream_tls(connector_h2.clone(), upstream_addr, &upstream_host).await?;
-        let (mut send_request, upstream_conn) =
-            tokio::time::timeout(TLS_IO_TIMEOUT, client::handshake(upstream_tls))
-                .await
-                .map_err(|_| "tls intercept: h2 upstream handshake timed out".to_string())?
-                .map_err(|err| format!("tls intercept: h2 upstream handshake failed: {err}"))?;
-        tokio::spawn(async move {
-            let _ = upstream_conn.await;
-        });
-
-        let upstream_req = http_match::request_for_upstream_h2(
-            &parsed_request.method,
-            &request_target,
-            &upstream_host,
-        )?;
-        let end_of_stream = request_body.is_empty();
-        let (response_fut, mut upstream_send_stream) = send_request
-            .send_request(upstream_req, end_of_stream)
-            .map_err(|err| format!("tls intercept: h2 upstream send failed: {err}"))?;
-        if !request_body.is_empty() {
-            upstream_send_stream
-                .send_data(Bytes::from(request_body), true)
-                .map_err(|err| format!("tls intercept: h2 upstream body send failed: {err}"))?;
-        }
-
-        let upstream_response = tokio::time::timeout(TLS_IO_TIMEOUT, response_fut)
-            .await
-            .map_err(|_| "tls intercept: h2 upstream response timed out".to_string())?
-            .map_err(|err| format!("tls intercept: h2 upstream response failed: {err}"))?;
-        let (upstream_parts, mut upstream_body) = upstream_response.into_parts();
-        let upstream_header_response = Response::from_parts(upstream_parts, ());
-        let parsed_response = http_match::parsed_response_from_h2(&upstream_header_response);
-        if let Some(resp_policy) = policy.as_ref().and_then(|policy| policy.response.as_ref()) {
-            if !http_match::response_allowed(resp_policy, &parsed_response) {
-                metrics.inc_svc_http_deny("h2", "response", "policy");
-                if enforce_http_policy {
-                    metrics.inc_svc_policy_rst("response_policy");
-                    metrics.inc_svc_fail_closed("tls");
-                    return Err("tls intercept: h2 response denied by policy".to_string());
+            next = client_conn.accept() => {
+                match next {
+                    Some(Ok((request, respond))) => {
+                        saw_request = true;
+                        stream_tasks.spawn(handle_tls_intercept_h2_stream(
+                            request,
+                            respond,
+                            connector_h2.clone(),
+                            metrics.clone(),
+                            policy.clone(),
+                            enforce_http_policy,
+                            orig_dst,
+                            upstream_override,
+                        ));
+                    }
+                    Some(Err(err)) => return Err(format!("tls intercept: h2 accept failed: {err}")),
+                    None => client_closed = true,
                 }
             }
-        }
-
-        let downstream_response = http_match::response_from_upstream_h2(&upstream_header_response)?;
-        let mut downstream_send = respond
-            .send_response(downstream_response, upstream_body.is_end_stream())
-            .map_err(|err| format!("tls intercept: h2 downstream send failed: {err}"))?;
-        let mut body_bytes = 0usize;
-        while let Some(next) = tokio::time::timeout(TLS_IO_TIMEOUT, upstream_body.data())
-            .await
-            .map_err(|_| "tls intercept: h2 upstream body read timed out".to_string())?
-        {
-            let chunk =
-                next.map_err(|err| format!("tls intercept: h2 upstream body read failed: {err}"))?;
-            body_bytes = body_bytes.saturating_add(chunk.len());
-            if body_bytes > http_match::HTTP_MAX_BODY_BYTES {
-                return Err("tls intercept: h2 response body exceeds max size".to_string());
-            }
-            downstream_send
-                .send_data(chunk, upstream_body.is_end_stream())
-                .map_err(|err| format!("tls intercept: h2 downstream body send failed: {err}"))?;
         }
     }
 }

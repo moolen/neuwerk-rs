@@ -4,6 +4,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use zeroize::Zeroize;
 
 use rcgen::{Certificate, CertificateParams, KeyPair};
+use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct CaEnvelope {
@@ -32,6 +33,7 @@ impl CaSigner {
 
     pub fn from_cert_and_key(cert_pem: &[u8], key_der: &[u8]) -> Result<Self, rcgen::Error> {
         let key_pair = KeyPair::from_der(key_der)?;
+        ensure_cert_matches_key(cert_pem, &key_pair)?;
         let params = CertificateParams::from_ca_cert_pem(
             std::str::from_utf8(cert_pem).map_err(|_| rcgen::Error::CouldNotParseCertificate)?,
             key_pair,
@@ -57,6 +59,16 @@ impl CaSigner {
     pub fn key_der(&self) -> &[u8] {
         &self.key_der
     }
+}
+
+fn ensure_cert_matches_key(cert_pem: &[u8], key_pair: &KeyPair) -> Result<(), rcgen::Error> {
+    let (_, pem) = parse_x509_pem(cert_pem).map_err(|_| rcgen::Error::CouldNotParseCertificate)?;
+    let (_, cert) = parse_x509_certificate(&pem.contents)
+        .map_err(|_| rcgen::Error::CouldNotParseCertificate)?;
+    if cert.public_key().raw != key_pair.public_key_der() {
+        return Err(rcgen::Error::CertificateKeyPairMismatch);
+    }
+    Ok(())
 }
 
 impl Drop for CaSigner {
@@ -135,6 +147,7 @@ fn derive_key(psk: &[u8], salt: &[u8]) -> Result<aead::UnboundKey, CaEnvelopeErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa};
 
     #[test]
     fn encrypt_decrypt_round_trip() {
@@ -143,5 +156,30 @@ mod tests {
         let envelope = encrypt_ca_key("kid-1", psk, ca_key).unwrap();
         let plaintext = decrypt_ca_key(&envelope, psk).unwrap();
         assert_eq!(plaintext, ca_key);
+    }
+
+    #[test]
+    fn from_cert_and_key_rejects_mismatched_pair() {
+        let mut cert_a = CertificateParams::default();
+        cert_a.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        cert_a
+            .distinguished_name
+            .push(DnType::CommonName, "Neuwerk Test CA A");
+        let cert_a = Certificate::from_params(cert_a).unwrap();
+
+        let mut cert_b = CertificateParams::default();
+        cert_b.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        cert_b
+            .distinguished_name
+            .push(DnType::CommonName, "Neuwerk Test CA B");
+        let cert_b = Certificate::from_params(cert_b).unwrap();
+
+        let err = CaSigner::from_cert_and_key(
+            cert_a.serialize_pem().unwrap().as_bytes(),
+            &cert_b.serialize_private_key_der(),
+        )
+        .err()
+        .expect("mismatched cert/key");
+        assert_eq!(err, rcgen::Error::CertificateKeyPairMismatch);
     }
 }

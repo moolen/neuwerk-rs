@@ -33,6 +33,7 @@ pub fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     let mut internal_cidr = None;
     let mut http_bind = None;
     let mut http_advertise = None;
+    let mut http_external_url = None;
     let mut http_tls_dir = PathBuf::from("/var/lib/neuwerk/http-tls");
     let mut http_cert_path = None;
     let mut http_key_path = None;
@@ -273,6 +274,11 @@ pub fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         if arg == "--http-advertise" || arg.starts_with("--http-advertise=") {
             let value = take_flag_value("--http-advertise", &arg, &mut args)?;
             http_advertise = Some(parse_socket("--http-advertise", &value)?);
+            continue;
+        }
+        if arg == "--http-external-url" || arg.starts_with("--http-external-url=") {
+            let value = take_flag_value("--http-external-url", &arg, &mut args)?;
+            http_external_url = Some(value);
             continue;
         }
         if arg == "--http-tls-dir" || arg.starts_with("--http-tls-dir=") {
@@ -572,7 +578,7 @@ pub fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         }
     }
 
-    let encap_udp_port = encap_udp_port.unwrap_or_else(|| match encap_mode {
+    let encap_udp_port = encap_udp_port.unwrap_or(match encap_mode {
         EncapMode::Geneve => 6081,
         EncapMode::Vxlan => 10800,
         EncapMode::None => 0,
@@ -625,6 +631,7 @@ pub fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         encap_mtu,
         http_bind,
         http_advertise,
+        http_external_url,
         http_tls_dir,
         http_cert_path,
         http_key_path,
@@ -659,4 +666,45 @@ pub fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
         gcp_region,
         gcp_ig_name,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_args;
+    use crate::runtime::cli::DataPlaneMode;
+
+    fn required_args(data_plane_mode: &str, data_plane_iface: &str) -> Vec<String> {
+        vec![
+            "--management-interface".to_string(),
+            "mgmt0".to_string(),
+            "--data-plane-interface".to_string(),
+            data_plane_iface.to_string(),
+            "--dns-target-ip".to_string(),
+            "10.0.0.53".to_string(),
+            "--dns-upstream".to_string(),
+            "1.1.1.1:53".to_string(),
+            "--data-plane-mode".to_string(),
+            data_plane_mode.to_string(),
+        ]
+    }
+
+    #[test]
+    fn parse_args_accepts_mac_selector_for_dpdk_mode() {
+        let cfg = parse_args("firewall", required_args("dpdk", "mac:02:00:00:00:00:42"))
+            .expect("cli config");
+
+        assert_eq!(cfg.data_plane_mode, DataPlaneMode::Dpdk);
+        assert_eq!(cfg.data_plane_iface, "mac:02:00:00:00:00:42");
+    }
+
+    #[test]
+    fn parse_args_rejects_mac_selector_for_soft_modes() {
+        let err = parse_args("firewall", required_args("tun", "mac:02:00:00:00:00:42"))
+            .expect_err("soft dataplane must reject mac selector");
+
+        assert_eq!(
+            err,
+            "--data-plane-interface must be a netdev when --data-plane-mode is tun or tap"
+        );
+    }
 }

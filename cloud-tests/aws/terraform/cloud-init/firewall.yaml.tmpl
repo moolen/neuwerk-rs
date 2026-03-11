@@ -92,6 +92,71 @@ write_files:
         netplan apply || true
       }
 
+      tag_network_interfaces() {
+        local token="$1"
+        local macs mac mac_clean devnum eni_id
+        if [ -z "${aws_region}" ] || ! command -v aws >/dev/null 2>&1; then
+          return 0
+        fi
+        macs=$(metadata_get "$token" "network/interfaces/macs/" | tr -d '\r')
+        for mac in $macs; do
+          mac_clean="$${mac%/}"
+          devnum=$(metadata_get "$token" "network/interfaces/macs/$mac/interface-id" || true)
+          eni_id="$devnum"
+          devnum=$(metadata_get "$token" "network/interfaces/macs/$mac/device-number" || true)
+          if [ -z "$eni_id" ] || [ -z "$devnum" ]; then
+            continue
+          fi
+          if [ "$devnum" = "0" ]; then
+            aws --region ${aws_region} ec2 create-tags --resources "$eni_id" --tags \
+              Key=neuwerk.io/management,Value=true \
+              Key=neuwerk.io/dataplane,Value=false >/dev/null 2>&1 || true
+          elif [ "$devnum" = "1" ]; then
+            aws --region ${aws_region} ec2 create-tags --resources "$eni_id" --tags \
+              Key=neuwerk.io/management,Value=false \
+              Key=neuwerk.io/dataplane,Value=true >/dev/null 2>&1 || true
+            aws --region ${aws_region} ec2 modify-network-interface-attribute \
+              --network-interface-id "$eni_id" \
+              --source-dest-check "{\"Value\":false}" >/dev/null 2>&1 || true
+          fi
+        done
+      }
+
+      dataplane_ip_from_metadata() {
+        local token="$1"
+        local macs mac devnum ip
+        macs=$(metadata_get "$token" "network/interfaces/macs/" | tr -d '\r')
+        for mac in $macs; do
+          devnum=$(metadata_get "$token" "network/interfaces/macs/$mac/device-number" || true)
+          if [ "$devnum" = "1" ]; then
+            ip=$(metadata_get "$token" "network/interfaces/macs/$mac/local-ipv4s" | head -n1 || true)
+            if [ -n "$ip" ]; then
+              echo "$ip"
+              return 0
+            fi
+          fi
+        done
+        return 1
+      }
+
+      register_gwlb_target() {
+        local dataplane_ip="$1"
+        local attempt=0
+        if [ -z "${asg_target_group_arn}" ] || [ -z "$dataplane_ip" ]; then
+          return 0
+        fi
+        for attempt in $(seq 1 10); do
+          if aws --region ${aws_region} elbv2 register-targets \
+            --target-group-arn "${asg_target_group_arn}" \
+            --targets "Id=$dataplane_ip,Port=6081" >/dev/null 2>&1; then
+            return 0
+          fi
+          sleep 2
+        done
+        log "failed to register dataplane target ip=$dataplane_ip into GWLB target group"
+        return 1
+      }
+
       bind_data_nic() {
         local pci=""
         local selector=""
@@ -270,6 +335,7 @@ write_files:
       RTE_EAL_PMD_PATH=/opt/neuwerk/runtime/usr/lib/dpdk/pmds-26.0
       LD_PRELOAD="/opt/neuwerk/runtime/usr/lib/dpdk/pmds-26.0/librte_net_ena.so.26 /opt/neuwerk/runtime/usr/lib/librte_mempool_ring.so.26"
       NEUWERK_DPDK_DISABLE_IN_MEMORY=1
+      NEUWERK_DPDK_SKIP_BUS_PCI_PRELOAD=1
       EOF_RUNTIME
         else
           log "runtime bundle detected but firewall links non-.26 DPDK ABI; skipping runtime preload env"
@@ -286,6 +352,11 @@ write_files:
       map_interfaces "$token"
       ensure_runtime_packages
       download_artifacts
+      tag_network_interfaces "$token"
+%{ if use_gwlb ~}
+      dataplane_ip=$(dataplane_ip_from_metadata "$token" || true)
+      register_gwlb_target "$dataplane_ip"
+%{ endif ~}
       data_selector=$(bind_data_nic)
       write_env "$data_selector"
       touch "$BOOTSTRAP_MARKER"
@@ -345,7 +416,12 @@ write_files:
         --default-policy allow \
         --snat $${SNAT_MODE} \
         --cloud-provider $${CLOUD_PROVIDER} \
-        --integration none
+        --integration ${integration_mode}%{ if integration_mode == "aws-asg" } \
+        --aws-region ${aws_region} \
+        --aws-vpc-id ${aws_vpc_id} \
+        --aws-asg-name ${aws_asg_name} \
+        --integration-drain-timeout-secs ${integration_drain_timeout_secs} \
+        --integration-reconcile-interval-secs ${integration_reconcile_interval_secs}%{ endif }
       Restart=on-failure
       RestartSec=2
       LimitMEMLOCK=infinity

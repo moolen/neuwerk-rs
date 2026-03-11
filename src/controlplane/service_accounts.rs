@@ -533,7 +533,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<Option<T>>
 }
 
 fn to_io_err<E: std::fmt::Display>(err: E) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, err.to_string())
+    io::Error::other(err.to_string())
 }
 
 #[cfg(test)]
@@ -602,5 +602,156 @@ mod tests {
             let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    #[tokio::test]
+    async fn disk_store_persists_accounts_and_revoked_tokens_across_restart() {
+        let dir = TempDir::new().unwrap();
+        let base_dir = dir.path().join("sa");
+
+        let store = ServiceAccountStore::local(base_dir.clone());
+        let account = store
+            .create_account(
+                "svc".to_string(),
+                Some("desc".to_string()),
+                "creator".to_string(),
+            )
+            .await
+            .unwrap();
+        let token_id = Uuid::new_v4();
+        let token = TokenMeta::new(
+            account.id,
+            Some("tok".to_string()),
+            "creator".to_string(),
+            "kid".to_string(),
+            None,
+            token_id,
+        )
+        .unwrap();
+        store.write_token(&token).await.unwrap();
+
+        let restarted = ServiceAccountStore::local(base_dir.clone());
+        let accounts = restarted.list_accounts().await.unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, account.id);
+        assert_eq!(accounts[0].name, "svc");
+
+        let mut persisted_token = restarted
+            .get_token(token_id)
+            .await
+            .unwrap()
+            .expect("token after restart");
+        assert_eq!(persisted_token.status, TokenStatus::Active);
+        persisted_token.status = TokenStatus::Revoked;
+        persisted_token.revoked_at = Some("2026-03-09T12:00:00Z".to_string());
+        restarted.write_token(&persisted_token).await.unwrap();
+
+        let restarted_again = ServiceAccountStore::local(base_dir);
+        let tokens = restarted_again.list_tokens(account.id).await.unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].id, token_id);
+        assert_eq!(tokens[0].status, TokenStatus::Revoked);
+        assert_eq!(
+            tokens[0].revoked_at.as_deref(),
+            Some("2026-03-09T12:00:00Z")
+        );
+    }
+
+    #[test]
+    fn write_account_returns_io_error_when_accounts_path_is_blocked() {
+        let dir = TempDir::new().unwrap();
+        let store = ServiceAccountDiskStore::new(dir.path().join("sa"));
+        fs::create_dir_all(store.base_dir()).unwrap();
+        fs::write(store.base_dir().join("accounts"), b"not-a-directory").unwrap();
+
+        let account = ServiceAccount::new("svc".to_string(), None, "creator".to_string()).unwrap();
+        let err = store
+            .write_account(&account)
+            .expect_err("expected blocked accounts path to fail");
+        assert!(matches!(
+            err.kind(),
+            io::ErrorKind::AlreadyExists | io::ErrorKind::NotADirectory
+        ));
+    }
+
+    #[test]
+    fn disk_store_reads_account_index_and_record_with_schema_compatibility() {
+        let dir = TempDir::new().unwrap();
+        let store = ServiceAccountDiskStore::new(dir.path().join("sa"));
+        store.ensure().unwrap();
+
+        let account_id = Uuid::new_v4();
+        fs::write(
+            store.index_path(),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "accounts": [account_id],
+                "ignored_index_field": "compat"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            store.account_path(account_id),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "id": account_id,
+                "name": "svc",
+                "created_at": "2026-03-09T12:00:00Z",
+                "created_by": "bootstrap",
+                "status": "active",
+                "ignored_record_field": { "future": true }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let accounts = store.list_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, account_id);
+        assert_eq!(accounts[0].name, "svc");
+        assert_eq!(accounts[0].description, None);
+        assert_eq!(accounts[0].status, ServiceAccountStatus::Active);
+    }
+
+    #[test]
+    fn disk_store_reads_token_index_and_record_with_schema_compatibility() {
+        let dir = TempDir::new().unwrap();
+        let store = ServiceAccountDiskStore::new(dir.path().join("sa"));
+        store.ensure().unwrap();
+
+        let account_id = Uuid::new_v4();
+        let token_id = Uuid::new_v4();
+        fs::write(
+            store.token_index_path(account_id),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "tokens": [token_id],
+                "ignored_index_field": "compat"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            store.token_path(token_id),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "id": token_id,
+                "service_account_id": account_id,
+                "name": "token-a",
+                "created_at": "2026-03-09T12:00:00Z",
+                "created_by": "bootstrap",
+                "kid": "kid-1",
+                "status": "active",
+                "ignored_record_field": { "future": true }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let tokens = store.list_tokens(account_id).unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].id, token_id);
+        assert_eq!(tokens[0].name.as_deref(), Some("token-a"));
+        assert_eq!(tokens[0].expires_at, None);
+        assert_eq!(tokens[0].revoked_at, None);
+        assert_eq!(tokens[0].last_used_at, None);
+        assert_eq!(tokens[0].status, TokenStatus::Active);
     }
 }

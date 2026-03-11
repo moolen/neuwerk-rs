@@ -125,6 +125,7 @@ pub(in crate::e2e::tests) fn parse_dhcp_message(buf: &[u8]) -> Option<DhcpMessag
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::e2e::tests) fn build_dhcp_reply(
     msg_type: u8,
     xid: u32,
@@ -190,6 +191,7 @@ pub(in crate::e2e::tests) fn build_ipv4_udp_frame(
     buf
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::e2e::tests) fn build_ipv4_tcp_frame(
     src_mac: [u8; 6],
     dst_mac: [u8; 6],

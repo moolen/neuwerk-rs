@@ -252,9 +252,8 @@ async fn cluster_write_blocks_without_quorum_and_recovers_after_rejoin() {
         survivor_raft.client_write(no_quorum_cmd),
     )
     .await;
-    match no_quorum {
-        Ok(Ok(_)) => panic!("write unexpectedly succeeded without quorum"),
-        Ok(Err(_)) | Err(_) => {}
+    if let Ok(Ok(_)) = no_quorum {
+        panic!("write unexpectedly succeeded without quorum");
     }
 
     let restarted = bootstrap::run_cluster(restart_cfg, None, None)

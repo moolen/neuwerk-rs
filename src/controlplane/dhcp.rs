@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rand::RngCore;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
+use tracing::{debug, info, warn};
 
 use crate::controlplane::metrics::Metrics;
 use crate::controlplane::PolicyStore;
@@ -77,12 +78,10 @@ pub struct DhcpLease {
 
 impl DhcpClient {
     pub async fn run(mut self) -> Result<(), String> {
-        tracing::info!("dhcp client starting");
+        info!("dhcp client starting");
         loop {
+            self.clear_lease_state();
             let mac = self.await_mac().await?;
-            if let Some(metrics) = &self.metrics {
-                metrics.set_dhcp_lease_active(false);
-            }
             let mut lease = self.acquire_lease(mac).await?;
             loop {
                 let renew_at = lease.renew_time_secs;
@@ -106,10 +105,10 @@ impl DhcpClient {
             if attempt > self.config.retry_max.max(1) {
                 return Err("dhcp discovery retries exceeded".to_string());
             }
-            tracing::debug!(
-                "dhcp: discover attempt {}/{}",
+            debug!(
                 attempt,
-                self.config.retry_max.max(1)
+                retry_max = self.config.retry_max.max(1),
+                "dhcp discover attempt"
             );
 
             let xid = rand_xid();
@@ -119,7 +118,7 @@ impl DhcpClient {
             let offer = match self.await_message(xid, DhcpMessageType::Offer, mac).await {
                 Ok(pkt) => pkt,
                 Err(err) => {
-                    tracing::warn!(error = %err, "dhcp offer wait failed");
+                    warn!(error = %err, "dhcp offer wait failed");
                     continue;
                 }
             };
@@ -140,7 +139,7 @@ impl DhcpClient {
             let ack = match self.await_message(xid, DhcpMessageType::Ack, mac).await {
                 Ok(pkt) => pkt,
                 Err(err) => {
-                    tracing::warn!(error = %err, "dhcp ack wait failed");
+                    warn!(error = %err, "dhcp ack wait failed");
                     continue;
                 }
             };
@@ -148,12 +147,12 @@ impl DhcpClient {
                 continue;
             }
             let lease = lease_from_packet(&ack, &self.config, mac)?;
-            tracing::info!(
-                "dhcp: lease acquired ip={}, prefix={}, gateway={}, lease_secs={}",
-                lease.ip,
-                lease.prefix,
-                lease.gateway,
-                lease.lease_time_secs
+            info!(
+                ip = %lease.ip,
+                prefix = lease.prefix,
+                gateway = %lease.gateway,
+                lease_secs = lease.lease_time_secs,
+                "dhcp lease acquired"
             );
             self.apply_lease(&lease, mac)?;
             return Ok(lease);
@@ -178,6 +177,14 @@ impl DhcpClient {
         let updated = lease_from_packet(&ack, &self.config, mac)?;
         self.apply_lease(&updated, mac)?;
         Ok(updated)
+    }
+
+    fn clear_lease_state(&self) {
+        self.dataplane_config.clear();
+        if let Some(metrics) = &self.metrics {
+            metrics.set_dhcp_lease_active(false);
+            metrics.set_dhcp_lease_expiry_epoch(0);
+        }
     }
 
     async fn await_message(
@@ -251,7 +258,7 @@ impl DhcpClient {
                 return Ok(mac);
             }
             if !logged {
-                tracing::debug!("dhcp waiting for dataplane mac");
+                debug!("dhcp waiting for dataplane mac");
                 logged = true;
             }
             self.mac_rx
@@ -283,9 +290,9 @@ fn lease_from_packet(
         None if cfg.allow_router_fallback_from_subnet => {
             let fallback = subnet_gateway(pkt.yiaddr, prefix)
                 .ok_or_else(|| "dhcp ack missing router and gateway fallback failed".to_string())?;
-            tracing::warn!(
-                "dhcp: ack missing router option; falling back to subnet gateway {}",
-                fallback
+            warn!(
+                gateway = %fallback,
+                "dhcp ack missing router option; falling back to subnet gateway"
             );
             fallback
         }
@@ -302,7 +309,7 @@ fn lease_from_packet(
     if (lease_time as u64) < cfg.lease_min_secs {
         return Err("dhcp lease below minimum".to_string());
     }
-    let renew_time = pkt.options.renew_time.unwrap_or_else(|| lease_time / 2);
+    let renew_time = pkt.options.renew_time.unwrap_or(lease_time / 2);
     let rebind_time = pkt
         .options
         .rebind_time
@@ -554,6 +561,39 @@ mod tests {
     use crate::dataplane::policy::DefaultPolicy;
     use tokio::sync::{mpsc, watch};
 
+    fn test_client(
+        timeout: Duration,
+    ) -> (
+        DhcpClient,
+        mpsc::Sender<DhcpRx>,
+        mpsc::Receiver<DhcpTx>,
+        DataplaneConfigStore,
+    ) {
+        let (_mac_tx, mac_rx) = watch::channel([0u8; 6]);
+        let (rx_tx, rx) = mpsc::channel(4);
+        let (tx, tx_rx) = mpsc::channel(4);
+        let dataplane_config = DataplaneConfigStore::new();
+        let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+        let client = DhcpClient {
+            config: DhcpClientConfig {
+                timeout,
+                retry_max: 1,
+                lease_min_secs: 1,
+                hostname: None,
+                update_internal_cidr: true,
+                allow_router_fallback_from_subnet: false,
+            },
+            mac_rx,
+            rx,
+            tx,
+            dataplane_config: dataplane_config.clone(),
+            policy_store,
+            metrics: None,
+        };
+        (client, rx_tx, tx_rx, dataplane_config)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn build_reply(
         msg_type: u8,
         xid: u32,
@@ -572,6 +612,31 @@ mod tests {
             push_option(&mut buf, 3, &router.octets());
         }
         push_option(&mut buf, 51, &lease_time.to_be_bytes());
+        finish_options(&mut buf);
+        buf
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_reply_with_renew_time(
+        msg_type: u8,
+        xid: u32,
+        mac: [u8; 6],
+        yiaddr: Ipv4Addr,
+        server_id: Ipv4Addr,
+        subnet: Ipv4Addr,
+        router: Option<Ipv4Addr>,
+        lease_time: u32,
+        renew_time: u32,
+    ) -> Vec<u8> {
+        let mut buf = build_base(2, xid, mac, true, Ipv4Addr::UNSPECIFIED, yiaddr);
+        push_option(&mut buf, 53, &[msg_type]);
+        push_option(&mut buf, 54, &server_id.octets());
+        push_option(&mut buf, 1, &subnet.octets());
+        if let Some(router) = router {
+            push_option(&mut buf, 3, &router.octets());
+        }
+        push_option(&mut buf, 51, &lease_time.to_be_bytes());
+        push_option(&mut buf, 58, &renew_time.to_be_bytes());
         finish_options(&mut buf);
         buf
     }
@@ -687,7 +752,7 @@ mod tests {
                 continue;
             }
             if let Some(rest) = line.strip_prefix(name) {
-                let value = rest.trim().split_whitespace().next()?;
+                let value = rest.split_whitespace().next()?;
                 return value.parse().ok();
             }
         }
@@ -745,5 +810,275 @@ mod tests {
             metric_value(&rendered, "dhcp_lease_changes_total"),
             Some(1.0)
         );
+    }
+
+    #[tokio::test]
+    async fn await_message_times_out_when_no_packets_arrive() {
+        let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x11];
+        let (mut client, _rx_tx, _tx_rx, _dataplane_config) =
+            test_client(Duration::from_millis(10));
+
+        let err = client
+            .await_message(0x12345678, DhcpMessageType::Ack, mac)
+            .await
+            .expect_err("timeout");
+
+        assert_eq!(err, "dhcp timeout");
+    }
+
+    #[tokio::test]
+    async fn await_message_returns_nak_error() {
+        let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x12];
+        let yiaddr = Ipv4Addr::new(10, 0, 0, 10);
+        let server_id = Ipv4Addr::new(10, 0, 0, 1);
+        let subnet = Ipv4Addr::new(255, 255, 255, 0);
+        let xid = 0x22334455;
+        let (mut client, rx_tx, _tx_rx, _dataplane_config) = test_client(Duration::from_secs(1));
+
+        rx_tx
+            .send(DhcpRx {
+                src_ip: server_id,
+                payload: build_reply(
+                    DhcpMessageType::Nak as u8,
+                    xid,
+                    mac,
+                    yiaddr,
+                    server_id,
+                    subnet,
+                    Some(server_id),
+                    600,
+                ),
+            })
+            .await
+            .expect("send nak");
+
+        let err = client
+            .await_message(xid, DhcpMessageType::Ack, mac)
+            .await
+            .expect_err("nak");
+
+        assert_eq!(err, "dhcp nak");
+    }
+
+    #[tokio::test]
+    async fn renew_lease_sends_unicast_request_and_applies_updated_lease() {
+        let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x13];
+        let server_id = Ipv4Addr::new(10, 0, 0, 1);
+        let subnet = Ipv4Addr::new(255, 255, 255, 0);
+        let initial_ip = Ipv4Addr::new(10, 0, 0, 20);
+        let updated_ip = Ipv4Addr::new(10, 0, 0, 21);
+        let updated_gateway = Ipv4Addr::new(10, 0, 0, 254);
+        let lease = DhcpLease {
+            ip: initial_ip,
+            prefix: 24,
+            gateway: server_id,
+            server_id,
+            lease_time_secs: 600,
+            renew_time_secs: 300,
+            rebind_time_secs: 525,
+            expiry: 100,
+        };
+        let (mut client, rx_tx, mut tx_rx, dataplane_config) = test_client(Duration::from_secs(1));
+
+        let renew_task = tokio::spawn(async move { client.renew_lease(&lease, mac).await });
+
+        let outbound = tx_rx.recv().await.expect("renew request");
+        let request = match outbound {
+            DhcpTx::Unicast { payload, dst_ip } => {
+                assert_eq!(dst_ip, server_id);
+                let parsed = parse_packet(&payload).expect("parse request");
+                assert_eq!(parsed.msg_type, DhcpMessageType::Request);
+                assert_eq!(parsed.options.requested_ip, Some(initial_ip));
+                assert_eq!(parsed.options.server_id, Some(server_id));
+                parsed
+            }
+            other => panic!("unexpected tx {other:?}"),
+        };
+
+        rx_tx
+            .send(DhcpRx {
+                src_ip: server_id,
+                payload: build_reply(
+                    DhcpMessageType::Ack as u8,
+                    request.xid,
+                    mac,
+                    updated_ip,
+                    server_id,
+                    subnet,
+                    Some(updated_gateway),
+                    900,
+                ),
+            })
+            .await
+            .expect("send ack");
+
+        let updated = renew_task.await.expect("renew task").expect("renew lease");
+        assert_eq!(updated.ip, updated_ip);
+        assert_eq!(updated.gateway, updated_gateway);
+        assert_eq!(updated.lease_time_secs, 900);
+        assert_eq!(updated.renew_time_secs, 450);
+        assert_eq!(
+            dataplane_config.get(),
+            Some(DataplaneConfig {
+                ip: updated_ip,
+                prefix: 24,
+                gateway: updated_gateway,
+                mac,
+                lease_expiry: Some(updated.expiry),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn run_clears_config_and_degrades_readiness_before_reacquire_after_renew_timeout() {
+        let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x14];
+        let yiaddr = Ipv4Addr::new(10, 0, 0, 30);
+        let server_id = Ipv4Addr::new(10, 0, 0, 1);
+        let subnet = Ipv4Addr::new(255, 255, 255, 0);
+        let gateway = Ipv4Addr::new(10, 0, 0, 1);
+        let metrics = Metrics::new().unwrap();
+        let (mac_tx, mac_rx) = watch::channel(mac);
+        let (rx_tx, rx) = mpsc::channel(8);
+        let (tx, mut tx_rx) = mpsc::channel(8);
+        let dataplane_config = DataplaneConfigStore::new();
+        let policy_store = PolicyStore::new_with_config(
+            DefaultPolicy::Deny,
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            dataplane_config.clone(),
+        );
+        let readiness = crate::controlplane::ready::ReadinessState::new(
+            dataplane_config.clone(),
+            policy_store.clone(),
+            None,
+            None,
+        );
+        readiness.set_dataplane_running(true);
+        readiness.set_policy_ready(true);
+        readiness.set_dns_ready(true);
+        readiness.set_service_plane_ready(true);
+
+        let client = DhcpClient {
+            config: DhcpClientConfig {
+                timeout: Duration::from_millis(20),
+                retry_max: 1,
+                lease_min_secs: 1,
+                hostname: None,
+                update_internal_cidr: true,
+                allow_router_fallback_from_subnet: false,
+            },
+            mac_rx,
+            rx,
+            tx,
+            dataplane_config: dataplane_config.clone(),
+            policy_store,
+            metrics: Some(metrics.clone()),
+        };
+
+        let run_task = tokio::spawn(async move { client.run().await });
+        let _mac_tx = mac_tx;
+
+        let discover = tokio::time::timeout(Duration::from_secs(1), tx_rx.recv())
+            .await
+            .expect("discover timeout")
+            .expect("discover message");
+        let discover = match discover {
+            DhcpTx::Broadcast { payload } => parse_packet(&payload).expect("parse discover"),
+            other => panic!("unexpected tx {other:?}"),
+        };
+        assert_eq!(discover.msg_type, DhcpMessageType::Discover);
+
+        rx_tx
+            .send(DhcpRx {
+                src_ip: server_id,
+                payload: build_reply(
+                    DhcpMessageType::Offer as u8,
+                    discover.xid,
+                    mac,
+                    yiaddr,
+                    server_id,
+                    subnet,
+                    Some(gateway),
+                    2,
+                ),
+            })
+            .await
+            .expect("send offer");
+
+        let request = tokio::time::timeout(Duration::from_secs(1), tx_rx.recv())
+            .await
+            .expect("request timeout")
+            .expect("request message");
+        let request = match request {
+            DhcpTx::Broadcast { payload } => parse_packet(&payload).expect("parse request"),
+            other => panic!("unexpected tx {other:?}"),
+        };
+        assert_eq!(request.msg_type, DhcpMessageType::Request);
+        assert_eq!(request.options.requested_ip, Some(yiaddr));
+
+        rx_tx
+            .send(DhcpRx {
+                src_ip: server_id,
+                payload: build_reply_with_renew_time(
+                    DhcpMessageType::Ack as u8,
+                    request.xid,
+                    mac,
+                    yiaddr,
+                    server_id,
+                    subnet,
+                    Some(gateway),
+                    2,
+                    1,
+                ),
+            })
+            .await
+            .expect("send ack");
+
+        tokio::time::timeout(Duration::from_millis(200), async {
+            loop {
+                if dataplane_config.get().is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("lease application timeout");
+        assert!(readiness.snapshot().ready);
+
+        let renew_request = tokio::time::timeout(Duration::from_secs(2), tx_rx.recv())
+            .await
+            .expect("renew timeout")
+            .expect("renew message");
+        match renew_request {
+            DhcpTx::Unicast { payload, dst_ip } => {
+                assert_eq!(dst_ip, server_id);
+                let renew = parse_packet(&payload).expect("parse renew request");
+                assert_eq!(renew.msg_type, DhcpMessageType::Request);
+                assert_eq!(renew.options.requested_ip, Some(yiaddr));
+            }
+            other => panic!("unexpected tx {other:?}"),
+        }
+
+        let reacquire = tokio::time::timeout(Duration::from_millis(250), tx_rx.recv())
+            .await
+            .expect("reacquire discover timeout")
+            .expect("reacquire discover message");
+        let reacquire = match reacquire {
+            DhcpTx::Broadcast { payload } => parse_packet(&payload).expect("parse reacquire"),
+            other => panic!("unexpected tx {other:?}"),
+        };
+        assert_eq!(reacquire.msg_type, DhcpMessageType::Discover);
+        assert!(dataplane_config.get().is_none());
+        assert!(!readiness.snapshot().ready);
+
+        let rendered = metrics.render().unwrap();
+        assert_eq!(metric_value(&rendered, "dhcp_lease_active"), Some(0.0));
+        assert_eq!(
+            metric_value(&rendered, "dhcp_lease_expiry_epoch"),
+            Some(0.0)
+        );
+
+        run_task.abort();
     }
 }

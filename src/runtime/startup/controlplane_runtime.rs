@@ -19,7 +19,9 @@ use firewall::dataplane::{
     DEFAULT_WIRETAP_REPORT_INTERVAL_SECS,
 };
 use tokio::sync::{mpsc, oneshot};
+use tracing::warn;
 
+use crate::runtime::bootstrap::policy_state::local_controlplane_data_root;
 use crate::runtime::cli::CliConfig;
 use crate::runtime::startup::bridges::spawn_event_bridges;
 use crate::runtime::startup::controlplane_threads::{
@@ -32,6 +34,7 @@ const KUBERNETES_STALE_GRACE_SECS: u64 = 300;
 pub struct ControlplaneRuntimeHandles {
     pub dns_task: oneshot::Receiver<Result<(), String>>,
     pub http_task: oneshot::Receiver<Result<(), String>>,
+    pub http_shutdown: controlplane::http_api::HttpApiShutdown,
     pub wiretap_emitter: WiretapEmitter,
     pub audit_emitter: AuditEmitter,
     pub shared_intercept_demux: Arc<Mutex<SharedInterceptDemuxState>>,
@@ -41,17 +44,12 @@ fn env_u64_with_default(name: &str, default: u64) -> u64 {
     match env::var(name) {
         Ok(raw) => match raw.trim().parse::<u64>() {
             Ok(0) => {
-                tracing::warn!(env_var = %name, value = 0, default, "invalid zero value; using default");
+                warn!(env_var = %name, value = 0, default, "invalid zero value; using default");
                 default
             }
             Ok(value) => value,
             Err(_) => {
-                tracing::warn!(
-                    env_var = %name,
-                    raw = %raw,
-                    default,
-                    "invalid numeric value; using default"
-                );
+                warn!(env_var = %name, raw = %raw, default, "invalid numeric value; using default");
                 default
             }
         },
@@ -59,6 +57,7 @@ fn env_u64_with_default(name: &str, default: u64) -> u64 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn start_controlplane_runtime(
     cfg: &CliConfig,
     management_ip: Ipv4Addr,
@@ -91,7 +90,7 @@ pub async fn start_controlplane_runtime(
     let dns_map_for_gc = dns_map.clone();
     let dns_map_for_http = dns_map.clone();
     let audit_store = AuditStore::new(
-        PathBuf::from("/var/lib/neuwerk/audit-store"),
+        local_controlplane_data_root().join("audit-store"),
         DEFAULT_AUDIT_STORE_MAX_BYTES,
     );
     let (wiretap_tx, wiretap_rx) = mpsc::channel(1024);
@@ -238,6 +237,7 @@ pub async fn start_controlplane_runtime(
         san_entries: cfg.http_tls_san.clone(),
         management_ip: IpAddr::V4(management_ip),
         token_path: cfg.cluster.token_path.clone(),
+        external_url: cfg.http_external_url.clone(),
         cluster_tls_dir: if cfg.cluster.enabled {
             Some(cfg.cluster.data_dir.join("tls"))
         } else {
@@ -246,6 +246,7 @@ pub async fn start_controlplane_runtime(
         tls_intercept_ca_ready: Some(tls_intercept_ca_ready),
         tls_intercept_ca_generation: Some(tls_intercept_ca_generation),
     };
+    let http_shutdown = controlplane::http_api::HttpApiShutdown::new();
     let http_task = spawn_http_runtime_thread(HttpRuntimeThreadConfig {
         cfg: http_cfg,
         policy_store,
@@ -256,11 +257,13 @@ pub async fn start_controlplane_runtime(
         dns_map: Some(dns_map_for_http),
         readiness: Some(readiness),
         metrics,
+        shutdown: http_shutdown.clone(),
     })?;
 
     Ok(ControlplaneRuntimeHandles {
         dns_task,
         http_task,
+        http_shutdown,
         wiretap_emitter,
         audit_emitter,
         shared_intercept_demux,

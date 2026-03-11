@@ -104,6 +104,12 @@ resource "google_storage_bucket_iam_member" "firewall_reader" {
   member = "serviceAccount:${google_service_account.firewall.email}"
 }
 
+resource "google_project_iam_member" "firewall_compute_viewer" {
+  project = var.project_id
+  role    = "roles/compute.viewer"
+  member  = "serviceAccount:${google_service_account.firewall.email}"
+}
+
 resource "google_compute_firewall" "allow_internal" {
   name    = "${local.name_prefix}-allow-internal"
   network = google_compute_network.main.name

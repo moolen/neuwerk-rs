@@ -75,9 +75,12 @@ fn maybe_prepare_tx_checksum_offload(
         *m._5.tx_offload.as_mut() = 0;
         if DPDK_TX_CSUM_PREP_FAIL_LOGS.fetch_add(1, Ordering::Relaxed) < 16 {
             tracing::warn!(
-                    "dpdk: tx checksum offload prep failed ret={} proto={} l3_len={} l4_cksum_off={}; falling back to software checksum",
-                    ret, proto, ihl, l4_cksum_ptr
-                );
+                ret,
+                proto,
+                l3_len = ihl,
+                l4_cksum_off = l4_cksum_ptr,
+                "dpdk tx checksum offload prep failed; falling back to software checksum"
+            );
         }
     }
     false

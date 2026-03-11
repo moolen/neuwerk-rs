@@ -351,3 +351,89 @@ fn extract_cookie_token(headers: &HeaderMap) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::controlplane::http_api::ApiAuthSource;
+    use crate::controlplane::integrations::IntegrationStore;
+    use crate::controlplane::metrics::Metrics;
+    use crate::controlplane::policy_repository::PolicyDiskStore;
+    use crate::controlplane::service_accounts::{ServiceAccountStore, TokenMeta};
+    use crate::controlplane::sso::SsoStore;
+    use crate::controlplane::PolicyStore;
+    use crate::dataplane::policy::DefaultPolicy;
+    use std::net::Ipv4Addr;
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+
+    fn test_api_state(dir: &TempDir, service_accounts: ServiceAccountStore) -> ApiState {
+        ApiState {
+            policy_store: PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24),
+            local_store: PolicyDiskStore::new(dir.path().join("policies")),
+            service_accounts,
+            sso: SsoStore::local(dir.path().join("sso")),
+            integrations: IntegrationStore::local(dir.path().join("integrations")),
+            audit_store: None,
+            cluster: None,
+            metrics: Metrics::new().unwrap(),
+            proxy_client: None,
+            http_port: 8443,
+            auth_source: ApiAuthSource::Local(dir.path().join("auth.json")),
+            auth_login_limiter: Arc::new(Mutex::new(AuthLoginLimiter::default())),
+            wiretap_hub: None,
+            cluster_tls_dir: None,
+            tls_dir: dir.path().join("http-tls"),
+            token_path: dir.path().join("bootstrap-token"),
+            external_url: "https://localhost".to_string(),
+            tls_intercept_ca_ready: None,
+            tls_intercept_ca_generation: None,
+            dns_map: None,
+            readiness: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_service_account_claims_rejects_revoked_token_after_restart() {
+        let dir = TempDir::new().unwrap();
+        let sa_dir = dir.path().join("service-accounts");
+        let store = ServiceAccountStore::local(sa_dir.clone());
+        let account = store
+            .create_account("svc".to_string(), None, "creator".to_string())
+            .await
+            .unwrap();
+        let token_id = Uuid::new_v4();
+        let mut token = TokenMeta::new(
+            account.id,
+            Some("token".to_string()),
+            "creator".to_string(),
+            "kid".to_string(),
+            None,
+            token_id,
+        )
+        .unwrap();
+        token.status = TokenStatus::Revoked;
+        token.revoked_at = Some("2026-03-09T12:00:00Z".to_string());
+        store.write_token(&token).await.unwrap();
+
+        let restarted_store = ServiceAccountStore::local(sa_dir);
+        let state = test_api_state(&dir, restarted_store);
+        let now = OffsetDateTime::now_utc();
+        let claims = api_auth::JwtClaims {
+            iss: "neuwerk".to_string(),
+            aud: "neuwerk-api".to_string(),
+            sub: account.id.to_string(),
+            exp: None,
+            iat: now.unix_timestamp(),
+            jti: token_id.to_string(),
+            sa_id: Some(account.id.to_string()),
+            scope: None,
+            roles: None,
+        };
+
+        let err = validate_service_account_claims(&state, &claims, &account.id.to_string(), now)
+            .await
+            .unwrap_err();
+        assert_eq!(err, "token revoked");
+    }
+}

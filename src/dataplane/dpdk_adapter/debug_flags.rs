@@ -22,7 +22,7 @@ pub(super) fn overlay_swap_tunnels() -> bool {
         let enabled = std::env::var("NEUWERK_GWLB_SWAP_TUNNELS")
             .map(|val| matches!(val.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
-        tracing::info!("dpdk: overlay tunnel swap enabled={}", enabled);
+        tracing::info!(enabled, "dpdk overlay tunnel swap configured");
         enabled
     })
 }
@@ -33,7 +33,7 @@ pub(super) fn overlay_force_tunnel_src_port() -> bool {
             .map(|val| matches!(val.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
         if enabled {
-            tracing::info!("dpdk: overlay tunnel src port forced to tunnel port");
+            tracing::info!("dpdk overlay tunnel source port forced to tunnel port");
         }
         enabled
     })
@@ -45,7 +45,7 @@ pub(super) fn overlay_debug_enabled() -> bool {
             .map(|val| matches!(val.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
         if enabled {
-            tracing::info!("dpdk: overlay debug logging enabled");
+            tracing::info!("dpdk overlay debug logging enabled");
         }
         enabled
     })
@@ -57,7 +57,7 @@ pub(super) fn health_probe_debug_enabled() -> bool {
             .map(|val| matches!(val.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
         if enabled {
-            tracing::info!("dpdk: health probe debug logging enabled");
+            tracing::info!("dpdk health probe debug logging enabled");
         }
         enabled
     })

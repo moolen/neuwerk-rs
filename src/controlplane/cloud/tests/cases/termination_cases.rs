@@ -140,7 +140,7 @@ async fn termination_event_persists_and_clears_locally() {
 
     let completed = provider.completed.lock().await;
     assert_eq!(*completed, 1);
-    assert!(manager.local_cache.terminations.get("i-a").is_none());
+    assert!(!manager.local_cache.terminations.contains_key("i-a"));
 }
 
 #[tokio::test]
@@ -212,7 +212,81 @@ async fn termination_event_completes_after_timeout_when_draining() {
 
     let completed = provider.completed.lock().await;
     assert_eq!(*completed, 1);
-    assert!(manager.local_cache.terminations.get("i-a").is_none());
+    assert!(!manager.local_cache.terminations.contains_key("i-a"));
+}
+
+#[tokio::test]
+async fn termination_event_heartbeats_while_draining() {
+    let tags = tagged(&[
+        ("neuwerk.io/cluster", "demo"),
+        ("neuwerk.io/role", "dataplane"),
+    ]);
+    let instance = tagged_instance(
+        "i-a",
+        "zone-1",
+        Ipv4Addr::new(10, 0, 0, 1),
+        Ipv4Addr::new(10, 1, 0, 1),
+        tags.clone(),
+    );
+    let provider = MockProvider::new(
+        vec![instance.clone()],
+        Vec::new(),
+        IntegrationCapabilities {
+            instance_protection: false,
+            termination_notice: true,
+            lifecycle_hook: true,
+        },
+        "i-a",
+    );
+    let next_deadline = unix_now() + 600;
+    *provider.heartbeat_deadline.lock().await = Some(next_deadline);
+    *provider.termination_event.lock().await = Some(TerminationEvent {
+        id: "event-1".to_string(),
+        instance_id: "i-a".to_string(),
+        deadline_epoch: unix_now(),
+    });
+
+    let ready = Arc::new(MockReady {
+        readiness: vec![(instance.mgmt_ip, false)].into_iter().collect(),
+    }) as Arc<dyn ReadyChecker>;
+
+    let metrics = Metrics::new().unwrap();
+    let drain_control = DrainControl::new();
+    let cfg = IntegrationConfig {
+        cluster_name: "demo".to_string(),
+        route_name: "neuwerk-default".to_string(),
+        drain_timeout_secs: 300,
+        reconcile_interval_secs: 1,
+        tag_filter: DiscoveryFilter { tags },
+        http_ready_port: 8443,
+        cluster_tls_dir: None,
+    };
+    let mut manager = IntegrationManager::new(
+        cfg,
+        Arc::new(provider.clone()),
+        None,
+        None,
+        metrics,
+        drain_control,
+        ready,
+    )
+    .await
+    .expect("manager");
+
+    manager.reconcile_once().await.unwrap();
+
+    let heartbeat_calls = provider.heartbeat_calls.lock().await;
+    assert_eq!(*heartbeat_calls, 1);
+
+    let completed = provider.completed.lock().await;
+    assert_eq!(*completed, 0);
+
+    let stored = manager
+        .local_cache
+        .terminations
+        .get("i-a")
+        .expect("termination state");
+    assert_eq!(stored.deadline_epoch, next_deadline);
 }
 
 #[tokio::test]
@@ -281,7 +355,7 @@ async fn termination_event_is_not_republished_on_duplicate_notice() {
         Some("event-1")
     );
     assert_eq!(manager.local_cache.terminations.len(), 1);
-    assert!(manager.local_cache.terminations.get("i-a").is_some());
+    assert!(manager.local_cache.terminations.contains_key("i-a"));
     assert_eq!(provider.completed_count().await, 0);
 }
 
@@ -381,7 +455,7 @@ async fn remote_unknown_flow_count_drains_after_timeout() {
     );
     let subnet = tagged_subnet("subnet-1", "zone-1", tags.clone());
     let assignments =
-        compute_assignments(&[subnet.clone()], &[instance_a.clone(), instance_b.clone()]);
+        compute_assignments(std::slice::from_ref(&subnet), &[instance_a.clone(), instance_b.clone()]);
     let local_id = assignments
         .get("subnet-1")
         .cloned()
@@ -441,4 +515,3 @@ async fn remote_unknown_flow_count_drains_after_timeout() {
         .expect("remote drain state after timeout");
     assert_eq!(second_state.state, DrainStatus::Drained);
 }
-

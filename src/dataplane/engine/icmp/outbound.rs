@@ -154,14 +154,6 @@ pub(super) fn handle_outbound_icmp(
     let mut current_generation = state.current_policy_generation();
     let audit = state.audit.clone();
     if state.flows.get_entry(&flow).is_none() {
-        if state.is_draining() {
-            if let Some(metrics) = &state.metrics {
-                metrics.observe_dp_packet("outbound", proto_label(1), "deny", "default", pkt.len());
-                metrics
-                    .observe_dp_icmp_decision("outbound", icmp_type, icmp_code, "deny", "default");
-            }
-            return Action::Drop;
-        }
         let (evaluation, generation) = match state.policy.read() {
             Ok(lock) => (
                 evaluate_policy_outcome(&lock, &meta, None, &state.tls_verifier),
@@ -269,7 +261,7 @@ pub(super) fn handle_outbound_icmp(
     };
 
     if let Some(drop_group) = policy_drop_group {
-        remove_flow_state(state, &flow, now);
+        remove_flow_state(state, &flow, now, "policy_drop");
         if let Some(metrics) = &metrics {
             metrics.observe_dp_packet("outbound", proto_label(1), "deny", &drop_group, pkt.len());
             metrics.observe_dp_icmp_decision("outbound", icmp_type, icmp_code, "deny", &drop_group);
@@ -359,14 +351,6 @@ pub(super) fn handle_outbound_icmp_no_snat(
     let mut current_generation = state.current_policy_generation();
     let audit = state.audit.clone();
     if state.flows.get_entry(&flow).is_none() {
-        if state.is_draining() {
-            if let Some(metrics) = &state.metrics {
-                metrics.observe_dp_packet("outbound", proto_label(1), "deny", "default", pkt.len());
-                metrics
-                    .observe_dp_icmp_decision("outbound", icmp_type, icmp_code, "deny", "default");
-            }
-            return Action::Drop;
-        }
         let (evaluation, generation) = match state.policy.read() {
             Ok(lock) => (
                 evaluate_policy_outcome(&lock, &meta, None, &state.tls_verifier),
@@ -474,7 +458,7 @@ pub(super) fn handle_outbound_icmp_no_snat(
     };
 
     if let Some(drop_group) = policy_drop_group {
-        remove_flow_state(state, &flow, now);
+        remove_flow_state(state, &flow, now, "policy_drop");
         if let Some(metrics) = &metrics {
             metrics.observe_dp_packet("outbound", proto_label(1), "deny", &drop_group, pkt.len());
             metrics.observe_dp_icmp_decision("outbound", icmp_type, icmp_code, "deny", &drop_group);
@@ -510,4 +494,3 @@ pub(super) fn handle_outbound_icmp_no_snat(
         out_port: state.data_port,
     }
 }
-

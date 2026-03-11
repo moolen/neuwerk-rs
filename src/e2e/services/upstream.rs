@@ -58,6 +58,7 @@ pub fn generate_upstream_tls_material() -> Result<UpstreamTlsMaterial, String> {
 }
 
 impl UpstreamServices {
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         ns: netns_rs::NetNs,
         dns_addr: SocketAddr,

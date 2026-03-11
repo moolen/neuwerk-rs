@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use firewall::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
 use firewall::controlplane::cloud::types::{IntegrationConfig, IntegrationMode};
@@ -7,6 +8,7 @@ use firewall::controlplane::cloud::{IntegrationManager, ReadyChecker, ReadyClien
 use firewall::controlplane::cluster::ClusterRuntime;
 use firewall::controlplane::metrics::Metrics;
 use firewall::dataplane::DrainControl;
+use tracing::{error, warn};
 
 use crate::runtime::bootstrap::integration::integration_tag_filter;
 use crate::runtime::cli::{load_http_ca, CliConfig};
@@ -42,17 +44,11 @@ pub fn spawn_integration_manager_task(
     let ready_client = match ReadyClient::new(http_advertise.port(), load_http_ca(cfg)) {
         Ok(client) => Arc::new(client) as Arc<dyn ReadyChecker>,
         Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "integration ready client init failed; falling back to insecure client"
-            );
+            warn!(error = %err, "integration ready client init failed; falling back to insecure client");
             match ReadyClient::new(http_advertise.port(), None) {
                 Ok(client) => Arc::new(client) as Arc<dyn ReadyChecker>,
                 Err(fallback_err) => {
-                    tracing::error!(
-                        error = %fallback_err,
-                        "integration ready client fallback init failed"
-                    );
+                    error!(error = %fallback_err, "integration ready client fallback init failed");
                     return Err("integration ready client init failed".to_string());
                 }
             }
@@ -63,20 +59,30 @@ pub fn spawn_integration_manager_task(
     let store_for_integration = cluster_runtime.map(|runtime| runtime.store.clone());
     let raft_for_integration = cluster_runtime.map(|runtime| runtime.raft.clone());
     let integration_mode = cfg.integration_mode;
+    let reconcile_interval_secs = integration_cfg.reconcile_interval_secs;
     Ok(Some(tokio::spawn(async move {
-        match IntegrationManager::new(
-            integration_cfg,
-            provider,
-            store_for_integration,
-            raft_for_integration,
-            metrics_for_integration,
-            drain_for_integration,
-            ready_client,
-        )
-        .await
-        {
-            Ok(manager) => manager.run(integration_mode).await,
-            Err(err) => tracing::warn!(error = %err, "integration manager init failed"),
+        loop {
+            match IntegrationManager::new(
+                integration_cfg.clone(),
+                provider.clone(),
+                store_for_integration.clone(),
+                raft_for_integration.clone(),
+                metrics_for_integration.clone(),
+                drain_for_integration.clone(),
+                ready_client.clone(),
+            )
+            .await
+            {
+                Ok(manager) => {
+                    manager.run(integration_mode).await;
+                    return;
+                }
+                Err(err) => {
+                    warn!(error = %err, "integration manager init failed");
+                    let wait_secs = reconcile_interval_secs.max(5);
+                    tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                }
+            }
         }
     })))
 }

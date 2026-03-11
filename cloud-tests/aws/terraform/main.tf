@@ -27,18 +27,19 @@ data "aws_ami" "ubuntu" {
 }
 
 locals {
-  name_suffix      = random_string.suffix.result
-  name_prefix      = "${var.name_prefix}-${local.name_suffix}"
-  bucket_name      = substr(replace(lower("${var.name_prefix}-${data.aws_caller_identity.current.account_id}-${local.name_suffix}"), "_", "-"), 0, 63)
-  runtime_enabled  = trimspace(var.firewall_dpdk_runtime_bundle_path) != ""
-  use_gwlb         = var.traffic_architecture == "gwlb"
-  firewall_encap   = local.use_gwlb ? "geneve" : "none"
-  dpdk_port_mtu    = local.use_gwlb ? var.firewall_dpdk_port_mtu : var.firewall_dpdk_port_mtu_no_encap
-  endpoint_mtu     = local.use_gwlb ? var.firewall_encap_mtu : local.dpdk_port_mtu
-  ssh_public_key   = file(var.ssh_public_key_path)
-  dns_target_ips   = length(var.dns_target_ips) > 0 ? var.dns_target_ips : ["$${MGMT_IP}"]
-  dns_upstreams    = length(var.dns_upstreams) > 0 ? var.dns_upstreams : ["${aws_instance.upstream.private_ip}:53"]
-  firewall_tag_set = merge(var.tags, { "Name" = "${local.name_prefix}-firewall-0" })
+  name_suffix       = random_string.suffix.result
+  name_prefix       = "${var.name_prefix}-${local.name_suffix}"
+  bucket_name       = substr(replace(lower("${var.name_prefix}-${data.aws_caller_identity.current.account_id}-${local.name_suffix}"), "_", "-"), 0, 63)
+  runtime_enabled   = trimspace(var.firewall_dpdk_runtime_bundle_path) != ""
+  use_gwlb          = var.traffic_architecture == "gwlb"
+  firewall_encap    = local.use_gwlb ? "geneve" : "none"
+  dpdk_port_mtu     = local.use_gwlb ? var.firewall_dpdk_port_mtu : var.firewall_dpdk_port_mtu_no_encap
+  endpoint_mtu      = local.use_gwlb ? var.firewall_encap_mtu : local.dpdk_port_mtu
+  ssh_public_key    = file(var.ssh_public_key_path)
+  dns_target_ips    = length(var.dns_target_ips) > 0 ? var.dns_target_ips : ["$${MGMT_IP}"]
+  dns_upstreams     = length(var.dns_upstreams) > 0 ? var.dns_upstreams : ["${aws_instance.upstream.private_ip}:53"]
+  firewall_tag_set  = merge(var.tags, { "Name" = "${local.name_prefix}-firewall-0" })
+  firewall_asg_name = "${local.name_prefix}-fw-asg"
 }
 
 resource "aws_key_pair" "main" {
@@ -219,7 +220,7 @@ resource "aws_route" "consumer_to_upstream_eni" {
   count                  = local.use_gwlb ? 0 : 1
   route_table_id         = aws_route_table.consumer.id
   destination_cidr_block = var.upstream_subnet_cidr
-  network_interface_id   = aws_network_interface.firewall_data.id
+  network_interface_id   = aws_network_interface.firewall_data[0].id
 }
 
 resource "aws_route" "upstream_to_consumer_gwlbe" {
@@ -234,7 +235,7 @@ resource "aws_route" "upstream_to_consumer_eni" {
   count                  = local.use_gwlb ? 0 : 1
   route_table_id         = aws_route_table.upstream.id
   destination_cidr_block = var.consumer_subnet_cidr
-  network_interface_id   = aws_network_interface.firewall_data.id
+  network_interface_id   = aws_network_interface.firewall_data[0].id
 }
 
 resource "aws_route_table" "gwlbe_consumer" {
@@ -562,6 +563,24 @@ resource "aws_iam_role_policy" "firewall_s3_read" {
           "${aws_s3_bucket.firewall.arn}/${var.firewall_object_key}",
           "${aws_s3_bucket.firewall.arn}/${var.firewall_dpdk_runtime_object_key}"
         ]
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "ec2:DescribeInstances",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:ModifyNetworkInterfaceAttribute",
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:DescribeAutoScalingInstances",
+          "autoscaling:DescribeLifecycleHooks",
+          "autoscaling:SetInstanceProtection",
+          "autoscaling:CompleteLifecycleAction",
+          "autoscaling:RecordLifecycleActionHeartbeat",
+          "elasticloadbalancing:RegisterTargets",
+          "elasticloadbalancing:DeregisterTargets",
+          "elasticloadbalancing:DescribeTargetHealth"
+        ],
+        Resource = ["*"]
       }
     ]
   })
@@ -573,6 +592,7 @@ resource "aws_iam_instance_profile" "firewall" {
 }
 
 resource "aws_network_interface" "firewall_mgmt" {
+  count           = local.use_gwlb ? 0 : 1
   subnet_id       = aws_subnet.mgmt.id
   security_groups = [aws_security_group.firewall_mgmt.id]
   tags = merge(var.tags, {
@@ -583,6 +603,7 @@ resource "aws_network_interface" "firewall_mgmt" {
 }
 
 resource "aws_network_interface" "firewall_data" {
+  count             = local.use_gwlb ? 0 : 1
   subnet_id         = aws_subnet.dataplane.id
   security_groups   = [aws_security_group.firewall_data.id]
   source_dest_check = false
@@ -594,18 +615,19 @@ resource "aws_network_interface" "firewall_data" {
 }
 
 resource "aws_instance" "firewall" {
+  count                = local.use_gwlb ? 0 : 1
   ami                  = data.aws_ami.ubuntu.id
   instance_type        = var.firewall_instance_type
   key_name             = aws_key_pair.main.key_name
   iam_instance_profile = aws_iam_instance_profile.firewall.name
 
   network_interface {
-    network_interface_id = aws_network_interface.firewall_mgmt.id
+    network_interface_id = aws_network_interface.firewall_mgmt[0].id
     device_index         = 0
   }
 
   network_interface {
-    network_interface_id = aws_network_interface.firewall_data.id
+    network_interface_id = aws_network_interface.firewall_data[0].id
     device_index         = 1
   }
 
@@ -620,27 +642,33 @@ resource "aws_instance" "firewall" {
   }
 
   user_data = templatefile("${path.module}/cloud-init/firewall.yaml.tmpl", {
-    admin_username      = var.admin_username
-    cloud_provider      = "aws"
-    dns_target_ips      = local.dns_target_ips
-    dns_upstreams       = local.dns_upstreams
-    dns_zone_name       = var.dns_zone_name
-    internal_cidr       = var.consumer_subnet_cidr
-    snat_mode           = var.firewall_snat_mode
-    dpdk_workers        = var.firewall_dpdk_workers
-    encap_mode          = local.firewall_encap
-    encap_mtu           = var.firewall_encap_mtu
-    dpdk_mbuf_data_room = var.firewall_dpdk_mbuf_data_room
-    dpdk_port_mtu       = local.dpdk_port_mtu
-    dpdk_queue_override = var.firewall_dpdk_queue_override
-    dpdk_state_shards   = var.firewall_dpdk_state_shards
-    dpdk_overlay_debug  = var.firewall_dpdk_overlay_debug
-    use_gwlb            = local.use_gwlb
-    s3_bucket           = aws_s3_bucket.firewall.id
-    s3_object           = aws_s3_object.firewall_binary.key
-    runtime_enabled     = local.runtime_enabled
-    s3_runtime_object   = var.firewall_dpdk_runtime_object_key
-    aws_region          = var.region
+    admin_username                      = var.admin_username
+    cloud_provider                      = "aws"
+    dns_target_ips                      = local.dns_target_ips
+    dns_upstreams                       = local.dns_upstreams
+    dns_zone_name                       = var.dns_zone_name
+    internal_cidr                       = var.consumer_subnet_cidr
+    snat_mode                           = var.firewall_snat_mode
+    dpdk_workers                        = var.firewall_dpdk_workers
+    encap_mode                          = local.firewall_encap
+    encap_mtu                           = var.firewall_encap_mtu
+    dpdk_mbuf_data_room                 = var.firewall_dpdk_mbuf_data_room
+    dpdk_port_mtu                       = local.dpdk_port_mtu
+    dpdk_queue_override                 = var.firewall_dpdk_queue_override
+    dpdk_state_shards                   = var.firewall_dpdk_state_shards
+    dpdk_overlay_debug                  = var.firewall_dpdk_overlay_debug
+    use_gwlb                            = local.use_gwlb
+    s3_bucket                           = aws_s3_bucket.firewall.id
+    s3_object                           = aws_s3_object.firewall_binary.key
+    runtime_enabled                     = local.runtime_enabled
+    s3_runtime_object                   = var.firewall_dpdk_runtime_object_key
+    aws_region                          = var.region
+    integration_mode                    = "none"
+    integration_drain_timeout_secs      = 300
+    integration_reconcile_interval_secs = 15
+    aws_vpc_id                          = aws_vpc.main.id
+    aws_asg_name                        = local.firewall_asg_name
+    asg_target_group_arn                = ""
   })
   user_data_replace_on_change = true
 
@@ -671,11 +699,129 @@ resource "aws_lb_target_group" "firewall" {
   tags = merge(var.tags, { Name = "${local.name_prefix}-gwlb-tg" })
 }
 
-resource "aws_lb_target_group_attachment" "firewall_data" {
-  count            = local.use_gwlb ? 1 : 0
-  target_group_arn = aws_lb_target_group.firewall[0].arn
-  target_id        = aws_network_interface.firewall_data.private_ip
-  port             = 6081
+resource "aws_launch_template" "firewall" {
+  count       = local.use_gwlb ? 1 : 0
+  name_prefix = "${local.name_prefix}-fw-"
+  image_id    = data.aws_ami.ubuntu.id
+
+  instance_type = var.firewall_instance_type
+  key_name      = aws_key_pair.main.key_name
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.firewall.name
+  }
+
+  network_interfaces {
+    device_index          = 0
+    subnet_id             = aws_subnet.mgmt.id
+    security_groups       = [aws_security_group.firewall_mgmt.id]
+    delete_on_termination = true
+  }
+
+  network_interfaces {
+    device_index          = 1
+    subnet_id             = aws_subnet.dataplane.id
+    security_groups       = [aws_security_group.firewall_data.id]
+    delete_on_termination = true
+  }
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
+  block_device_mappings {
+    device_name = "/dev/sda1"
+    ebs {
+      volume_size = 40
+      volume_type = "gp3"
+    }
+  }
+
+  user_data = base64encode(templatefile("${path.module}/cloud-init/firewall.yaml.tmpl", {
+    admin_username                      = var.admin_username
+    cloud_provider                      = "aws"
+    dns_target_ips                      = local.dns_target_ips
+    dns_upstreams                       = local.dns_upstreams
+    dns_zone_name                       = var.dns_zone_name
+    internal_cidr                       = var.consumer_subnet_cidr
+    snat_mode                           = var.firewall_snat_mode
+    dpdk_workers                        = var.firewall_dpdk_workers
+    encap_mode                          = local.firewall_encap
+    encap_mtu                           = var.firewall_encap_mtu
+    dpdk_mbuf_data_room                 = var.firewall_dpdk_mbuf_data_room
+    dpdk_port_mtu                       = local.dpdk_port_mtu
+    dpdk_queue_override                 = var.firewall_dpdk_queue_override
+    dpdk_state_shards                   = var.firewall_dpdk_state_shards
+    dpdk_overlay_debug                  = var.firewall_dpdk_overlay_debug
+    use_gwlb                            = local.use_gwlb
+    s3_bucket                           = aws_s3_bucket.firewall.id
+    s3_object                           = aws_s3_object.firewall_binary.key
+    runtime_enabled                     = local.runtime_enabled
+    s3_runtime_object                   = var.firewall_dpdk_runtime_object_key
+    aws_region                          = var.region
+    integration_mode                    = "aws-asg"
+    integration_drain_timeout_secs      = max(300, var.firewall_asg_heartbeat_timeout_secs - 60)
+    integration_reconcile_interval_secs = 5
+    aws_vpc_id                          = aws_vpc.main.id
+    aws_asg_name                        = local.firewall_asg_name
+    asg_target_group_arn                = aws_lb_target_group.firewall[0].arn
+  }))
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(var.tags, {
+      Name = "${local.name_prefix}-firewall"
+    })
+  }
+
+  tag_specifications {
+    resource_type = "volume"
+    tags = merge(var.tags, {
+      Name = "${local.name_prefix}-firewall"
+    })
+  }
+
+  update_default_version = true
+
+  depends_on = [
+    aws_s3_object.firewall_binary,
+    aws_s3_object.firewall_runtime_bundle
+  ]
+}
+
+resource "aws_autoscaling_group" "firewall" {
+  count               = local.use_gwlb ? 1 : 0
+  name                = local.firewall_asg_name
+  min_size            = var.firewall_asg_min_size
+  max_size            = var.firewall_asg_max_size
+  desired_capacity    = var.firewall_asg_desired_capacity
+  health_check_type   = "EC2"
+  force_delete        = true
+  vpc_zone_identifier = [aws_subnet.mgmt.id]
+
+  launch_template {
+    id      = aws_launch_template.firewall[0].id
+    version = "$Latest"
+  }
+
+  dynamic "tag" {
+    for_each = merge(var.tags, { Name = "${local.name_prefix}-firewall" })
+    content {
+      key                 = tag.key
+      value               = tag.value
+      propagate_at_launch = true
+    }
+  }
+}
+
+resource "aws_autoscaling_lifecycle_hook" "firewall_terminating" {
+  count                  = local.use_gwlb ? 1 : 0
+  name                   = "${local.name_prefix}-fw-terminating"
+  autoscaling_group_name = aws_autoscaling_group.firewall[0].name
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  heartbeat_timeout      = var.firewall_asg_heartbeat_timeout_secs
+  default_result         = "CONTINUE"
 }
 
 resource "aws_lb" "firewall" {

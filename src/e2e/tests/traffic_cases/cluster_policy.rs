@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_names)]
+
 use super::*;
 
 pub(super) fn cluster_policy_update_applies(cfg: &TopologyConfig) -> Result<(), String> {

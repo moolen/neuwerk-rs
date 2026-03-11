@@ -14,7 +14,8 @@ fn assignments_with_fallback_prefers_primary_set() {
     let instance_b = instance("b", "1");
     let preferred = vec![instance_b.clone()];
     let fallback = vec![instance_a.clone(), instance_b.clone()];
-    let assignments = compute_assignments_with_fallback(&[subnet.clone()], &preferred, &fallback);
+    let assignments =
+        compute_assignments_with_fallback(std::slice::from_ref(&subnet), &preferred, &fallback);
     assert_eq!(assignments.get("s1"), Some(&"b".to_string()));
 
     let empty: Vec<InstanceRef> = Vec::new();
@@ -164,7 +165,7 @@ async fn assignments_avoid_terminating_instance_when_possible() {
 
     manager.reconcile_once().await.unwrap();
     let routes = provider.routes.lock().await;
-    let route_key = format!("subnet-1:neuwerk-default");
+    let route_key = "subnet-1:neuwerk-default".to_string();
     assert_eq!(routes.get(&route_key), Some(&instance_b.dataplane_ip));
 }
 
@@ -234,7 +235,7 @@ async fn assignments_fall_back_to_terminating_instance_when_needed() {
 
     manager.reconcile_once().await.unwrap();
     let routes = provider.routes.lock().await;
-    let route_key = format!("subnet-1:neuwerk-default");
+    let route_key = "subnet-1:neuwerk-default".to_string();
     assert_eq!(routes.get(&route_key), Some(&instance_a.dataplane_ip));
 }
 

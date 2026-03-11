@@ -24,6 +24,7 @@ async fn http_api_local_lifecycle() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         token_path: dir.path().join("token.json"),
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -196,6 +197,7 @@ async fn http_api_integrations_lifecycle_and_policy_ref_validation() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         token_path: dir.path().join("token.json"),
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -462,4 +464,200 @@ async fn http_api_integrations_lifecycle_and_policy_ref_validation() {
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
 
     server.abort();
+}
+
+#[tokio::test]
+async fn http_api_shutdown_transitions_readiness_closes_listeners_and_allows_restart() {
+    ensure_rustls_provider();
+    let dir = TempDir::new().unwrap();
+    let tls_dir = dir.path().join("http-tls");
+    let local_store_dir = dir.path().join("policies");
+    let bind_addr = next_addr(Ipv4Addr::LOCALHOST);
+    let metrics_addr = next_addr(Ipv4Addr::LOCALHOST);
+
+    let dataplane_config = DataplaneConfigStore::new();
+    dataplane_config.set(DataplaneConfig {
+        ip: Ipv4Addr::new(10, 0, 0, 2),
+        prefix: 24,
+        gateway: Ipv4Addr::new(10, 0, 0, 1),
+        mac: [0x02, 0, 0, 0, 0, 1],
+        lease_expiry: None,
+    });
+    let policy_store = PolicyStore::new_with_config(
+        DefaultPolicy::Deny,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        dataplane_config.clone(),
+    );
+    let local_store = PolicyDiskStore::new(local_store_dir.clone());
+    let seeded_policy = PolicyRecord::new(
+        PolicyMode::Enforce,
+        serde_yaml::from_str(
+            r#"
+default_policy: deny
+source_groups:
+  - id: local
+    sources:
+      ips:
+        - 10.0.0.5
+    rules:
+      - id: allow-dns
+        mode: enforce
+        action: allow
+        match:
+          dns_hostname: example.com
+"#,
+        )
+        .unwrap(),
+        Some("shutdown-seeded".to_string()),
+    )
+    .unwrap();
+    local_store.write_record(&seeded_policy).unwrap();
+    local_store.set_active(Some(seeded_policy.id)).unwrap();
+    let cfg = HttpApiConfig {
+        bind_addr,
+        advertise_addr: bind_addr,
+        metrics_bind: metrics_addr,
+        tls_dir: tls_dir.clone(),
+        cert_path: None,
+        key_path: None,
+        ca_path: None,
+        san_entries: Vec::new(),
+        management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        token_path: dir.path().join("token.json"),
+        external_url: None,
+        cluster_tls_dir: None,
+        tls_intercept_ca_ready: None,
+        tls_intercept_ca_generation: None,
+    };
+    let readiness = ReadinessState::new(dataplane_config, policy_store.clone(), None, None);
+    readiness.set_dataplane_running(true);
+    readiness.set_policy_ready(true);
+    readiness.set_dns_ready(true);
+    readiness.set_service_plane_ready(true);
+    let drain_control = firewall::dataplane::DrainControl::new();
+    readiness.set_drain_control(drain_control.clone());
+    let shutdown = http_api::HttpApiShutdown::new();
+
+    let server = tokio::spawn(http_api::run_http_api_with_shutdown(
+        cfg.clone(),
+        policy_store,
+        local_store,
+        None,
+        None,
+        None,
+        None,
+        Some(readiness.clone()),
+        Metrics::new().unwrap(),
+        shutdown.clone(),
+    ));
+
+    wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(2))
+        .await
+        .unwrap();
+    let auth_path = api_auth::local_keyset_path(&tls_dir);
+    wait_for_file(&auth_path, Duration::from_secs(2))
+        .await
+        .unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
+    wait_for_tcp(metrics_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
+
+    let keyset = api_auth::load_keyset_from_file(&auth_path)
+        .unwrap()
+        .expect("missing local api keyset");
+    let token = api_auth::mint_token(&keyset, "shutdown-test", None, None).unwrap();
+    let client = http_api_client(&tls_dir).unwrap();
+
+    wait_for_ready_status(&client, bind_addr, true, Duration::from_secs(2))
+        .await
+        .unwrap();
+
+    drain_control.set_draining(true);
+    readiness.set_dataplane_running(false);
+    readiness.set_dns_ready(false);
+    readiness.set_service_plane_ready(false);
+    readiness.set_policy_ready(false);
+    wait_for_ready_status(&client, bind_addr, false, Duration::from_secs(2))
+        .await
+        .unwrap();
+
+    shutdown.graceful_shutdown(Some(Duration::from_millis(100)));
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .expect("http shutdown timeout")
+        .expect("http join")
+        .expect("http shutdown result");
+    wait_for_tcp_closed(bind_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
+    wait_for_tcp_closed(metrics_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
+
+    let restart_dataplane = DataplaneConfigStore::new();
+    restart_dataplane.set(DataplaneConfig {
+        ip: Ipv4Addr::new(10, 0, 0, 2),
+        prefix: 24,
+        gateway: Ipv4Addr::new(10, 0, 0, 1),
+        mac: [0x02, 0, 0, 0, 0, 1],
+        lease_expiry: None,
+    });
+    let restarted_policy_store = PolicyStore::new_with_config(
+        DefaultPolicy::Deny,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        restart_dataplane.clone(),
+    );
+    let restarted_readiness = ReadinessState::new(
+        restart_dataplane,
+        restarted_policy_store.clone(),
+        None,
+        None,
+    );
+    restarted_readiness.set_dataplane_running(true);
+    restarted_readiness.set_policy_ready(true);
+    restarted_readiness.set_dns_ready(true);
+    restarted_readiness.set_service_plane_ready(true);
+    let restarted_shutdown = http_api::HttpApiShutdown::new();
+
+    let restarted = tokio::spawn(http_api::run_http_api_with_shutdown(
+        cfg,
+        restarted_policy_store,
+        PolicyDiskStore::new(local_store_dir),
+        None,
+        None,
+        None,
+        None,
+        Some(restarted_readiness),
+        Metrics::new().unwrap(),
+        restarted_shutdown.clone(),
+    ));
+
+    wait_for_tcp(bind_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
+    wait_for_ready_status(&client, bind_addr, true, Duration::from_secs(2))
+        .await
+        .unwrap();
+    let listed = client
+        .get(format!("https://{bind_addr}/api/v1/policies"))
+        .bearer_auth(&token.token)
+        .send()
+        .await
+        .unwrap();
+    assert!(listed.status().is_success());
+    let listed: Vec<PolicyRecord> = listed.json().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, seeded_policy.id);
+
+    restarted_shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), restarted)
+        .await
+        .expect("restart shutdown timeout")
+        .expect("restart join")
+        .expect("restart shutdown result");
 }

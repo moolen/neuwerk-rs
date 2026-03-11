@@ -17,8 +17,10 @@ pub struct HttpRuntimeThreadConfig {
     pub dns_map: Option<DnsMap>,
     pub readiness: Option<ReadinessState>,
     pub metrics: Metrics,
+    pub shutdown: controlplane::http_api::HttpApiShutdown,
 }
 
+#[allow(clippy::type_complexity)]
 pub fn spawn_dns_runtime_thread(
     mut cfg: controlplane::trafficd::TrafficdConfig,
 ) -> Result<
@@ -76,7 +78,7 @@ pub fn spawn_http_runtime_thread(
                 }
             };
             let res = rt.block_on(async {
-                controlplane::http_api::run_http_api(
+                controlplane::http_api::run_http_api_with_shutdown(
                     cfg.cfg,
                     cfg.policy_store,
                     cfg.local_store,
@@ -86,6 +88,7 @@ pub fn spawn_http_runtime_thread(
                     cfg.dns_map,
                     cfg.readiness,
                     cfg.metrics,
+                    cfg.shutdown,
                 )
                 .await
                 .map_err(|err| format!("http api failed: {err}"))

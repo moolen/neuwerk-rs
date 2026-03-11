@@ -1,3 +1,5 @@
+#![allow(clippy::format_in_format_args)]
+
 use super::*;
 
 pub(super) fn icmp_echo_allowed(cfg: &TopologyConfig) -> Result<(), String> {

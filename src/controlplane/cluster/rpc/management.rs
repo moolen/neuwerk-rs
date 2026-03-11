@@ -96,7 +96,7 @@ where
             .handler
             .handle_join(join_req)
             .await
-            .map_err(|err| Status::unauthenticated(err))?;
+            .map_err(Status::unauthenticated)?;
         Ok(Response::new(proto::JoinResponse {
             encrypted_payload: resp.encrypted_payload,
             payload_nonce: resp.payload_nonce,
@@ -164,7 +164,7 @@ where
         self.handler
             .set_active_policy(req.policy_yaml)
             .await
-            .map_err(|err| Status::invalid_argument(err))?;
+            .map_err(Status::invalid_argument)?;
         Ok(Response::new(proto::PolicyUpdateResponse { ok: true }))
     }
 }
@@ -250,7 +250,7 @@ where
         self.handler
             .publish_termination_event(event)
             .await
-            .map_err(|err| Status::unavailable(err))?;
+            .map_err(Status::unavailable)?;
         Ok(Response::new(proto::TerminationEventResponse { ok: true }))
     }
 
@@ -262,7 +262,7 @@ where
         self.handler
             .clear_termination_event(req.instance_id)
             .await
-            .map_err(|err| Status::unavailable(err))?;
+            .map_err(Status::unavailable)?;
         Ok(Response::new(proto::TerminationEventResponse { ok: true }))
     }
 }
@@ -403,7 +403,7 @@ where
             .handler
             .list_keys()
             .await
-            .map_err(|err| Status::invalid_argument(err))?;
+            .map_err(Status::invalid_argument)?;
         let keys = keys
             .into_iter()
             .map(|key| proto::AuthKeyEntry {
@@ -427,7 +427,7 @@ where
             .handler
             .rotate_key()
             .await
-            .map_err(|err| Status::invalid_argument(err))?;
+            .map_err(Status::invalid_argument)?;
         Ok(Response::new(proto::AuthKeyRotateResponse {
             key: Some(proto::AuthKeyEntry {
                 kid: key.kid,
@@ -446,7 +446,7 @@ where
         self.handler
             .retire_key(req.kid)
             .await
-            .map_err(|err| Status::invalid_argument(err))?;
+            .map_err(Status::invalid_argument)?;
         Ok(Response::new(proto::AuthKeyRetireResponse { ok: true }))
     }
 
@@ -474,7 +474,7 @@ where
             .handler
             .mint_token(req.sub, ttl, kid, roles)
             .await
-            .map_err(|err| Status::invalid_argument(err))?;
+            .map_err(Status::invalid_argument)?;
         Ok(Response::new(proto::AuthTokenMintResponse {
             token,
             kid,
@@ -549,7 +549,7 @@ where
             .handler
             .subscribe(req)
             .await
-            .map_err(|err| Status::invalid_argument(err))?;
+            .map_err(Status::invalid_argument)?;
         Ok(Response::new(stream))
     }
 }

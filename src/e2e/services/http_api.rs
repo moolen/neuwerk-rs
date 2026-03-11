@@ -103,9 +103,8 @@ pub async fn http_wait_for_health(
 ) -> Result<(), String> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        match http_api_health(addr, tls_dir).await {
-            Ok(()) => return Ok(()),
-            Err(_) => {}
+        if let Ok(()) = http_api_health(addr, tls_dir).await {
+            return Ok(());
         }
         if std::time::Instant::now() >= deadline {
             return Err("timed out waiting for http api health".to_string());

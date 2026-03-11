@@ -88,14 +88,36 @@ pub(super) fn request_for_upstream_h2(
     method: &str,
     target: &str,
     host: &str,
+    request_headers: &axum::http::HeaderMap,
 ) -> Result<Request<()>, String> {
-    let mut builder = Request::builder().method(method).uri(target);
-    if !host.is_empty() {
-        builder = builder.header("host", host);
-    }
-    builder
+    let mut request = Request::builder()
+        .method(method)
+        .uri(target)
         .body(())
-        .map_err(|err| format!("tls intercept: build upstream h2 request failed: {err}"))
+        .map_err(|err| format!("tls intercept: build upstream h2 request failed: {err}"))?;
+    let upstream_headers = request.headers_mut();
+    for (name, value) in request_headers {
+        if should_skip_upstream_h2_request_header(name.as_str()) {
+            continue;
+        }
+        upstream_headers.append(name, value.clone());
+    }
+    if !host.is_empty() {
+        let host_value = axum::http::HeaderValue::from_str(host).map_err(|err| {
+            format!("tls intercept: invalid upstream host header '{host}': {err}")
+        })?;
+        upstream_headers.insert(axum::http::header::HOST, host_value);
+    }
+    Ok(request)
+}
+
+fn should_skip_upstream_h2_request_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("host")
+        || name.eq_ignore_ascii_case("connection")
+        || name.eq_ignore_ascii_case("proxy-connection")
+        || name.eq_ignore_ascii_case("keep-alive")
+        || name.eq_ignore_ascii_case("transfer-encoding")
+        || name.eq_ignore_ascii_case("upgrade")
 }
 
 pub(super) fn response_from_upstream_h2(response: &Response<()>) -> Result<Response<()>, String> {

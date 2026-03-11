@@ -365,6 +365,10 @@ impl NatTable {
         self.map.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.map.len() == 0
+    }
+
     pub fn port_range_len() -> u32 {
         (PORT_MAX - PORT_MIN + 1) as u32
     }
@@ -504,5 +508,82 @@ mod tests {
         assert_eq!(table.reverse_lookup(&reverse), Some(flow));
         assert!(table.remove(&flow));
         assert!(table.reverse_lookup(&reverse).is_none());
+    }
+
+    #[test]
+    fn evict_expired_allows_deterministic_port_reuse() {
+        let mut table = NatTable::new_with_timeout(1);
+        let flow = FlowKey {
+            src_ip: Ipv4Addr::new(10, 0, 0, 2),
+            dst_ip: Ipv4Addr::new(203, 0, 113, 10),
+            src_port: 12345,
+            dst_port: 443,
+            proto: 6,
+        };
+
+        let first = table.get_or_create(&flow, 1).unwrap();
+        assert_eq!(table.evict_expired(3), 1);
+
+        let (second, created) = table.get_or_create_with_status(&flow, 4).unwrap();
+        assert!(created);
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    fn nat_reports_port_exhaustion_for_single_remote_tuple() {
+        let mut table = NatTable::new_with_timeout(300);
+        let dst_ip = Ipv4Addr::new(198, 51, 100, 10);
+        let dst_port = 443;
+        let proto = 6;
+
+        for src_port in 0..NatTable::port_range_len() {
+            let flow = FlowKey {
+                src_ip: Ipv4Addr::new(10, 0, 0, 2),
+                dst_ip,
+                src_port: src_port as u16,
+                dst_port,
+                proto,
+            };
+            table.get_or_create(&flow, 1).unwrap();
+        }
+
+        let exhausted = FlowKey {
+            src_ip: Ipv4Addr::new(10, 0, 0, 3),
+            dst_ip,
+            src_port: 65000,
+            dst_port,
+            proto,
+        };
+        assert_eq!(
+            table.get_or_create(&exhausted, 2),
+            Err(NatError::PortExhausted)
+        );
+    }
+
+    #[test]
+    fn allocation_wraps_from_port_max_to_port_min() {
+        let mut table = NatTable::new_with_timeout(300);
+        let mut flow = FlowKey {
+            src_ip: Ipv4Addr::new(10, 0, 0, 2),
+            dst_ip: Ipv4Addr::new(203, 0, 113, 40),
+            src_port: 10000,
+            dst_port: 8443,
+            proto: 6,
+        };
+        let range = NatTable::port_range_len();
+        while flow_hash(&flow) % range != range - 1 {
+            flow.src_port = flow.src_port.wrapping_add(1);
+        }
+
+        let occupied = ReverseKey {
+            external_port: PORT_MAX,
+            remote_ip: flow.dst_ip,
+            remote_port: flow.dst_port,
+            proto: flow.proto,
+        };
+        table.reverse.insert(occupied, flow);
+
+        let allocated = table.allocate_port(&flow).unwrap();
+        assert_eq!(allocated, PORT_MIN);
     }
 }

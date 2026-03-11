@@ -1,10 +1,18 @@
 import React from 'react';
 import { Github } from 'lucide-react';
+import { buildSsoStartPath } from '../../services/api';
 import { LoginTokenForm } from './LoginTokenForm';
+import { useSsoProviders } from './useSsoProviders';
 import { useTokenLogin } from './useTokenLogin';
 
 export function LoginPage() {
   const { tokenInput, setTokenInput, tokenLoading, tokenError, submit } = useTokenLogin();
+  const { providers, loading: ssoLoading, error: ssoError } = useSsoProviders();
+
+  const startSso = (providerId: string) => {
+    const nextPath = window.location.pathname === '/login' ? '/' : window.location.pathname;
+    window.location.assign(buildSsoStartPath(providerId, nextPath));
+  };
 
   return (
     <div
@@ -80,46 +88,65 @@ export function LoginPage() {
           </div>
 
           <div className="space-y-3">
-            <button
-              type="button"
-              onClick={() => undefined}
-              className="w-full py-2.5 px-4 text-sm font-semibold rounded-lg border transition-colors"
-              style={{
-                background: 'var(--bg-input)',
-                borderColor: 'var(--border-subtle)',
-                color: 'var(--text)',
-              }}
-            >
-              <span className="inline-flex items-center justify-center gap-2">
-                <span
-                  aria-hidden
-                  className="inline-flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold"
+            {ssoLoading && (
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+                Loading SSO providers...
+              </p>
+            )}
+            {!ssoLoading && ssoError && (
+              <p className="text-sm" style={{ color: 'var(--red)' }}>
+                {ssoError}
+              </p>
+            )}
+            {!ssoLoading && !ssoError && providers.length === 0 && (
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+                No SSO providers configured.
+              </p>
+            )}
+            {!ssoLoading &&
+              !ssoError &&
+              providers.map((provider) => (
+                <button
+                  key={provider.id}
+                  type="button"
+                  onClick={() => startSso(provider.id)}
+                  className="w-full py-2.5 px-4 text-sm font-semibold rounded-lg border transition-colors"
                   style={{
-                    background: 'linear-gradient(135deg, #34a853, #4285f4)',
-                    color: 'white',
+                    background: 'var(--bg-input)',
+                    borderColor: 'var(--border-subtle)',
+                    color: 'var(--text)',
                   }}
                 >
-                  G
-                </span>
-                Continue with Google
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => undefined}
-              className="w-full py-2.5 px-4 text-sm font-semibold rounded-lg border transition-colors"
-              style={{
-                background: 'var(--bg-input)',
-                borderColor: 'var(--border-subtle)',
-                color: 'var(--text)',
-              }}
-            >
-              <span className="inline-flex items-center justify-center gap-2">
-                <Github className="w-4 h-4" />
-                Continue with GitHub
-              </span>
-            </button>
+                  <span className="inline-flex items-center justify-center gap-2">
+                    {provider.kind === 'google' && (
+                      <span
+                        aria-hidden
+                        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold"
+                        style={{
+                          background: 'linear-gradient(135deg, #34a853, #4285f4)',
+                          color: 'white',
+                        }}
+                      >
+                        G
+                      </span>
+                    )}
+                    {provider.kind === 'github' && <Github className="w-4 h-4" />}
+                    {provider.kind === 'generic-oidc' && (
+                      <span
+                        aria-hidden
+                        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold"
+                        style={{
+                          background: 'var(--accent)',
+                          color: 'white',
+                        }}
+                      >
+                        O
+                      </span>
+                    )}
+                    {`Continue with ${provider.name}`}
+                  </span>
+                </button>
+              ))}
           </div>
         </div>
       </div>

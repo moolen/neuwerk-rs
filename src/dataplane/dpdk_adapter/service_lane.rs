@@ -33,7 +33,7 @@ pub(super) fn open_tap(name: &str) -> Result<File, String> {
             libc::IFNAMSIZ - 1
         ));
     }
-    let fd = unsafe { libc::open(b"/dev/net/tun\0".as_ptr() as *const _, libc::O_RDWR) };
+    let fd = unsafe { libc::open(c"/dev/net/tun".as_ptr(), libc::O_RDWR) };
     if fd < 0 {
         return Err(format!(
             "dpdk: open /dev/net/tun failed: {}",

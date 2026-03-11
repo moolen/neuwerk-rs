@@ -1,4 +1,4 @@
-.PHONY: build test test.integration fuzz.check fuzz.smoke fuzz.nightly ha.up ha.down dpdk.prepare
+.PHONY: build test test.clippy test.integration test.integration.sso test.security fuzz.check fuzz.smoke fuzz.nightly ha.up ha.down dpdk.prepare
 
 DPDK_VERSION := $(shell cat third_party/dpdk/VERSION 2>/dev/null)
 DPDK_INSTALL := third_party/dpdk/install/$(DPDK_VERSION)
@@ -24,10 +24,20 @@ build.ui:
 test:
 	cargo test
 
+test.clippy:
+	cargo clippy --workspace --all-targets --no-default-features --no-deps -- -D warnings
+
 test.integration: build
 	DPDK_DIR=$(DPDK_DIR_ABS) PKG_CONFIG_PATH=$(DPDK_PKG_CONFIG_PATH) cargo build --bin e2e_harness --all-features
 	$(SUDO) env PATH="$(PATH)" LD_LIBRARY_PATH="$(DPDK_LD_LIBRARY_PATH)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" target/debug/e2e_harness
 	DPDK_DIR=$(DPDK_DIR_ABS) PKG_CONFIG_PATH=$(DPDK_PKG_CONFIG_PATH) LD_LIBRARY_PATH="$(DPDK_LD_LIBRARY_PATH)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" cargo run --bin e2e_kind_harness --all-features
+
+test.integration.sso:
+	cargo test --test http_api sso_oidc_cases -- --nocapture
+
+test.security:
+	cargo audit
+	npm --prefix ui audit --omit=dev --audit-level=high
 
 fuzz.check:
 	cargo check --manifest-path fuzz/Cargo.toml

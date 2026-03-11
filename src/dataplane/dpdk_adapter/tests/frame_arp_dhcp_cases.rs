@@ -282,6 +282,58 @@ fn process_packet_in_place_health_probe_returns_owned() {
 }
 
 #[test]
+fn process_frame_health_probe_reply_uses_probe_destination_ip() {
+    let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+    let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+    let fw_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let ilb_vip = Ipv4Addr::new(10, 0, 0, 10);
+    let client_ip = Ipv4Addr::new(10, 0, 0, 99);
+    adapter.set_mac(fw_mac);
+
+    let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+        DefaultPolicy::Deny,
+        Vec::new(),
+    )));
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::UNSPECIFIED,
+        0,
+    );
+    state.set_dataplane_config({
+        let store = crate::dataplane::config::DataplaneConfigStore::new();
+        store.set(DataplaneConfig {
+            ip: fw_ip,
+            prefix: 24,
+            gateway: Ipv4Addr::new(10, 0, 0, 1),
+            mac: fw_mac,
+            lease_expiry: None,
+        });
+        store
+    });
+
+    let syn = build_tcp_syn_ipv4_frame(
+        [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+        fw_mac,
+        client_ip,
+        ilb_vip,
+        40000,
+        HEALTH_PROBE_PORT,
+    );
+    let out = adapter
+        .process_frame(&syn, &mut state)
+        .expect("health probe syn should get synack");
+    let ipv4 = parse_ipv4(&out, ETH_HDR_LEN).expect("ipv4");
+    let tcp = parse_tcp(&out, ipv4.l4_offset).expect("tcp");
+    assert_eq!(ipv4.src, ilb_vip);
+    assert_eq!(ipv4.dst, client_ip);
+    assert_eq!(tcp.src_port, HEALTH_PROBE_PORT);
+    assert_eq!(tcp.dst_port, 40000);
+    assert_eq!(tcp.flags & 0x12, 0x12);
+}
+
+#[test]
 fn process_frame_health_probe_non_syn_is_ignored() {
     let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
     let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
@@ -323,6 +375,100 @@ fn process_frame_health_probe_non_syn_is_ignored() {
     assert!(
         adapter.process_frame(&ack, &mut state).is_none(),
         "non-SYN packet to health probe port should not trigger SYN-ACK"
+    );
+}
+
+#[test]
+fn process_frame_gcp_health_probe_port_80_from_hc_range_is_accepted() {
+    let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+    let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+    let fw_ip = Ipv4Addr::new(10, 0, 0, 2);
+    adapter.set_mac(fw_mac);
+
+    let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+        DefaultPolicy::Deny,
+        Vec::new(),
+    )));
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::UNSPECIFIED,
+        0,
+    );
+    state.set_dataplane_config({
+        let store = crate::dataplane::config::DataplaneConfigStore::new();
+        store.set(DataplaneConfig {
+            ip: fw_ip,
+            prefix: 24,
+            gateway: Ipv4Addr::new(10, 0, 0, 1),
+            mac: fw_mac,
+            lease_expiry: None,
+        });
+        store
+    });
+
+    let syn = build_tcp_syn_ipv4_frame(
+        [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+        fw_mac,
+        Ipv4Addr::new(35, 191, 10, 10),
+        fw_ip,
+        40000,
+        80,
+    );
+    let out = adapter
+        .process_frame(&syn, &mut state)
+        .expect("gcp health checker source to port 80 should get synack");
+    let ipv4 = parse_ipv4(&out, ETH_HDR_LEN).expect("ipv4");
+    let tcp = parse_tcp(&out, ipv4.l4_offset).expect("tcp");
+    assert_eq!(ipv4.src, fw_ip);
+    assert_eq!(ipv4.dst, Ipv4Addr::new(35, 191, 10, 10));
+    assert_eq!(tcp.src_port, 80);
+    assert_eq!(tcp.dst_port, 40000);
+    assert_eq!(tcp.flags & 0x12, 0x12);
+}
+
+#[test]
+fn process_frame_port_80_from_non_hc_range_is_ignored() {
+    let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+    let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+    let fw_ip = Ipv4Addr::new(10, 0, 0, 2);
+    adapter.set_mac(fw_mac);
+
+    let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+        DefaultPolicy::Deny,
+        Vec::new(),
+    )));
+    let mut state = EngineState::new(
+        policy,
+        Ipv4Addr::new(10, 0, 0, 0),
+        24,
+        Ipv4Addr::UNSPECIFIED,
+        0,
+    );
+    state.set_dataplane_config({
+        let store = crate::dataplane::config::DataplaneConfigStore::new();
+        store.set(DataplaneConfig {
+            ip: fw_ip,
+            prefix: 24,
+            gateway: Ipv4Addr::new(10, 0, 0, 1),
+            mac: fw_mac,
+            lease_expiry: None,
+        });
+        store
+    });
+
+    let syn = build_tcp_syn_ipv4_frame(
+        [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+        fw_mac,
+        Ipv4Addr::new(10, 0, 0, 99),
+        fw_ip,
+        40000,
+        80,
+    );
+    assert!(
+        adapter.process_frame(&syn, &mut state).is_none(),
+        "regular data traffic to port 80 must not be intercepted by health probe path"
     );
 }
 

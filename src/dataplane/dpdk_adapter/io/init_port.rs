@@ -40,7 +40,7 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
             let mut clamp_queue_count = true;
             if queue_caps_look_unreliable(max_rx, max_tx) {
                 clamp_queue_count = false;
-                tracing::info!(
+                tracing::warn!(
                     "dpdk: queue caps look unreliable (max_rx={} max_tx={}); skipping cap clamp and probing requested queue count",
                     max_rx, max_tx
                 );
@@ -60,7 +60,7 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
             if clamp_queue_count {
                 let max_supported = max_rx.min(max_tx).max(1);
                 if queue_count > max_supported {
-                    tracing::info!(
+                    tracing::warn!(
                         "dpdk: requested {} queues, but device supports rx={} tx={}, clamping to {}",
                         queue_count, max_rx, max_tx, max_supported
                     );
@@ -157,7 +157,7 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
                     rss_hf = preferred_rss_hf(dev_info.flow_type_rss_offloads);
                     if rss_hf == 0 {
                         rss_hf = fallback_rss_hf();
-                        tracing::info!(
+                        tracing::warn!(
                             "dpdk: rss capability mask unavailable (supported_hf=0x{:x}); using fallback_hf=0x{:x}",
                             dev_info.flow_type_rss_offloads, rss_hf
                         );
@@ -183,13 +183,13 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
                     let clamped = dev_info.max_rx_pktlen.saturating_sub(MTU_FRAME_OVERHEAD);
                     let clamped_mtu = clamped.min(u16::MAX as u32) as u16;
                     if clamped_mtu < MIN_VALID_MTU {
-                        tracing::info!(
+                        tracing::warn!(
                             "dpdk: mtu override {} exceeds driver max_rx_pktlen={} and clamp would be invalid; ignoring",
                             mtu, dev_info.max_rx_pktlen
                         );
                         requested_port_mtu = None;
                     } else {
-                        tracing::info!(
+                        tracing::warn!(
                             "dpdk: clamped NEUWERK_DPDK_PORT_MTU {} -> {} (driver max_rx_pktlen={})",
                             mtu, clamped_mtu, dev_info.max_rx_pktlen
                         );
@@ -209,7 +209,7 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
                             mtu, frame_len
                         );
                     } else {
-                        tracing::info!(
+                        tracing::warn!(
                             "dpdk: mtu override {} requested but DEV_RX_OFFLOAD_JUMBO_FRAME unsupported (rx_offload_capa=0x{:x})",
                             mtu, dev_info.rx_offload_capa
                         );
@@ -229,7 +229,7 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
                 )
             };
             if ret < 0 && queue_count > 1 && use_rss_mq && rss_hf != 0 {
-                tracing::info!(
+                tracing::warn!(
                     "dpdk: multi-queue configure with rss_hf=0x{:x} failed (ret={}); retrying with rss_hf=0",
                     rss_hf, ret
                 );
@@ -245,7 +245,7 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
                 };
             }
             if ret < 0 && queue_count > 2 {
-                tracing::info!(
+                tracing::warn!(
                     "dpdk: multi-queue configure failed at {} queues (ret={}); probing 2 queues",
                     queue_count, ret
                 );
@@ -260,7 +260,7 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
                     )
                 };
                 if ret < 0 && use_rss_mq && rss_hf != 0 {
-                    tracing::info!(
+                    tracing::warn!(
                         "dpdk: 2-queue configure with rss_hf=0x{:x} failed (ret={}); retrying with rss_hf=0",
                         rss_hf, ret
                     );
@@ -270,11 +270,11 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
                 }
                 if ret >= 0 {
                     queue_count = 2;
-                    tracing::info!("dpdk: configured 2 queues after probe fallback");
+                    tracing::warn!("dpdk: configured 2 queues after probe fallback");
                 }
             }
             if ret < 0 && queue_count > 1 {
-                tracing::info!(
+                tracing::warn!(
                     "dpdk: multi-queue configure failed (ret={ret}); retrying with single queue"
                 );
                 queue_count = 1;
@@ -291,7 +291,7 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
                 rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &mut rx_desc, &mut tx_desc)
             };
             if adjust_ret < 0 {
-                tracing::info!(
+                tracing::warn!(
                     "dpdk: descriptor adjust failed (ret={}); using rx={} tx={}",
                     adjust_ret, rx_desc, tx_desc
                 );
@@ -345,14 +345,14 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
             if let Some(mtu) = requested_port_mtu {
                 let set_ret = unsafe { rte_eth_dev_set_mtu(port_id, mtu) };
                 if set_ret < 0 {
-                    tracing::info!("dpdk: rte_eth_dev_set_mtu({}) failed ({})", mtu, set_ret);
+                    tracing::warn!("dpdk: rte_eth_dev_set_mtu({}) failed ({})", mtu, set_ret);
                 } else {
                     tracing::info!("dpdk: rte_eth_dev_set_mtu({}) applied", mtu);
                 }
                 let mut effective_mtu = 0u16;
                 let get_ret = unsafe { rte_eth_dev_get_mtu(port_id, &mut effective_mtu) };
                 if get_ret < 0 {
-                    tracing::info!("dpdk: rte_eth_dev_get_mtu failed ({})", get_ret);
+                    tracing::warn!("dpdk: rte_eth_dev_get_mtu failed ({})", get_ret);
                 } else {
                     tracing::info!("dpdk: effective port mtu {}", effective_mtu);
                 }
@@ -361,8 +361,7 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
                 if let Err(err) =
                     configure_rss_reta(port_id, queue_count, dev_info.reta_size as u16)
                 {
-                    tracing::info!("{err}");
-                    tracing::info!("dpdk: continuing without explicit reta override");
+                    tracing::warn!(error = %err, "dpdk continuing without explicit reta override");
                 }
             }
 
@@ -403,4 +402,3 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
         Err(err) => Err(err.clone()),
     }
 }
-

@@ -30,4 +30,5 @@ This folder provisions a GCP test bench mirroring the Azure traffic shape:
   - Example for `n2-standard-8`: keep defaults so management gets `1` queue and dataplane gets `7`.
 - Firewall cloud-init installs hugepages/IOMMU settings and reboots once during first bootstrap.
 - Policy management API checks use `https://<fw-mgmt-ip>:8443/{health,ready}` through the jumpbox.
+- Dataplane ILB backend health checks use TCP on `:8080` (DPDK dataplane probe path on dataplane NIC).
 - GCP does not allow overriding subnet-local routes with VPC static routes; steering is applied with per-host guest routes on consumer/upstream VMs that point to subnet-local dataplane ILB VIPs.

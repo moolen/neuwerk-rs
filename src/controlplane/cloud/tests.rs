@@ -81,6 +81,8 @@ struct MockProvider {
     routes: Arc<Mutex<HashMap<String, Ipv4Addr>>>,
     protections: Arc<Mutex<Vec<(String, bool)>>>,
     termination_event: Arc<Mutex<Option<TerminationEvent>>>,
+    heartbeat_deadline: Arc<Mutex<Option<i64>>>,
+    heartbeat_calls: Arc<Mutex<u32>>,
     completed: Arc<Mutex<u32>>,
     caps: IntegrationCapabilities,
     self_id: String,
@@ -99,6 +101,8 @@ impl MockProvider {
             routes: Arc::new(Mutex::new(HashMap::new())),
             protections: Arc::new(Mutex::new(Vec::new())),
             termination_event: Arc::new(Mutex::new(None)),
+            heartbeat_deadline: Arc::new(Mutex::new(None)),
+            heartbeat_calls: Arc::new(Mutex::new(0)),
             completed: Arc::new(Mutex::new(0)),
             caps,
             self_id: self_id.to_string(),
@@ -221,6 +225,15 @@ impl CloudProvider for MockProvider {
         Ok(CapabilityResult::Applied)
     }
 
+    async fn record_termination_heartbeat(
+        &self,
+        _event: &TerminationEvent,
+    ) -> Result<Option<i64>, CloudError> {
+        let mut calls = self.heartbeat_calls.lock().await;
+        *calls += 1;
+        Ok(*self.heartbeat_deadline.lock().await)
+    }
+
     fn capabilities(&self) -> IntegrationCapabilities {
         self.caps.clone()
     }
@@ -290,6 +303,13 @@ impl CloudProvider for RepeatTerminationProvider {
         event: &TerminationEvent,
     ) -> Result<CapabilityResult, CloudError> {
         self.base.complete_termination_action(event).await
+    }
+
+    async fn record_termination_heartbeat(
+        &self,
+        event: &TerminationEvent,
+    ) -> Result<Option<i64>, CloudError> {
+        self.base.record_termination_heartbeat(event).await
     }
 
     fn capabilities(&self) -> IntegrationCapabilities {

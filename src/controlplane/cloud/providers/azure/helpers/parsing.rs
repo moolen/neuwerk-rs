@@ -7,7 +7,7 @@ impl AzureProvider {
         let Some(zones) = zones else {
             return Ok(None);
         };
-        let filtered: Vec<String> = zones.into_iter().filter_map(|zone| zone).collect();
+        let filtered: Vec<String> = zones.into_iter().flatten().collect();
         if filtered.is_empty() {
             Ok(None)
         } else {
@@ -47,6 +47,7 @@ impl AzureProvider {
             .unwrap_or(0)
     }
 
+    #[cfg(test)]
     fn is_management_subnet(name: &str, tags: &HashMap<String, String>) -> bool {
         let lowered = name.to_ascii_lowercase();
         if lowered.contains("mgmt") || lowered.contains("management") {

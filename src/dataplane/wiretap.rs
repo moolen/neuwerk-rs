@@ -2,6 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::mpsc;
+use tracing::warn;
 
 use crate::dataplane::flow::FlowKey;
 
@@ -49,7 +50,7 @@ impl WiretapEmitter {
     pub fn try_send(&self, event: WiretapEvent) {
         if let Err(err) = self.sender.try_send(event) {
             if WIRETAP_SEND_FAIL_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-                tracing::warn!(error = %err, "wiretap event enqueue failed");
+                warn!(error = %err, "wiretap event enqueue failed");
             }
         }
     }

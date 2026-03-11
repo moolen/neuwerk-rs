@@ -22,18 +22,13 @@ pub struct CompiledPolicy {
     pub kubernetes_bindings: Vec<KubernetesSelectorBinding>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PolicyMode {
     Disabled,
     Audit,
+    #[default]
     Enforce,
-}
-
-impl Default for PolicyMode {
-    fn default() -> Self {
-        PolicyMode::Enforce
-    }
 }
 
 impl PolicyMode {
@@ -46,17 +41,12 @@ impl PolicyMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleMode {
     Audit,
+    #[default]
     Enforce,
-}
-
-impl Default for RuleMode {
-    fn default() -> Self {
-        RuleMode::Enforce
-    }
 }
 
 impl From<RuleMode> for DataplaneRuleMode {

@@ -71,7 +71,7 @@ impl AzureProvider {
                 .as_deref()
                 .and_then(|raw| OffsetDateTime::parse(raw, &Rfc2822).ok())
                 .map(|dt| dt.unix_timestamp())
-                .or_else(|| event.duration_in_seconds.map(|secs| now + secs as i64))
+                .or_else(|| event.duration_in_seconds.map(|secs| now + secs))
                 .unwrap_or(now);
             return Ok(Some(TerminationEvent {
                 id: event.event_id.clone(),

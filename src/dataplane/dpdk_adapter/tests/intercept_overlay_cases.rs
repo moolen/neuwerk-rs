@@ -126,7 +126,7 @@ fn process_frame_overlay_dual_tunnel_swaps_and_forces_src_port() {
     std::env::set_var("NEUWERK_GWLB_SWAP_TUNNELS", "1");
     std::env::set_var("NEUWERK_GWLB_TUNNEL_SRC_PORT", "1");
 
-    let result = (|| {
+    {
         let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
         adapter.set_mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
 
@@ -183,7 +183,7 @@ fn process_frame_overlay_dual_tunnel_swaps_and_forces_src_port() {
             src_port, 10801,
             "outer src port should be forced to tunnel port"
         );
-    })();
+    }
 
     match old_swap {
         Some(value) => std::env::set_var("NEUWERK_GWLB_SWAP_TUNNELS", value),
@@ -194,7 +194,6 @@ fn process_frame_overlay_dual_tunnel_swaps_and_forces_src_port() {
         None => std::env::remove_var("NEUWERK_GWLB_TUNNEL_SRC_PORT"),
     }
 
-    result
 }
 
 #[test]

@@ -22,6 +22,7 @@ async fn http_api_metrics_bind_public_requires_explicit_allow_override() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         token_path: dir.path().join("token.json"),
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -43,6 +44,54 @@ async fn http_api_metrics_bind_public_requires_explicit_allow_override() {
     .unwrap_err();
 
     assert!(err.contains("NEUWERK_ALLOW_PUBLIC_METRICS_BIND"));
+}
+
+#[tokio::test]
+async fn http_api_metrics_bind_conflict_fails_startup() {
+    ensure_rustls_provider();
+    let dir = TempDir::new().unwrap();
+    let tls_dir = dir.path().join("http-tls");
+    let local_store_dir = dir.path().join("policies");
+    let bind_addr = next_addr(Ipv4Addr::LOCALHOST);
+    let metrics_addr = next_addr(Ipv4Addr::LOCALHOST);
+    let _occupied = std::net::TcpListener::bind(metrics_addr).unwrap();
+
+    let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+    let local_store = PolicyDiskStore::new(local_store_dir);
+    let cfg = HttpApiConfig {
+        bind_addr,
+        advertise_addr: bind_addr,
+        metrics_bind: metrics_addr,
+        tls_dir: tls_dir.clone(),
+        cert_path: None,
+        key_path: None,
+        ca_path: None,
+        san_entries: Vec::new(),
+        management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        token_path: dir.path().join("token.json"),
+        external_url: None,
+        cluster_tls_dir: None,
+        tls_intercept_ca_ready: None,
+        tls_intercept_ca_generation: None,
+    };
+    let metrics = Metrics::new().unwrap();
+
+    let err = http_api::run_http_api(
+        cfg,
+        policy_store,
+        local_store,
+        None,
+        None,
+        None,
+        None,
+        None,
+        metrics,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.contains("metrics bind"));
+    assert!(err.contains(&metrics_addr.to_string()));
 }
 
 #[tokio::test]
@@ -70,6 +119,7 @@ async fn http_api_ready_health_metrics_contract_startup_and_failure_modes() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         token_path: dir.path().join("token.json"),
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -320,6 +370,7 @@ async fn cluster_ready_degrades_on_quorum_loss_and_recovers() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         token_path: api_token,
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -389,6 +440,7 @@ async fn http_api_tls_intercept_ca_local_settings_round_trip() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         token_path: dir.path().join("token.json"),
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -515,6 +567,7 @@ async fn http_api_policy_write_times_out_when_dataplane_ack_missing() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         token_path: dir.path().join("token.json"),
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -625,6 +678,7 @@ async fn http_api_policy_write_waits_for_dataplane_ack() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         token_path: dir.path().join("token.json"),
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -761,6 +815,7 @@ async fn http_api_policy_write_times_out_when_service_plane_ack_missing() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         token_path: dir.path().join("token.json"),
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,

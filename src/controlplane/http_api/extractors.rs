@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use super::MAX_BODY_BYTES;
 
+#[allow(clippy::result_large_err)]
 pub(super) fn parse_uuid(value: &str, field: &str) -> Result<Uuid, Response> {
     Uuid::parse_str(value)
         .map_err(|_| error_response(StatusCode::BAD_REQUEST, format!("invalid {field}")))

@@ -52,7 +52,7 @@ pub(super) fn dpdk_dhcp_l2_hairpin(_cfg: &TopologyConfig) -> Result<(), String> 
                 Some(DefaultPolicy::Deny),
                 crate::dataplane::policy::EnforcementMode::Enforce,
             )
-            .map_err(|e| format!("{e}"))?;
+            .map_err(|e| e.to_string())?;
 
         let policy = policy_store.snapshot();
         let mut state = EngineState::new_with_idle_timeout(

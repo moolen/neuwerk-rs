@@ -1,3 +1,5 @@
+#![allow(clippy::format_in_format_args)]
+
 use super::*;
 
 pub(super) fn nat_idle_eviction_metrics(cfg: &TopologyConfig) -> Result<(), String> {

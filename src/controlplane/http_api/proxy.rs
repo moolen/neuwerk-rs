@@ -149,12 +149,9 @@ pub(super) async fn proxy_stream_request(
     let resp = builder.send().await.map_err(|err| err.to_string())?;
     let status = resp.status();
     let headers = resp.headers().clone();
-    let stream = resp.bytes_stream().map_err(|err| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("proxy stream error: {err}"),
-        )
-    });
+    let stream = resp
+        .bytes_stream()
+        .map_err(|err| std::io::Error::other(format!("proxy stream error: {err}")));
 
     let mut response = Response::builder().status(status);
     for (key, value) in &headers {

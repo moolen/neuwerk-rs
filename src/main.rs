@@ -7,7 +7,9 @@ use firewall::controlplane::{self, PolicyStore};
 #[cfg(test)]
 use firewall::dataplane::Packet;
 use firewall::dataplane::{DataplaneConfigStore, DrainControl, OverlayConfig, SnatMode};
+use firewall::logging;
 mod runtime;
+use tracing::{error, info, warn};
 
 use runtime::auth::{auth_usage, parse_auth_args, run_auth_command};
 use runtime::bootstrap::dataplane_config::{
@@ -17,6 +19,7 @@ use runtime::bootstrap::dataplane_warmup::maybe_spawn_soft_dataplane_autoconfig_
 use runtime::bootstrap::integration::build_integration_provider;
 use runtime::bootstrap::network::{dataplane_ipv4_config, internal_ipv4_config};
 use runtime::bootstrap::policy_state::init_local_controlplane_state;
+use runtime::bootstrap::shutdown::spawn_signal_shutdown_task;
 use runtime::bootstrap::startup::{
     log_startup_summary, maybe_select_cluster_seed, resolve_bindings,
     run_cluster_migration_if_requested, start_cluster_runtime,
@@ -32,14 +35,15 @@ use runtime::startup::controlplane_runtime::start_controlplane_runtime;
 use runtime::startup::dataplane_bootstrap::bootstrap_dataplane_runtime;
 use runtime::startup::dataplane_thread::{spawn_dataplane_runtime_thread, DataplaneRuntimeConfig};
 use runtime::startup::integration_task::spawn_integration_manager_task;
+use runtime::sysdump::{parse_sysdump_args, run_sysdump, sysdump_usage};
 
 fn boxed_error(msg: impl Into<String>) -> Box<dyn std::error::Error> {
-    std::io::Error::new(std::io::ErrorKind::Other, msg.into()).into()
+    std::io::Error::other(msg.into()).into()
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if let Err(err) = firewall::logging::init_logging() {
+    if let Err(err) = logging::init_logging() {
         eprintln!("{err}");
     }
     let bin = env::args().next().unwrap_or_else(|| "firewall".to_string());
@@ -53,6 +57,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         if let Err(err) = run_auth_command(cmd).await {
+            eprintln!("{err}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+    if args.first().map(|arg| arg.as_str()) == Some("sysdump") {
+        let cmd = match parse_sysdump_args(&bin, &args[1..]) {
+            Ok(cmd) => cmd,
+            Err(err) => {
+                eprintln!("{err}\n\n{}", sysdump_usage(&bin));
+                std::process::exit(2);
+            }
+        };
+        if let Err(err) = run_sysdump(cmd).await {
             eprintln!("{err}");
             std::process::exit(2);
         }
@@ -97,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_advertise = bindings.http_advertise;
     let metrics_bind = bindings.metrics_bind;
 
-    tracing::info!(
+    info!(
         http_bind = %http_bind,
         http_advertise = %http_advertise,
         metrics_bind = %metrics_bind,
@@ -142,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if dpdk_enabled && dataplane_config.get().is_none() {
         match dpdk_static_config_from_env() {
             Ok(Some(config)) => {
-                tracing::info!(
+                info!(
                     dataplane_ip = %config.ip,
                     dataplane_prefix = config.prefix,
                     dataplane_gateway = %config.gateway,
@@ -151,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 dataplane_config.set(config);
             }
             Ok(None) => {}
-            Err(err) => tracing::warn!(error = %err, "dpdk static bootstrap failed"),
+            Err(err) => warn!(error = %err, "dpdk static bootstrap failed"),
         }
     }
 
@@ -165,7 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     mac,
                     lease_expiry: None,
                 });
-                tracing::info!(
+                info!(
                     dataplane_ip = %ip,
                     dataplane_prefix = prefix,
                     dataplane_gateway = %gateway,
@@ -173,7 +191,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             Err(err) => {
-                tracing::warn!(error = %err, "dpdk imds bootstrap failed");
+                warn!(error = %err, "dpdk imds bootstrap failed");
             }
         }
     }
@@ -184,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             let _ = policy_store.update_internal_cidr(ip, prefix);
         } else {
-            tracing::warn!("internal CIDR not detected; relying on policy source groups");
+            warn!("internal CIDR not detected; relying on policy source groups");
         }
     }
 
@@ -219,12 +237,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match firewall::dataplane::preinit_dpdk_eal(&cfg.data_plane_iface) {
             Ok(()) => {
                 metrics.set_dpdk_init_ok(true);
-                tracing::info!("dpdk preinit complete");
+                info!("dpdk preinit complete");
             }
             Err(err) => {
                 metrics.set_dpdk_init_ok(false);
                 metrics.inc_dpdk_init_failure();
-                tracing::error!(error = %err, "dpdk preinit failed");
+                error!(error = %err, "dpdk preinit failed");
                 std::process::exit(2);
             }
         }
@@ -248,7 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match start_cluster_runtime(&cfg, Some(wiretap_hub.clone()), metrics.clone()).await {
             Ok(runtime) => runtime,
             Err(err) => {
-                tracing::error!(error = %err, "cluster runtime failed");
+                error!(error = %err, "cluster runtime failed");
                 std::process::exit(2);
             }
         };
@@ -266,6 +284,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
 
+    let drain_control = DrainControl::new();
     let readiness = ReadinessState::new(
         dataplane_config.clone(),
         policy_store.clone(),
@@ -275,6 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cluster_runtime.as_ref().map(|runtime| runtime.raft.clone()),
     );
     readiness.set_policy_ready(true);
+    readiness.set_drain_control(drain_control.clone());
 
     let controlplane_runtime = match start_controlplane_runtime(
         &cfg,
@@ -303,12 +323,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime::startup::controlplane_runtime::ControlplaneRuntimeHandles {
         dns_task,
         http_task,
+        http_shutdown,
         wiretap_emitter,
         audit_emitter,
         shared_intercept_demux,
     } = controlplane_runtime;
 
-    let drain_control = DrainControl::new();
+    let shutdown_task =
+        spawn_signal_shutdown_task(readiness.clone(), drain_control.clone(), http_shutdown);
+
     let drain_control_for_dp = drain_control.clone();
     let _integration_task = spawn_integration_manager_task(
         &cfg,
@@ -368,9 +391,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    await_runtime_tasks(http_task, dns_task, dataplane_task, dhcp_task)
-        .await
-        .map_err(boxed_error)
+    await_runtime_tasks(
+        http_task,
+        dns_task,
+        dataplane_task,
+        dhcp_task,
+        Some(shutdown_task),
+    )
+    .await
+    .map_err(boxed_error)
 }
 
 #[cfg(test)]

@@ -25,11 +25,27 @@ fi
 pushd "$TF_DIR" >/dev/null
 VPC_ID=$(terraform output -raw vpc_id 2>/dev/null || true)
 IPS_JSON=$(terraform output -json firewall_mgmt_ips 2>/dev/null || true)
+ASG_NAME=$(terraform output -raw firewall_asg_name 2>/dev/null || true)
 popd >/dev/null
 
 ips=""
 if [ -n "$IPS_JSON" ] && [ "$IPS_JSON" != "null" ]; then
   ips=$(echo "$IPS_JSON" | jq -r '.[]?' | awk 'NF' | sort -u || true)
+fi
+
+if [ -z "$ips" ] && [ -n "$VPC_ID" ]; then
+  if [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "null" ]; then
+    instance_ids=$(aws autoscaling describe-auto-scaling-groups \
+      --auto-scaling-group-names "$ASG_NAME" \
+      --query 'AutoScalingGroups[0].Instances[].InstanceId' \
+      --output text 2>/dev/null || true)
+    if [ -n "$instance_ids" ]; then
+      ips=$(aws ec2 describe-instances \
+        --instance-ids $instance_ids \
+        --query 'Reservations[].Instances[].NetworkInterfaces[?Attachment.DeviceIndex==`0`].PrivateIpAddress[]' \
+        --output text 2>/dev/null | tr '\t' '\n' | awk 'NF' | sort -u || true)
+    fi
+  fi
 fi
 
 if [ -z "$ips" ] && [ -n "$VPC_ID" ]; then

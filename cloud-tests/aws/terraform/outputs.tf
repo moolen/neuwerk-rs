@@ -43,15 +43,19 @@ output "upstream_vip" {
 }
 
 output "firewall_instance" {
-  value = {
-    private_ip_mgmt   = aws_network_interface.firewall_mgmt.private_ip
-    private_ip_data   = aws_network_interface.firewall_data.private_ip
+  value = local.use_gwlb ? null : {
+    private_ip_mgmt   = aws_network_interface.firewall_mgmt[0].private_ip
+    private_ip_data   = aws_network_interface.firewall_data[0].private_ip
     availability_zone = var.availability_zone
   }
 }
 
 output "firewall_mgmt_ips" {
-  value = [aws_network_interface.firewall_mgmt.private_ip]
+  value = local.use_gwlb ? [] : [aws_network_interface.firewall_mgmt[0].private_ip]
+}
+
+output "firewall_asg_name" {
+  value = local.use_gwlb ? aws_autoscaling_group.firewall[0].name : null
 }
 
 output "gwlb" {

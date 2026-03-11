@@ -70,14 +70,17 @@ impl FlowEntry {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ExpiredFlow {
     pub key: FlowKey,
+    pub first_seen: u64,
     pub last_seen: u64,
     pub packets_in: u64,
     pub packets_out: u64,
+    pub source_group: Option<Arc<str>>,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum FlowSlot {
     Empty,
@@ -179,6 +182,10 @@ impl FlowTable {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn idle_timeout_secs(&self) -> u64 {
         self.idle_timeout_secs
     }
@@ -200,9 +207,11 @@ impl FlowTable {
                 self.tombstones = self.tombstones.saturating_add(1);
                 expired.push(ExpiredFlow {
                     key,
+                    first_seen: entry.first_seen,
                     last_seen: entry.last_seen,
                     packets_in: entry.packets_in,
                     packets_out: entry.packets_out,
+                    source_group: entry.source_group_arc(),
                 });
             }
         }

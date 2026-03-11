@@ -1,5 +1,7 @@
 import React from 'react';
 import { SettingsStatusCard } from './settings/components/SettingsStatusCard';
+import { SsoProvidersForm } from './settings/components/SsoProvidersForm';
+import { SupportBundleCard } from './settings/components/SupportBundleCard';
 import { TlsInterceptCaForm } from './settings/components/TlsInterceptCaForm';
 import { useSettingsPage } from './settings/useSettingsPage';
 
@@ -20,6 +22,22 @@ export const SettingsPage: React.FC = () => {
     submit,
     generate,
     downloadCert,
+    sysdumpDownloading,
+    downloadClusterBundle,
+    ssoProviders,
+    ssoLoading,
+    ssoSaving,
+    ssoDeletingId,
+    ssoTestingId,
+    ssoError,
+    ssoSuccess,
+    ssoDraft,
+    setSsoDraft,
+    createNewSsoDraft,
+    selectSsoProvider,
+    saveSsoProviderDraft,
+    deleteSsoProviderById,
+    testSsoProviderById,
   } = useSettingsPage();
 
   return (
@@ -27,7 +45,7 @@ export const SettingsPage: React.FC = () => {
       <div className="mb-6">
         <h1 className="text-2xl font-bold mb-1" style={{ color: 'var(--text)' }}>Settings</h1>
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Manage DPI TLS interception CA material.
+          Manage DPI TLS interception CA material and SSO providers.
         </p>
       </div>
 
@@ -60,6 +78,28 @@ export const SettingsPage: React.FC = () => {
           onDownload={() => void downloadCert()}
         />
       </div>
+
+      <SupportBundleCard
+        downloading={sysdumpDownloading}
+        onDownload={() => void downloadClusterBundle()}
+      />
+
+      <SsoProvidersForm
+        providers={ssoProviders}
+        loading={ssoLoading}
+        saving={ssoSaving}
+        deletingId={ssoDeletingId}
+        testingId={ssoTestingId}
+        error={ssoError}
+        success={ssoSuccess}
+        draft={ssoDraft}
+        onSelect={selectSsoProvider}
+        onCreateNew={createNewSsoDraft}
+        onDraftChange={setSsoDraft}
+        onSave={() => void saveSsoProviderDraft()}
+        onDelete={(id) => void deleteSsoProviderById(id)}
+        onTest={(id) => void testSsoProviderById(id)}
+      />
     </div>
   );
 };

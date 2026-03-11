@@ -239,6 +239,7 @@ fn generate_tls_intercept_ca_material() -> Result<(Vec<u8>, Vec<u8>), String> {
     Ok((signer.cert_pem().to_vec(), signer.key_der().to_vec()))
 }
 
+#[allow(clippy::result_large_err)]
 fn load_tls_intercept_ca_cert_material(
     state: &ApiState,
 ) -> Result<(Option<String>, Option<Vec<u8>>), Response> {

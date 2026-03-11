@@ -17,6 +17,7 @@ use openraft::RaftTypeConfig;
 use tokio::time::timeout;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Status};
+use tracing::warn;
 
 use crate::controlplane::cluster::types::{ClusterTypeConfig, Node, NodeId};
 use crate::controlplane::metrics::Metrics;
@@ -55,9 +56,11 @@ impl RaftNetworkFactory<ClusterTypeConfig> for RaftGrpcNetworkFactory {
         let endpoint = match raft_client_endpoint(&addr, &self.tls) {
             Ok(endpoint) => endpoint,
             Err(err) => {
-                tracing::warn!(
-                    "cluster rpc: failed to build raft endpoint for peer {} ({addr}): {err}; using unreachable fallback",
-                    target
+                warn!(
+                    peer_id = %target,
+                    addr = %addr,
+                    error = %err,
+                    "cluster rpc failed to build raft endpoint; using unreachable fallback"
                 );
                 unreachable_fallback_endpoint()
             }
@@ -124,10 +127,7 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
                 .map_err(|err| {
                     self.observe_peer_rtt("append_entries", elapsed);
                     self.observe_peer_error("append_entries", "other");
-                    RPCError::Network(NetworkError::new(&std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        err,
-                    )))
+                    RPCError::Network(NetworkError::new(&std::io::Error::other(err)))
                 })?;
                 self.observe_peer_rtt("append_entries", elapsed);
                 Ok(decoded)
@@ -176,10 +176,7 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
                 .map_err(|err| {
                     self.observe_peer_rtt("install_snapshot", elapsed);
                     self.observe_peer_error("install_snapshot", "other");
-                    RPCError::Network(NetworkError::new(&std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        err,
-                    )))
+                    RPCError::Network(NetworkError::new(&std::io::Error::other(err)))
                 })?;
                 self.observe_peer_rtt("install_snapshot", elapsed);
                 Ok(decoded)
@@ -226,10 +223,7 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
                     .map_err(|err| {
                         self.observe_peer_rtt("vote", elapsed);
                         self.observe_peer_error("vote", "other");
-                        RPCError::Network(NetworkError::new(&std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            err,
-                        )))
+                        RPCError::Network(NetworkError::new(&std::io::Error::other(err)))
                     })?;
                 self.observe_peer_rtt("vote", elapsed);
                 Ok(decoded)
@@ -270,13 +264,13 @@ impl proto::raft_service_server::RaftService for RaftServer {
     ) -> Result<Response<proto::RaftResponse>, Status> {
         let payload =
             decode::<AppendEntriesRequest<ClusterTypeConfig>>(&request.into_inner().payload)
-                .map_err(|err| Status::invalid_argument(err))?;
+                .map_err(Status::invalid_argument)?;
         let resp = self
             .raft
             .append_entries(payload)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
-        let encoded = encode(&resp).map_err(|err| Status::internal(err))?;
+        let encoded = encode(&resp).map_err(Status::internal)?;
         Ok(Response::new(proto::RaftResponse { payload: encoded }))
     }
 
@@ -287,13 +281,13 @@ impl proto::raft_service_server::RaftService for RaftServer {
         let payload = decode::<VoteRequest<<ClusterTypeConfig as RaftTypeConfig>::NodeId>>(
             &request.into_inner().payload,
         )
-        .map_err(|err| Status::invalid_argument(err))?;
+        .map_err(Status::invalid_argument)?;
         let resp = self
             .raft
             .vote(payload)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
-        let encoded = encode(&resp).map_err(|err| Status::internal(err))?;
+        let encoded = encode(&resp).map_err(Status::internal)?;
         Ok(Response::new(proto::RaftResponse { payload: encoded }))
     }
 
@@ -303,13 +297,13 @@ impl proto::raft_service_server::RaftService for RaftServer {
     ) -> Result<Response<proto::RaftResponse>, Status> {
         let payload =
             decode::<InstallSnapshotRequest<ClusterTypeConfig>>(&request.into_inner().payload)
-                .map_err(|err| Status::invalid_argument(err))?;
+                .map_err(Status::invalid_argument)?;
         let resp = self
             .raft
             .install_snapshot(payload)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
-        let encoded = encode(&resp).map_err(|err| Status::internal(err))?;
+        let encoded = encode(&resp).map_err(Status::internal)?;
         Ok(Response::new(proto::RaftResponse { payload: encoded }))
     }
 }
@@ -322,14 +316,12 @@ fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
     bincode::deserialize(bytes).map_err(|err| err.to_string())
 }
 
+#[allow(clippy::result_large_err)]
 fn encode_rpc<T: serde::Serialize, E>(value: &T) -> Result<Vec<u8>, RPCError<NodeId, Node, E>>
 where
     E: std::error::Error,
 {
     bincode::serialize(value).map_err(|err| {
-        RPCError::Network(NetworkError::new(&std::io::Error::new(
-            std::io::ErrorKind::Other,
-            err.to_string(),
-        )))
+        RPCError::Network(NetworkError::new(&std::io::Error::other(err.to_string())))
     })
 }

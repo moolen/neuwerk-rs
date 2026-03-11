@@ -10,6 +10,7 @@ use firewall::controlplane::metrics::Metrics;
 use firewall::controlplane::policy_repository::PolicyDiskStore;
 use firewall::controlplane::wiretap::WiretapHub;
 use firewall::dataplane::EncapMode;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::runtime::bootstrap::integration::{integration_tag_filter, select_integration_seed};
@@ -42,7 +43,7 @@ pub async fn maybe_select_cluster_seed(
                     }
                 }
                 Err(err) => {
-                    tracing::warn!(error = %err, "integration seed selection failed");
+                    warn!(error = %err, "integration seed selection failed");
                 }
             }
         }
@@ -50,7 +51,7 @@ pub async fn maybe_select_cluster_seed(
 }
 
 pub fn log_startup_summary(cfg: &CliConfig) {
-    tracing::info!(
+    info!(
         management_iface = %cfg.management_iface,
         data_plane_iface = %cfg.data_plane_iface,
         data_plane_mode = ?cfg.data_plane_mode,
@@ -64,7 +65,7 @@ pub fn log_startup_summary(cfg: &CliConfig) {
         "firewall startup configuration"
     );
     if cfg.cluster.enabled {
-        tracing::info!(
+        info!(
             cluster_bind = %cfg.cluster.bind_addr,
             cluster_join_bind = %cfg.cluster.join_bind_addr,
             cluster_advertise = %cfg.cluster.advertise_addr,
@@ -73,7 +74,7 @@ pub fn log_startup_summary(cfg: &CliConfig) {
         );
     }
     if cfg.integration_mode != IntegrationMode::None {
-        tracing::info!(
+        info!(
             integration_mode = ?cfg.integration_mode,
             integration_route_name = %cfg.integration_route_name,
             integration_drain_timeout_secs = cfg.integration_drain_timeout_secs,
@@ -82,9 +83,9 @@ pub fn log_startup_summary(cfg: &CliConfig) {
             "integration startup configuration"
         );
     }
-    tracing::info!(snat_mode = ?cfg.snat_mode, "snat configuration");
+    info!(snat_mode = ?cfg.snat_mode, "snat configuration");
     if cfg.encap_mode != EncapMode::None {
-        tracing::info!(
+        info!(
             encap_mode = ?cfg.encap_mode,
             encap_vni = ?cfg.encap_vni,
             encap_vni_internal = ?cfg.encap_vni_internal,
@@ -97,10 +98,7 @@ pub fn log_startup_summary(cfg: &CliConfig) {
         );
     }
     if let Some((net, prefix)) = cfg.internal_cidr {
-        tracing::info!(
-            internal_cidr = %format!("{net}/{prefix}"),
-            "internal network configuration"
-        );
+        info!(internal_cidr = %format!("{net}/{prefix}"), "internal network configuration");
     }
 }
 
@@ -119,7 +117,7 @@ pub async fn resolve_bindings(cfg: &CliConfig, dpdk_enabled: bool) -> Result<Bin
     {
         let old_bind = metrics_bind;
         metrics_bind = SocketAddr::new(IpAddr::V4(management_ip), old_bind.port());
-        tracing::warn!(
+        warn!(
             old_bind = %old_bind,
             new_bind = %metrics_bind,
             "azure dpdk metrics bind override applied to avoid dataplane probe listener races"
@@ -183,7 +181,7 @@ pub async fn run_cluster_migration_if_requested(
     match migration::run(&runtime.raft, &runtime.store, migrate_cfg).await {
         Ok(report) => {
             if report.migrated {
-                tracing::info!(
+                info!(
                     policies_seeded = report.policies_seeded,
                     service_accounts_seeded = report.service_accounts_seeded,
                     tokens_seeded = report.tokens_seeded,
@@ -193,7 +191,7 @@ pub async fn run_cluster_migration_if_requested(
                     "cluster migration complete"
                 );
             } else if let Some(reason) = report.skipped_reason {
-                tracing::info!(reason = %reason, "cluster migration skipped");
+                info!(reason = %reason, "cluster migration skipped");
             }
             Ok(())
         }

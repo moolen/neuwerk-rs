@@ -1,6 +1,6 @@
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 use serde::Serialize;
@@ -9,7 +9,7 @@ use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::ClusterTypeConfig;
 use crate::controlplane::policy_repository::{PolicyActive, POLICY_ACTIVE_KEY};
 use crate::controlplane::PolicyStore;
-use crate::dataplane::DataplaneConfigStore;
+use crate::dataplane::{DataplaneConfigStore, DrainControl};
 
 #[derive(Clone)]
 pub struct ReadinessState {
@@ -21,6 +21,7 @@ pub struct ReadinessState {
     policy_ready: Arc<AtomicBool>,
     dns_ready: Arc<AtomicBool>,
     service_plane_ready: Arc<AtomicBool>,
+    drain_control: Arc<Mutex<Option<DrainControl>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,6 +53,7 @@ impl ReadinessState {
             policy_ready: Arc::new(AtomicBool::new(false)),
             dns_ready: Arc::new(AtomicBool::new(false)),
             service_plane_ready: Arc::new(AtomicBool::new(false)),
+            drain_control: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -73,6 +75,12 @@ impl ReadinessState {
 
     pub fn set_service_plane_ready(&self, ready: bool) {
         self.service_plane_ready.store(ready, Ordering::Relaxed);
+    }
+
+    pub fn set_drain_control(&self, drain_control: DrainControl) {
+        if let Ok(mut lock) = self.drain_control.lock() {
+            *lock = Some(drain_control);
+        }
     }
 
     pub fn snapshot(&self) -> ReadyStatus {
@@ -133,6 +141,23 @@ impl ReadinessState {
             },
         });
 
+        let draining = self
+            .drain_control
+            .lock()
+            .ok()
+            .and_then(|lock| lock.as_ref().cloned())
+            .map(|control| control.is_draining())
+            .unwrap_or(false);
+        checks.push(ReadyCheck {
+            name: "draining".to_string(),
+            ok: !draining,
+            detail: if draining {
+                Some("instance is draining".to_string())
+            } else {
+                None
+            },
+        });
+
         let cluster_ok = self.cluster_membership_ready();
         checks.push(ReadyCheck {
             name: "cluster".to_string(),
@@ -184,5 +209,359 @@ impl ReadinessState {
             Err(_) => return false,
         };
         self.policy_store.active_policy_id() == Some(active.id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::net::Ipv4Addr;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    use crate::controlplane::cluster;
+    use crate::controlplane::cluster::config::ClusterConfig;
+    use crate::controlplane::cluster::store::ClusterStore;
+    use crate::controlplane::cluster::types::ClusterCommand;
+    use crate::controlplane::cluster::types::ClusterTypeConfig;
+    use crate::dataplane::policy::DefaultPolicy;
+    use crate::dataplane::DataplaneConfig;
+    use openraft::entry::EntryPayload;
+    use openraft::storage::RaftStateMachine;
+    use openraft::RaftMetrics;
+    use openraft::{Entry, LogId};
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    fn ready_state_with_basics() -> ReadinessState {
+        let dataplane_config = DataplaneConfigStore::new();
+        dataplane_config.set(DataplaneConfig {
+            ip: Ipv4Addr::new(10, 0, 0, 2),
+            prefix: 24,
+            gateway: Ipv4Addr::new(10, 0, 0, 1),
+            mac: [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+            lease_expiry: None,
+        });
+        let policy_store = PolicyStore::new_with_config(
+            DefaultPolicy::Allow,
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            dataplane_config.clone(),
+        );
+        let readiness = ReadinessState::new(dataplane_config, policy_store, None, None);
+        readiness.set_dataplane_running(true);
+        readiness.set_policy_ready(true);
+        readiness.set_dns_ready(true);
+        readiness.set_service_plane_ready(true);
+        readiness
+    }
+
+    #[test]
+    fn ready_status_is_not_ready_when_draining() {
+        let readiness = ready_state_with_basics();
+        let drain_control = DrainControl::new();
+        drain_control.set_draining(true);
+        readiness.set_drain_control(drain_control);
+        let status = readiness.snapshot();
+        assert!(!status.ready);
+        assert!(status
+            .checks
+            .iter()
+            .any(|check| check.name == "draining" && !check.ok));
+    }
+
+    #[test]
+    fn ready_status_is_ready_when_not_draining() {
+        let readiness = ready_state_with_basics();
+        let drain_control = DrainControl::new();
+        drain_control.set_draining(false);
+        readiness.set_drain_control(drain_control);
+        let status = readiness.snapshot();
+        assert!(status.ready);
+    }
+
+    fn write_token_file(path: &std::path::Path) {
+        let json = serde_json::json!({
+            "tokens": [
+                {
+                    "kid": "test",
+                    "token": "b64:dGVzdC1zZWNyZXQ=",
+                    "valid_until": "2027-01-01T00:00:00Z"
+                }
+            ]
+        });
+        fs::write(path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    async fn wait_for_leader(
+        raft: &openraft::Raft<ClusterTypeConfig>,
+        timeout: Duration,
+    ) -> Result<u128, String> {
+        let mut metrics = raft.metrics();
+        let deadline = Instant::now() + timeout;
+        loop {
+            let m: RaftMetrics<u128, openraft::BasicNode> = metrics.borrow().clone();
+            if let Some(leader) = m.current_leader {
+                return Ok(leader);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err("timed out waiting for leader".to_string());
+            }
+            let remaining = deadline - now;
+            tokio::time::timeout(remaining, metrics.changed())
+                .await
+                .map_err(|_| "metrics wait timeout".to_string())?
+                .map_err(|_| "metrics channel closed".to_string())?;
+        }
+    }
+
+    async fn wait_for_voter(
+        raft: &openraft::Raft<ClusterTypeConfig>,
+        node_id: u128,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let mut metrics = raft.metrics();
+        let deadline = Instant::now() + timeout;
+        loop {
+            let m: RaftMetrics<u128, openraft::BasicNode> = metrics.borrow().clone();
+            if m.membership_config
+                .membership()
+                .voter_ids()
+                .any(|id| id == node_id)
+            {
+                return Ok(());
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err("timed out waiting for voter membership".to_string());
+            }
+            let remaining = deadline - now;
+            tokio::time::timeout(remaining, metrics.changed())
+                .await
+                .map_err(|_| "metrics wait timeout".to_string())?
+                .map_err(|_| "metrics channel closed".to_string())?;
+        }
+    }
+
+    async fn wait_for_stable_membership(
+        raft: &openraft::Raft<ClusterTypeConfig>,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let mut metrics = raft.metrics();
+        let deadline = Instant::now() + timeout;
+        loop {
+            let m: RaftMetrics<u128, openraft::BasicNode> = metrics.borrow().clone();
+            if m.membership_config.membership().get_joint_config().len() == 1 {
+                return Ok(());
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err("timed out waiting for stable membership".to_string());
+            }
+            let remaining = deadline - now;
+            tokio::time::timeout(remaining, metrics.changed())
+                .await
+                .map_err(|_| "metrics wait timeout".to_string())?
+                .map_err(|_| "metrics channel closed".to_string())?;
+        }
+    }
+
+    fn next_local_addr() -> std::net::SocketAddr {
+        let listener =
+            std::net::TcpListener::bind(std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+                .unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        addr
+    }
+
+    async fn write_cluster_active_bytes(
+        store: &mut ClusterStore,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        store
+            .apply([Entry {
+                log_id: LogId::new(openraft::CommittedLeaderId::new(1, 1), 1),
+                payload: EntryPayload::Normal(ClusterCommand::Put {
+                    key: POLICY_ACTIVE_KEY.to_vec(),
+                    value: bytes,
+                }),
+            }])
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ready_status_is_not_ready_when_policy_replication_payload_is_invalid() {
+        let dir = TempDir::new().unwrap();
+        let mut store = ClusterStore::open(dir.path()).unwrap();
+        write_cluster_active_bytes(&mut store, b"{invalid-json".to_vec())
+            .await
+            .unwrap();
+
+        let readiness = ReadinessState::new(
+            DataplaneConfigStore::new(),
+            PolicyStore::new(DefaultPolicy::Allow, Ipv4Addr::new(10, 0, 0, 0), 24),
+            Some(store),
+            None,
+        );
+        readiness.set_dataplane_running(true);
+        readiness.set_policy_ready(true);
+        readiness.set_dns_ready(true);
+        readiness.set_service_plane_ready(true);
+
+        let status = readiness.snapshot();
+        assert!(!status.ready);
+        assert!(status
+            .checks
+            .iter()
+            .any(|check| check.name == "policy_replication" && !check.ok));
+    }
+
+    #[tokio::test]
+    async fn ready_status_is_not_ready_when_cluster_active_policy_differs_from_local() {
+        let dir = TempDir::new().unwrap();
+        let mut store = ClusterStore::open(dir.path()).unwrap();
+        let active_id = Uuid::new_v4();
+        let payload = serde_json::to_vec(&PolicyActive { id: active_id }).unwrap();
+        write_cluster_active_bytes(&mut store, payload)
+            .await
+            .unwrap();
+
+        let dataplane_config = DataplaneConfigStore::new();
+        dataplane_config.set(DataplaneConfig {
+            ip: Ipv4Addr::new(10, 0, 0, 2),
+            prefix: 24,
+            gateway: Ipv4Addr::new(10, 0, 0, 1),
+            mac: [0x02, 0x00, 0x00, 0x00, 0x00, 0x22],
+            lease_expiry: None,
+        });
+        let policy_store = PolicyStore::new_with_config(
+            DefaultPolicy::Allow,
+            Ipv4Addr::new(10, 0, 0, 0),
+            24,
+            dataplane_config.clone(),
+        );
+        policy_store.set_active_policy_id(Some(Uuid::new_v4()));
+        let readiness = ReadinessState::new(dataplane_config, policy_store, Some(store), None);
+        readiness.set_dataplane_running(true);
+        readiness.set_policy_ready(true);
+        readiness.set_dns_ready(true);
+        readiness.set_service_plane_ready(true);
+
+        let status = readiness.snapshot();
+        assert!(!status.ready);
+        assert!(status
+            .checks
+            .iter()
+            .any(|check| check.name == "policy_replication" && !check.ok));
+    }
+
+    #[tokio::test]
+    async fn ready_status_cluster_check_degrades_after_quorum_loss() {
+        let seed_dir = TempDir::new().unwrap();
+        let join_dir = TempDir::new().unwrap();
+        let seed_token = seed_dir.path().join("bootstrap.json");
+        let join_token = join_dir.path().join("bootstrap.json");
+        write_token_file(&seed_token);
+        write_token_file(&join_token);
+
+        let seed_addr = next_local_addr();
+        let seed_join_addr = next_local_addr();
+        let join_addr = next_local_addr();
+        let join_join_addr = next_local_addr();
+
+        let mut seed_cfg = ClusterConfig::disabled();
+        seed_cfg.enabled = true;
+        seed_cfg.bind_addr = seed_addr;
+        seed_cfg.join_bind_addr = seed_join_addr;
+        seed_cfg.advertise_addr = seed_addr;
+        seed_cfg.data_dir = seed_dir.path().to_path_buf();
+        seed_cfg.node_id_path = seed_dir.path().join("node_id");
+        seed_cfg.token_path = seed_token.clone();
+
+        let mut join_cfg = ClusterConfig::disabled();
+        join_cfg.enabled = true;
+        join_cfg.bind_addr = join_addr;
+        join_cfg.join_bind_addr = join_join_addr;
+        join_cfg.advertise_addr = join_addr;
+        join_cfg.join_seed = Some(seed_join_addr);
+        join_cfg.data_dir = join_dir.path().to_path_buf();
+        join_cfg.node_id_path = join_dir.path().join("node_id");
+        join_cfg.token_path = join_token.clone();
+
+        let seed_runtime = cluster::run_cluster_tasks(seed_cfg.clone(), None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let join_runtime = cluster::run_cluster_tasks(join_cfg.clone(), None, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let leader_id = wait_for_leader(&seed_runtime.raft, Duration::from_secs(5))
+            .await
+            .unwrap();
+        let joiner_node_id = Uuid::parse_str(
+            fs::read_to_string(join_dir.path().join("node_id"))
+                .unwrap()
+                .trim(),
+        )
+        .unwrap()
+        .as_u128();
+        wait_for_voter(&seed_runtime.raft, joiner_node_id, Duration::from_secs(10))
+            .await
+            .unwrap();
+        wait_for_stable_membership(&seed_runtime.raft, Duration::from_secs(10))
+            .await
+            .unwrap();
+
+        let (follower_raft, surviving_runtime, stopped_runtime) =
+            if leader_id == seed_runtime.raft.metrics().borrow().id {
+                (join_runtime.raft.clone(), join_runtime, seed_runtime)
+            } else {
+                (seed_runtime.raft.clone(), seed_runtime, join_runtime)
+            };
+
+        let readiness = ready_state_with_basics();
+        let readiness = ReadinessState {
+            raft: Some(follower_raft),
+            cluster_store: None,
+            ..readiness
+        };
+        assert!(readiness
+            .snapshot()
+            .checks
+            .iter()
+            .any(|check| check.name == "cluster" && check.ok));
+
+        stopped_runtime.shutdown().await;
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let status = readiness.snapshot();
+            if status
+                .checks
+                .iter()
+                .any(|check| check.name == "cluster" && !check.ok)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for cluster readiness degradation"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        surviving_runtime.shutdown().await;
     }
 }

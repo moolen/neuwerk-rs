@@ -378,6 +378,7 @@ impl WiretapGrpcService {
 
 #[async_trait::async_trait]
 impl WiretapHandler for WiretapGrpcService {
+    #[allow(clippy::result_large_err)]
     async fn subscribe(
         &self,
         req: rpc::proto::WiretapSubscribeRequest,

@@ -32,7 +32,7 @@
 - DPDK builds use a pinned, vendored DPDK source build (`third_party/dpdk/VERSION`) via `scripts/build-dpdk.sh` and `make build` (installs into `third_party/dpdk/install/<version>`).
 - Makefile default `build` now prepares vendored DPDK and builds with `--all-features` (DPDK included) using `DPDK_DIR`/`PKG_CONFIG_PATH`; manual `--features dpdk` flags are no longer needed in Make targets.
 - `DPDK_DIR` can point to a custom DPDK install prefix; `third_party/dpdk-sys` compiles a small wrapper C shim against those headers/libs.
-- When building in a container, set `DPDK_DIR` to an absolute path (relative paths resolve from the dpdk-sys crate and will miss headers), and ensure `protobuf-compiler`, `libclang-14-dev`, and `llvm-14-dev` are installed so build scripts can run.
+- When building in a container, set `DPDK_DIR` to an absolute path (relative paths resolve from the dpdk-sys crate and will miss headers), and ensure `libclang-14-dev` and `llvm-14-dev` are installed so DPDK-related build scripts can run. The root gRPC `build.rs` now vendors `protoc` unless `PROTOC` is explicitly set.
 - DPDK build dependencies include `meson`, `ninja`, `python3`, `pkg-config`, `libnuma` headers, and Python `pyelftools`.
 - Default vendored build disables `net/ionic` via `DPDK_DISABLE_DRIVERS` to avoid GCC 15 type conflicts; override as needed.
 - Set `DPDK_FORCE_REBUILD=1` to rebuild an existing vendored DPDK install.
@@ -61,6 +61,7 @@
 - TTL is decremented on forwarded packets; ICMP Time Exceeded is generated when TTL expires.
 - ICMP is fully supported in dataplane and policy-controlled (type/code allow/deny). Default policy allows common ICMP types.
 - DNS allowlist enforcement is per source group (DNS policy decides which internal groups can access which hostnames).
+- Service-policy readiness for TLS intercept can retract (applied generation drops to `policy_generation - 1`) when TLS intercept CA/runtime is unready, so dataplane keeps intercept-constrained flows fail-closed during CA rotation or runtime restarts.
 
 ## Future Extension Notes
 - DPI may be added as a dedicated dataplane layer later.
@@ -120,6 +121,7 @@
 - DNS cache UI is now split: `ui/pages/DNSCachePage.tsx` is a shell, data load/filter state lives in `ui/pages/dns-cache/useDNSCachePage.ts`, and rendering/controls are split into `ui/pages/dns-cache/components/`.
 - Settings UI is now split: `ui/pages/SettingsPage.tsx` is a shell, TLS intercept CA + SSO provider orchestration lives in `ui/pages/settings/useSettingsPage.ts`, and rendering is split into `ui/pages/settings/components/` (including `SsoProvidersForm.tsx`).
 - Settings includes a one-click DPI/TLS intercept CA generator in `ui/pages/settings/components/TlsInterceptCaForm.tsx` wired through `useSettingsPage.ts` to `POST /api/v1/settings/tls-intercept-ca/generate`; generation persists material through the same backend storage path as manual Save.
+- Settings now also exposes a single cluster-global support-bundle action via `ui/pages/settings/components/SupportBundleCard.tsx`; it calls `POST /api/v1/support/sysdump/cluster` and there is intentionally no separate local-sysdump UI action.
 - UI API client is now domain-split: `ui/services/api.ts` is a compatibility barrel, shared fetch/error transport lives in `ui/services/apiClient/transport.ts`, and domain clients live in `ui/services/apiClient/{auth,policies,integrations,dns,audit,wiretap,serviceAccounts,settings,sso}.ts`.
 - UI shared types are now domain-split: `ui/types.ts` is a compatibility barrel, and feature type domains live under `ui/types/` (`policy`, `integrations`, `stats`, `dns`, `wiretap`, `audit`, `auth`, `serviceAccounts`, `settings`).
 - UI API error parsing in `ui/services/api.ts` now prioritizes backend `{ error: "..." }`, falls back to `{ message: "..." }`, then status text.
@@ -181,12 +183,17 @@
 ## Control-Plane Storage Notes
 - Local (non-cluster) policies live in `/var/lib/neuwerk/local-policy-store`.
 - Local (non-cluster) service accounts and token metadata live in `/var/lib/neuwerk/service-accounts`.
+- `firewall sysdump [--output <path>]` produces a zero-config support archive (default `/tmp/neuwerk-sysdump-<timestamp>.tar.gz`) from well-known paths only, includes command/http snapshots plus `summary/*.json`, redacts bootstrap tokens/private keys/API auth signing material by default, and records `/var/lib/neuwerk/cluster/raft` as a manifest-only listing instead of copying the raw RocksDB data.
+- Cluster-global support bundles are leader-orchestrated over the protected HTTP API: `POST /api/v1/support/sysdump/cluster` fans out to per-node `POST /api/v1/support/sysdump/node`, and the final tarball embeds `nodes/<node-id>/sysdump.tar.gz` plus `cluster/overview.json`, `cluster/failures.json`, and optional `cluster/membership.json`.
+- `NEUWERK_LOCAL_DATA_DIR` overrides the local mutable-state root for non-cluster runs/tests; policy, service-account, integration, and audit-store paths are derived beneath that root.
 - Local integration records now seal `service_account_token` into `service_account_token_envelope`; plaintext tokens are not persisted to disk.
 - Local integration and service-account store files are written with explicit `0600` permissions (including atomic-temp files).
 - Local (non-cluster) API auth keyset lives in `/var/lib/neuwerk/http-tls/api-auth.json`.
 - `run_http_api` local-mode wiring now derives service-account/integration store paths from the local policy store root (sibling directories), so tests should use a temp local policy store root to keep all mutable HTTP API state writable and isolated.
 - Cluster mode stores policies, service accounts, API auth keyset, and CA material in the Raft-backed RocksDB store under `/var/lib/neuwerk/cluster/raft`.
 - HTTP TLS CA cert and private key should be persisted in local mode (proposed `http-tls/ca.key` alongside `ca.crt`).
+- Runtime logging now supports `NEUWERK_LOG_LEVEL` and `NEUWERK_LOG_FORMAT=plain|json`; redact secrets in logs with `firewall::logging::redact_secret(...)` instead of printing raw tokens or keys.
+- Strict lint gating now runs via `make test.clippy`, which executes `cargo clippy --workspace --all-targets --no-default-features --no-deps -- -D warnings`; keep new code and test helpers clean under that target.
 - TLS intercept CA local files are `http-tls/intercept-ca.crt` and `http-tls/intercept-ca.key`; cluster migration seeds them into Raft keys `settings/tls_intercept/ca_cert_pem` and `settings/tls_intercept/ca_key_envelope` when present.
 - Policy rebuilds clear the DNS allowlist so deny updates take effect immediately.
 - Policy rebuilds bump a generation counter so the dataplane re-evaluates existing flows on their next packet (soft-cut enforcement).

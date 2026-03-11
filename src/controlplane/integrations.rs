@@ -689,7 +689,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<Option<T>>
 }
 
 fn to_io_err<E: std::fmt::Display>(err: E) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, err.to_string())
+    io::Error::other(err.to_string())
 }
 
 #[cfg(test)]
@@ -863,5 +863,168 @@ mod tests {
         assert_eq!(item_mode, 0o600);
         assert_eq!(index_mode, 0o600);
         assert_eq!(key_mode, 0o600);
+    }
+
+    #[tokio::test]
+    async fn disk_store_persists_across_restart_and_recovers_token_envelope() {
+        let dir = TempDir::new().unwrap();
+        let base_dir = dir.path().join("integrations");
+
+        let store = IntegrationStore::local(base_dir.clone());
+        let created = store
+            .create_kubernetes(
+                "prod".to_string(),
+                "https://127.0.0.1:6443".to_string(),
+                "ca-1".to_string(),
+                "token-1".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let restarted = IntegrationStore::local(base_dir.clone());
+        let recovered = restarted
+            .get_by_name_kind("prod", IntegrationKind::Kubernetes)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.id, created.id);
+        assert_eq!(recovered.api_server_url, "https://127.0.0.1:6443");
+        assert_eq!(recovered.ca_cert_pem, "ca-1");
+        assert_eq!(recovered.service_account_token, "token-1");
+
+        let updated = restarted
+            .update_kubernetes(
+                "prod",
+                "https://10.0.0.20:6443".to_string(),
+                "ca-2".to_string(),
+                "token-2".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.id, created.id);
+
+        let restarted_again = IntegrationStore::local(base_dir.clone());
+        let final_record = restarted_again
+            .get_by_name_kind("prod", IntegrationKind::Kubernetes)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_record.id, created.id);
+        assert_eq!(final_record.api_server_url, "https://10.0.0.20:6443");
+        assert_eq!(final_record.ca_cert_pem, "ca-2");
+        assert_eq!(final_record.service_account_token, "token-2");
+
+        let records = restarted_again.list_records().await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, created.id);
+    }
+
+    #[test]
+    fn disk_store_write_record_returns_io_error_when_integrations_path_is_blocked() {
+        let dir = TempDir::new().unwrap();
+        let store = IntegrationDiskStore::new(dir.path().join("integrations"));
+        fs::create_dir_all(store.base_dir()).unwrap();
+        fs::write(store.base_dir().join("integrations"), b"not-a-directory").unwrap();
+        let record = IntegrationRecord::new_kubernetes(
+            "prod".to_string(),
+            "https://127.0.0.1:6443".to_string(),
+            "ca".to_string(),
+            "secret-token".to_string(),
+        )
+        .unwrap();
+
+        let err = store
+            .write_record(&record)
+            .expect_err("expected blocked integrations path to fail");
+        assert!(matches!(
+            err.kind(),
+            io::ErrorKind::AlreadyExists | io::ErrorKind::NotADirectory
+        ));
+    }
+
+    #[test]
+    fn disk_store_reads_legacy_plaintext_record_and_ignores_unknown_fields() {
+        let dir = TempDir::new().unwrap();
+        let store = IntegrationDiskStore::new(dir.path().join("integrations"));
+        store.ensure().unwrap();
+
+        let id = Uuid::new_v4();
+        let record_path = store.item_path(id);
+        let index = serde_json::json!({
+            "integrations": [{
+                "id": id,
+                "created_at": "2026-03-09T12:00:00Z",
+                "name": "prod",
+                "kind": "kubernetes",
+                "ignored_meta": true
+            }],
+            "ignored_index_field": "compat"
+        });
+        fs::write(
+            store.index_path(),
+            serde_json::to_vec_pretty(&index).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &record_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "id": id,
+                "created_at": "2026-03-09T12:00:00Z",
+                "name": "prod",
+                "kind": "kubernetes",
+                "api_server_url": "https://127.0.0.1:6443",
+                "ca_cert_pem": "legacy-ca",
+                "service_account_token": "legacy-token",
+                "ignored_record_field": { "future": true }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let records = store.list_records().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, id);
+        assert_eq!(records[0].name, "prod");
+        assert_eq!(records[0].ca_cert_pem, "legacy-ca");
+        assert_eq!(records[0].service_account_token, "legacy-token");
+    }
+
+    #[test]
+    fn stored_record_reads_legacy_plaintext_without_creating_secret_key() {
+        let dir = TempDir::new().unwrap();
+        let sealer = IntegrationSecretSealer::local(dir.path());
+        let stored: StoredIntegrationRecord = serde_json::from_value(serde_json::json!({
+            "id": Uuid::new_v4(),
+            "created_at": "2026-03-09T12:00:00Z",
+            "name": "prod",
+            "kind": "kubernetes",
+            "api_server_url": "https://127.0.0.1:6443",
+            "ca_cert_pem": "legacy-ca",
+            "service_account_token": "legacy-token"
+        }))
+        .unwrap();
+
+        let loaded = stored.into_record(&sealer).unwrap();
+        assert_eq!(loaded.service_account_token, "legacy-token");
+        assert!(!dir.path().join("secret.key").exists());
+    }
+
+    #[test]
+    fn stored_record_prefers_envelope_over_legacy_plaintext_during_mixed_version_upgrade() {
+        let dir = TempDir::new().unwrap();
+        let sealer = IntegrationSecretSealer::local(dir.path());
+        let record = IntegrationRecord::new_kubernetes(
+            "prod".to_string(),
+            "https://127.0.0.1:6443".to_string(),
+            "ca".to_string(),
+            "sealed-token".to_string(),
+        )
+        .unwrap();
+
+        let mut stored = StoredIntegrationRecord::from_record(&record, &sealer).unwrap();
+        stored.service_account_token = Some("stale-legacy-token".to_string());
+
+        let loaded = stored.into_record(&sealer).unwrap();
+        assert_eq!(loaded.service_account_token, "sealed-token");
     }
 }

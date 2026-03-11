@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_outbound_no_snat(
     pkt: &mut Packet,
     state: &mut EngineState,
@@ -33,18 +34,6 @@ pub(super) fn handle_outbound_no_snat(
     let mut current_generation = state.current_policy_generation();
     let audit = state.audit.clone();
     if state.flows.get_entry(&flow).is_none() {
-        if state.is_draining() {
-            if let Some(metrics) = &state.metrics {
-                metrics.observe_dp_packet(
-                    "outbound",
-                    proto_label(proto),
-                    "deny",
-                    "default",
-                    pkt.len(),
-                );
-            }
-            return Action::Drop;
-        }
         let (evaluation, generation) = match state.policy.read() {
             Ok(lock) => (
                 evaluate_policy_outcome(&lock, &meta, None, &state.tls_verifier),
@@ -243,7 +232,7 @@ pub(super) fn handle_outbound_no_snat(
     };
 
     if let Some(drop_group) = policy_drop_group {
-        remove_flow_state(state, &flow, now);
+        remove_flow_state(state, &flow, now, "policy_drop");
         if policy_drop_intercept_requires_service {
             if let Some(action) =
                 maybe_intercept_fail_closed_rst(pkt, state, &drop_group, "outbound")
@@ -313,6 +302,7 @@ pub(super) fn is_dns_target_outbound_flow(
     state.dns_target_ips.contains(&dst_ip)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_outbound_dns_target(
     pkt: &mut Packet,
     state: &mut EngineState,
@@ -382,6 +372,7 @@ pub(super) fn handle_outbound_dns_target(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_inbound_no_snat(
     pkt: &mut Packet,
     state: &mut EngineState,
@@ -512,7 +503,7 @@ pub(super) fn handle_inbound_no_snat(
     };
 
     if let Some(drop_group) = policy_drop_group {
-        remove_flow_state(state, &flow, now);
+        remove_flow_state(state, &flow, now, "policy_drop");
         if let Some(metrics) = &metrics {
             metrics.observe_dp_packet(
                 "inbound",

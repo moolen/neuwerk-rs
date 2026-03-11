@@ -7,3 +7,4 @@ export * from './types/audit';
 export * from './types/auth';
 export * from './types/serviceAccounts';
 export * from './types/settings';
+export * from './types/sso';
