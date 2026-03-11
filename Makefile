@@ -1,4 +1,4 @@
-.PHONY: build test test.clippy test.integration test.integration.sso test.security fuzz.check fuzz.smoke fuzz.nightly ha.up ha.down dpdk.prepare package.target.validate package.image.bundle package.image.qemu-key package.image.validate package.image.build.qemu package.image.build.aws package.image.build.azure package.image.build.gcp package.image.release-manifest package.image.release-assets
+.PHONY: build test test.clippy test.integration test.integration.sso test.security fuzz.check fuzz.smoke fuzz.nightly ha.up ha.down dpdk.prepare package.target.validate package.image.bundle package.image.prebuilt-bundle package.image.qemu-key package.image.validate package.image.build.qemu package.image.build.aws package.image.build.azure package.image.build.gcp package.image.release-manifest package.image.release-assets
 
 DPDK_VERSION := $(shell cat third_party/dpdk/VERSION 2>/dev/null)
 DPDK_INSTALL := third_party/dpdk/install/$(DPDK_VERSION)
@@ -55,6 +55,13 @@ package.image.bundle: package.target.validate
 	NEUWERK_BUNDLE_OUTPUT=$(PACKER_ARTIFACT_DIR)/source/$(TARGET).tar.gz \
 		packer/scripts/create-source-bundle.sh
 
+package.image.prebuilt-bundle: package.target.validate
+	NEUWERK_REPO_ROOT=$(CURDIR) \
+	NEUWERK_PREBUILT_BUNDLE_OUTPUT=$(PACKER_ARTIFACT_DIR)/source/$(TARGET)-prebuilt.tar.gz \
+	NEUWERK_TARGET=$(TARGET) \
+	NEUWERK_USE_PREBUILT_ARTIFACTS=$(if $(USE_PREBUILT_ARTIFACTS),$(USE_PREBUILT_ARTIFACTS),false) \
+		packer/scripts/create-prebuilt-bundle.sh
+
 package.image.qemu-key:
 	@mkdir -p $(QEMU_SSH_KEY_DIR)
 	@if [ ! -f "$(QEMU_SSH_PRIVATE_KEY)" ]; then \
@@ -72,7 +79,7 @@ package.image.validate: package.target.validate
 		-var "git_revision=$(GIT_REVISION)" \
 		$(PACKER_DIR)
 
-package.image.build.qemu: package.image.bundle package.image.qemu-key
+package.image.build.qemu: package.image.bundle package.image.prebuilt-bundle package.image.qemu-key
 	@command -v $(PACKER) >/dev/null || { echo "packer is required" >&2; exit 1; }
 	rm -rf $(PACKER_ARTIFACT_DIR)/qemu/$(TARGET)
 	$(PACKER) init $(PACKER_DIR)

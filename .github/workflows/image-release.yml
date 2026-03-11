@@ -111,6 +111,16 @@ jobs:
           make dpdk.prepare
           bash packaging/scripts/build_firewall.sh --target "$TARGET" --profile release
 
+      - name: Resolve qemu accelerator
+        id: qemu
+        run: |
+          accelerator="${{ inputs.qemu_accelerator }}"
+          if [[ "$accelerator" == "kvm" && ! -e /dev/kvm ]]; then
+            echo "Requested qemu_accelerator=kvm but /dev/kvm is unavailable on this runner; falling back to none."
+            accelerator="none"
+          fi
+          echo "accelerator=$accelerator" >>"$GITHUB_OUTPUT"
+
       - name: Build qemu image
         run: |
           make package.image.build.qemu \
@@ -118,7 +128,7 @@ jobs:
             RELEASE_VERSION="$RELEASE_VERSION" \
             GIT_REVISION="${{ steps.git.outputs.revision }}" \
             PACKER=packer \
-            QEMU_ACCELERATOR="${{ inputs.qemu_accelerator }}" \
+            QEMU_ACCELERATOR="${{ steps.qemu.outputs.accelerator }}" \
             USE_PREBUILT_ARTIFACTS=true
 
       - name: Prepare GitHub release assets
