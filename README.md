@@ -1,116 +1,98 @@
-# Firewall MVP (Rust)
+# DNS-Aware Egress Firewall
 
-This repository bootstraps a high-performance firewall MVP with a strict separation between dataplane (DPDK) and control plane (kernel networking). The current focus is correctness, determinism, and testability.
+Most cloud environments accidentally allow outbound traffic to the entire internet.
 
-## Structure
-- `src/dataplane/` contains packet parsing, NAT, flow tracking, and policy checks.
-- `src/controlplane/` contains DNS proxy logic and cluster stubs.
-- `src/dataplane/dpdk_adapter.rs` is the only place DPDK FFI may live.
-- `src/dataplane/soft_adapter.rs` implements the software dataplane using a Linux TUN/TAP interface.
+Not because teams are careless — but because modern infrastructure makes it hard to do the right thing. SaaS endpoints sit behind CDNs, IPs change constantly, and traditional firewalls still operate on static CIDR lists.
 
-## Build
-Default build does not require DPDK.
+Meanwhile, policy is written in hostnames:
+`api.stripe.com`, `*.github.com`, `s3.amazonaws.com`.
 
-```bash
-cd firewall
-cargo build
-```
+This project bridges that gap.
 
-The software dataplane uses `--data-plane-mode tun|tap` (default `tun`) and requires a TUN/TAP device on Linux.
+It turns DNS context into enforceable network policy by binding resolution events to packet filters implemented in a **high-performance DPDK dataplane**. The result is an egress firewall that understands **names, services, and intent**, not just IPs.
 
-### DPDK Build (vendored)
-`make build.dpdk` builds a pinned DPDK release from source and then builds the firewall with the `dpdk` feature.
+No proxies. No application changes. No vendor lock-in.
 
-```bash
-make build.dpdk
-```
+---
 
-Notes:
-- The DPDK version is pinned in `third_party/dpdk/VERSION`.
-- The build installs DPDK into `third_party/dpdk/install/<version>`.
-- To use a custom DPDK install, set `DPDK_DIR=/path/to/dpdk-prefix` before running `make build.dpdk`.
-- To rebuild an existing install, set `DPDK_FORCE_REBUILD=1`.
-- Default build disables `net/ionic` due to GCC 15 type conflicts; override via `DPDK_DISABLE_DRIVERS=...` or `DPDK_MESON_ARGS`.
-- Local patches in `third_party/dpdk/patches/*.patch` are applied during the vendored build.
-- Build dependencies: `meson`, `ninja`, `python3`, `pkg-config`, `libnuma` headers, and `pyelftools` (python module).
+## Why This Exists
 
-## Runtime
-The binary requires the management interface, dataplane interface, DNS upstream, and DNS listen flags.
+Most egress controls today fall into one of three categories:
 
-Notes:
-- `--management-interface` and `--data-plane-interface` must be different.
-- DPDK mode requires DHCP on the dataplane NIC and the process exits if DHCP fails.
-- Software mode can override SNAT with `--snat <ipv4>` (useful for tests); production SNAT IPs are still expected to come from DHCP in DPDK mode.
+• **IP-based firewalls** — incompatible with modern SaaS infrastructure
+• **HTTP proxies** — operationally painful and incomplete
+• **cloud-provider firewalls** — expensive and inconsistent across providers
 
-## Tests
-All tests run without NIC hardware or hugepages.
+The result is predictable: many environments quietly allow `0.0.0.0/0` on port 443.
 
-```bash
-cd firewall
-cargo test
-```
+This project provides a **programmable, DNS-aware enforcement layer** designed for modern infrastructure.
 
-Integration e2e harness (Linux root required):
+---
 
-```bash
-sudo make test.integration
-```
+## Architecture
 
-## Local HA Lab (netns)
-Spin up a 3-node control-plane cluster with a software dataplane and route your host traffic through `fw1` using Linux network namespaces.
+The system follows a strict **control-plane / data-plane separation**.
 
-Prereqs:
-- Linux + iproute2
-- iptables
-- sudo
+The **dataplane** is implemented with **DPDK**, allowing high-throughput packet inspection and filtering without relying on kernel networking stacks.
 
-Run:
+The **control plane** exposes an API that allows policy to be managed programmatically. Policies can be defined through infrastructure pipelines and automatically translated into runtime firewall rules.
 
-```bash
-make ha.up
-```
+This architecture provides:
 
-Tear down and restore host routing:
+* high throughput
+* deterministic performance
+* programmable policy management
+* operational separation between enforcement and configuration
 
-```bash
-make ha.down
-```
+---
 
-Notes:
-- UI: `https://192.168.100.11:8443/` (self-signed TLS; use `-k` for curl)
-- Health: `https://192.168.100.11:8443/health`
-- Logs: `/tmp/neuwerk-ha/logs/`
-- Default policy is `allow` for safety; override via `DEFAULT_POLICY=deny make ha.up`.
-- To test DNS allowlist behavior, point your host DNS at `192.168.100.11`.
+## Key Features
 
-## API Auth
-The HTTP API requires `Authorization: Bearer <jwt>` for `/v1/*`. `/health` and `/metrics` stay unauthenticated.
+### DNS-aware policy enforcement
 
-CLI (mTLS to cluster RPC):
+DNS responses are translated into short-lived IP sets and enforced in the DPDK dataplane.
 
-```bash
-firewall auth key rotate --cluster-addr <ip:port>
-firewall auth key list --cluster-addr <ip:port>
-firewall auth key retire <kid> --cluster-addr <ip:port>
-firewall auth token mint --sub <id> --cluster-addr <ip:port> [--ttl 90d] [--kid <kid>]
-```
+### TLS metadata filtering
 
-## Service Accounts
-Service account tokens are managed over the HTTP API and can be used for UI/API access.
+Policies can match TLS metadata such as **SNI and certificate attributes** without terminating TLS.
 
-Endpoints:
-- `POST /v1/service-accounts` (create)
-- `GET /v1/service-accounts` (list)
-- `DELETE /v1/service-accounts/{id}` (disable + revoke tokens)
-- `POST /v1/service-accounts/{id}/tokens` (mint token; default TTL 90d or `eternal: true`)
-- `GET /v1/service-accounts/{id}/tokens` (list token metadata)
-- `DELETE /v1/service-accounts/{id}/tokens/{token_id}` (revoke)
+### Optional TLS deep packet inspection
 
-## Observability
-Prometheus metrics are exposed on `/metrics` (default `:8080`). See `docs/observability.md` for metric schema, label policy, and scrape examples.
+For environments that require deeper inspection, encrypted flows can be analyzed while maintaining a transparent network path.
 
-## Notes
-- IPv4-only MVP with symmetric NAT.
-- Control plane uses Tokio for async networking.
-- DNS parsing and allowlist management live in the control plane only.
-- DNS allowlist entries are garbage-collected when idle and no active flows remain (`--dns-allowlist-idle-secs`, interval via `--dns-allowlist-gc-interval-secs`).
+### Kubernetes integration
+
+Designed to integrate with Kubernetes networking and container workloads while enforcing policy outside the node trust boundary.
+
+### Infrastructure-as-Code control plane
+
+Policy configuration integrates naturally with **Terraform and other IaC workflows**.
+
+### Cloud and vendor agnostic
+
+Runs anywhere Linux runs:
+
+• AWS
+• GCP
+• Azure
+• on-premises
+• hybrid environments
+
+No dependency on proprietary cloud firewall products.
+
+---
+
+## What This Is (and Isn't)
+
+This is not another heavyweight NGFW appliance.
+
+It’s a **programmable, API-driven egress firewall** designed for modern infrastructure:
+
+• DNS-aware policy
+• high-performance DPDK dataplane
+• strict control-plane separation
+• cloud-agnostic deployment
+
+The goal is simple:
+
+**make default-deny egress practical again.**
