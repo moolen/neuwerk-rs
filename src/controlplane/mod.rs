@@ -17,6 +17,7 @@ pub mod policy_repository;
 pub mod policy_store;
 pub mod ready;
 pub mod service_accounts;
+pub mod sso;
 pub mod trafficd;
 pub mod wiretap;
 

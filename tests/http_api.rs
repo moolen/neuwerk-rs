@@ -170,5 +170,7 @@ mod cluster_audit_cases;
 mod lifecycle_cases;
 #[path = "http_api/readiness_policy_cases.rs"]
 mod readiness_policy_cases;
+#[path = "http_api/sso_oidc_cases.rs"]
+mod sso_oidc_cases;
 #[path = "http_api/wiretap_auth_cases.rs"]
 mod wiretap_auth_cases;
