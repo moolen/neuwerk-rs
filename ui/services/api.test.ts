@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { APIError, loginWithToken, logout, subscribeToWiretap, whoAmI } from './api';
+import {
+  APIError,
+  buildSsoStartPath,
+  createSsoProvider,
+  downloadClusterSysdump,
+  listSupportedSsoProviders,
+  loginWithToken,
+  logout,
+  subscribeToWiretap,
+  whoAmI,
+} from './api';
 
 describe('api auth transport behavior', () => {
   beforeEach(() => {
@@ -107,6 +117,58 @@ describe('api auth transport behavior', () => {
       message: 'bad token',
     } satisfies Partial<APIError>);
   });
+
+  it('builds SSO start path with encoded next path', () => {
+    expect(buildSsoStartPath('provider-1', '/policies?tab=active')).toBe(
+      '/api/v1/auth/sso/provider-1/start?next=%2Fpolicies%3Ftab%3Dactive'
+    );
+  });
+
+  it('loads supported SSO providers via GET', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => [{ id: 'p1', name: 'Google', kind: 'google' }],
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const providers = await listSupportedSsoProviders();
+
+    expect(providers).toEqual([{ id: 'p1', name: 'Google', kind: 'google' }]);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/auth/sso/providers', {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+
+  it('creates SSO providers via POST', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'p1', name: 'Google', kind: 'google' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createSsoProvider({
+      name: 'Google',
+      kind: 'google',
+      client_id: 'cid',
+      client_secret: 'secret',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/settings/sso/providers', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Google',
+        kind: 'google',
+        client_id: 'cid',
+        client_secret: 'secret',
+      }),
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
 });
 
 describe('wiretap stream auth transport', () => {
@@ -139,5 +201,59 @@ describe('wiretap stream auth transport', () => {
 
     unsubscribe();
     expect(close).toHaveBeenCalledOnce();
+  });
+});
+
+describe('support bundle download transport', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('downloads the cluster sysdump with same-origin credentials and filename parsing', async () => {
+    const blob = new Blob(['sysdump'], { type: 'application/gzip' });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      blob: async () => blob,
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-disposition'
+            ? 'attachment; filename="neuwerk-cluster-sysdump.tar.gz"'
+            : null,
+      },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await downloadClusterSysdump();
+
+    expect(result).toEqual({
+      blob,
+      filename: 'neuwerk-cluster-sysdump.tar.gz',
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/support/sysdump/cluster', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {},
+    });
+  });
+
+  it('surfaces text error bodies for cluster sysdump download failures', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      text: async () => 'cluster sysdump requires cluster mode',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(downloadClusterSysdump()).rejects.toMatchObject({
+      name: 'APIError',
+      status: 503,
+      message: 'cluster sysdump requires cluster mode',
+    } satisfies Partial<APIError>);
   });
 });

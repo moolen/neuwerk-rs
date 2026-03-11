@@ -40,6 +40,7 @@ async fn http_api_audit_findings_local_returns_deduped_items() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         token_path: dir.path().join("token.json"),
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -175,6 +176,7 @@ async fn http_api_audit_findings_cluster_aggregates_and_returns_partial() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(seed_ip),
         token_path: seed_token.clone(),
+        external_url: None,
         cluster_tls_dir: Some(seed_dir.path().join("tls")),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -190,6 +192,7 @@ async fn http_api_audit_findings_cluster_aggregates_and_returns_partial() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(join_ip),
         token_path: join_token.clone(),
+        external_url: None,
         cluster_tls_dir: Some(join_dir.path().join("tls")),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -382,6 +385,7 @@ async fn http_api_audit_findings_persist_across_restart() {
         san_entries: Vec::new(),
         management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         token_path: token_path.clone(),
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
@@ -390,12 +394,14 @@ async fn http_api_audit_findings_persist_across_restart() {
     let base_cfg = cfg.clone();
     let start_server = || {
         let cfg = base_cfg.clone();
+        let shutdown = http_api::HttpApiShutdown::new();
+        let shutdown_for_server = shutdown.clone();
         let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
         let local_store = PolicyDiskStore::new(local_store_dir.clone());
         let audit_store = AuditStore::new(audit_dir.clone(), max_bytes);
         let metrics = Metrics::new().unwrap();
-        tokio::spawn(async move {
-            http_api::run_http_api(
+        let server = tokio::spawn(async move {
+            http_api::run_http_api_with_shutdown(
                 cfg,
                 policy_store,
                 local_store,
@@ -405,17 +411,19 @@ async fn http_api_audit_findings_persist_across_restart() {
                 None,
                 None,
                 metrics,
+                shutdown_for_server,
             )
             .await
             .map_err(|err| format!("http api error: {err}"))
-        })
+        });
+        (shutdown, server)
     };
 
     let seed_store = AuditStore::new(audit_dir.clone(), max_bytes);
     seed_store.ingest(event, None, "node-a");
     drop(seed_store);
 
-    let server = start_server();
+    let (shutdown, server) = start_server();
     wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(2))
         .await
         .unwrap();
@@ -447,13 +455,20 @@ async fn http_api_audit_findings_persist_across_restart() {
     let payload: AuditQueryResponse = serde_json::from_str(&body).unwrap();
     assert!(!payload.items.is_empty());
 
-    server.abort();
-    let _ = server.await;
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("http audit restart shutdown timeout")
+        .expect("http audit restart join")
+        .expect("http audit restart result");
     wait_for_tcp_closed(bind_addr, Duration::from_secs(2))
         .await
         .unwrap();
+    wait_for_tcp_closed(metrics_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
 
-    let server = start_server();
+    let (shutdown, server) = start_server();
     wait_for_tcp(bind_addr, Duration::from_secs(2))
         .await
         .unwrap();
@@ -473,5 +488,10 @@ async fn http_api_audit_findings_persist_across_restart() {
         .iter()
         .any(|item| item.source_group == "persist" && item.count >= 1));
 
-    server.abort();
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("http audit restart final shutdown timeout")
+        .expect("http audit restart final join")
+        .expect("http audit restart final result");
 }

@@ -46,6 +46,8 @@ rustls-native-certs = "0.7"
 tokio-stream = { version = "0.1", features = ["sync"] }
 h2 = "0.4"
 bytes = "1"
+flate2 = "1"
+tar = "0.4"
 dpdk-sys = { version = "0.1.5", optional = true }
 include_dir = "0.7"
 mime_guess = "2"

@@ -72,4 +72,32 @@ export async function fetchText(path: string, options?: RequestInit): Promise<st
   return res.text();
 }
 
+export async function fetchBlob(
+  path: string,
+  options?: RequestInit
+): Promise<{ blob: Blob; filename: string | null }> {
+  const headers: Record<string, string> = {
+    ...(options?.headers as Record<string, string>),
+  };
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    credentials: options?.credentials ?? 'same-origin',
+    headers,
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => res.statusText);
+    throw new APIError(res.status, body || res.statusText);
+  }
+
+  const blob = await res.blob();
+  const contentDisposition = res.headers.get('content-disposition');
+  const filenameMatch = contentDisposition?.match(/filename=\"([^\"]+)\"/i);
+  return {
+    blob,
+    filename: filenameMatch?.[1] ?? null,
+  };
+}
+
 export { API_BASE, extractApiErrorMessage };

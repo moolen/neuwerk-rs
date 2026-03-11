@@ -30,8 +30,19 @@ export {
   revokeServiceAccountToken,
 } from './apiClient/serviceAccounts';
 export {
+  downloadClusterSysdump,
   generateTlsInterceptCa,
   getTlsInterceptCaCertPem,
   getTlsInterceptCaStatus,
   updateTlsInterceptCa,
 } from './apiClient/settings';
+export {
+  buildSsoStartPath,
+  createSsoProvider,
+  deleteSsoProvider,
+  getSsoProvider,
+  listSsoProviders,
+  listSupportedSsoProviders,
+  testSsoProvider,
+  updateSsoProvider,
+} from './apiClient/sso';

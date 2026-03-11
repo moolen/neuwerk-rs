@@ -4,8 +4,9 @@ use std::net::Ipv4Addr;
 use std::net::TcpListener;
 use std::time::Duration;
 
+use crate::controlplane::sso::{SsoProvider, SsoProviderKind, SsoStore};
 use crate::dataplane::policy::DefaultPolicy;
-use axum::http::{header::AUTHORIZATION, header::COOKIE, HeaderValue};
+use axum::http::{header::AUTHORIZATION, header::COOKIE, header::SET_COOKIE, HeaderValue, Method};
 use rcgen::{BasicConstraints, Certificate, CertificateParams, IsCa, SanType};
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -80,12 +81,14 @@ async fn proxy_stream_forwards_auth_header() {
     let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
     let local_store = PolicyDiskStore::new(dir.path().join("policies"));
     let service_accounts = ServiceAccountStore::local(dir.path().join("service-accounts"));
+    let sso = SsoStore::local(dir.path().join("sso"));
     let integrations = IntegrationStore::local(dir.path().join("integrations"));
     let metrics = Metrics::new().unwrap();
     let state = ApiState {
         policy_store,
         local_store,
         service_accounts,
+        sso,
         integrations,
         audit_store: None,
         cluster: None,
@@ -98,6 +101,7 @@ async fn proxy_stream_forwards_auth_header() {
         cluster_tls_dir: None,
         tls_dir: dir.path().join("http-tls"),
         token_path: dir.path().join("bootstrap-token"),
+        external_url: format!("https://{}", addr),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
         dns_map: None,
@@ -134,12 +138,14 @@ async fn auth_metrics_record_failures() {
     let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
     let local_store = PolicyDiskStore::new(dir.path().join("policies"));
     let service_accounts = ServiceAccountStore::local(dir.path().join("service-accounts"));
+    let sso = SsoStore::local(dir.path().join("sso"));
     let integrations = IntegrationStore::local(dir.path().join("integrations"));
     let metrics = Metrics::new().unwrap();
     let state = ApiState {
         policy_store,
         local_store,
         service_accounts,
+        sso,
         integrations,
         audit_store: None,
         cluster: None,
@@ -152,6 +158,7 @@ async fn auth_metrics_record_failures() {
         cluster_tls_dir: None,
         tls_dir: tls_dir.clone(),
         token_path: dir.path().join("bootstrap-token"),
+        external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
         dns_map: None,
@@ -276,12 +283,14 @@ async fn wiretap_query_token_is_rejected_and_cookie_auth_works() {
     let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
     let local_store = PolicyDiskStore::new(dir.path().join("policies"));
     let service_accounts = ServiceAccountStore::local(dir.path().join("service-accounts"));
+    let sso = SsoStore::local(dir.path().join("sso"));
     let integrations = IntegrationStore::local(dir.path().join("integrations"));
     let metrics = Metrics::new().unwrap();
     let state = ApiState {
         policy_store,
         local_store,
         service_accounts,
+        sso,
         integrations,
         audit_store: None,
         cluster: None,
@@ -294,6 +303,7 @@ async fn wiretap_query_token_is_rejected_and_cookie_auth_works() {
         cluster_tls_dir: None,
         tls_dir: tls_dir.clone(),
         token_path: dir.path().join("bootstrap-token"),
+        external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
         dns_map: None,
@@ -439,6 +449,7 @@ async fn auth_token_login_rate_limits_repeated_failures() {
         policy_store: PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24),
         local_store: PolicyDiskStore::new(dir.path().join("policies")),
         service_accounts: ServiceAccountStore::local(dir.path().join("service-accounts")),
+        sso: SsoStore::local(dir.path().join("sso")),
         integrations: IntegrationStore::local(dir.path().join("integrations")),
         audit_store: None,
         cluster: None,
@@ -451,6 +462,7 @@ async fn auth_token_login_rate_limits_repeated_failures() {
         cluster_tls_dir: None,
         tls_dir,
         token_path: dir.path().join("bootstrap-token"),
+        external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
         dns_map: None,
@@ -503,6 +515,7 @@ async fn auth_token_login_rate_limit_is_scoped_by_client_and_token() {
         policy_store: PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24),
         local_store: PolicyDiskStore::new(dir.path().join("policies")),
         service_accounts: ServiceAccountStore::local(dir.path().join("service-accounts")),
+        sso: SsoStore::local(dir.path().join("sso")),
         integrations: IntegrationStore::local(dir.path().join("integrations")),
         audit_store: None,
         cluster: None,
@@ -515,6 +528,7 @@ async fn auth_token_login_rate_limit_is_scoped_by_client_and_token() {
         cluster_tls_dir: None,
         tls_dir,
         token_path: dir.path().join("bootstrap-token"),
+        external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
         dns_map: None,
@@ -599,6 +613,7 @@ async fn auth_token_login_prefers_connect_info_over_forwarded_header() {
         policy_store: PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24),
         local_store: PolicyDiskStore::new(dir.path().join("policies")),
         service_accounts: ServiceAccountStore::local(dir.path().join("service-accounts")),
+        sso: SsoStore::local(dir.path().join("sso")),
         integrations: IntegrationStore::local(dir.path().join("integrations")),
         audit_store: None,
         cluster: None,
@@ -611,6 +626,7 @@ async fn auth_token_login_prefers_connect_info_over_forwarded_header() {
         cluster_tls_dir: None,
         tls_dir,
         token_path: dir.path().join("bootstrap-token"),
+        external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
         dns_map: None,
@@ -677,6 +693,7 @@ async fn auth_token_login_rejects_oversized_token_field() {
         policy_store: PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24),
         local_store: PolicyDiskStore::new(dir.path().join("policies")),
         service_accounts: ServiceAccountStore::local(dir.path().join("service-accounts")),
+        sso: SsoStore::local(dir.path().join("sso")),
         integrations: IntegrationStore::local(dir.path().join("integrations")),
         audit_store: None,
         cluster: None,
@@ -689,6 +706,7 @@ async fn auth_token_login_rejects_oversized_token_field() {
         cluster_tls_dir: None,
         tls_dir,
         token_path: dir.path().join("bootstrap-token"),
+        external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
         dns_map: None,
@@ -741,4 +759,392 @@ fn metrics_bind_guardrail_requires_override_for_public_bind() {
     assert!(parse_truthy_env("TrUe"));
     assert!(!parse_truthy_env("0"));
     assert!(!parse_truthy_env("false"));
+}
+
+fn test_auth_setup(dir: &TempDir) -> std::path::PathBuf {
+    let tls_dir = dir.path().join("http-tls");
+    std::fs::create_dir_all(&tls_dir).unwrap();
+    api_auth::ensure_local_keyset(&tls_dir).unwrap();
+    api_auth::local_keyset_path(&tls_dir)
+}
+
+fn mint_admin_token(keyset_path: &std::path::Path) -> String {
+    let keyset = api_auth::load_keyset_from_file(keyset_path)
+        .unwrap()
+        .expect("missing keyset");
+    api_auth::mint_token(&keyset, "sso-test-admin", None, None)
+        .unwrap()
+        .token
+}
+
+fn test_state(dir: &TempDir, keyset_path: std::path::PathBuf, metrics: Metrics) -> ApiState {
+    ApiState {
+        policy_store: PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24),
+        local_store: PolicyDiskStore::new(dir.path().join("policies")),
+        service_accounts: ServiceAccountStore::local(dir.path().join("service-accounts")),
+        sso: SsoStore::local(dir.path().join("sso")),
+        integrations: IntegrationStore::local(dir.path().join("integrations")),
+        audit_store: None,
+        cluster: None,
+        metrics,
+        proxy_client: None,
+        http_port: 8443,
+        auth_source: ApiAuthSource::Local(keyset_path),
+        auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
+        wiretap_hub: None,
+        cluster_tls_dir: None,
+        tls_dir: dir.path().join("http-tls"),
+        token_path: dir.path().join("bootstrap-token"),
+        external_url: "https://127.0.0.1:8443".to_string(),
+        tls_intercept_ca_ready: None,
+        tls_intercept_ca_generation: None,
+        dns_map: None,
+        readiness: None,
+    }
+}
+
+#[tokio::test]
+async fn sso_public_providers_only_returns_enabled() {
+    let dir = TempDir::new().unwrap();
+    let keyset_path = test_auth_setup(&dir);
+    let state = test_state(&dir, keyset_path, Metrics::new().unwrap());
+
+    let mut github = SsoProvider::new(
+        "GitHub".to_string(),
+        SsoProviderKind::Github,
+        "cid-gh".to_string(),
+        "secret-gh".to_string(),
+    )
+    .unwrap();
+    github.display_order = 2;
+    github.authorization_url = Some("http://127.0.0.1:5556/auth".to_string());
+    github.token_url = Some("http://127.0.0.1:5556/token".to_string());
+    github.userinfo_url = Some("http://127.0.0.1:5556/user".to_string());
+
+    let mut disabled = SsoProvider::new(
+        "Disabled".to_string(),
+        SsoProviderKind::Github,
+        "cid-disabled".to_string(),
+        "secret-disabled".to_string(),
+    )
+    .unwrap();
+    disabled.enabled = false;
+    disabled.display_order = 0;
+    disabled.authorization_url = Some("http://127.0.0.1:5556/auth".to_string());
+    disabled.token_url = Some("http://127.0.0.1:5556/token".to_string());
+    disabled.userinfo_url = Some("http://127.0.0.1:5556/user".to_string());
+
+    let mut google = SsoProvider::new(
+        "Google".to_string(),
+        SsoProviderKind::Google,
+        "cid-go".to_string(),
+        "secret-go".to_string(),
+    )
+    .unwrap();
+    google.display_order = 1;
+    google.issuer_url = Some("http://127.0.0.1:5556/dex".to_string());
+    google.authorization_url = Some("http://127.0.0.1:5556/auth".to_string());
+    google.token_url = Some("http://127.0.0.1:5556/token".to_string());
+    google.userinfo_url = Some("http://127.0.0.1:5556/userinfo".to_string());
+
+    state.sso.write_provider(&github).await.unwrap();
+    state.sso.write_provider(&disabled).await.unwrap();
+    state.sso.write_provider(&google).await.unwrap();
+
+    let app = Router::new()
+        .route(
+            "/api/v1/auth/sso/providers",
+            get(auth_sso_supported_providers),
+        )
+        .with_state(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/sso/providers")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let providers: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(providers.len(), 2);
+    assert_eq!(
+        providers[0].get("name").and_then(serde_json::Value::as_str),
+        Some("Google")
+    );
+    assert_eq!(
+        providers[1].get("name").and_then(serde_json::Value::as_str),
+        Some("GitHub")
+    );
+}
+
+#[tokio::test]
+async fn sso_start_sets_state_cookie_and_redirects() {
+    let dir = TempDir::new().unwrap();
+    let keyset_path = test_auth_setup(&dir);
+    let state = test_state(&dir, keyset_path, Metrics::new().unwrap());
+
+    let mut provider = SsoProvider::new(
+        "GitHub".to_string(),
+        SsoProviderKind::Github,
+        "cid-gh".to_string(),
+        "secret-gh".to_string(),
+    )
+    .unwrap();
+    provider.authorization_url = Some("http://127.0.0.1:5556/auth".to_string());
+    provider.token_url = Some("http://127.0.0.1:5556/token".to_string());
+    provider.userinfo_url = Some("http://127.0.0.1:5556/user".to_string());
+    state.sso.write_provider(&provider).await.unwrap();
+
+    let app = Router::new()
+        .route("/api/v1/auth/sso/:id/start", get(auth_sso_start))
+        .with_state(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/auth/sso/{}/start?next=%2Fpolicies",
+                    provider.id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FOUND);
+
+    let location = resp
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(location.starts_with("http://127.0.0.1:5556/auth?"));
+    assert!(location.contains("response_type=code"));
+    assert!(location.contains("client_id=cid-gh"));
+    assert!(
+        location.contains("redirect_uri=https%3A%2F%2F127.0.0.1%3A8443%2Fapi%2Fv1%2Fauth%2Fsso")
+    );
+    assert!(location.contains("state="));
+
+    let cookie = resp.headers().get(SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(cookie.contains("neuwerk_sso="));
+    assert!(cookie.contains("HttpOnly"));
+    assert!(cookie.contains("SameSite=Lax"));
+}
+
+#[tokio::test]
+async fn sso_callback_missing_cookie_denied_and_metric_recorded() {
+    let dir = TempDir::new().unwrap();
+    let keyset_path = test_auth_setup(&dir);
+    let metrics = Metrics::new().unwrap();
+    let state = test_state(&dir, keyset_path, metrics.clone());
+
+    let mut provider = SsoProvider::new(
+        "GitHub".to_string(),
+        SsoProviderKind::Github,
+        "cid-gh".to_string(),
+        "secret-gh".to_string(),
+    )
+    .unwrap();
+    provider.authorization_url = Some("http://127.0.0.1:5556/auth".to_string());
+    provider.token_url = Some("http://127.0.0.1:5556/token".to_string());
+    provider.userinfo_url = Some("http://127.0.0.1:5556/user".to_string());
+    state.sso.write_provider(&provider).await.unwrap();
+
+    let app = Router::new()
+        .route("/api/v1/auth/sso/:id/callback", get(auth_sso_callback))
+        .with_state(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/auth/sso/{}/callback?code=abc&state=def",
+                    provider.id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let cookie = resp.headers().get(SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(cookie.contains("neuwerk_sso=; Max-Age=0"));
+
+    let rendered = metrics.render().unwrap();
+    assert!(rendered.contains("http_auth_sso_total"));
+    assert!(rendered.contains("reason=\"missing_state_cookie\""));
+    assert!(rendered.contains("provider=\"none\""));
+}
+
+#[tokio::test]
+async fn sso_settings_create_and_update_redacts_and_preserves_secret() {
+    let dir = TempDir::new().unwrap();
+    let keyset_path = test_auth_setup(&dir);
+    let admin_token = mint_admin_token(&keyset_path);
+    let state = test_state(&dir, keyset_path, Metrics::new().unwrap());
+
+    let app = Router::new()
+        .route(
+            "/api/v1/settings/sso/providers",
+            get(list_sso_providers).post(create_sso_provider),
+        )
+        .route(
+            "/api/v1/settings/sso/providers/:id",
+            get(get_sso_provider).put(update_sso_provider),
+        )
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::auth_middleware,
+        ));
+
+    let create_payload = serde_json::json!({
+        "name": "GitHub SSO",
+        "kind": "github",
+        "client_id": "cid-gh",
+        "client_secret": "super-secret",
+        "authorization_url": "http://127.0.0.1:5556/auth",
+        "token_url": "http://127.0.0.1:5556/token",
+        "userinfo_url": "http://127.0.0.1:5556/user",
+        "default_role": "admin"
+    });
+    let create_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/settings/sso/providers")
+                .header(CONTENT_TYPE, "application/json")
+                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::from(create_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_body = axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&create_body).unwrap();
+    assert_eq!(
+        created
+            .get("client_secret_configured")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(created.get("client_secret").is_none());
+
+    let provider_id = created
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap()
+        .to_string();
+
+    let update_payload = serde_json::json!({
+        "name": "GitHub SSO Updated"
+    });
+    let update_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(format!("/api/v1/settings/sso/providers/{provider_id}"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::from(update_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update_resp.status(), StatusCode::OK);
+
+    let stored_id = Uuid::parse_str(&provider_id).unwrap();
+    let stored = state.sso.get_provider(stored_id).await.unwrap().unwrap();
+    assert_eq!(stored.name, "GitHub SSO Updated");
+    assert_eq!(stored.client_secret, "super-secret");
+}
+
+#[tokio::test]
+async fn cluster_sysdump_requires_cluster_mode() {
+    let dir = TempDir::new().unwrap();
+    let keyset_path = test_auth_setup(&dir);
+    let admin_token = mint_admin_token(&keyset_path);
+    let state = test_state(&dir, keyset_path, Metrics::new().unwrap());
+
+    let app = Router::new()
+        .route("/api/v1/support/sysdump/cluster", post(cluster_sysdump))
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            auth::auth_middleware,
+        ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/support/sysdump/cluster")
+                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        payload.get("error").and_then(serde_json::Value::as_str),
+        Some("cluster sysdump requires cluster mode")
+    );
+}
+
+#[tokio::test]
+async fn node_sysdump_requires_internal_fanout_header() {
+    let dir = TempDir::new().unwrap();
+    let keyset_path = test_auth_setup(&dir);
+    let admin_token = mint_admin_token(&keyset_path);
+    let state = test_state(&dir, keyset_path, Metrics::new().unwrap());
+
+    let app = Router::new()
+        .route("/api/v1/support/sysdump/node", post(node_sysdump))
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            auth::auth_middleware,
+        ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/support/sysdump/node")
+                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        payload.get("error").and_then(serde_json::Value::as_str),
+        Some("cluster sysdump fanout header required")
+    );
 }
