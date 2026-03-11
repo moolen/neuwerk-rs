@@ -1,0 +1,84 @@
+name: Image Validation
+
+on:
+  pull_request:
+    branches: ["master"]
+    paths:
+      - ".github/workflows/image-validation.yml"
+      - "AGENTS.md"
+      - "Makefile"
+      - "packer/**"
+      - "packaging/**"
+      - "scripts/build-dpdk.sh"
+      - "third_party/dpdk/VERSION"
+      - "third_party/dpdk/patches/**"
+      - "cloud-tests/aws/terraform/**"
+      - "cloud-tests/azure/terraform/**"
+      - "cloud-tests/gcp/terraform/**"
+  push:
+    branches: ["master"]
+    paths:
+      - ".github/workflows/image-validation.yml"
+      - "AGENTS.md"
+      - "Makefile"
+      - "packer/**"
+      - "packaging/**"
+      - "scripts/build-dpdk.sh"
+      - "third_party/dpdk/VERSION"
+      - "third_party/dpdk/patches/**"
+      - "cloud-tests/aws/terraform/**"
+      - "cloud-tests/azure/terraform/**"
+      - "cloud-tests/gcp/terraform/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Validate target manifest
+        run: make package.target.validate
+
+      - name: Validate packaging script syntax
+        run: |
+          python3 -m py_compile packaging/scripts/*.py
+          for script in packaging/scripts/*.sh packer/scripts/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Validate Packer syntax
+        run: make package.image.validate
+
+      - name: Validate AWS Terraform syntax
+        working-directory: cloud-tests/aws/terraform
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate Azure Terraform syntax
+        working-directory: cloud-tests/azure/terraform
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate GCP Terraform syntax
+        working-directory: cloud-tests/gcp/terraform
+        run: |
+          terraform init -backend=false
+          terraform validate

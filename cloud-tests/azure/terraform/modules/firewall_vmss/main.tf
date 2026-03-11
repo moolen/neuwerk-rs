@@ -17,13 +17,17 @@ resource "azurerm_orchestrated_virtual_machine_scale_set" "firewall" {
   instances                   = var.instance_count
   upgrade_mode                = "Manual"
   platform_fault_domain_count = 1
+  source_image_id             = var.firewall_image_id != "" ? var.firewall_image_id : null
   tags                        = var.tags
 
-  source_image_reference {
-    publisher = var.image_publisher
-    offer     = var.image_offer
-    sku       = var.image_sku
-    version   = var.image_version
+  dynamic "source_image_reference" {
+    for_each = var.firewall_image_id == "" ? [1] : []
+    content {
+      publisher = var.image_publisher
+      offer     = var.image_offer
+      sku       = var.image_sku
+      version   = var.image_version
+    }
   }
 
   os_disk {

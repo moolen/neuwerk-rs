@@ -92,6 +92,7 @@ module "firewall_vmss" {
   azure_vmss_name              = "${local.name_prefix}-fw"
   cloud_provider               = var.cloud_provider
   tags                         = var.tags
+  firewall_image_id            = var.firewall_image_id
   image_publisher              = var.image_publisher
   image_offer                  = var.image_offer
   image_sku                    = var.image_sku

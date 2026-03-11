@@ -1,0 +1,6 @@
+# Neuwerk appliance waiver placeholders for Ubuntu 24.04 CIS Level 2.
+# Keep future waivers in the format:
+# <control-id> | <justification>
+#
+# Example:
+# 1.1.1.1 | Cloud image retains required cloud-init datasource behavior during first boot.

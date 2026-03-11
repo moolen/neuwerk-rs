@@ -1,0 +1,105 @@
+name: Image Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Release tag/version to create or update
+        required: true
+        type: string
+      target:
+        description: Image target manifest id
+        required: true
+        default: ubuntu-24.04-amd64
+        type: choice
+        options:
+          - ubuntu-24.04-amd64
+      draft:
+        description: Publish the GitHub release as a draft
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        required: true
+        default: false
+        type: boolean
+      runner:
+        description: Runner label to use for the build
+        required: true
+        default: ubuntu-latest
+        type: string
+      qemu_accelerator:
+        description: qemu accelerator to pass to Packer
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - kvm
+
+permissions:
+  contents: write
+
+concurrency:
+  group: image-release-${{ inputs.target }}-${{ inputs.release_version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 300
+    env:
+      TARGET: ${{ inputs.target }}
+      RELEASE_VERSION: ${{ inputs.release_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve git revision
+        id: git
+        run: echo "revision=$(git rev-parse --short=12 HEAD)" >>"$GITHUB_OUTPUT"
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+
+      - name: Install qemu host dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            genisoimage \
+            qemu-system-x86 \
+            qemu-utils \
+            xorriso \
+            zstd
+
+      - name: Validate image configuration
+        run: make package.image.validate TARGET="$TARGET" PACKER=packer RELEASE_VERSION="$RELEASE_VERSION"
+
+      - name: Build qemu image
+        run: |
+          make package.image.build.qemu \
+            TARGET="$TARGET" \
+            RELEASE_VERSION="$RELEASE_VERSION" \
+            GIT_REVISION="${{ steps.git.outputs.revision }}" \
+            PACKER=packer \
+            QEMU_ACCELERATOR="${{ inputs.qemu_accelerator }}"
+
+      - name: Prepare GitHub release assets
+        run: |
+          make package.image.release-assets \
+            TARGET="$TARGET" \
+            RELEASE_VERSION="$RELEASE_VERSION" \
+            GIT_REVISION="${{ steps.git.outputs.revision }}"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_version }}
+          name: Neuwerk ${{ inputs.release_version }} (${{ inputs.target }})
+          body_path: artifacts/image-build/github-release/${{ inputs.target }}/release-notes.md
+          files: |
+            artifacts/image-build/github-release/${{ inputs.target }}/*
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          fail_on_unmatched_files: true

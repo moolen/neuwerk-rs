@@ -1,0 +1,24 @@
+{
+  "name": "generic-cloud",
+  "disable_drivers": [
+    "net/ionic"
+  ],
+  "pmd_sets": {
+    "generic": [
+      "virtio",
+      "vmxnet3",
+      "ixgbe",
+      "i40e",
+      "ice"
+    ],
+    "aws-ena": [
+      "ena"
+    ],
+    "azure-mana": [
+      "mana"
+    ],
+    "gcp-gve": [
+      "gve"
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+- name: Ensure Neuwerk directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "/etc/neuwerk", mode: "0755" }
+    - { path: "/var/lib/neuwerk", mode: "0750" }
+    - { path: "/var/lib/neuwerk/compliance", mode: "0750" }
