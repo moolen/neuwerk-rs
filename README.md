@@ -19,9 +19,9 @@ No proxies. No application changes. No vendor lock-in.
 
 Most egress controls today fall into one of three categories:
 
-• **IP-based firewalls** — incompatible with modern SaaS infrastructure
-• **HTTP proxies** — operationally painful and incomplete
-• **cloud-provider firewalls** — expensive and inconsistent across providers
+- **IP-based firewalls** — incompatible with modern SaaS infrastructure
+- **HTTP proxies** — operationally painful and incomplete
+- **cloud-provider firewalls** — expensive and inconsistent across providers
 
 The result is predictable: many environments quietly allow `0.0.0.0/0` on port 443.
 
@@ -72,11 +72,11 @@ Policy configuration integrates naturally with **Terraform and other IaC workflo
 
 Runs anywhere Linux runs:
 
-• AWS
-• GCP
-• Azure
-• on-premises
-• hybrid environments
+- AWS
+- GCP
+- Azure
+- on-premises
+- hybrid environments
 
 No dependency on proprietary cloud firewall products.
 
@@ -88,10 +88,10 @@ This is not another heavyweight NGFW appliance.
 
 It’s a **programmable, API-driven egress firewall** designed for modern infrastructure:
 
-• DNS-aware policy
-• high-performance DPDK dataplane
-• strict control-plane separation
-• cloud-agnostic deployment
+- DNS-aware policy
+- high-performance DPDK dataplane
+- strict control-plane separation
+- cloud-agnostic deployment
 
 The goal is simple:
 
