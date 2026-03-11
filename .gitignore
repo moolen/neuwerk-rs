@@ -5,3 +5,5 @@
 /third_party/dpdk/build/
 /third_party/dpdk/install/
 .terraform
+*.tfstate
+*.tfstate.backup
