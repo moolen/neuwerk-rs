@@ -92,6 +92,12 @@ variable "firewall_binary_path" {
   description = "Path to the firewall binary uploaded to S3."
 }
 
+variable "firewall_ami_id" {
+  type        = string
+  default     = ""
+  description = "Optional custom AMI ID for firewall nodes only. Empty uses the default Ubuntu 24.04 AMI lookup."
+}
+
 variable "firewall_object_key" {
   type        = string
   default     = "firewall"

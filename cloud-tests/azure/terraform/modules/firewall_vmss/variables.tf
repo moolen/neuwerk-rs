@@ -110,6 +110,10 @@ variable "tags" {
   type = map(string)
 }
 
+variable "firewall_image_id" {
+  type = string
+}
+
 variable "image_publisher" {
   type = string
 }

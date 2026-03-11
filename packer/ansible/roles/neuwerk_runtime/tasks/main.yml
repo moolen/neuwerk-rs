@@ -1,0 +1,35 @@
+- name: Ensure Neuwerk runtime root exists
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "/opt/neuwerk", mode: "0755" }
+    - { path: "/opt/neuwerk/bin", mode: "0755" }
+    - { path: "/opt/neuwerk/runtime", mode: "0755" }
+    - { path: "/opt/neuwerk/ui", mode: "0755" }
+
+- name: Ensure staged runtime files have restrictive permissions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "/etc/neuwerk/firewall.env", mode: "0640" }
+    - { path: "/etc/neuwerk/appliance.env", mode: "0644" }
+    - { path: "/etc/systemd/system/firewall.service", mode: "0644" }
+    - { path: "/opt/neuwerk/bin/firewall", mode: "0755" }
+    - { path: "/opt/neuwerk/bin/firewall-launch", mode: "0755" }
+    - { path: "/opt/neuwerk/bin/firewall-bootstrap", mode: "0755" }
+
+- name: Reload systemd units after staging runtime
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Enable firewall service in image
+  ansible.builtin.systemd_service:
+    name: firewall.service
+    enabled: true

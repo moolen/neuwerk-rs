@@ -158,6 +158,12 @@ variable "image_version" {
   description = "Marketplace image version."
 }
 
+variable "firewall_image_id" {
+  type        = string
+  default     = ""
+  description = "Optional custom managed image or shared gallery image version ID for the firewall VMSS only. When set, the firewall VMSS ignores the marketplace image_* variables and other VMs continue using them."
+}
+
 variable "firewall_instance_count" {
   type    = number
   default = 3

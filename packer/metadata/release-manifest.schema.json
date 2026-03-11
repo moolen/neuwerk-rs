@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Neuwerk image release manifest",
+  "type": "object",
+  "required": [
+    "release_version",
+    "git_revision",
+    "provider",
+    "target",
+    "artifacts"
+  ],
+  "properties": {
+    "release_version": {
+      "type": "string"
+    },
+    "git_revision": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "target": {
+      "type": "object"
+    },
+    "image_reference": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "size",
+          "sha256"
+        ]
+      }
+    }
+  }
+}

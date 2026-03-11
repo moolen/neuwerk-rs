@@ -7,3 +7,6 @@
 .terraform
 *.tfstate
 *.tfstate.backup
+/artifacts/image-build/
+/.packer.d/
+/packer_cache/

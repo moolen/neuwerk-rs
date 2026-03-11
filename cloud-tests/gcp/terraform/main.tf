@@ -18,6 +18,7 @@ locals {
     1,
     var.firewall_total_nic_queue_count - local.firewall_mgmt_queue_count
   )
+  firewall_source_image = trimspace(var.firewall_source_image) != "" ? trimspace(var.firewall_source_image) : "projects/${var.image_project}/global/images/family/${var.image_family}"
 }
 
 resource "google_compute_network" "main" {
@@ -178,7 +179,7 @@ resource "google_compute_instance_template" "firewall" {
   }
 
   disk {
-    source_image = "projects/${var.image_project}/global/images/family/${var.image_family}"
+    source_image = local.firewall_source_image
     auto_delete  = true
     boot         = true
     disk_size_gb = var.boot_disk_size_gb

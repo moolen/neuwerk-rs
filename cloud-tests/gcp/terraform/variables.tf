@@ -46,6 +46,12 @@ variable "firewall_binary_path" {
   description = "Path to the firewall binary uploaded to GCS."
 }
 
+variable "firewall_source_image" {
+  type        = string
+  default     = ""
+  description = "Optional custom source image for firewall nodes only. Empty uses the default Ubuntu image family."
+}
+
 variable "firewall_blob_name" {
   type        = string
   default     = "firewall"

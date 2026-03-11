@@ -39,6 +39,11 @@
 - Vendored DPDK patches live in `third_party/dpdk/patches` and are applied during `scripts/build-dpdk.sh`.
 - Azure e2e images are Ubuntu 24.04 (glibc 2.39). Binaries built on newer glibc will fail to run; build the firewall binary inside a 24.04 (or older) environment or ship compatible runtime libs.
 - Vendored DPDK 23.11.2 installs ABI `.so.24` (e.g., `librte_eal.so.24`). If you link against a different system DPDK (e.g., `.so.26`), you must install matching DPDK libs on the VM or the firewall binary will not start.
+- Packer image builds now treat release artifacts as guest-local state under `/tmp/neuwerk-release/<target>` and explicitly download them back to the host; do not assume host `artifacts/` paths are shared inside the guest.
+- Appliance images now stage `/etc/neuwerk/appliance.env` as the operator override file and regenerate `/etc/neuwerk/firewall.env` at service start via `/opt/neuwerk/bin/firewall-bootstrap`.
+- Current cloud test assets still carry mixed DPDK runtime assumptions (`.so.24` validation on AWS/Azure, `dpdk-runtime-26` bundle defaults in GCP); packaging/image-build work should converge on a single explicit per-target DPDK manifest instead of ad hoc runtime bundles.
+- GitHub Release automation for appliance images is manual-only via `.github/workflows/image-release.yml`; it is intentionally not triggered on merge/push.
+- The raw `ubuntu-24.04-amd64` `qcow2` is currently about `9169534976` bytes and is packaged for GitHub Releases as a compressed multi-part archive under `artifacts/image-build/github-release/<target>/`.
 - Azure Germany West Central now offers Ubuntu 24.04 via `publisher=Canonical`, `offer=ubuntu-24_04-lts`, `sku=server` for the e2e stack.
 - Azure MANA DPDK uses devargs `mac=` to select the NIC; kernel MANA drivers remain bound (no vfio binding). The dataplane can accept `--data-plane-interface mac:aa:bb:cc:dd:ee:ff` and map the DPDK port by MAC.
 - Azure DPDK on NetVSC may miss ARP replies for the gateway in multiqueue mode; when `NEUWERK_CLOUD_PROVIDER=azure` the dataplane now falls back to `NEUWERK_AZURE_GATEWAY_MAC` (default `12:34:56:78:9a:bc`) to seed the gateway ARP entry.

@@ -40,6 +40,7 @@ locals {
   dns_upstreams     = length(var.dns_upstreams) > 0 ? var.dns_upstreams : ["${aws_instance.upstream.private_ip}:53"]
   firewall_tag_set  = merge(var.tags, { "Name" = "${local.name_prefix}-firewall-0" })
   firewall_asg_name = "${local.name_prefix}-fw-asg"
+  firewall_ami_id   = trimspace(var.firewall_ami_id) != "" ? trimspace(var.firewall_ami_id) : data.aws_ami.ubuntu.id
 }
 
 resource "aws_key_pair" "main" {
@@ -616,7 +617,7 @@ resource "aws_network_interface" "firewall_data" {
 
 resource "aws_instance" "firewall" {
   count                = local.use_gwlb ? 0 : 1
-  ami                  = data.aws_ami.ubuntu.id
+  ami                  = local.firewall_ami_id
   instance_type        = var.firewall_instance_type
   key_name             = aws_key_pair.main.key_name
   iam_instance_profile = aws_iam_instance_profile.firewall.name
@@ -702,7 +703,7 @@ resource "aws_lb_target_group" "firewall" {
 resource "aws_launch_template" "firewall" {
   count       = local.use_gwlb ? 1 : 0
   name_prefix = "${local.name_prefix}-fw-"
-  image_id    = data.aws_ami.ubuntu.id
+  image_id    = local.firewall_ami_id
 
   instance_type = var.firewall_instance_type
   key_name      = aws_key_pair.main.key_name

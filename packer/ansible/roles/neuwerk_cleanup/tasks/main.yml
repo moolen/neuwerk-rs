@@ -1,0 +1,11 @@
+- name: Remove apt cache after image build
+  ansible.builtin.file:
+    path: /var/lib/apt/lists
+    state: absent
+
+- name: Remove temporary Neuwerk build artifacts
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/neuwerk-source.tar.gz

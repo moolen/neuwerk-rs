@@ -1,0 +1,156 @@
+- name: Install packaged CIS waiver file
+  ansible.builtin.copy:
+    src: "{{ neuwerk_repo_dir }}/packer/cis/waivers/{{ neuwerk_target }}.txt"
+    dest: /var/lib/neuwerk/compliance/cis-waivers.txt
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Harden login defaults
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: "^{{ item.key }}\\b"
+    line: "{{ item.key }} {{ item.value }}"
+    create: false
+    backrefs: false
+  loop:
+    - { key: "PASS_MAX_DAYS", value: "365" }
+    - { key: "PASS_MIN_DAYS", value: "1" }
+    - { key: "PASS_WARN_AGE", value: "7" }
+    - { key: "UMASK", value: "027" }
+
+- name: Ensure hardening drop-in directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/security/pwquality.conf.d
+    - /etc/audit/rules.d
+
+- name: Configure password quality policy
+  ansible.builtin.copy:
+    dest: /etc/security/pwquality.conf.d/90-neuwerk.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      minlen = 14
+      minclass = 4
+      difok = 4
+      maxrepeat = 3
+      retry = 3
+      enforce_for_root
+
+- name: Configure faillock policy
+  ansible.builtin.copy:
+    dest: /etc/security/faillock.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      deny = 5
+      unlock_time = 900
+      fail_interval = 900
+      even_deny_root
+      root_unlock_time = 900
+
+- name: Install Neuwerk sysctl hardening profile
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/60-neuwerk-cis.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      fs.suid_dumpable=0
+      kernel.randomize_va_space=2
+      net.ipv4.conf.all.accept_redirects=0
+      net.ipv4.conf.default.accept_redirects=0
+      net.ipv4.conf.all.secure_redirects=0
+      net.ipv4.conf.default.secure_redirects=0
+      net.ipv4.conf.all.send_redirects=0
+      net.ipv4.conf.default.send_redirects=0
+      net.ipv4.conf.all.accept_source_route=0
+      net.ipv4.conf.default.accept_source_route=0
+      net.ipv4.icmp_echo_ignore_broadcasts=1
+      net.ipv4.icmp_ignore_bogus_error_responses=1
+      net.ipv4.tcp_syncookies=1
+      net.ipv6.conf.all.accept_redirects=0
+      net.ipv6.conf.default.accept_redirects=0
+      net.ipv6.conf.all.accept_source_route=0
+      net.ipv6.conf.default.accept_source_route=0
+
+- name: Apply sysctl hardening profile
+  ansible.builtin.command: sysctl --system
+  changed_when: true
+
+- name: Configure SSH daemon hardening
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^{{ item.key }}\\b"
+    line: "{{ item.key }} {{ item.value }}"
+    create: false
+  loop:
+    - { key: "PermitRootLogin", value: "no" }
+    - { key: "PasswordAuthentication", value: "no" }
+    - { key: "MaxAuthTries", value: "4" }
+    - { key: "X11Forwarding", value: "no" }
+    - { key: "ClientAliveInterval", value: "300" }
+    - { key: "ClientAliveCountMax", value: "0" }
+
+- name: Install audit rules for appliance-critical files
+  ansible.builtin.copy:
+    dest: /etc/audit/rules.d/50-neuwerk.rules
+    owner: root
+    group: root
+    mode: "0640"
+    content: |
+      -w /etc/passwd -p wa -k identity
+      -w /etc/group -p wa -k identity
+      -w /etc/shadow -p wa -k identity
+      -w /etc/gshadow -p wa -k identity
+      -w /etc/sudoers -p wa -k scope
+      -w /etc/sudoers.d -p wa -k scope
+      -w /etc/neuwerk -p wa -k neuwerk-config
+      -w /opt/neuwerk/bin/firewall -p x -k neuwerk-runtime
+
+- name: Tighten permissions on account databases
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "/etc/passwd", mode: "0644" }
+    - { path: "/etc/group", mode: "0644" }
+    - { path: "/etc/shadow", mode: "0640" }
+    - { path: "/etc/gshadow", mode: "0640" }
+
+- name: Disable systemd coredump socket
+  ansible.builtin.systemd_service:
+    name: systemd-coredump.socket
+    enabled: false
+    masked: true
+  failed_when: false
+
+- name: Enable auditd and rsyslog
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+  loop:
+    - auditd.service
+    - rsyslog.service
+
+- name: Restart sshd to apply hardened config
+  ansible.builtin.systemd_service:
+    name: ssh.service
+    state: restarted
+
+- name: Restart auditd to apply local rules
+  ansible.builtin.systemd_service:
+    name: auditd.service
+    state: restarted
+  failed_when: false

@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Neuwerk image target manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "os",
+    "base_images",
+    "packages",
+    "dpdk",
+    "runtime",
+    "hardening",
+    "sbom"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9.-]+$"
+    },
+    "description": {
+      "type": "string"
+    },
+    "os": {
+      "type": "object",
+      "required": [
+        "family",
+        "version",
+        "arch"
+      ],
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        }
+      }
+    },
+    "base_images": {
+      "type": "object",
+      "required": [
+        "aws",
+        "azure",
+        "gcp",
+        "qemu"
+      ]
+    },
+    "packages": {
+      "type": "object",
+      "required": [
+        "build",
+        "runtime"
+      ]
+    },
+    "dpdk": {
+      "type": "object",
+      "required": [
+        "version",
+        "profile",
+        "abi",
+        "disable_drivers",
+        "enable_pmd_sets"
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "required": [
+        "prefix",
+        "binary_dir",
+        "ui_dir",
+        "env_file",
+        "appliance_env_file",
+        "bootstrap_path",
+        "service_file",
+        "launcher_path",
+        "link_name",
+        "dpdk_library_globs",
+        "dpdk_pmd_globs"
+      ]
+    },
+    "hardening": {
+      "type": "object",
+      "required": [
+        "profile",
+        "waiver_file"
+      ]
+    },
+    "sbom": {
+      "type": "object",
+      "required": [
+        "formats"
+      ]
+    }
+  }
+}

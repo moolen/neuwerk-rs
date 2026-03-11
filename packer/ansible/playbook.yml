@@ -1,0 +1,8 @@
+- hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - neuwerk_base
+    - neuwerk_runtime
+    - neuwerk_hardening
+    - neuwerk_cleanup
