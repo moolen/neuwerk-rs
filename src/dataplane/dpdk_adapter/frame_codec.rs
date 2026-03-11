@@ -133,6 +133,7 @@ pub(super) fn parse_tcp(frame: &[u8], l4_off: usize) -> Option<TcpHeader> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_tcp_control(
     src_mac: [u8; 6],
     dst_mac: [u8; 6],

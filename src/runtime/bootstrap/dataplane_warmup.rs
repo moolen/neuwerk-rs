@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use firewall::dataplane::{DataplaneConfigStore, SnatMode};
+use tracing::warn;
 
 use crate::runtime::bootstrap::network::dataplane_ipv4_config;
 use crate::runtime::cli::CliConfig;
@@ -29,11 +30,7 @@ pub fn maybe_spawn_soft_dataplane_autoconfig_task(
                     }
                     Err(err) => {
                         if Instant::now() >= deadline {
-                            tracing::warn!(
-                                iface = %iface,
-                                error = %err,
-                                "dataplane interface IP discovery failed"
-                            );
+                            warn!(iface = %iface, error = %err, "dataplane interface IP discovery failed");
                             break;
                         }
                         tokio::time::sleep(Duration::from_millis(200)).await;

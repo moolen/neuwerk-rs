@@ -117,32 +117,38 @@ fn cleanup_interface(name: &str) {
 
 fn create_tun_interface(name: &str, cidr: &str) -> Result<(), String> {
     cleanup_interface(name);
-    let status = Command::new("ip")
+    let output = Command::new("ip")
         .args(["tuntap", "add", "dev", name, "mode", "tun"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .output()
         .map_err(|err| format!("create tuntap {name} failed: {err}"))?;
-    if !status.success() {
-        return Err(format!("create tuntap {name} exited with {status}"));
+    if !output.status.success() {
+        return Err(format!(
+            "create tuntap {name} exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
-    let status = Command::new("ip")
+    let output = Command::new("ip")
         .args(["addr", "add", cidr, "dev", name])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .output()
         .map_err(|err| format!("assign addr {cidr} to {name} failed: {err}"))?;
-    if !status.success() {
-        return Err(format!("assign addr {cidr} to {name} exited with {status}"));
+    if !output.status.success() {
+        return Err(format!(
+            "assign addr {cidr} to {name} exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
-    let status = Command::new("ip")
+    let output = Command::new("ip")
         .args(["link", "set", "dev", name, "up"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .output()
         .map_err(|err| format!("set link {name} up failed: {err}"))?;
-    if !status.success() {
-        return Err(format!("set link {name} up exited with {status}"));
+    if !output.status.success() {
+        return Err(format!(
+            "set link {name} up exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
     Ok(())
 }
@@ -244,7 +250,10 @@ async fn firewall_binary_sigterm_flips_readiness_false_before_exit_and_restarts(
     };
 
     cleanup_service_lane_state();
-    create_tun_interface(&dataplane_iface, "10.9.0.2/24").unwrap();
+    if let Err(err) = create_tun_interface(&dataplane_iface, "10.9.0.2/24") {
+        eprintln!("skipping runtime signal case: tun interface setup unavailable: {err}");
+        return;
+    }
 
     let mut child = spawn_firewall(
         &tls_dir,

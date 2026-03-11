@@ -57,16 +57,21 @@ pub(super) fn init_eal(iface: &str) -> Result<(), String> {
                 if mode == "va" || mode == "pa" {
                     args.push(format!("--iova-mode={}", mode));
                 } else {
-                    tracing::info!("dpdk: invalid NEUWERK_DPDK_IOVA={}, ignoring", mode);
+                    tracing::warn!("dpdk: invalid NEUWERK_DPDK_IOVA={}, ignoring", mode);
                 }
             } else if !iommu_groups_present() {
                 args.push("--iova-mode=va".to_string());
-                tracing::info!("dpdk: no iommu groups detected; forcing iova=va");
+                tracing::warn!("dpdk: no iommu groups detected; forcing iova=va");
             }
             let force_netvsc = std::env::var("NEUWERK_DPDK_NETVSC")
                 .ok()
                 .as_deref()
                 == Some("1");
+            for driver in resolve_eal_driver_preloads(iface, &cloud_provider, force_netvsc) {
+                tracing::info!("dpdk: preloading driver {}", driver);
+                args.push("-d".to_string());
+                args.push(driver);
+            }
             let allow_azure_pmds = cloud_provider == "azure";
             let allow_gcp_autoprobe = cloud_provider == "gcp"
                 && std::env::var("NEUWERK_GCP_DPDK_AUTOPROBE")
@@ -162,6 +167,145 @@ fn iommu_groups_present() -> bool {
     entries.flatten().next().is_some()
 }
 
+fn resolve_eal_driver_preloads(
+    iface: &str,
+    cloud_provider: &str,
+    force_netvsc: bool,
+) -> Vec<String> {
+    let iface_looks_pci = normalize_pci_arg(iface).is_some()
+        || pci_addr_for_iface(iface).is_ok()
+        || normalize_mac_arg(iface)
+            .and_then(pci_addr_for_mac)
+            .is_some();
+    let driver_names = base_driver_preload_names(iface_looks_pci, cloud_provider, force_netvsc);
+    let search_dirs = dpdk_driver_search_dirs();
+    let mut resolved = Vec::new();
+    for name in driver_names {
+        if let Some(path) = resolve_driver_lib_path(name, &search_dirs) {
+            if !resolved.contains(&path) {
+                resolved.push(path);
+            }
+        }
+    }
+    if let Ok(extra) = std::env::var("NEUWERK_DPDK_DRIVER_PRELOAD") {
+        for raw in extra.split(',') {
+            let token = raw.trim();
+            if token.is_empty() {
+                continue;
+            }
+            let resolved_path = if token.contains('/') {
+                let candidate = Path::new(token);
+                if candidate.is_file() {
+                    Some(candidate.display().to_string())
+                } else {
+                    None
+                }
+            } else {
+                resolve_driver_lib_path(token, &search_dirs)
+            };
+            if let Some(path) = resolved_path {
+                if !resolved.contains(&path) {
+                    resolved.push(path);
+                }
+            }
+        }
+    }
+    resolved
+}
+
+fn base_driver_preload_names(
+    iface_looks_pci: bool,
+    cloud_provider: &str,
+    force_netvsc: bool,
+) -> Vec<&'static str> {
+    let skip_bus_pci = std::env::var("NEUWERK_DPDK_SKIP_BUS_PCI_PRELOAD")
+        .ok()
+        .map(|raw| matches!(raw.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+    let mut driver_names: Vec<&'static str> = vec!["librte_mempool_ring.so"];
+    if iface_looks_pci && !skip_bus_pci {
+        driver_names.push("librte_bus_pci.so");
+    }
+    match cloud_provider {
+        "gcp" => {
+            if !skip_bus_pci {
+                driver_names.push("librte_bus_pci.so");
+            }
+            driver_names.push("librte_net_gve.so");
+        }
+        "aws" => {
+            if !skip_bus_pci {
+                driver_names.push("librte_bus_pci.so");
+            }
+            driver_names.push("librte_net_ena.so");
+        }
+        "azure" => {
+            if !skip_bus_pci {
+                driver_names.push("librte_bus_pci.so");
+            }
+            driver_names.push("librte_bus_vdev.so");
+            driver_names.push("librte_bus_vmbus.so");
+            driver_names.push("librte_net_mana.so");
+            driver_names.push("librte_net_netvsc.so");
+            driver_names.push("librte_net_vdev_netvsc.so");
+        }
+        _ => {}
+    }
+    if force_netvsc {
+        driver_names.push("librte_bus_vdev.so");
+        driver_names.push("librte_bus_vmbus.so");
+        driver_names.push("librte_net_netvsc.so");
+        driver_names.push("librte_net_vdev_netvsc.so");
+    }
+    driver_names
+}
+
+fn dpdk_driver_search_dirs() -> Vec<String> {
+    let mut dirs = Vec::new();
+    for env_name in ["RTE_EAL_PMD_PATH", "LD_LIBRARY_PATH"] {
+        let Some(raw) = std::env::var_os(env_name) else {
+            continue;
+        };
+        for entry in std::env::split_paths(&raw) {
+            if !entry.is_dir() {
+                continue;
+            }
+            let value = entry.display().to_string();
+            if !dirs.contains(&value) {
+                dirs.push(value);
+            }
+        }
+    }
+    dirs
+}
+
+fn resolve_driver_lib_path(name: &str, search_dirs: &[String]) -> Option<String> {
+    for dir in search_dirs {
+        let dir_path = Path::new(dir);
+        let exact = dir_path.join(name);
+        if exact.is_file() {
+            return Some(exact.display().to_string());
+        }
+        let prefix = format!("{name}.");
+        let Ok(entries) = fs::read_dir(dir_path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let Some(file_name) = file_name.to_str() else {
+                continue;
+            };
+            if file_name == name || file_name.starts_with(&prefix) {
+                let path = entry.path();
+                if path.is_file() {
+                    return Some(path.display().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn pci_addr_for_iface(iface: &str) -> Result<String, String> {
     let path = format!("/sys/class/net/{iface}/device");
     let target = fs::read_link(Path::new(&path))
@@ -179,7 +323,7 @@ fn port_id_for_iface_or_pci(iface: &str, ports: &[PortInfo]) -> Result<u16, Stri
             Ok(port) => return Ok(port),
             Err(err) => {
                 if ports.len() == 1 {
-                    tracing::info!(
+                    tracing::warn!(
                         "dpdk: {} (single port available, falling back to port {})",
                         err, ports[0].id
                     );
@@ -461,3 +605,133 @@ fn is_hex_len(value: &str, len: usize) -> bool {
     value.len() == len && value.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+#[cfg(test)]
+mod eal_preload_tests {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    use super::{
+        base_driver_preload_names, normalize_mac_arg, parse_mac, port_id_for_iface_or_pci,
+        port_id_for_mac, PortInfo,
+    };
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn port(id: u16, mac: [u8; 6], name: Option<&str>) -> PortInfo {
+        PortInfo {
+            id,
+            mac,
+            name: name.map(str::to_string),
+        }
+    }
+
+    fn with_prefer_pci_env<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
+        let _env_guard = ENV_LOCK.lock().expect("env lock");
+        let old_value = std::env::var("NEUWERK_DPDK_PREFER_PCI").ok();
+
+        match value {
+            Some(value) => std::env::set_var("NEUWERK_DPDK_PREFER_PCI", value),
+            None => std::env::remove_var("NEUWERK_DPDK_PREFER_PCI"),
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+        match old_value {
+            Some(value) => std::env::set_var("NEUWERK_DPDK_PREFER_PCI", value),
+            None => std::env::remove_var("NEUWERK_DPDK_PREFER_PCI"),
+        }
+
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    #[test]
+    fn gcp_preloads_include_pci_bus_and_gve() {
+        let names = base_driver_preload_names(true, "gcp", false);
+        let names: HashSet<_> = names.into_iter().collect();
+        assert!(names.contains("librte_mempool_ring.so"));
+        assert!(names.contains("librte_bus_pci.so"));
+        assert!(names.contains("librte_net_gve.so"));
+    }
+
+    #[test]
+    fn azure_netvsc_preloads_include_vdev_stack() {
+        let names = base_driver_preload_names(false, "azure", true);
+        let names: HashSet<_> = names.into_iter().collect();
+        assert!(names.contains("librte_mempool_ring.so"));
+        assert!(names.contains("librte_bus_vdev.so"));
+        assert!(names.contains("librte_bus_vmbus.so"));
+        assert!(names.contains("librte_net_netvsc.so"));
+        assert!(names.contains("librte_net_vdev_netvsc.so"));
+    }
+
+    #[test]
+    fn parse_mac_accepts_colon_or_hyphen_separated_hex() {
+        let expected = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
+        assert_eq!(parse_mac("aa:bb:cc:dd:ee:ff"), Some(expected));
+        assert_eq!(parse_mac("AA-BB-CC-DD-EE-FF"), Some(expected));
+        assert_eq!(normalize_mac_arg(" mac:AA-BB-CC-DD-EE-FF "), Some(expected));
+    }
+
+    #[test]
+    fn parse_mac_rejects_invalid_octets() {
+        assert_eq!(parse_mac("aa:bb:cc:dd:ee"), None);
+        assert_eq!(parse_mac("aa:bb:cc:dd:ee:xyz"), None);
+        assert_eq!(normalize_mac_arg("mac:aa:bb:cc:dd:ee:gg"), None);
+    }
+
+    #[test]
+    fn port_lookup_by_mac_prefers_netvsc_without_override() {
+        let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x42];
+        let ports = vec![
+            port(3, mac, Some("tap42")),
+            port(5, mac, Some("failsafe0")),
+            port(7, mac, Some("net_vdev_netvsc0")),
+        ];
+
+        assert_eq!(port_id_for_mac(mac, &ports).expect("port"), 7);
+    }
+
+    #[test]
+    fn port_lookup_by_mac_prefers_pci_when_override_enabled() {
+        with_prefer_pci_env(Some("1"), || {
+            let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x43];
+            let ports = vec![
+                port(3, mac, Some("net_vdev_netvsc0")),
+                port(5, mac, Some("0000:00:08.0")),
+            ];
+
+            assert_eq!(port_id_for_mac(mac, &ports).expect("port"), 5);
+        });
+    }
+
+    #[test]
+    fn port_lookup_by_mac_reports_not_found_when_multiple_ports_exist() {
+        let ports = vec![
+            port(
+                1,
+                [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+                Some("net_vdev_netvsc0"),
+            ),
+            port(
+                2,
+                [0x02, 0x00, 0x00, 0x00, 0x00, 0x02],
+                Some("0000:00:08.0"),
+            ),
+        ];
+
+        let err = port_id_for_iface_or_pci("mac:02:00:00:00:00:99", &ports).expect_err("error");
+        assert!(err.contains("no port found with mac 02:00:00:00:00:99"));
+    }
+
+    #[test]
+    fn port_lookup_by_mac_falls_back_to_single_port_when_only_one_exists() {
+        let only_port = port(11, [0x02, 0x00, 0x00, 0x00, 0x00, 0x0b], Some("failsafe0"));
+        let selected =
+            port_id_for_iface_or_pci("mac:02:00:00:00:00:99", &[only_port]).expect("fallback");
+
+        assert_eq!(selected, 11);
+    }
+}

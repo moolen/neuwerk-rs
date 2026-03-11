@@ -104,8 +104,8 @@ impl OverlayConfig {
 
     fn resolve_udp_port(&self, tunnel: TunnelKind) -> u16 {
         match tunnel {
-            TunnelKind::Internal => self.udp_port_internal.unwrap_or_else(|| self.udp_port),
-            TunnelKind::External => self.udp_port_external.unwrap_or_else(|| self.udp_port),
+            TunnelKind::Internal => self.udp_port_internal.unwrap_or(self.udp_port),
+            TunnelKind::External => self.udp_port_external.unwrap_or(self.udp_port),
             TunnelKind::Default => self.udp_port,
         }
     }
@@ -572,24 +572,20 @@ fn resolve_tunnel(cfg: &OverlayConfig, vni: u32, udp_port: u16) -> Option<Tunnel
         tunnel = Some(TunnelKind::Default);
     }
 
-    if tunnel.is_none() {
-        if cfg.udp_port_internal.is_none() && cfg.udp_port_external.is_none() {
-            if let Some(internal) = cfg.vni_internal {
-                if vni == internal {
-                    tunnel = Some(TunnelKind::Internal);
-                }
+    if tunnel.is_none() && cfg.udp_port_internal.is_none() && cfg.udp_port_external.is_none() {
+        if let Some(internal) = cfg.vni_internal {
+            if vni == internal {
+                tunnel = Some(TunnelKind::Internal);
             }
-            if let Some(external) = cfg.vni_external {
-                if vni == external {
-                    tunnel = Some(TunnelKind::External);
-                }
+        }
+        if let Some(external) = cfg.vni_external {
+            if vni == external {
+                tunnel = Some(TunnelKind::External);
             }
         }
     }
 
-    let Some(tunnel) = tunnel else {
-        return None;
-    };
+    let tunnel = tunnel?;
 
     if !vni_matches_tunnel(cfg, vni, tunnel) {
         return None;

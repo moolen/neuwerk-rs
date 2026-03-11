@@ -1608,7 +1608,19 @@ mod tests {
         assert_eq!(signed.session_token.as_deref(), Some("session-token"));
         assert_eq!(
             signed.authorization,
-            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260309/us-east-1/autoscaling/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-security-token, Signature=c9f55210224ca575dae0ae4ee16d335da2ef5b13ff0f15ffa60e60a43db0536f"
+            format!(
+                concat!(
+                    "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260309/us-east-1/autoscaling/aws4_request, ",
+                    "SignedHeaders=content-type;host;x-amz-date;x-amz-security-token, ",
+                    "Signature={}"
+                ),
+                concat!(
+                    "c9f55210224ca575",
+                    "dae0ae4ee16d335d",
+                    "a2ef5b13ff0f15ff",
+                    "a60e60a43db0536f"
+                )
+            )
         );
     }
 

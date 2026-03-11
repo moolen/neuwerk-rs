@@ -92,7 +92,7 @@ pub(super) fn handle_inbound_icmp_no_snat(
         };
 
         if let Some(drop_group) = policy_drop_group {
-            remove_flow_state(state, &flow, now);
+            remove_flow_state(state, &flow, now, "policy_drop");
             if let Some(metrics) = &metrics {
                 metrics.observe_dp_packet(
                     "inbound",
@@ -219,7 +219,7 @@ pub(super) fn handle_inbound_icmp_no_snat(
     };
 
     if let Some(drop_group) = policy_drop_group {
-        remove_flow_state(state, &flow, now);
+        remove_flow_state(state, &flow, now, "policy_drop");
         if let Some(metrics) = &metrics {
             metrics.observe_dp_packet("inbound", proto_label(1), "deny", &drop_group, pkt.len());
             metrics.observe_dp_icmp_decision("inbound", icmp_type, icmp_code, "deny", &drop_group);
@@ -345,7 +345,7 @@ pub(super) fn handle_inbound_icmp(
         };
 
         if let Some(drop_group) = policy_drop_group {
-            remove_flow_state(state, &flow, now);
+            remove_flow_state(state, &flow, now, "policy_drop");
             if let Some(metrics) = &metrics {
                 metrics.observe_dp_packet(
                     "inbound",
@@ -475,7 +475,7 @@ pub(super) fn handle_inbound_icmp(
     };
 
     if let Some(drop_group) = policy_drop_group {
-        remove_flow_state(state, &flow, now);
+        remove_flow_state(state, &flow, now, "policy_drop");
         if let Some(metrics) = &metrics {
             metrics.observe_dp_packet("inbound", proto_label(1), "deny", &drop_group, pkt.len());
             metrics.observe_dp_icmp_decision("inbound", icmp_type, icmp_code, "deny", &drop_group);
@@ -516,4 +516,3 @@ pub(super) fn handle_inbound_icmp(
         out_port: state.data_port,
     }
 }
-

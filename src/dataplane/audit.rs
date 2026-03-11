@@ -2,6 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::mpsc;
+use tracing::warn;
 
 pub const DEFAULT_AUDIT_REPORT_INTERVAL_SECS: u64 = 1;
 static AUDIT_SEND_FAIL_LOGS: AtomicUsize = AtomicUsize::new(0);
@@ -49,7 +50,7 @@ impl AuditEmitter {
     pub fn try_send(&self, event: AuditEvent) {
         if let Err(err) = self.sender.try_send(event) {
             if AUDIT_SEND_FAIL_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-                tracing::warn!(error = %err, "audit event enqueue failed");
+                warn!(error = %err, "audit event enqueue failed");
             }
         }
     }

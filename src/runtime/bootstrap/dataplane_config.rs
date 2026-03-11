@@ -195,10 +195,10 @@ fn parse_imds_mac(value: &str) -> Result<[u8; 6], String> {
         return Err("invalid imds mac".to_string());
     }
     let mut bytes = [0u8; 6];
-    for idx in 0..6 {
+    for (idx, byte) in bytes.iter_mut().enumerate() {
         let start = idx * 2;
         let part = &raw[start..start + 2];
-        bytes[idx] = u8::from_str_radix(part, 16).map_err(|_| "invalid imds mac".to_string())?;
+        *byte = u8::from_str_radix(part, 16).map_err(|_| "invalid imds mac".to_string())?;
     }
     Ok(bytes)
 }

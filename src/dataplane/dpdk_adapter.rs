@@ -40,6 +40,7 @@ const ETH_HDR_LEN: usize = 14;
 const ETH_TYPE_IPV4: u16 = 0x0800;
 const ETH_TYPE_ARP: u16 = 0x0806;
 const HEALTH_PROBE_PORT: u16 = 8080;
+const GCP_BACKEND_HEALTH_PROBE_PORT: u16 = 80;
 const TCP_FLAG_FIN: u8 = 0x01;
 const TCP_FLAG_SYN: u8 = 0x02;
 const TCP_FLAG_RST: u8 = 0x04;

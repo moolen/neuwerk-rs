@@ -1,3 +1,5 @@
+#![allow(clippy::format_in_format_args)]
+
 use super::*;
 
 pub(super) fn icmp_ttl_exceeded(cfg: &TopologyConfig) -> Result<(), String> {

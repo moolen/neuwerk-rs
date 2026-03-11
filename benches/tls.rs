@@ -12,11 +12,12 @@ fn tls_record(content_type: u8, payload: &[u8]) -> Vec<u8> {
 }
 
 fn handshake_message(msg_type: u8, body: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.push(msg_type);
-    out.push(((body.len() >> 16) & 0xff) as u8);
-    out.push(((body.len() >> 8) & 0xff) as u8);
-    out.push((body.len() & 0xff) as u8);
+    let mut out = vec![
+        msg_type,
+        ((body.len() >> 16) & 0xff) as u8,
+        ((body.len() >> 8) & 0xff) as u8,
+        (body.len() & 0xff) as u8,
+    ];
     out.extend_from_slice(body);
     out
 }

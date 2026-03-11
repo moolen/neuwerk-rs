@@ -157,6 +157,12 @@ impl TlsFlowState {
     }
 }
 
+impl Default for TlsFlowState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct TlsIngestResult {
     pub saw_application_data: bool,
@@ -486,6 +492,12 @@ impl TlsVerifier {
     }
 }
 
+impl Default for TlsVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn names_match(a: &x509_parser::x509::X509Name<'_>, b: &x509_parser::x509::X509Name<'_>) -> bool {
     a == b
 }
@@ -556,11 +568,7 @@ impl TcpReassembly {
         }
 
         let mut out = Vec::new();
-        loop {
-            let expected = match self.expected_seq {
-                Some(value) => value,
-                None => break,
-            };
+        while let Some(expected) = self.expected_seq {
             let segment = match self.segments.remove(&expected) {
                 Some(segment) => segment,
                 None => break,

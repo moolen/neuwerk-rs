@@ -3,7 +3,7 @@ name: E2E SSO Dex
 on:
   pull_request:
   push:
-    branches: ["main"]
+    branches: ["master"]
   workflow_dispatch:
 
 jobs:
@@ -22,7 +22,10 @@ jobs:
       - name: Install native build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y \
+            libclang-dev \
+            llvm-dev \
+            protobuf-compiler
 
       - name: Setup Go (for Dex build fallback)
         uses: actions/setup-go@v5

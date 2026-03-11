@@ -1,4 +1,5 @@
 use firewall::dataplane::Packet;
+use tracing::warn;
 
 pub fn shard_index_for_packet(pkt: &Packet, shard_count: usize) -> usize {
     if shard_count <= 1 {
@@ -60,9 +61,9 @@ impl DpdkSingleQueueStrategy {
             "" | "demux" | "shared-demux" | "shared_rx_demux" => Self::SharedDemux,
             "single" | "single-worker" | "single_worker" => Self::SingleWorker,
             _ => {
-                tracing::warn!(
-                    "dpdk: unknown NEUWERK_DPDK_SINGLE_QUEUE_MODE='{}' (expected demux|single); defaulting to demux",
-                    raw
+                warn!(
+                    raw = %raw,
+                    "unknown NEUWERK_DPDK_SINGLE_QUEUE_MODE (expected demux|single); defaulting to demux"
                 );
                 Self::SharedDemux
             }
@@ -143,9 +144,9 @@ impl DpdkPerfMode {
             "" | "standard" | "default" | "off" => Self::Standard,
             "aggressive" | "on" | "1" | "true" | "yes" => Self::Aggressive,
             _ => {
-                tracing::warn!(
-                    "dpdk: unknown NEUWERK_DPDK_PERF_MODE='{}' (expected standard|aggressive); defaulting to standard",
-                    raw
+                warn!(
+                    raw = %raw,
+                    "unknown NEUWERK_DPDK_PERF_MODE (expected standard|aggressive); defaulting to standard"
                 );
                 Self::Standard
             }

@@ -175,11 +175,12 @@ fn tls_client_hello_record(sni: &str) -> Vec<u8> {
     body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
     body.extend_from_slice(&extensions);
 
-    let mut handshake = Vec::new();
-    handshake.push(1);
-    handshake.push(((body.len() >> 16) & 0xff) as u8);
-    handshake.push(((body.len() >> 8) & 0xff) as u8);
-    handshake.push((body.len() & 0xff) as u8);
+    let mut handshake = vec![
+        1,
+        ((body.len() >> 16) & 0xff) as u8,
+        ((body.len() >> 8) & 0xff) as u8,
+        (body.len() & 0xff) as u8,
+    ];
     handshake.extend_from_slice(&body);
 
     let mut record = Vec::new();

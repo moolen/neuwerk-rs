@@ -107,18 +107,6 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
         let mut current_generation = state.current_policy_generation();
         let audit = state.audit.clone();
         if state.flows.get_entry(&flow).is_none() {
-            if state.is_draining() {
-                if let Some(metrics) = &state.metrics {
-                    metrics.observe_dp_packet(
-                        "outbound",
-                        proto_label(proto),
-                        "deny",
-                        "default",
-                        pkt.len(),
-                    );
-                }
-                return Action::Drop;
-            }
             let (evaluation, generation) = match state.policy.read() {
                 Ok(lock) => (
                     evaluate_policy_outcome(&lock, &meta, None, &state.tls_verifier),
@@ -322,7 +310,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             .unwrap_or(DEFAULT_SOURCE_GROUP);
 
         if let Some(drop_group) = policy_drop_group {
-            remove_flow_state(state, &flow, now);
+            remove_flow_state(state, &flow, now, "policy_drop");
             if policy_drop_intercept_requires_service {
                 if let Some(action) =
                     maybe_intercept_fail_closed_rst(pkt, state, &drop_group, "outbound")
@@ -408,12 +396,8 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
         };
     }
 
-    if snat_disabled {
-        if !src_internal && dst_internal {
-            return handle_inbound_no_snat(
-                pkt, state, src_ip, dst_ip, src_port, dst_port, proto, now,
-            );
-        }
+    if snat_disabled && !src_internal && dst_internal {
+        return handle_inbound_no_snat(pkt, state, src_ip, dst_ip, src_port, dst_port, proto, now);
     }
 
     if dst_ip == resolve_snat_ip(state).unwrap_or(Ipv4Addr::UNSPECIFIED) {
@@ -533,7 +517,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                 .unwrap_or(DEFAULT_SOURCE_GROUP);
 
             if let Some(drop_group) = policy_drop_group {
-                remove_flow_state(state, &flow, now);
+                remove_flow_state(state, &flow, now, "policy_drop");
                 if let Some(metrics) = &metrics {
                     metrics.observe_dp_packet(
                         "inbound",
@@ -571,13 +555,13 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
         }
         if NAT_MISS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
             tracing::debug!(
-                "dp: nat miss src={} dst={} sport={} dport={} proto={} snat_ip={}",
-                src_ip,
-                dst_ip,
+                src_ip = %src_ip,
+                dst_ip = %dst_ip,
                 src_port,
                 dst_port,
                 proto,
-                resolve_snat_ip(state).unwrap_or(Ipv4Addr::UNSPECIFIED)
+                snat_ip = %resolve_snat_ip(state).unwrap_or(Ipv4Addr::UNSPECIFIED),
+                "dataplane nat miss"
             );
         }
         if let Some(metrics) = &state.metrics {

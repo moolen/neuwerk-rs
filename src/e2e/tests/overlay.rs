@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use super::*;
 
 pub fn overlay_cases_vxlan() -> Vec<TestCase> {
@@ -710,7 +712,7 @@ fn build_vxlan_payload(inner: &[u8], vni: u32) -> Vec<u8> {
 }
 
 fn build_geneve_payload(inner: &[u8], vni: u32, options: &[u8]) -> Result<Vec<u8>, String> {
-    if options.len() % 4 != 0 {
+    if !options.len().is_multiple_of(4) {
         return Err("geneve options must be a multiple of 4 bytes".to_string());
     }
     let opt_len_words = (options.len() / 4) as u8;

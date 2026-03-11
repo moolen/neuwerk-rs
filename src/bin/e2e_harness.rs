@@ -4,7 +4,6 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use nix::sched::{setns, CloneFlags};
-use rustls;
 use std::os::unix::process::CommandExt;
 
 use firewall::controlplane::api_auth;
@@ -379,8 +378,7 @@ fn spawn_firewall(
 
     unsafe {
         cmd.pre_exec(move || {
-            setns(&ns_file, CloneFlags::CLONE_NEWNET)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            setns(&ns_file, CloneFlags::CLONE_NEWNET).map_err(std::io::Error::other)?;
             Ok(())
         });
     }

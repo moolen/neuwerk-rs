@@ -5,6 +5,7 @@ use firewall::controlplane::wiretap::{DnsMap, WiretapHub};
 use firewall::controlplane::PolicyStore;
 use firewall::dataplane::{AuditEvent, AuditEventType, WiretapEvent as DataplaneWiretapEvent};
 use tokio::sync::mpsc;
+use tracing::warn;
 
 pub fn spawn_event_bridges(
     mut wiretap_rx: mpsc::Receiver<DataplaneWiretapEvent>,
@@ -35,7 +36,7 @@ pub fn spawn_event_bridges(
                 );
                 hub_for_wiretap.publish(enriched);
             }
-            tracing::warn!("wiretap bridge stopped because all senders dropped");
+            warn!("wiretap bridge stopped because all senders dropped");
         })
         .map_err(|err| format!("wiretap bridge thread failed to start: {err}"))?;
 
@@ -69,7 +70,7 @@ pub fn spawn_event_bridges(
                     &node_id_for_audit,
                 );
             }
-            tracing::warn!("audit bridge stopped because all senders dropped");
+            warn!("audit bridge stopped because all senders dropped");
         })
         .map_err(|err| format!("audit bridge thread failed to start: {err}"))?;
 

@@ -1,3 +1,5 @@
+#![allow(clippy::format_in_format_args)]
+
 use super::*;
 
 pub(in crate::e2e::tests) fn overlay_policy_allow_udp(cfg: &TopologyConfig) -> Result<(), String> {

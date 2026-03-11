@@ -62,9 +62,9 @@ impl SoftAdapter {
 
     pub fn run(&mut self, state: &mut EngineState) -> Result<(), String> {
         tracing::info!(
-            "dataplane started (software), mode={:?}, data-plane-interface={}",
-            self.mode,
-            self.iface
+            mode = ?self.mode,
+            data_plane_interface = %self.iface,
+            "dataplane started (software)"
         );
         let mut buf = vec![0u8; 65535];
         loop {
@@ -126,7 +126,7 @@ fn overlay_swap_tunnels() -> bool {
 }
 
 fn open_tun_tap(name: &str, mode: SoftMode) -> Result<File, String> {
-    let fd = unsafe { libc::open(b"/dev/net/tun\0".as_ptr() as *const _, libc::O_RDWR) };
+    let fd = unsafe { libc::open(c"/dev/net/tun".as_ptr(), libc::O_RDWR) };
     if fd < 0 {
         return Err(format!(
             "failed to open /dev/net/tun: {}",
