@@ -12,10 +12,26 @@ build {
     destination = "/tmp/neuwerk-source.tar.gz"
   }
 
+  provisioner "shell-local" {
+    environment_vars = [
+      "NEUWERK_REPO_ROOT=${local.repo_root}",
+      "NEUWERK_PREBUILT_BUNDLE_OUTPUT=${local.prebuilt_bundle_output_path}",
+      "NEUWERK_TARGET=${var.target}",
+      "NEUWERK_USE_PREBUILT_ARTIFACTS=${var.use_prebuilt_artifacts}"
+    ]
+    script = "${path.root}/scripts/create-prebuilt-bundle.sh"
+  }
+
+  provisioner "file" {
+    source      = local.prebuilt_bundle_output_path
+    destination = "/tmp/neuwerk-prebuilt.tar.gz"
+  }
+
   provisioner "shell" {
     inline = [
       "sudo mkdir -p ${local.guest_repo_dir}",
       "sudo tar -xzf /tmp/neuwerk-source.tar.gz -C ${local.guest_repo_dir} --strip-components=1",
+      "sudo tar -xzf /tmp/neuwerk-prebuilt.tar.gz -C ${local.guest_repo_dir}",
       "sudo chown -R ${var.qemu_ssh_username}:${var.qemu_ssh_username} ${local.guest_repo_dir}"
     ]
   }
@@ -24,7 +40,8 @@ build {
     environment_vars = [
       "NEUWERK_REPO_DIR=${local.guest_repo_dir}",
       "NEUWERK_TARGET=${var.target}",
-      "NEUWERK_RELEASE_ARTIFACT_DIR=${local.guest_release_artifact_dir}"
+      "NEUWERK_RELEASE_ARTIFACT_DIR=${local.guest_release_artifact_dir}",
+      "NEUWERK_USE_PREBUILT_ARTIFACTS=${var.use_prebuilt_artifacts}"
     ]
     script = "${path.root}/scripts/install-build-deps.sh"
   }
@@ -40,7 +57,8 @@ build {
   provisioner "shell" {
     environment_vars = [
       "NEUWERK_REPO_DIR=${local.guest_repo_dir}",
-      "NEUWERK_TARGET=${var.target}"
+      "NEUWERK_TARGET=${var.target}",
+      "NEUWERK_USE_PREBUILT_ARTIFACTS=${var.use_prebuilt_artifacts}"
     ]
     script = "${path.root}/scripts/build-firewall.sh"
   }

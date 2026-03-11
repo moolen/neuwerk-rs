@@ -100,9 +100,12 @@ It is intentionally not triggered on push or merge. Use GitHub Actions `workflow
 The workflow:
 
 1. validates the Packer/image configuration
-2. builds the qemu image
-3. packages GitHub-safe release assets
-4. creates or updates the GitHub Release for the requested tag
+2. builds and caches the release binary, UI, and vendored DPDK on the host runner
+3. builds the qemu image and reuses those prebuilt artifacts inside the guest when enabled
+4. packages GitHub-safe release assets
+5. creates or updates the GitHub Release for the requested tag
+
+This host-prebuild path exists to avoid compiling DPDK and the Rust workspace inside a software-emulated guest on GitHub-hosted runners. Local builds still default to the original in-guest compile path unless `USE_PREBUILT_ARTIFACTS=true` is passed to `make package.image.build.qemu`.
 
 ## Current Artifact Sizes
 

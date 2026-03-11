@@ -14,6 +14,7 @@ QEMU_SSH_KEY_DIR ?= $(PACKER_ARTIFACT_DIR)/qemu-keys
 QEMU_SSH_PRIVATE_KEY ?= $(QEMU_SSH_KEY_DIR)/id_ed25519
 QEMU_SSH_PUBLIC_KEY ?= $(QEMU_SSH_KEY_DIR)/id_ed25519.pub
 QEMU_ACCELERATOR ?=
+USE_PREBUILT_ARTIFACTS ?=
 RELEASE_VERSION ?= dev
 GIT_REVISION ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf "unknown")
 SUDO := $(shell if [ "$$(id -u)" -eq 0 ]; then printf ""; else printf "sudo"; fi)
@@ -82,6 +83,7 @@ package.image.build.qemu: package.image.bundle package.image.qemu-key
 		-var "release_version=$(RELEASE_VERSION)" \
 		-var "git_revision=$(GIT_REVISION)" \
 		$(if $(QEMU_ACCELERATOR),-var "qemu_accelerator=$(QEMU_ACCELERATOR)") \
+		$(if $(USE_PREBUILT_ARTIFACTS),-var "use_prebuilt_artifacts=$(USE_PREBUILT_ARTIFACTS)") \
 		-var "qemu_ssh_private_key_file=$(QEMU_SSH_PRIVATE_KEY)" \
 		-var "qemu_ssh_public_key=$$(cat $(QEMU_SSH_PUBLIC_KEY))" \
 		$(PACKER_DIR)

@@ -33,6 +33,11 @@ variable "qemu_accelerator" {
   default = "kvm"
 }
 
+variable "use_prebuilt_artifacts" {
+  type    = bool
+  default = false
+}
+
 variable "qemu_cpus" {
   type    = number
   default = 4

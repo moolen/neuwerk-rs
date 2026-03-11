@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_dir="${NEUWERK_REPO_DIR:-}"
 target_id="${NEUWERK_TARGET:-}"
+use_prebuilt="${NEUWERK_USE_PREBUILT_ARTIFACTS:-false}"
 
 if [[ -z "$repo_dir" || -z "$target_id" ]]; then
   echo "NEUWERK_REPO_DIR and NEUWERK_TARGET are required" >&2
@@ -16,13 +17,24 @@ runtime_packages="$(printf '%s\n' "$packages_json" | python3 -c 'import json,sys
 sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $build_packages $runtime_packages
 
-if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'process.versions.node.split(`.`)[0]' 2>/dev/null || printf 0)" -lt 20 ]]; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
-fi
+case "$use_prebuilt" in
+  1|true|TRUE|yes|YES)
+    install_compilers=0
+    ;;
+  *)
+    install_compilers=1
+    ;;
+esac
 
-if ! command -v cargo >/dev/null 2>&1; then
-  curl https://sh.rustup.rs -sSf | sh -s -- -y
+if [[ "$install_compilers" -eq 1 ]]; then
+  if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'process.versions.node.split(`.`)[0]' 2>/dev/null || printf 0)" -lt 20 ]]; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+  fi
+
+  if ! command -v cargo >/dev/null 2>&1; then
+    curl https://sh.rustup.rs -sSf | sh -s -- -y
+  fi
 fi
 
 if [[ -f "$HOME/.cargo/env" ]]; then
