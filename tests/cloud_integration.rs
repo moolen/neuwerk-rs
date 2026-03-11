@@ -364,7 +364,7 @@ async fn reconcile_sets_drain_for_unassigned_local() {
     let subnet = subnet("subnet-1");
 
     let assignments = firewall::controlplane::cloud::compute_assignments(
-        &[subnet.clone()],
+        std::slice::from_ref(&subnet),
         &[instance_a.clone(), instance_b.clone()],
     );
     let assigned = assignments.get("subnet-1").cloned().unwrap();

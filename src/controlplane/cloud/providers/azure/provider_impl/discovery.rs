@@ -49,8 +49,10 @@ impl AzureProvider {
                         {
                             Ok(nics) => nic_resources = nics,
                             Err(err) => tracing::warn!(
-                                "azure integration: vmss nic list failed for {} ({instance_id}): {err}",
-                                entry.name
+                                vm_name = %entry.name,
+                                instance_id = %instance_id,
+                                error = %err,
+                                "azure integration vmss nic list failed"
                             ),
                         }
                     }
@@ -59,8 +61,8 @@ impl AzureProvider {
             if nic_resources.is_empty() {
                 let Some(resource_id) = entry.id.as_deref() else {
                     tracing::warn!(
-                        "azure integration: instance {} missing resource id; cannot match rg nics",
-                        entry.name
+                        vm_name = %entry.name,
+                        "azure integration instance missing resource id; cannot match resource-group NICs"
                     );
                     continue;
                 };
@@ -111,61 +113,10 @@ impl AzureProvider {
 
     async fn discover_subnets_provider(
         &self,
-        filter: &DiscoveryFilter,
+        _filter: &DiscoveryFilter,
     ) -> Result<Vec<SubnetRef>, CloudError> {
-        let url = format!(
-            "{ARM_BASE}/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Network/virtualNetworks?api-version={NETWORK_API_VERSION}",
-            self.subscription_id, self.resource_group
-        );
-        let list: VnetList = self.get_json(url).await?;
-        let mut subnets = Vec::new();
-        for vnet in list.value {
-            let location = vnet.location.clone().unwrap_or_default();
-            let vnet_tags = vnet.tags.clone().unwrap_or_default();
-            let vnet_subnets = vnet
-                .properties
-                .and_then(|props| props.subnets)
-                .unwrap_or_default();
-            for subnet in vnet_subnets {
-                let subnet_name = subnet.name.clone().unwrap_or_default();
-                let tags = subnet.tags.clone().unwrap_or_else(|| vnet_tags.clone());
-                if AzureProvider::is_management_subnet(&subnet_name, &tags) {
-                    continue;
-                }
-                if !filter.matches(&tags) {
-                    continue;
-                }
-                let route_table_id = subnet
-                    .properties
-                    .as_ref()
-                    .and_then(|props| props.route_table.as_ref())
-                    .and_then(|rt| rt.id.clone())
-                    .unwrap_or_default();
-                if route_table_id.is_empty() {
-                    continue;
-                }
-                let cidr = subnet
-                    .properties
-                    .as_ref()
-                    .and_then(|props| props.address_prefix.clone())
-                    .or_else(|| {
-                        subnet
-                            .properties
-                            .as_ref()
-                            .and_then(|props| props.address_prefixes.as_ref())
-                            .and_then(|prefixes| prefixes.first().cloned())
-                    })
-                    .unwrap_or_default();
-                subnets.push(SubnetRef {
-                    id: subnet.id.unwrap_or_default(),
-                    name: subnet_name,
-                    zone: location.clone(),
-                    cidr,
-                    route_table_id,
-                    tags,
-                });
-            }
-        }
-        Ok(subnets)
+        // Azure VMSS integration is lifecycle-only when steering is handled externally.
+        // Route ownership stays outside of the firewall integration.
+        Ok(Vec::new())
     }
 }

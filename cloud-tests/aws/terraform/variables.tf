@@ -116,6 +116,30 @@ variable "firewall_instance_type" {
   description = "Firewall instance type (Intel, 2 vCPU target)."
 }
 
+variable "firewall_asg_min_size" {
+  type        = number
+  default     = 1
+  description = "Minimum ASG size for firewall nodes (GWLB architecture)."
+}
+
+variable "firewall_asg_desired_capacity" {
+  type        = number
+  default     = 2
+  description = "Desired ASG size for firewall nodes (GWLB architecture)."
+}
+
+variable "firewall_asg_max_size" {
+  type        = number
+  default     = 3
+  description = "Maximum ASG size for firewall nodes (GWLB architecture)."
+}
+
+variable "firewall_asg_heartbeat_timeout_secs" {
+  type        = number
+  default     = 900
+  description = "AWS ASG terminating lifecycle hook heartbeat timeout."
+}
+
 variable "consumer_instance_type" {
   type        = string
   default     = "c6in.large"

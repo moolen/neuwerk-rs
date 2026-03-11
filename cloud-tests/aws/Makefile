@@ -9,7 +9,7 @@ INDEX ?= 0
 RESOLVE_FW_IPS ?= $(CURDIR)/scripts/resolve-firewall-mgmt-ips.sh
 MINT_API_TOKEN ?= $(CURDIR)/scripts/mint-api-token.sh
 
-.PHONY: ssh.jumpbox ssh.consumer ssh.upstream ssh.firewall health policy-smoke run-tests
+.PHONY: ssh.jumpbox ssh.consumer ssh.upstream ssh.firewall health policy-smoke run-tests lifecycle-rollout
 
 ssh.jumpbox:
 	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
@@ -92,3 +92,7 @@ policy-smoke:
 run-tests:
 	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
 		"$(CURDIR)/scripts/run-tests.sh"
+
+lifecycle-rollout:
+	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
+		"$(CURDIR)/scripts/lifecycle-rollout.sh"

@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
+use tracing::warn;
 
 use crate::controlplane::cloud::provider::{CloudError, CloudProvider};
 use crate::controlplane::cloud::types::{
@@ -18,7 +19,7 @@ use crate::controlplane::cloud::types::{
     SubnetRef, TerminationEvent,
 };
 
-const IMDS_BASE: &str = "http://169.254.169.254/latest";
+const DEFAULT_IMDS_BASE: &str = "http://169.254.169.254/latest";
 const EC2_API_VERSION: &str = "2016-11-15";
 const AUTOSCALING_API_VERSION: &str = "2011-01-01";
 const LIFECYCLE_TRANSITION_TERMINATING: &str = "autoscaling:EC2_INSTANCE_TERMINATING";
@@ -34,9 +35,18 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct AwsProvider {
     region: String,
     asg_name: String,
+    imds_base: String,
+    autoscaling_endpoint: Option<AwsQueryEndpoint>,
+    ec2_endpoint: Option<AwsQueryEndpoint>,
     client: reqwest::Client,
     local_instance_id: Arc<Mutex<Option<String>>>,
     credentials: Arc<Mutex<Option<AwsCredentials>>>,
+}
+
+#[derive(Debug, Clone)]
+struct AwsQueryEndpoint {
+    request_url: String,
+    sign_host: String,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +55,14 @@ struct AwsCredentials {
     secret_access_key: String,
     session_token: String,
     expiration_epoch: i64,
+}
+
+#[derive(Debug, Clone)]
+struct SignedAwsRequest {
+    body: String,
+    amz_date: String,
+    authorization: String,
+    session_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,9 +128,32 @@ impl AwsProvider {
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
+        Self::with_client(region, asg_name, client, DEFAULT_IMDS_BASE.to_string())
+    }
+
+    fn with_client(
+        region: String,
+        asg_name: String,
+        client: reqwest::Client,
+        imds_base: String,
+    ) -> Self {
+        Self::with_client_and_endpoints(region, asg_name, client, imds_base, None, None)
+    }
+
+    fn with_client_and_endpoints(
+        region: String,
+        asg_name: String,
+        client: reqwest::Client,
+        imds_base: String,
+        autoscaling_endpoint: Option<AwsQueryEndpoint>,
+        ec2_endpoint: Option<AwsQueryEndpoint>,
+    ) -> Self {
         Self {
             region,
             asg_name,
+            imds_base,
+            autoscaling_endpoint,
+            ec2_endpoint,
             client,
             local_instance_id: Arc::new(Mutex::new(None)),
             credentials: Arc::new(Mutex::new(None)),
@@ -126,7 +167,7 @@ impl AwsProvider {
     async fn self_identity_provider(&self) -> Result<InstanceRef, CloudError> {
         let instance_id = self.local_instance_id().await?;
         let instances = self
-            .describe_instances_by_ids(&[instance_id.clone()])
+            .describe_instances_by_ids(std::slice::from_ref(&instance_id))
             .await?;
         let instance = instances
             .into_iter()
@@ -188,7 +229,11 @@ impl AwsProvider {
                     // During ASG terminating transitions, ENIs can be detached between
                     // autoscaling and EC2 describe calls. Skip those transient entries
                     // instead of failing the full reconcile cycle.
-                    tracing::warn!("aws discover instances: skipping {}: {msg}", instance.id);
+                    warn!(
+                        instance_id = %instance.id,
+                        error = %msg,
+                        "aws discover instances skipping transient missing-nic entry"
+                    );
                 }
                 Err(err) => return Err(err),
             }
@@ -276,11 +321,10 @@ impl AwsProvider {
             })?;
 
         let now = OffsetDateTime::now_utc().unix_timestamp();
-        let timeout = hook.heartbeat_timeout_secs.max(30);
         let event = TerminationEvent {
             id: lifecycle_event_id(&hook.name),
             instance_id: instance.id.clone(),
-            deadline_epoch: now + timeout,
+            deadline_epoch: lifecycle_heartbeat_deadline(now, hook.heartbeat_timeout_secs),
         };
         Ok(Some(event))
     }
@@ -302,9 +346,7 @@ impl AwsProvider {
 
         match self.autoscaling_query(params).await {
             Ok(_) => Ok(CapabilityResult::Applied),
-            Err(CloudError::RequestFailed(msg))
-                if msg.contains("No active Lifecycle Action found") =>
-            {
+            Err(CloudError::RequestFailed(msg)) if is_missing_lifecycle_action_error(&msg) => {
                 Ok(CapabilityResult::Applied)
             }
             Err(err) => Err(err),
@@ -328,7 +370,6 @@ impl AwsProvider {
             .ok_or_else(|| {
                 CloudError::InvalidResponse("asg missing terminating lifecycle hook".to_string())
             })?;
-        let timeout = hook.heartbeat_timeout_secs.max(30);
 
         let mut params = BTreeMap::new();
         params.insert(
@@ -342,11 +383,12 @@ impl AwsProvider {
         match self.autoscaling_query(params).await {
             Ok(_) => {
                 let now = OffsetDateTime::now_utc().unix_timestamp();
-                Ok(Some(now + timeout))
+                Ok(Some(lifecycle_heartbeat_deadline(
+                    now,
+                    hook.heartbeat_timeout_secs,
+                )))
             }
-            Err(CloudError::RequestFailed(msg))
-                if msg.contains("No active Lifecycle Action found") =>
-            {
+            Err(CloudError::RequestFailed(msg)) if is_missing_lifecycle_action_error(&msg) => {
                 Ok(None)
             }
             Err(err) => Err(err),
@@ -587,7 +629,7 @@ impl AwsProvider {
     }
 
     async fn imds_token(&self) -> Result<String, CloudError> {
-        let url = format!("{IMDS_BASE}/api/token");
+        let url = format!("{}/api/token", self.imds_base);
         let response = self
             .client
             .put(url)
@@ -609,7 +651,7 @@ impl AwsProvider {
     }
 
     async fn imds_get(&self, token: &str, path: &str) -> Result<String, CloudError> {
-        let url = format!("{IMDS_BASE}/{path}");
+        let url = format!("{}/{path}", self.imds_base);
         let response = self
             .client
             .get(url)
@@ -635,72 +677,67 @@ impl AwsProvider {
     ) -> Result<String, CloudError> {
         params.insert("Version".to_string(), AUTOSCALING_API_VERSION.to_string());
         let host = format!("autoscaling.{}.amazonaws.com", self.region);
-        self.signed_query("autoscaling", &host, params).await
+        let request_url = self
+            .autoscaling_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.request_url.clone())
+            .unwrap_or_else(|| format!("https://{host}/"));
+        let sign_host = self
+            .autoscaling_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.sign_host.clone())
+            .unwrap_or(host);
+        self.signed_query("autoscaling", &sign_host, &request_url, params)
+            .await
     }
 
     async fn ec2_query(&self, mut params: BTreeMap<String, String>) -> Result<String, CloudError> {
         params.insert("Version".to_string(), EC2_API_VERSION.to_string());
         let host = format!("ec2.{}.amazonaws.com", self.region);
-        self.signed_query("ec2", &host, params).await
+        let request_url = self
+            .ec2_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.request_url.clone())
+            .unwrap_or_else(|| format!("https://{host}/"));
+        let sign_host = self
+            .ec2_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.sign_host.clone())
+            .unwrap_or(host);
+        self.signed_query("ec2", &sign_host, &request_url, params)
+            .await
     }
 
     async fn signed_query(
         &self,
         service: &str,
         host: &str,
+        request_url: &str,
         params: BTreeMap<String, String>,
     ) -> Result<String, CloudError> {
         let creds = self.aws_credentials().await?;
-        let now = OffsetDateTime::now_utc();
-        let date_stamp = format!("{:04}{:02}{:02}", now.year(), now.month() as u8, now.day());
-        let amz_date = format!(
-            "{date_stamp}T{:02}{:02}{:02}Z",
-            now.hour(),
-            now.minute(),
-            now.second()
-        );
-
-        let body = form_urlencode_params(&params);
-        let payload_hash = sha256_hex(body.as_bytes());
-
-        let mut canonical_headers = format!(
-            "content-type:application/x-www-form-urlencoded; charset=utf-8\nhost:{host}\nx-amz-date:{amz_date}\n"
-        );
-        let mut signed_headers = "content-type;host;x-amz-date".to_string();
-        if !creds.session_token.is_empty() {
-            canonical_headers.push_str(&format!("x-amz-security-token:{}\n", creds.session_token));
-            signed_headers.push_str(";x-amz-security-token");
-        }
-
-        let canonical_request =
-            format!("POST\n/\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
-        let credential_scope = format!("{date_stamp}/{}/{service}/aws4_request", self.region);
-        let string_to_sign = format!(
-            "AWS4-HMAC-SHA256\n{amz_date}\n{credential_scope}\n{}",
-            sha256_hex(canonical_request.as_bytes())
-        );
-
-        let signing_key =
-            derive_signing_key(&creds.secret_access_key, &date_stamp, &self.region, service)?;
-        let signature = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
-
-        let authorization = format!(
-            "AWS4-HMAC-SHA256 Credential={}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}",
-            creds.access_key_id
-        );
+        let signed = build_signed_query_request(
+            service,
+            host,
+            &params,
+            &creds,
+            &self.region,
+            OffsetDateTime::now_utc(),
+        )?;
 
         let mut request = self
             .client
-            .post(format!("https://{host}/"))
+            .post(request_url)
             .header(
                 "content-type",
                 "application/x-www-form-urlencoded; charset=utf-8",
             )
-            .header("x-amz-date", amz_date)
-            .header("authorization", authorization)
-            .body(body);
-        if !creds.session_token.is_empty() {
-            request = request.header("x-amz-security-token", creds.session_token);
+            .header("host", host)
+            .header("x-amz-date", signed.amz_date)
+            .header("authorization", signed.authorization)
+            .body(signed.body);
+        if let Some(session_token) = signed.session_token {
+            request = request.header("x-amz-security-token", session_token);
         }
 
         let response = request
@@ -1041,6 +1078,16 @@ fn lifecycle_event_hook(event_id: &str) -> Option<&str> {
     event_id.strip_prefix(LIFECYCLE_EVENT_PREFIX)
 }
 
+fn lifecycle_heartbeat_deadline(now_epoch: i64, heartbeat_timeout_secs: i64) -> i64 {
+    now_epoch + heartbeat_timeout_secs.max(30)
+}
+
+fn is_missing_lifecycle_action_error(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains("no active lifecycle action found")
+}
+
 fn tag_value<'a>(tags: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
     if let Some(value) = tags.get(key) {
         return Some(value.as_str());
@@ -1120,9 +1167,222 @@ fn abbreviate(value: &str, limit: usize) -> String {
     truncated
 }
 
+fn build_signed_query_request(
+    service: &str,
+    host: &str,
+    params: &BTreeMap<String, String>,
+    creds: &AwsCredentials,
+    region: &str,
+    now: OffsetDateTime,
+) -> Result<SignedAwsRequest, CloudError> {
+    let date_stamp = format!("{:04}{:02}{:02}", now.year(), now.month() as u8, now.day());
+    let amz_date = format!(
+        "{date_stamp}T{:02}{:02}{:02}Z",
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
+
+    let body = form_urlencode_params(params);
+    let payload_hash = sha256_hex(body.as_bytes());
+
+    let mut canonical_headers = format!(
+        "content-type:application/x-www-form-urlencoded; charset=utf-8\nhost:{host}\nx-amz-date:{amz_date}\n"
+    );
+    let mut signed_headers = "content-type;host;x-amz-date".to_string();
+    let session_token = if creds.session_token.is_empty() {
+        None
+    } else {
+        canonical_headers.push_str(&format!("x-amz-security-token:{}\n", creds.session_token));
+        signed_headers.push_str(";x-amz-security-token");
+        Some(creds.session_token.clone())
+    };
+
+    let canonical_request =
+        format!("POST\n/\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
+    let credential_scope = format!("{date_stamp}/{region}/{service}/aws4_request");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amz_date}\n{credential_scope}\n{}",
+        sha256_hex(canonical_request.as_bytes())
+    );
+
+    let signing_key = derive_signing_key(&creds.secret_access_key, &date_stamp, region, service)?;
+    let signature = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
+    let authorization = format!(
+        "AWS4-HMAC-SHA256 Credential={}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}",
+        creds.access_key_id
+    );
+
+    Ok(SignedAwsRequest {
+        body,
+        amz_date,
+        authorization,
+        session_token,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
+
+    use axum::extract::{Path as AxumPath, State};
+    use axum::http::HeaderMap;
+    use axum::http::StatusCode;
+    use axum::routing::{get, post, put};
+    use axum::Router;
+    use time::format_description::well_known::Rfc3339;
+
+    #[derive(Clone)]
+    struct ImdsTestState {
+        token_status: StatusCode,
+        token_body: String,
+        roles_status: StatusCode,
+        roles_body: String,
+        creds_status: StatusCode,
+        creds_body: String,
+    }
+
+    #[derive(Debug, Clone)]
+    struct RecordedAwsRequest {
+        action: String,
+        params: HashMap<String, String>,
+        host: String,
+        authorization: String,
+        amz_date: String,
+        security_token: Option<String>,
+    }
+
+    async fn imds_token_handler(State(state): State<Arc<ImdsTestState>>) -> (StatusCode, String) {
+        (state.token_status, state.token_body.clone())
+    }
+
+    async fn imds_roles_handler(State(state): State<Arc<ImdsTestState>>) -> (StatusCode, String) {
+        (state.roles_status, state.roles_body.clone())
+    }
+
+    async fn imds_creds_handler(
+        State(state): State<Arc<ImdsTestState>>,
+        AxumPath(_role): AxumPath<String>,
+    ) -> (StatusCode, String) {
+        (state.creds_status, state.creds_body.clone())
+    }
+
+    async fn start_imds_server(state: ImdsTestState) -> (String, tokio::task::JoinHandle<()>) {
+        let app = Router::new()
+            .route("/latest/api/token", put(imds_token_handler))
+            .route(
+                "/latest/meta-data/iam/security-credentials/",
+                get(imds_roles_handler),
+            )
+            .route(
+                "/latest/meta-data/iam/security-credentials/:role",
+                get(imds_creds_handler),
+            )
+            .with_state(Arc::new(state));
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind imds test server");
+        let addr = listener.local_addr().expect("imds local addr");
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{addr}/latest"), handle)
+    }
+
+    async fn autoscaling_handler(
+        State(recorded): State<Arc<StdMutex<Vec<RecordedAwsRequest>>>>,
+        headers: HeaderMap,
+        body: String,
+    ) -> (StatusCode, String) {
+        let params: HashMap<String, String> = body
+            .split('&')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut pieces = part.splitn(2, '=');
+                let key = pieces.next().unwrap_or_default().to_string();
+                let value = pieces.next().unwrap_or_default().to_string();
+                (key, value)
+            })
+            .collect();
+        let action = params.get("Action").cloned().unwrap_or_default();
+        recorded.lock().unwrap().push(RecordedAwsRequest {
+            action: action.clone(),
+            params: params.clone(),
+            host: headers
+                .get("host")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string(),
+            authorization: headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string(),
+            amz_date: headers
+                .get("x-amz-date")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string(),
+            security_token: headers
+                .get("x-amz-security-token")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.to_string()),
+        });
+
+        match action.as_str() {
+            "DescribeLifecycleHooks" => (
+                StatusCode::OK,
+                r#"
+<DescribeLifecycleHooksResponse>
+  <DescribeLifecycleHooksResult>
+    <LifecycleHooks>
+      <member>
+        <LifecycleHookName>terminate-hook</LifecycleHookName>
+        <LifecycleTransition>autoscaling:EC2_INSTANCE_TERMINATING</LifecycleTransition>
+        <HeartbeatTimeout>120</HeartbeatTimeout>
+      </member>
+    </LifecycleHooks>
+  </DescribeLifecycleHooksResult>
+</DescribeLifecycleHooksResponse>
+"#
+                .to_string(),
+            ),
+            "RecordLifecycleActionHeartbeat" => (
+                StatusCode::OK,
+                "<RecordLifecycleActionHeartbeatResponse />".to_string(),
+            ),
+            "CompleteLifecycleAction" => (
+                StatusCode::OK,
+                "<CompleteLifecycleActionResponse />".to_string(),
+            ),
+            other => (
+                StatusCode::BAD_REQUEST,
+                format!("unexpected autoscaling action {other}"),
+            ),
+        }
+    }
+
+    async fn start_autoscaling_server() -> (
+        String,
+        Arc<StdMutex<Vec<RecordedAwsRequest>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let recorded = Arc::new(StdMutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/", post(autoscaling_handler))
+            .with_state(recorded.clone());
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind autoscaling test server");
+        let addr = listener.local_addr().expect("autoscaling local addr");
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{addr}/"), recorded, handle)
+    }
 
     #[test]
     fn parse_asg_members_extracts_instances() {
@@ -1289,5 +1549,295 @@ mod tests {
         assert!(!is_transient_missing_nic_error(
             "autoscaling xml parse: invalid document"
         ));
+    }
+
+    #[test]
+    fn lifecycle_heartbeat_deadline_enforces_minimum_timeout() {
+        assert_eq!(lifecycle_heartbeat_deadline(1_000, 5), 1_030);
+        assert_eq!(lifecycle_heartbeat_deadline(1_000, 120), 1_120);
+    }
+
+    #[test]
+    fn missing_lifecycle_action_detection_is_case_insensitive() {
+        assert!(is_missing_lifecycle_action_error(
+            "aws autoscaling request failed: 400: No active Lifecycle Action found"
+        ));
+        assert!(is_missing_lifecycle_action_error(
+            "aws autoscaling request failed: 400: no active lifecycle action found"
+        ));
+        assert!(!is_missing_lifecycle_action_error(
+            "aws autoscaling request failed: 403: unauthorized"
+        ));
+    }
+
+    #[test]
+    fn build_signed_query_request_matches_expected_sigv4_output() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "Action".to_string(),
+            "DescribeAutoScalingGroups".to_string(),
+        );
+        params.insert(
+            "AutoScalingGroupNames.member.1".to_string(),
+            "asg-prod".to_string(),
+        );
+        params.insert("Version".to_string(), AUTOSCALING_API_VERSION.to_string());
+        let creds = AwsCredentials {
+            access_key_id: "AKIDEXAMPLE".to_string(),
+            secret_access_key: "secret-key".to_string(),
+            session_token: "session-token".to_string(),
+            expiration_epoch: 0,
+        };
+        let now = OffsetDateTime::parse("2026-03-09T12:00:00Z", &Rfc3339).unwrap();
+
+        let signed = build_signed_query_request(
+            "autoscaling",
+            "autoscaling.us-east-1.amazonaws.com",
+            &params,
+            &creds,
+            "us-east-1",
+            now,
+        )
+        .unwrap();
+
+        assert_eq!(
+            signed.body,
+            "Action=DescribeAutoScalingGroups&AutoScalingGroupNames.member.1=asg-prod&Version=2011-01-01"
+        );
+        assert_eq!(signed.amz_date, "20260309T120000Z");
+        assert_eq!(signed.session_token.as_deref(), Some("session-token"));
+        assert_eq!(
+            signed.authorization,
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260309/us-east-1/autoscaling/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-security-token, Signature=c9f55210224ca575dae0ae4ee16d335da2ef5b13ff0f15ffa60e60a43db0536f"
+        );
+    }
+
+    #[tokio::test]
+    async fn aws_credentials_reports_imds_token_failure() {
+        let (imds_base, handle) = start_imds_server(ImdsTestState {
+            token_status: StatusCode::INTERNAL_SERVER_ERROR,
+            token_body: "no token".to_string(),
+            roles_status: StatusCode::OK,
+            roles_body: "role-a\n".to_string(),
+            creds_status: StatusCode::OK,
+            creds_body: "{}".to_string(),
+        })
+        .await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let provider = AwsProvider::with_client(
+            "us-east-1".to_string(),
+            "asg-a".to_string(),
+            client,
+            imds_base,
+        );
+
+        let err = provider
+            .aws_credentials()
+            .await
+            .expect_err("imds token failure");
+        handle.abort();
+
+        match err {
+            CloudError::RequestFailed(message) => {
+                assert!(message.contains("imds token failed"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn aws_credentials_reports_iam_credential_decode_errors() {
+        let (imds_base, handle) = start_imds_server(ImdsTestState {
+            token_status: StatusCode::OK,
+            token_body: "token-a".to_string(),
+            roles_status: StatusCode::OK,
+            roles_body: "role-a\n".to_string(),
+            creds_status: StatusCode::OK,
+            creds_body: "{not-json".to_string(),
+        })
+        .await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let provider = AwsProvider::with_client(
+            "us-east-1".to_string(),
+            "asg-a".to_string(),
+            client,
+            imds_base,
+        );
+
+        let err = provider
+            .aws_credentials()
+            .await
+            .expect_err("credential decode failure");
+        handle.abort();
+
+        match err {
+            CloudError::InvalidResponse(message) => {
+                assert!(message.contains("imds creds decode"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn record_termination_heartbeat_provider_sends_expected_autoscaling_requests() {
+        let (autoscaling_url, recorded, handle) = start_autoscaling_server().await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let provider = AwsProvider::with_client_and_endpoints(
+            "us-east-1".to_string(),
+            "asg-prod".to_string(),
+            client,
+            DEFAULT_IMDS_BASE.to_string(),
+            Some(AwsQueryEndpoint {
+                request_url: autoscaling_url,
+                sign_host: "autoscaling.us-east-1.amazonaws.com".to_string(),
+            }),
+            None,
+        );
+        *provider.credentials.lock().await = Some(AwsCredentials {
+            access_key_id: "AKIDEXAMPLE".to_string(),
+            secret_access_key: "secret-key".to_string(),
+            session_token: "session-token".to_string(),
+            expiration_epoch: OffsetDateTime::now_utc().unix_timestamp() + 3600,
+        });
+
+        let event = TerminationEvent {
+            id: lifecycle_event_id("terminate-hook"),
+            instance_id: "i-1234567890".to_string(),
+            deadline_epoch: 0,
+        };
+
+        let deadline = provider
+            .record_termination_heartbeat_provider(&event)
+            .await
+            .expect("heartbeat request")
+            .expect("heartbeat deadline");
+        handle.abort();
+
+        assert!(deadline > OffsetDateTime::now_utc().unix_timestamp());
+        let requests = recorded.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].action, "DescribeLifecycleHooks");
+        assert_eq!(
+            requests[0]
+                .params
+                .get("AutoScalingGroupName")
+                .map(String::as_str),
+            Some("asg-prod")
+        );
+        assert_eq!(
+            requests[0].params.get("Version").map(String::as_str),
+            Some(AUTOSCALING_API_VERSION)
+        );
+        assert_eq!(requests[0].host, "autoscaling.us-east-1.amazonaws.com");
+        assert!(requests[0]
+            .authorization
+            .starts_with("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"));
+        assert_eq!(requests[0].security_token.as_deref(), Some("session-token"));
+        assert!(!requests[0].amz_date.is_empty());
+
+        assert_eq!(requests[1].action, "RecordLifecycleActionHeartbeat");
+        assert_eq!(
+            requests[1]
+                .params
+                .get("AutoScalingGroupName")
+                .map(String::as_str),
+            Some("asg-prod")
+        );
+        assert_eq!(
+            requests[1]
+                .params
+                .get("LifecycleHookName")
+                .map(String::as_str),
+            Some("terminate-hook")
+        );
+        assert_eq!(
+            requests[1].params.get("InstanceId").map(String::as_str),
+            Some("i-1234567890")
+        );
+        assert_eq!(
+            requests[1].params.get("Version").map(String::as_str),
+            Some(AUTOSCALING_API_VERSION)
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_termination_action_provider_sends_continue_request() {
+        let (autoscaling_url, recorded, handle) = start_autoscaling_server().await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let provider = AwsProvider::with_client_and_endpoints(
+            "us-east-1".to_string(),
+            "asg-prod".to_string(),
+            client,
+            DEFAULT_IMDS_BASE.to_string(),
+            Some(AwsQueryEndpoint {
+                request_url: autoscaling_url,
+                sign_host: "autoscaling.us-east-1.amazonaws.com".to_string(),
+            }),
+            None,
+        );
+        *provider.credentials.lock().await = Some(AwsCredentials {
+            access_key_id: "AKIDEXAMPLE".to_string(),
+            secret_access_key: "secret-key".to_string(),
+            session_token: "session-token".to_string(),
+            expiration_epoch: OffsetDateTime::now_utc().unix_timestamp() + 3600,
+        });
+
+        let event = TerminationEvent {
+            id: lifecycle_event_id("terminate-hook"),
+            instance_id: "i-terminate".to_string(),
+            deadline_epoch: 0,
+        };
+
+        let result = provider
+            .complete_termination_action_provider(&event)
+            .await
+            .expect("complete lifecycle action");
+        handle.abort();
+
+        assert_eq!(result, CapabilityResult::Applied);
+        let requests = recorded.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].action, "CompleteLifecycleAction");
+        assert_eq!(
+            requests[0]
+                .params
+                .get("AutoScalingGroupName")
+                .map(String::as_str),
+            Some("asg-prod")
+        );
+        assert_eq!(
+            requests[0]
+                .params
+                .get("LifecycleHookName")
+                .map(String::as_str),
+            Some("terminate-hook")
+        );
+        assert_eq!(
+            requests[0]
+                .params
+                .get("LifecycleActionResult")
+                .map(String::as_str),
+            Some("CONTINUE")
+        );
+        assert_eq!(
+            requests[0].params.get("InstanceId").map(String::as_str),
+            Some("i-terminate")
+        );
+        assert_eq!(
+            requests[0].params.get("Version").map(String::as_str),
+            Some(AUTOSCALING_API_VERSION)
+        );
     }
 }

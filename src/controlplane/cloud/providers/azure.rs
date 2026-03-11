@@ -23,6 +23,7 @@ const COMPUTE_API_VERSION: &str = "2023-09-01";
 const NETWORK_API_VERSION: &str = "2023-05-01";
 const TAG_NIC_MANAGEMENT: &[&str] = &["neuwerk.io/management", "neuwerk.io.management"];
 const TAG_NIC_DATAPLANE: &[&str] = &["neuwerk.io/dataplane", "neuwerk.io.dataplane"];
+#[cfg(test)]
 const TAG_ROLE: &[&str] = &["neuwerk.io/role", "neuwerk.io.role"];
 const TERMINATION_EVENT_TYPES: &[&str] = &[
     "terminate",

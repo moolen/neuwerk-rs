@@ -30,9 +30,11 @@ This folder provisions an AWS verification bench for:
   - `terraform apply -var 'firewall_binary_path=../../../target/release/firewall' -var 'traffic_architecture=eni_no_encap'`
 
 ## Notes
-- The bench is currently single-AZ and single-firewall-instance oriented for deterministic verification.
+- `gwlb` architecture now runs firewall nodes via an ASG with an EC2 terminating lifecycle hook, and the firewall process runs with `--integration aws-asg` for drain/heartbeat/completion handling.
+- `eni_no_encap` remains single-firewall-instance oriented for deterministic direct-route verification.
 - SSH key defaults to `cloud-tests/.secrets/ssh/aws_e2e`.
 - `policy-smoke` reuses the common cloud runner and skips standalone throughput; `run-tests` includes throughput.
+- ASG lifecycle rollout experiment: `make lifecycle-rollout` (writes `cloud-tests/aws/artifacts/aws-connectivity-rollout-*.{log,consumer-flow.log,result.json}`).
 - AWS smoke defaults exclude `tls_intercept_http_path_enforcement`; override with `RUNNER_ARGS` (or `AWS_RUNNER_TESTS`) to run a custom test set.
 - Throughput-sensitive knobs: `firewall_encap_mtu` (default `1800`), `firewall_dpdk_mbuf_data_room` (default `4096`), `firewall_dpdk_port_mtu` (GWLB default `1800`; set `0` to disable), `firewall_dpdk_port_mtu_no_encap` (eni_no_encap default `1800`; set `0` to disable), optional `firewall_dpdk_queue_override` (default `0`), `firewall_dpdk_state_shards` (default `32`), and `firewall_dpdk_overlay_debug` (keep `false` for perf).
 - If the firewall binary is linked against DPDK `.so.24` (default `make build` output), avoid `.so.26` runtime preload settings; ABI mixing can fail startup (`EAL: Cannot init trace`).

@@ -19,8 +19,10 @@ async fn reconcile_updates_routes_and_protection() {
         tags.clone(),
     );
     let subnet = tagged_subnet("subnet-1", "zone-1", tags.clone());
-    let expected_assignments =
-        compute_assignments(&[subnet.clone()], &[instance_a.clone(), instance_b.clone()]);
+    let expected_assignments = compute_assignments(
+        std::slice::from_ref(&subnet),
+        &[instance_a.clone(), instance_b.clone()],
+    );
     let local_id = expected_assignments.values().next().cloned().unwrap();
 
     let provider = MockProvider::new(
@@ -70,7 +72,7 @@ async fn reconcile_updates_routes_and_protection() {
     } else {
         instance_b.dataplane_ip
     };
-    let route_key = format!("subnet-1:neuwerk-default");
+    let route_key = "subnet-1:neuwerk-default".to_string();
     assert_eq!(routes.get(&route_key), Some(&assigned_ip));
 
     let protections = provider.protections.lock().await;
@@ -83,7 +85,7 @@ async fn reconcile_updates_routes_and_protection() {
     assert_eq!(latest.get("i-a"), Some(&expected_a));
     assert_eq!(latest.get("i-b"), Some(&expected_b));
 
-    assert_eq!(drain_control.is_draining(), false);
+    assert!(!drain_control.is_draining());
     assert_eq!(
         manager.local_cache.assignments.get("subnet-1"),
         expected_assignments.get("subnet-1")
@@ -149,7 +151,7 @@ async fn reconcile_uses_only_ready_instances() {
     manager.reconcile_once().await.unwrap();
 
     let routes = provider.routes.lock().await;
-    let route_key = format!("subnet-1:neuwerk-default");
+    let route_key = "subnet-1:neuwerk-default".to_string();
     assert_eq!(routes.get(&route_key), Some(&instance_a.dataplane_ip));
 }
 

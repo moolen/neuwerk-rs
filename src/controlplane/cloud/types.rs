@@ -47,21 +47,11 @@ pub enum CapabilityResult {
     Unsupported,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct IntegrationCapabilities {
     pub instance_protection: bool,
     pub termination_notice: bool,
     pub lifecycle_hook: bool,
-}
-
-impl Default for IntegrationCapabilities {
-    fn default() -> Self {
-        Self {
-            instance_protection: false,
-            termination_notice: false,
-            lifecycle_hook: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
