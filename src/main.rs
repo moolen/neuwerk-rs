@@ -6,7 +6,7 @@ use firewall::controlplane::wiretap::{load_or_create_node_id, WiretapHub};
 use firewall::controlplane::{self, PolicyStore};
 #[cfg(test)]
 use firewall::dataplane::Packet;
-use firewall::dataplane::{DataplaneConfigStore, DrainControl, OverlayConfig, SnatMode};
+use firewall::dataplane::{DataplaneConfigStore, DrainControl, SnatMode};
 use firewall::logging;
 mod runtime;
 use tracing::{error, info, warn};
@@ -21,8 +21,8 @@ use runtime::bootstrap::network::{dataplane_ipv4_config, internal_ipv4_config};
 use runtime::bootstrap::policy_state::init_local_controlplane_state;
 use runtime::bootstrap::shutdown::spawn_signal_shutdown_task;
 use runtime::bootstrap::startup::{
-    log_startup_summary, maybe_select_cluster_seed, resolve_bindings,
-    run_cluster_migration_if_requested, start_cluster_runtime,
+    build_dataplane_runtime_network_config, log_startup_summary, maybe_select_cluster_seed,
+    resolve_bindings, run_cluster_migration_if_requested, start_cluster_runtime,
 };
 use runtime::bootstrap::task_wait::await_runtime_tasks;
 use runtime::cli::{parse_args, usage, CloudProviderKind, DataPlaneMode};
@@ -122,23 +122,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "resolved control-plane listener addresses"
     );
 
-    // TODO: wire dataplane network parameters via CLI or config.
-    let (internal_net, internal_prefix) = cfg.internal_cidr.unwrap_or((Ipv4Addr::UNSPECIFIED, 32));
-    let public_ip = match cfg.snat_mode {
-        SnatMode::Static(ip) => ip,
-        _ => Ipv4Addr::UNSPECIFIED,
-    };
-    let data_port = 0;
-    let overlay = OverlayConfig {
-        mode: cfg.encap_mode,
-        udp_port: cfg.encap_udp_port.unwrap_or(0),
-        udp_port_internal: cfg.encap_udp_port_internal,
-        udp_port_external: cfg.encap_udp_port_external,
-        vni: cfg.encap_vni,
-        vni_internal: cfg.encap_vni_internal,
-        vni_external: cfg.encap_vni_external,
-        mtu: cfg.encap_mtu,
-    };
+    let dataplane_network = build_dataplane_runtime_network_config(&cfg);
+    let internal_net = dataplane_network.internal_net;
+    let internal_prefix = dataplane_network.internal_prefix;
+    let public_ip = dataplane_network.public_ip;
+    let data_port = dataplane_network.data_port;
+    let overlay = dataplane_network.overlay;
 
     let dataplane_config = DataplaneConfigStore::new();
     let policy_store = PolicyStore::new_with_config(

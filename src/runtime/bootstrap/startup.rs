@@ -9,7 +9,7 @@ use firewall::controlplane::cluster::ClusterRuntime;
 use firewall::controlplane::metrics::Metrics;
 use firewall::controlplane::policy_repository::PolicyDiskStore;
 use firewall::controlplane::wiretap::WiretapHub;
-use firewall::dataplane::EncapMode;
+use firewall::dataplane::{EncapMode, OverlayConfig, SnatMode};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -24,6 +24,44 @@ pub struct Bindings {
     pub http_bind: SocketAddr,
     pub http_advertise: SocketAddr,
     pub metrics_bind: SocketAddr,
+}
+
+#[derive(Debug, Clone)]
+pub struct DataplaneRuntimeNetworkConfig {
+    pub internal_net: Ipv4Addr,
+    pub internal_prefix: u8,
+    pub public_ip: Ipv4Addr,
+    pub overlay: OverlayConfig,
+    pub data_port: u16,
+}
+
+const DEFAULT_DATAPLANE_PORT: u16 = 0;
+
+pub fn build_dataplane_runtime_network_config(cfg: &CliConfig) -> DataplaneRuntimeNetworkConfig {
+    let (internal_net, internal_prefix) = cfg.internal_cidr.unwrap_or((Ipv4Addr::UNSPECIFIED, 32));
+    let public_ip = match cfg.snat_mode {
+        SnatMode::Static(ip) => ip,
+        SnatMode::None | SnatMode::Auto => Ipv4Addr::UNSPECIFIED,
+    };
+    let overlay = OverlayConfig {
+        mode: cfg.encap_mode,
+        udp_port: cfg.encap_udp_port.unwrap_or(0),
+        udp_port_internal: cfg.encap_udp_port_internal,
+        udp_port_external: cfg.encap_udp_port_external,
+        vni: cfg.encap_vni,
+        vni_internal: cfg.encap_vni_internal,
+        vni_external: cfg.encap_vni_external,
+        mtu: cfg.encap_mtu,
+    };
+
+    DataplaneRuntimeNetworkConfig {
+        internal_net,
+        internal_prefix,
+        public_ip,
+        overlay,
+        // The runtime currently exposes a single dataplane egress path.
+        data_port: DEFAULT_DATAPLANE_PORT,
+    }
 }
 
 pub async fn maybe_select_cluster_seed(

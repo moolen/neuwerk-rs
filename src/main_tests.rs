@@ -34,6 +34,17 @@ fn base_args() -> Vec<String> {
     ]
 }
 
+fn required_runtime_args() -> Vec<String> {
+    let mut args = base_args();
+    args.extend_from_slice(&[
+        "--dns-target-ip".to_string(),
+        "10.0.0.53".to_string(),
+        "--dns-upstream".to_string(),
+        "1.1.1.1:53".to_string(),
+    ]);
+    args
+}
+
 #[test]
 fn parse_args_accepts_repeated_dns_flags() {
     let mut args = base_args();
@@ -209,4 +220,45 @@ fn flow_steer_payload_copies_borrowed_packet() {
     assert_eq!(steered, backing);
     assert_ne!(steered.as_ptr(), backing.as_ptr());
     assert!(pkt.is_borrowed());
+}
+
+#[test]
+fn dataplane_runtime_network_config_uses_safe_defaults() {
+    let cfg = parse_args("firewall", required_runtime_args()).expect("parse args");
+
+    let network = runtime::bootstrap::startup::build_dataplane_runtime_network_config(&cfg);
+
+    assert_eq!(network.internal_net, Ipv4Addr::UNSPECIFIED);
+    assert_eq!(network.internal_prefix, 32);
+    assert_eq!(network.public_ip, Ipv4Addr::UNSPECIFIED);
+    assert_eq!(network.data_port, 0);
+    assert_eq!(network.overlay.mode, firewall::dataplane::EncapMode::None);
+    assert_eq!(network.overlay.udp_port, 0);
+    assert_eq!(network.overlay.vni, None);
+}
+
+#[test]
+fn dataplane_runtime_network_config_preserves_cli_overrides() {
+    let mut args = required_runtime_args();
+    args.extend_from_slice(&[
+        "--internal-cidr".to_string(),
+        "10.42.0.0/16".to_string(),
+        "--snat".to_string(),
+        "203.0.113.10".to_string(),
+        "--encap".to_string(),
+        "vxlan".to_string(),
+        "--encap-vni".to_string(),
+        "4242".to_string(),
+    ]);
+    let cfg = parse_args("firewall", args).expect("parse args");
+
+    let network = runtime::bootstrap::startup::build_dataplane_runtime_network_config(&cfg);
+
+    assert_eq!(network.internal_net, Ipv4Addr::new(10, 42, 0, 0));
+    assert_eq!(network.internal_prefix, 16);
+    assert_eq!(network.public_ip, Ipv4Addr::new(203, 0, 113, 10));
+    assert_eq!(network.data_port, 0);
+    assert_eq!(network.overlay.mode, firewall::dataplane::EncapMode::Vxlan);
+    assert_eq!(network.overlay.udp_port, 10800);
+    assert_eq!(network.overlay.vni, Some(4242));
 }
