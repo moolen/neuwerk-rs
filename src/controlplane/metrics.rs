@@ -88,6 +88,8 @@ pub struct Metrics {
     http_requests: CounterVec,
     http_duration: HistogramVec,
     http_auth: CounterVec,
+    http_auth_sso: CounterVec,
+    http_auth_sso_latency: HistogramVec,
     dns_queries: CounterVec,
     dns_upstream_rtt: HistogramVec,
     dns_nxdomain: CounterVec,
@@ -123,6 +125,8 @@ pub struct Metrics {
     dp_flow_closes: CounterVec,
     dp_active_flows: Gauge,
     dp_active_flows_shard: GaugeVec,
+    dp_active_flows_source_group: GaugeVec,
+    dp_flow_lifetime_seconds: HistogramVec,
     dp_active_nat_entries: Gauge,
     dp_active_nat_entries_shard: GaugeVec,
     dp_nat_port_utilization_ratio: Gauge,
@@ -167,6 +171,7 @@ pub struct Metrics {
     integration_drain_duration: HistogramVec,
     integration_termination_drain_start: Histogram,
     dp_active_flows_counts: Arc<Mutex<HashMap<usize, usize>>>,
+    dp_active_flows_source_group_counts: Arc<Mutex<HashMap<String, i64>>>,
     dp_active_nat_counts: Arc<Mutex<HashMap<usize, usize>>>,
 }
 

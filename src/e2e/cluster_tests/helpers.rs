@@ -562,6 +562,7 @@ pub(super) fn spawn_http_api_with_audit(
         san_entries: Vec::new(),
         management_ip: bind_addr.ip(),
         token_path,
+        external_url: None,
         cluster_tls_dir: None,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,

@@ -651,3 +651,175 @@ fn verify_intercept_ca(store: &ClusterStore, cfg: &MigrationConfig) -> Result<()
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use openraft::entry::EntryPayload;
+    use openraft::storage::RaftStateMachine;
+    use openraft::{CommittedLeaderId, Entry, LogId};
+    use tempfile::TempDir;
+
+    use crate::controlplane::policy_config::{PolicyConfig, PolicyMode};
+
+    fn sample_policy() -> PolicyConfig {
+        serde_yaml::from_str(
+            r#"
+default_policy: deny
+source_groups:
+  - id: branch
+    sources:
+      ips: ["10.0.0.5"]
+    rules:
+      - id: allow-dns
+        action: allow
+        match:
+          dns_hostname: example.com
+"#,
+        )
+        .unwrap()
+    }
+
+    fn migration_config(dir: &TempDir) -> MigrationConfig {
+        MigrationConfig {
+            enabled: true,
+            force: false,
+            verify: true,
+            http_tls_dir: dir.path().join("http-tls"),
+            local_policy_store: PolicyDiskStore::new(dir.path().join("local-policy-store")),
+            local_service_accounts_dir: dir.path().join("service-accounts"),
+            cluster_data_dir: dir.path().join("cluster-data"),
+            token_path: dir.path().join("token.json"),
+            node_id: Uuid::new_v4(),
+        }
+    }
+
+    fn test_entry(index: u64, cmd: ClusterCommand) -> Entry<ClusterTypeConfig> {
+        Entry {
+            log_id: LogId::new(CommittedLeaderId::new(1, 1), index),
+            payload: EntryPayload::Normal(cmd),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_state_accepts_schema_compatible_cluster_payloads() {
+        let dir = TempDir::new().unwrap();
+        let cfg = migration_config(&dir);
+        let mut store = ClusterStore::open(dir.path().join("cluster-store")).unwrap();
+
+        let keyset = api_auth::ensure_local_keyset(&cfg.http_tls_dir).unwrap();
+
+        let record = PolicyRecord::new(PolicyMode::Enforce, sample_policy(), None).unwrap();
+        cfg.local_policy_store.write_record(&record).unwrap();
+        cfg.local_policy_store.set_active(Some(record.id)).unwrap();
+
+        let local_service_accounts =
+            ServiceAccountDiskStore::new(cfg.local_service_accounts_dir.clone());
+        let account =
+            ServiceAccount::new("svc-compat".to_string(), None, "creator".to_string()).unwrap();
+        local_service_accounts.write_account(&account).unwrap();
+        let token = TokenMeta::new(
+            account.id,
+            None,
+            "creator".to_string(),
+            keyset.active_kid.clone(),
+            None,
+            Uuid::new_v4(),
+        )
+        .unwrap();
+        local_service_accounts.write_token(&token).unwrap();
+
+        let mut cluster_keyset = serde_json::to_value(&keyset).unwrap();
+        cluster_keyset
+            .as_object_mut()
+            .unwrap()
+            .insert("future_keyset_field".to_string(), serde_json::json!(true));
+        cluster_keyset["keys"][0].as_object_mut().unwrap().insert(
+            "future_key_field".to_string(),
+            serde_json::json!("ignored-by-current-reader"),
+        );
+
+        let commands = vec![
+            ClusterCommand::Put {
+                key: API_KEYS_KEY.to_vec(),
+                value: serde_json::to_vec(&cluster_keyset).unwrap(),
+            },
+            ClusterCommand::Put {
+                key: POLICY_INDEX_KEY.to_vec(),
+                value: serde_json::to_vec(&serde_json::json!({
+                    "policies": [{
+                        "id": record.id,
+                        "created_at": record.created_at,
+                        "mode": "enforce",
+                        "future_meta_field": 7
+                    }],
+                    "future_index_field": "ignored"
+                }))
+                .unwrap(),
+            },
+            ClusterCommand::Put {
+                key: POLICY_ACTIVE_KEY.to_vec(),
+                value: serde_json::to_vec(&serde_json::json!({
+                    "id": record.id,
+                    "future_active_field": true
+                }))
+                .unwrap(),
+            },
+            ClusterCommand::Put {
+                key: SERVICE_ACCOUNTS_INDEX_KEY.to_vec(),
+                value: serde_json::to_vec(&serde_json::json!({
+                    "accounts": [account.id],
+                    "future_index_field": "ignored"
+                }))
+                .unwrap(),
+            },
+            ClusterCommand::Put {
+                key: account_item_key(account.id),
+                value: serde_json::to_vec(&serde_json::json!({
+                    "id": account.id,
+                    "name": account.name,
+                    "created_at": account.created_at,
+                    "created_by": account.created_by,
+                    "status": "active",
+                    "future_account_field": "ignored"
+                }))
+                .unwrap(),
+            },
+            ClusterCommand::Put {
+                key: token_index_key(account.id),
+                value: serde_json::to_vec(&serde_json::json!({
+                    "tokens": [token.id],
+                    "future_index_field": "ignored"
+                }))
+                .unwrap(),
+            },
+            ClusterCommand::Put {
+                key: token_item_key(token.id),
+                value: serde_json::to_vec(&serde_json::json!({
+                    "id": token.id,
+                    "service_account_id": account.id,
+                    "created_at": token.created_at,
+                    "created_by": token.created_by,
+                    "kid": token.kid,
+                    "status": "active",
+                    "future_token_field": "ignored"
+                }))
+                .unwrap(),
+            },
+        ];
+
+        store
+            .apply(
+                commands
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, cmd)| test_entry(index as u64 + 1, cmd))
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .unwrap();
+
+        verify_state(&store, &cfg).unwrap();
+    }
+}

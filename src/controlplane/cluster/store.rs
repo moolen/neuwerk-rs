@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 use std::ops::RangeBounds;
 use std::path::Path;
 use std::sync::Arc;
@@ -35,6 +37,8 @@ const KEY_LAST_MEMBERSHIP: &[u8] = b"last_membership";
 const KEY_SNAPSHOT_META: &[u8] = b"snapshot_meta";
 const KEY_SNAPSHOT_DATA: &[u8] = b"snapshot_data";
 
+type StateEntries = Vec<(Vec<u8>, Vec<u8>)>;
+
 #[derive(Debug, Clone)]
 pub struct ClusterStore {
     db: Arc<DB>,
@@ -48,6 +52,15 @@ pub struct ClusterLogReader {
 #[derive(Debug, Clone)]
 pub struct ClusterSnapshotBuilder {
     db: Arc<DB>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ClusterStoreMetadata {
+    pub vote: Option<Vote<NodeId>>,
+    pub last_log: Option<LogId<NodeId>>,
+    pub last_purged: Option<LogId<NodeId>>,
+    pub last_applied: Option<LogId<NodeId>>,
+    pub last_membership: StoredMembership<NodeId, Node>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -85,7 +98,7 @@ impl ClusterStore {
         self.db.property_int_value(name).ok().flatten()
     }
 
-    pub fn scan_state_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+    pub fn scan_state_prefix(&self, prefix: &[u8]) -> Result<StateEntries, String> {
         let cf = self.cf(CF_STATE).map_err(|err| err.to_string())?;
         let mut entries = Vec::new();
         let iter = self
@@ -141,6 +154,28 @@ impl ClusterStore {
 
     pub fn get_state_value(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
         self.get_state(key).map_err(|err| err.to_string())
+    }
+
+    pub fn read_metadata(&self) -> Result<ClusterStoreMetadata, String> {
+        let vote = self.get_meta(KEY_VOTE).map_err(|err| err.to_string())?;
+        let last_log = self.get_meta(KEY_LAST_LOG).map_err(|err| err.to_string())?;
+        let last_purged = self
+            .get_meta(KEY_LAST_PURGED)
+            .map_err(|err| err.to_string())?;
+        let last_applied = self
+            .get_meta(KEY_LAST_APPLIED)
+            .map_err(|err| err.to_string())?;
+        let last_membership = self
+            .get_meta(KEY_LAST_MEMBERSHIP)
+            .map_err(|err| err.to_string())?
+            .unwrap_or_else(StoredMembership::default);
+        Ok(ClusterStoreMetadata {
+            vote,
+            last_log,
+            last_purged,
+            last_applied,
+            last_membership,
+        })
     }
 
     fn put_state(
@@ -250,7 +285,7 @@ impl RaftLogStorage<ClusterTypeConfig> for ClusterStore {
             let idx = entry.log_id.index;
             let encoded = bincode::serialize(&entry).map_err(map_storage_err)?;
             batch.put_cf(cf, encode_u64_be(idx), encoded);
-            last_log_id = Some(entry.log_id.clone());
+            last_log_id = Some(entry.log_id);
         }
         if let Some(last_log_id) = last_log_id {
             self.put_meta(KEY_LAST_LOG, &last_log_id, &mut batch)?;
@@ -324,13 +359,13 @@ impl RaftStateMachine<ClusterTypeConfig> for ClusterStore {
         let mut last_applied: Option<LogId<NodeId>> = None;
 
         for entry in entries {
-            last_applied = Some(entry.log_id.clone());
+            last_applied = Some(entry.log_id);
             match entry.payload {
                 EntryPayload::Blank => {
                     responses.push(ClusterResponse::ok());
                 }
                 EntryPayload::Membership(m) => {
-                    let stored = StoredMembership::new(Some(entry.log_id.clone()), m);
+                    let stored = StoredMembership::new(Some(entry.log_id), m);
                     self.put_meta(KEY_LAST_MEMBERSHIP, &stored, &mut batch)?;
                     responses.push(ClusterResponse::ok());
                 }
@@ -437,7 +472,7 @@ impl RaftSnapshotBuilder<ClusterTypeConfig> for ClusterSnapshotBuilder {
         }
 
         let snapshot_data = SnapshotData {
-            last_applied: last_applied.clone(),
+            last_applied,
             last_membership: last_membership.clone(),
             kv,
         };
@@ -537,7 +572,7 @@ fn map_storage_err<E: std::fmt::Display>(err: E) -> StorageError<NodeId> {
     StorageError::from_io_error(
         ErrorSubject::Store,
         ErrorVerb::Read,
-        std::io::Error::new(std::io::ErrorKind::Other, err.to_string()),
+        std::io::Error::other(err.to_string()),
     )
 }
 
@@ -548,7 +583,24 @@ mod tests {
     use crate::controlplane::integrations::INTEGRATIONS_INDEX_KEY;
     use crate::controlplane::policy_repository::{POLICY_ACTIVE_KEY, POLICY_INDEX_KEY};
     use crate::controlplane::service_accounts::SERVICE_ACCOUNTS_INDEX_KEY;
+    use openraft::storage::RaftLogStorageExt;
+    use openraft::CommittedLeaderId;
+    use std::fs;
     use tempfile::TempDir;
+
+    fn test_log_id(term: u64, node_id: NodeId, index: u64) -> LogId<NodeId> {
+        LogId::new(CommittedLeaderId::new(term, node_id), index)
+    }
+
+    fn test_entry(index: u64, key: &[u8], value: &[u8]) -> openraft::Entry<ClusterTypeConfig> {
+        openraft::Entry {
+            log_id: test_log_id(1, 1, index),
+            payload: EntryPayload::Normal(ClusterCommand::Put {
+                key: key.to_vec(),
+                value: value.to_vec(),
+            }),
+        }
+    }
 
     #[test]
     fn gc_removes_stale_dns_entries() {
@@ -735,5 +787,151 @@ mod tests {
             !fresh_entries.is_empty(),
             "fresh entries should remain after churn"
         );
+    }
+
+    #[tokio::test]
+    async fn append_updates_log_state_and_reader() {
+        let dir = TempDir::new().unwrap();
+        let mut store = ClusterStore::open(dir.path()).unwrap();
+        let entries = vec![
+            test_entry(1, b"k1", b"v1"),
+            test_entry(2, b"k2", b"v2"),
+            test_entry(3, b"k3", b"v3"),
+        ];
+
+        store.blocking_append(entries.clone()).await.unwrap();
+
+        let state = store.get_log_state().await.unwrap();
+        assert_eq!(state.last_purged_log_id, None);
+        assert_eq!(state.last_log_id, Some(test_log_id(1, 1, 3)));
+
+        let read_back = store.try_get_log_entries(1..4).await.unwrap();
+        assert_eq!(read_back, entries);
+    }
+
+    #[test]
+    fn open_read_only_rejects_corrupted_manifest_pointer() {
+        let dir = TempDir::new().unwrap();
+        let db_dir = dir.path().join("raft");
+        {
+            let store = ClusterStore::open(&db_dir).unwrap();
+            let mut batch = WriteBatch::default();
+            store
+                .put_state(b"state/test", b"value", &mut batch)
+                .unwrap();
+            store.db.write(batch).unwrap();
+        }
+
+        fs::write(db_dir.join("CURRENT"), b"MANIFEST-does-not-exist\n").unwrap();
+
+        let err = ClusterStore::open_read_only(&db_dir)
+            .expect_err("expected corrupted RocksDB manifest pointer to fail");
+        let message = err.to_string();
+        assert!(
+            !message.is_empty(),
+            "corrupted open should surface a readable error"
+        );
+    }
+
+    #[tokio::test]
+    async fn truncate_updates_last_log_and_removes_conflicts() {
+        let dir = TempDir::new().unwrap();
+        let mut store = ClusterStore::open(dir.path()).unwrap();
+        store
+            .blocking_append(vec![
+                test_entry(1, b"k1", b"v1"),
+                test_entry(2, b"k2", b"v2"),
+                test_entry(3, b"k3", b"v3"),
+            ])
+            .await
+            .unwrap();
+
+        store.truncate(test_log_id(1, 1, 3)).await.unwrap();
+
+        let state = store.get_log_state().await.unwrap();
+        assert_eq!(state.last_log_id, Some(test_log_id(1, 1, 2)));
+        let remaining = store.try_get_log_entries(1..4).await.unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].log_id, test_log_id(1, 1, 1));
+        assert_eq!(remaining[1].log_id, test_log_id(1, 1, 2));
+    }
+
+    #[tokio::test]
+    async fn purge_updates_last_purged_and_keeps_newer_logs_readable() {
+        let dir = TempDir::new().unwrap();
+        let mut store = ClusterStore::open(dir.path()).unwrap();
+        store
+            .blocking_append(vec![
+                test_entry(1, b"k1", b"v1"),
+                test_entry(2, b"k2", b"v2"),
+                test_entry(3, b"k3", b"v3"),
+                test_entry(4, b"k4", b"v4"),
+            ])
+            .await
+            .unwrap();
+
+        store.purge(test_log_id(1, 1, 2)).await.unwrap();
+
+        let state = store.get_log_state().await.unwrap();
+        assert_eq!(state.last_purged_log_id, Some(test_log_id(1, 1, 2)));
+        assert_eq!(state.last_log_id, Some(test_log_id(1, 1, 4)));
+
+        let entries = store.try_get_log_entries(0..10).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].log_id, test_log_id(1, 1, 3));
+        assert_eq!(entries[1].log_id, test_log_id(1, 1, 4));
+    }
+
+    #[tokio::test]
+    async fn snapshot_build_and_restore_work_after_log_purge() {
+        let dir = TempDir::new().unwrap();
+        let source_dir = dir.path().join("source-after-purge");
+        let restore_dir = dir.path().join("restore-after-purge");
+        let mut source = ClusterStore::open(&source_dir).unwrap();
+
+        source
+            .blocking_append(vec![
+                test_entry(1, b"state/a", b"va"),
+                test_entry(2, b"state/b", b"vb"),
+                test_entry(3, b"state/c", b"vc"),
+            ])
+            .await
+            .unwrap();
+        let _ = source
+            .apply(vec![
+                test_entry(1, b"state/a", b"va"),
+                test_entry(2, b"state/b", b"vb"),
+                test_entry(3, b"state/c", b"vc"),
+            ])
+            .await
+            .unwrap();
+        source.purge(test_log_id(1, 1, 2)).await.unwrap();
+
+        let mut builder = source.get_snapshot_builder().await;
+        let snapshot = builder.build_snapshot().await.unwrap();
+        let meta = snapshot.meta.clone();
+        let mut reader = snapshot.snapshot;
+        let mut payload = Vec::new();
+        reader.read_to_end(&mut payload).await.unwrap();
+
+        let mut restored = ClusterStore::open(&restore_dir).unwrap();
+        restored
+            .install_snapshot(&meta, Box::new(Cursor::new(payload)))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            restored.get_state(b"state/a").unwrap(),
+            Some(b"va".to_vec())
+        );
+        assert_eq!(
+            restored.get_state(b"state/b").unwrap(),
+            Some(b"vb".to_vec())
+        );
+        assert_eq!(
+            restored.get_state(b"state/c").unwrap(),
+            Some(b"vc".to_vec())
+        );
+        assert!(restored.get_current_snapshot().await.unwrap().is_some());
     }
 }

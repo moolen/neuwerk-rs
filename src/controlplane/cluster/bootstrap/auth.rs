@@ -181,7 +181,7 @@ fn append_len_prefixed(buf: &mut Vec<u8>, value: &[u8]) {
     buf.extend_from_slice(value);
 }
 
-fn take_len_prefixed<'a>(buf: &'a [u8], offset: usize) -> Result<(&'a [u8], usize), String> {
+fn take_len_prefixed(buf: &[u8], offset: usize) -> Result<(&[u8], usize), String> {
     if offset + 8 > buf.len() {
         return Err("invalid encrypted join payload".to_string());
     }

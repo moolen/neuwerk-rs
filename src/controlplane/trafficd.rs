@@ -25,9 +25,11 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::oneshot;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tracing::{error, warn};
 
 const TLS_IO_TIMEOUT: Duration = Duration::from_secs(3);
 const TLS_H2_BODY_IDLE_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
+const TLS_H2_MAX_CONCURRENT_STREAMS_DEFAULT: u32 = 64;
 const INTERCEPT_LEAF_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 const INTERCEPT_LEAF_CACHE_MAX_ENTRIES: usize = 1024;
 const INTERCEPT_CHAIN: &str = "NEUWERK_TLS_INTERCEPT";
@@ -52,6 +54,17 @@ fn tls_h2_body_idle_timeout() -> Duration {
             .filter(|value| *value > 0)
             .unwrap_or(TLS_H2_BODY_IDLE_TIMEOUT_DEFAULT.as_secs());
         Duration::from_secs(secs)
+    })
+}
+
+fn tls_h2_max_concurrent_streams() -> u32 {
+    static H2_MAX_CONCURRENT_STREAMS: OnceLock<u32> = OnceLock::new();
+    *H2_MAX_CONCURRENT_STREAMS.get_or_init(|| {
+        std::env::var("NEUWERK_TLS_H2_MAX_CONCURRENT_STREAMS")
+            .ok()
+            .and_then(|raw| raw.parse::<u32>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(TLS_H2_MAX_CONCURRENT_STREAMS_DEFAULT)
     })
 }
 
@@ -341,14 +354,19 @@ fn spawn_service_policy_observer(
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 continue;
             };
+            let generation = snapshot.generation();
             if policy_has_tls_intercept(&snapshot)
                 && (!tls_intercept_ca_ready.load(Ordering::Acquire)
                     || !intercept_ready.load(Ordering::Acquire))
             {
+                let blocked_generation = generation.saturating_sub(1);
+                if blocked_generation != last {
+                    observer_applied.store(blocked_generation, Ordering::Release);
+                    last = blocked_generation;
+                }
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 continue;
             }
-            let generation = snapshot.generation();
             if generation != last {
                 observer_applied.store(generation, Ordering::Release);
                 last = generation;
@@ -358,6 +376,7 @@ fn spawn_service_policy_observer(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_tls_intercept_supervisor(
     policy_snapshot: Arc<RwLock<PolicySnapshot>>,
     tls_intercept_ca_ready: Arc<AtomicBool>,
@@ -436,7 +455,7 @@ fn spawn_tls_intercept_supervisor(
                 let signer = match load_intercept_ca_signer(&tls_intercept_ca_source) {
                     Ok(signer) => signer,
                     Err(err) => {
-                        tracing::warn!(error = %err, "trafficd intercept ca load failed");
+                        warn!(error = %err, "trafficd intercept ca load failed");
                         intercept_ready.store(false, Ordering::Release);
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         continue;
@@ -461,24 +480,21 @@ fn spawn_tls_intercept_supervisor(
                         runtime_ca_generation = Some(desired_ca_generation);
                     }
                     Ok(Ok(Err(err))) => {
-                        tracing::error!(
-                            error = %err,
-                            "trafficd tls intercept runtime startup failed"
-                        );
+                        error!(error = %err, "trafficd tls intercept runtime startup failed");
                         task.abort();
                         intercept_ready.store(false, Ordering::Release);
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         continue;
                     }
                     Ok(Err(_)) => {
-                        tracing::error!("trafficd tls intercept runtime startup channel dropped");
+                        error!("trafficd tls intercept runtime startup channel dropped");
                         task.abort();
                         intercept_ready.store(false, Ordering::Release);
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         continue;
                     }
                     Err(_) => {
-                        tracing::error!("trafficd tls intercept runtime startup timed out");
+                        error!("trafficd tls intercept runtime startup timed out");
                         task.abort();
                         intercept_ready.store(false, Ordering::Release);
                         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -509,7 +525,7 @@ fn spawn_tls_intercept_supervisor(
                         listen_addr,
                         &service_lane_iface,
                     ) {
-                        tracing::error!(error = %err, "trafficd intercept steering apply failed");
+                        error!(error = %err, "trafficd intercept steering apply failed");
                         service_lane::clear_intercept_steering_rules(&service_lane_iface);
                         applied_steering_rules = None;
                         intercept_ready.store(false, Ordering::Release);

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use rcgen::{BasicConstraints, Certificate, CertificateParams, IsCa, SanType};
 use time::OffsetDateTime;
+use tracing::warn;
 
 use crate::controlplane::cluster::bootstrap::ca::{
     decrypt_ca_key, encrypt_ca_key, CaEnvelope, CaSigner,
@@ -52,10 +53,12 @@ pub async fn ensure_http_tls(cfg: HttpTlsConfig) -> Result<HttpTlsMaterial, Stri
     let mut cert_exists = paths.cert_path.exists();
     let mut key_exists = paths.key_path.exists();
     if cert_exists != key_exists {
-        tracing::warn!(
+        warn!(
+            cert_exists,
+            key_exists,
             cert_path = %paths.cert_path.display(),
             key_path = %paths.key_path.display(),
-            "http tls cert/key mismatch detected; regenerating"
+            "http tls cert/key mismatch; removing and regenerating"
         );
         if cert_exists {
             fs::remove_file(&paths.cert_path).map_err(|err| err.to_string())?;
@@ -73,13 +76,16 @@ pub async fn ensure_http_tls(cfg: HttpTlsConfig) -> Result<HttpTlsMaterial, Stri
     if cert_exists {
         let ca_pem = load_or_fetch_ca_cert(&paths, cfg.store.as_ref(), cfg.raft.as_ref()).await?;
         ensure_permissions(&paths.key_path, 0o600)?;
-        if cfg.raft.is_none() && cfg.store.is_none() {
-            if paths.ca_path.exists() && !paths.ca_key_path.exists() {
-                tracing::warn!(
-                    ca_key_path = %paths.ca_key_path.display(),
-                    "http tls CA key missing; cluster migration will require HTTP CA regeneration"
-                );
-            }
+        if cfg.raft.is_none()
+            && cfg.store.is_none()
+            && paths.ca_path.exists()
+            && !paths.ca_key_path.exists()
+        {
+            warn!(
+                ca_path = %paths.ca_path.display(),
+                ca_key_path = %paths.ca_key_path.display(),
+                "http tls ca.key missing; migration to cluster will require regenerating the HTTP CA"
+            );
         }
         return Ok(HttpTlsMaterial {
             cert_path: paths.cert_path,

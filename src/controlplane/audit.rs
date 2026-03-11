@@ -16,6 +16,7 @@ pub enum AuditFindingType {
     L4Deny,
     TlsDeny,
     IcmpDeny,
+    AuthSso,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,6 +311,7 @@ fn parse_finding_types(values: &[String]) -> Result<HashSet<AuditFindingType>, S
             "l4_deny" => AuditFindingType::L4Deny,
             "tls_deny" => AuditFindingType::TlsDeny,
             "icmp_deny" => AuditFindingType::IcmpDeny,
+            "auth_sso" => AuditFindingType::AuthSso,
             _ => return Err(format!("invalid finding_type value: {value}")),
         };
         out.insert(parsed);
@@ -350,6 +352,7 @@ fn parse_uuid(value: &str, field: &str) -> Result<Uuid, String> {
     Uuid::parse_str(value).map_err(|err| format!("invalid {field}: {err}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn key_for_fields(
     finding_type: AuditFindingType,
     policy_id: Option<Uuid>,
@@ -408,6 +411,15 @@ fn key_for_fields(
                 .unwrap_or_else(|| "0.0.0.0".to_string()),
             icmp_type.unwrap_or(255),
             icmp_code.unwrap_or(255),
+        ),
+        AuditFindingType::AuthSso => format!(
+            "auth_sso:{}:{}:{}:{}",
+            policy_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            source_group,
+            hostname.unwrap_or(""),
+            fqdn.unwrap_or(""),
         ),
     }
 }
@@ -492,5 +504,109 @@ mod tests {
         a.node_ids.push("node-b".to_string());
         a.node_ids.sort();
         assert_eq!(finding.node_ids, a.node_ids);
+    }
+
+    #[test]
+    fn ingest_evicts_oldest_findings_when_snapshot_exceeds_limit() {
+        let dir = std::env::temp_dir().join(format!("audit-store-{}", Uuid::new_v4()));
+        let store = AuditStore::new(dir.clone(), 1024);
+
+        for idx in 0..32u8 {
+            store.ingest(
+                AuditEvent {
+                    finding_type: AuditFindingType::L4Deny,
+                    source_group: format!("apps-{idx:02}"),
+                    hostname: None,
+                    dst_ip: Some(Ipv4Addr::new(203, 0, 113, idx)),
+                    dst_port: Some(4000 + idx as u16),
+                    proto: Some(6),
+                    fqdn: Some(format!(
+                        "very-long-persisted-name-{idx:02}.example.internal.example.com"
+                    )),
+                    sni: None,
+                    icmp_type: None,
+                    icmp_code: None,
+                    query_type: None,
+                    observed_at: idx as u64,
+                },
+                None,
+                "node-a",
+            );
+        }
+
+        let snapshot_path = dir.join("snapshot.json");
+        let snapshot_size = fs::metadata(&snapshot_path).unwrap().len() as usize;
+        assert!(
+            snapshot_size <= 1024,
+            "snapshot should honor max_bytes, got {snapshot_size}"
+        );
+
+        let items = store.query(&AuditQuery {
+            limit: Some(1000),
+            ..AuditQuery::default()
+        });
+        let items = items.unwrap();
+        assert!(
+            items.len() < 32,
+            "expected eviction when snapshot grows too large"
+        );
+        assert!(
+            items.iter().all(|item| item.source_group != "apps-00"),
+            "oldest finding should be evicted first"
+        );
+        assert!(
+            items.iter().any(|item| item.source_group == "apps-31"),
+            "newest finding should remain after eviction"
+        );
+    }
+
+    #[test]
+    fn load_snapshot_restores_evicted_retained_findings_after_restart() {
+        let dir = std::env::temp_dir().join(format!("audit-store-{}", Uuid::new_v4()));
+        {
+            let store = AuditStore::new(dir.clone(), 1024);
+            for idx in 0..32u8 {
+                store.ingest(
+                    AuditEvent {
+                        finding_type: AuditFindingType::L4Deny,
+                        source_group: format!("persist-{idx:02}"),
+                        hostname: None,
+                        dst_ip: Some(Ipv4Addr::new(198, 51, 100, idx)),
+                        dst_port: Some(5000 + idx as u16),
+                        proto: Some(6),
+                        fqdn: Some(format!(
+                            "persisted-retention-test-{idx:02}.example.internal.example.com"
+                        )),
+                        sni: None,
+                        icmp_type: None,
+                        icmp_code: None,
+                        query_type: None,
+                        observed_at: idx as u64,
+                    },
+                    None,
+                    "node-a",
+                );
+            }
+        }
+
+        let restored = AuditStore::new(dir, 1024);
+        let items = restored
+            .query(&AuditQuery {
+                limit: Some(1000),
+                ..AuditQuery::default()
+            })
+            .unwrap();
+        assert!(
+            !items.is_empty(),
+            "expected retained findings after restart"
+        );
+        assert!(
+            items.iter().all(|item| item.source_group != "persist-00"),
+            "evicted oldest finding should stay gone after reload"
+        );
+        assert!(
+            items.iter().any(|item| item.source_group == "persist-31"),
+            "latest retained finding should reload from snapshot"
+        );
     }
 }

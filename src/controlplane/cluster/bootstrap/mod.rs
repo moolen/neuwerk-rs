@@ -59,15 +59,11 @@ pub async fn run_cluster(
     let signer: Arc<Mutex<Option<CaSigner>>> = Arc::new(Mutex::new(None));
 
     if cfg.join_seed.is_none() && !tls_material_exists(&tls_dir) {
-        let ca_signer =
-            build_ca_signer().map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-        let (csr, key_pem) = build_csr(cfg.advertise_addr)
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-        let cert_pem = ca_signer
-            .sign_csr(&csr)
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        let ca_signer = build_ca_signer().map_err(io::Error::other)?;
+        let (csr, key_pem) = build_csr(cfg.advertise_addr).map_err(io::Error::other)?;
+        let cert_pem = ca_signer.sign_csr(&csr).map_err(io::Error::other)?;
         persist_tls_material(&cfg.data_dir, &key_pem, &cert_pem, ca_signer.cert_pem())
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
         let mut guard = signer.lock().await;
         *guard = Some(ca_signer);
     }
@@ -82,19 +78,17 @@ pub async fn run_cluster(
             &cfg.data_dir,
         )
         .await
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        .map_err(io::Error::other)?;
     }
 
-    let store = ClusterStore::open(cfg.data_dir.join("raft"))
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-    let tls = RaftTlsConfig::load(tls_dir.clone())
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    let store = ClusterStore::open(cfg.data_dir.join("raft")).map_err(io::Error::other)?;
+    let tls = RaftTlsConfig::load(tls_dir.clone()).map_err(io::Error::other)?;
     let raft_config = openraft::Config {
         cluster_name: "neuwerk".to_string(),
         ..Default::default()
     }
     .validate()
-    .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+    .map_err(|err| io::Error::other(err.to_string()))?;
     let raft = openraft::Raft::new(
         raft_node_id,
         Arc::new(raft_config),
@@ -103,7 +97,7 @@ pub async fn run_cluster(
         store.clone(),
     )
     .await
-    .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+    .map_err(|err| io::Error::other(err.to_string()))?;
 
     let join_handler = JoinService::new(
         raft.clone(),
@@ -124,7 +118,7 @@ pub async fn run_cluster(
 
     let mut raft_builder = Server::builder()
         .tls_config(tls.server_config())
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("raft tls config: {err}")))?
+        .map_err(|err| io::Error::other(format!("raft tls config: {err}")))?
         .add_service(crate::controlplane::cluster::rpc::proto::raft_service_server::RaftServiceServer::new(raft_service))
         .add_service(crate::controlplane::cluster::rpc::proto::policy_management_server::PolicyManagementServer::new(policy_service))
         .add_service(crate::controlplane::cluster::rpc::proto::auth_management_server::AuthManagementServer::new(auth_service))
@@ -158,7 +152,7 @@ pub async fn run_cluster(
         let initialized = raft
             .is_initialized()
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+            .map_err(|err| io::Error::other(err.to_string()))?;
         if !initialized {
             let mut nodes = std::collections::BTreeMap::new();
             nodes.insert(
@@ -169,7 +163,7 @@ pub async fn run_cluster(
             );
             raft.initialize(nodes)
                 .await
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+                .map_err(|err| io::Error::other(err.to_string()))?;
             retry_forward_to_leader(|| {
                 ensure_ca(
                     raft.clone(),
@@ -180,10 +174,10 @@ pub async fn run_cluster(
                 )
             })
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
             retry_forward_to_leader(|| api_auth::ensure_cluster_keyset(&raft, &store))
                 .await
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                .map_err(io::Error::other)?;
         }
     }
 

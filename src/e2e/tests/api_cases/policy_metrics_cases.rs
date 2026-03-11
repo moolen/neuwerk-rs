@@ -325,6 +325,7 @@ fn policy_scale_rule_count() -> Result<usize, String> {
     Ok(parsed)
 }
 
+#[allow(clippy::format_in_format_args)]
 fn build_policy_scale_yaml(cfg: &TopologyConfig, rule_count: usize) -> String {
     let mut yaml = format!(
         r#"default_policy: deny

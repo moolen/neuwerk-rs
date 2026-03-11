@@ -131,6 +131,7 @@ source_groups:
     })
 }
 
+#[allow(clippy::format_in_format_args)]
 pub(super) fn api_audit_findings_l4_passthrough_records_event(
     cfg: &TopologyConfig,
 ) -> Result<(), String> {
@@ -212,6 +213,7 @@ source_groups:
     })
 }
 
+#[allow(clippy::format_in_format_args)]
 pub(super) fn api_audit_findings_tls_passthrough_captures_sni(
     cfg: &TopologyConfig,
 ) -> Result<(), String> {
@@ -297,6 +299,7 @@ source_groups:
     })
 }
 
+#[allow(clippy::format_in_format_args)]
 pub(super) fn api_audit_findings_icmp_passthrough_records_type_code(
     cfg: &TopologyConfig,
 ) -> Result<(), String> {
@@ -379,6 +382,7 @@ source_groups:
     })
 }
 
+#[allow(clippy::format_in_format_args)]
 pub(super) fn api_audit_findings_policy_id_filter_isolates_rotated_policies(
     cfg: &TopologyConfig,
 ) -> Result<(), String> {

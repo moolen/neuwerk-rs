@@ -15,6 +15,18 @@ impl Metrics {
         self.http_auth.with_label_values(&[outcome, reason]).inc();
     }
 
+    pub fn observe_http_auth_sso(&self, outcome: &str, reason: &str, provider: &str) {
+        self.http_auth_sso
+            .with_label_values(&[outcome, reason, provider])
+            .inc();
+    }
+
+    pub fn observe_http_auth_sso_latency(&self, provider: &str, stage: &str, duration: Duration) {
+        self.http_auth_sso_latency
+            .with_label_values(&[provider, stage])
+            .observe(duration.as_secs_f64());
+    }
+
     pub fn observe_dns_query(&self, result: &str, reason: &str, source_group: &str) {
         self.dns_queries
             .with_label_values(&[result, reason, source_group])
@@ -159,12 +171,21 @@ impl Metrics {
         self.dp_flow_opens
             .with_label_values(&[proto, source_group])
             .inc();
+        self.add_dp_active_flows_source_group(source_group, 1);
     }
 
     pub fn inc_dp_flow_close(&self, reason: &str, count: u64) {
         self.dp_flow_closes
             .with_label_values(&[reason])
             .inc_by(count as f64);
+    }
+
+    pub fn observe_dp_flow_close(&self, source_group: &str, reason: &str, lifetime_secs: f64) {
+        self.dp_flow_closes.with_label_values(&[reason]).inc();
+        self.dp_flow_lifetime_seconds
+            .with_label_values(&[source_group, reason])
+            .observe(lifetime_secs.max(0.0));
+        self.add_dp_active_flows_source_group(source_group, -1);
     }
 
     pub fn set_dp_active_flows(&self, count: usize) {
@@ -180,6 +201,19 @@ impl Metrics {
             lock.insert(shard, count);
             let total: usize = lock.values().sum();
             self.dp_active_flows.set(total as f64);
+        }
+    }
+
+    fn add_dp_active_flows_source_group(&self, source_group: &str, delta: i64) {
+        if let Ok(mut lock) = self.dp_active_flows_source_group_counts.lock() {
+            let next = {
+                let entry = lock.entry(source_group.to_string()).or_insert(0);
+                *entry = (*entry + delta).max(0);
+                *entry
+            };
+            self.dp_active_flows_source_group
+                .with_label_values(&[source_group])
+                .set(next as f64);
         }
     }
 

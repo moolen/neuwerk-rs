@@ -6,6 +6,7 @@ use futures::StreamExt;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
 use serde_json::Value;
+use tracing::warn;
 
 use crate::controlplane::integrations::{IntegrationKind, IntegrationStore};
 use crate::controlplane::policy_config::KubernetesSourceSelector;
@@ -151,11 +152,11 @@ pub async fn run_kubernetes_resolver(
                         if !runtimes.contains_key(&key) {
                             continue;
                         }
-                        tracing::warn!(
+                        warn!(
                             source_group_id = %key.source_group_id,
                             integration = %key.integration,
                             error = %error,
-                            "kubernetes resolver refresh failed"
+                            "kubernetes resolver worker error"
                         );
                     }
                 }
@@ -338,6 +339,7 @@ async fn list_and_watch_forever(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn watch_once(
     client: &reqwest::Client,
     list_url: &str,

@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tracing::{debug, error, info};
 
 use crate::controlplane::audit::{
     AuditEvent as ControlplaneAuditEvent, AuditFindingType, AuditStore,
@@ -17,6 +18,7 @@ use crate::dataplane::policy::DynamicIpSetV4;
 static DNS_LOGS: AtomicUsize = AtomicUsize::new(0);
 const DNS_UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_dns_proxy(
     bind_addr: SocketAddr,
     upstream_addrs: Vec<SocketAddr>,
@@ -49,11 +51,11 @@ pub async fn run_dns_proxy(
         ));
     }
     let upstream_addrs = std::sync::Arc::new(upstream_addrs);
-    tracing::info!("dns proxy: binding udp {}", bind_addr);
+    info!(bind = %bind_addr, "dns proxy binding udp socket");
     let listen = match UdpSocket::bind(bind_addr).await {
         Ok(sock) => sock,
         Err(err) => {
-            tracing::error!("dns proxy: bind {} failed: {err}", bind_addr);
+            error!(bind = %bind_addr, error = %err, "dns proxy udp bind failed");
             report_startup(&mut startup_status_tx, Err(err.to_string()));
             return Err(err);
         }
@@ -65,7 +67,7 @@ pub async fn run_dns_proxy(
             return Err(err);
         }
     };
-    tracing::info!("dns proxy: listening on {}", bind_addr);
+    info!(bind = %bind_addr, "dns proxy listening");
     report_startup(&mut startup_status_tx, Ok(()));
 
     let tcp_policy = policy.clone();
@@ -90,7 +92,7 @@ pub async fn run_dns_proxy(
         )
         .await
         {
-            tracing::error!(error = %err, "dns proxy tcp listener failed");
+            error!(error = %err, "dns proxy tcp listener failed");
         }
     });
 
@@ -130,13 +132,13 @@ pub async fn run_dns_proxy(
         };
 
         if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-            tracing::debug!(
-                "dns proxy: query from={} name={} allowed={} would_deny={} group={}",
-                peer,
-                question.name,
+            debug!(
+                peer = %peer,
+                dns_name = %question.name,
                 allowed,
                 would_deny,
-                source_group
+                source_group = %source_group,
+                "dns proxy query decision"
             );
         }
 
@@ -262,11 +264,11 @@ async fn forward_dns_query_udp(
         };
 
         if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-            tracing::debug!(
-                "dns proxy: upstream response from={} bytes={} group={}",
-                resp_peer,
-                resp_len,
-                source_group
+            debug!(
+                upstream_peer = %resp_peer,
+                bytes = resp_len,
+                source_group = %source_group,
+                "dns proxy upstream response received"
             );
         }
 
@@ -283,13 +285,13 @@ async fn forward_dns_query_udp(
 
     if saw_mismatch {
         Err(UpstreamQueryError::Mismatch)
-    } else if saw_transport_error {
-        Err(UpstreamQueryError::Transport)
     } else {
+        let _ = saw_transport_error;
         Err(UpstreamQueryError::Transport)
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_dns_proxy_tcp(
     listener: TcpListener,
     upstream_addrs: std::sync::Arc<Vec<SocketAddr>>,
@@ -326,12 +328,13 @@ async fn run_dns_proxy_tcp(
             )
             .await
             {
-                tracing::debug!(peer = %peer, error = %err, "dns proxy tcp client failed");
+                debug!(peer = %peer, error = %err, "dns proxy tcp client failed");
             }
         });
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_dns_tcp_client(
     mut stream: TcpStream,
     peer: SocketAddr,
@@ -391,13 +394,13 @@ async fn handle_dns_tcp_client(
         };
 
         if DNS_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
-            tracing::debug!(
-                "dns proxy: tcp query from={} name={} allowed={} would_deny={} group={}",
-                peer,
-                question.name,
+            debug!(
+                peer = %peer,
+                dns_name = %question.name,
                 allowed,
                 would_deny,
-                source_group
+                source_group = %source_group,
+                "dns proxy tcp query decision"
             );
         }
 
@@ -500,7 +503,7 @@ fn evaluate_dns_policy_decision(
         .or(audit_group)
         .unwrap_or_else(|| "default".to_string());
     let would_deny = !raw_allowed || audit_rule_denied;
-    let allowed = raw_allowed || (audit_passthrough && !raw_allowed);
+    let allowed = raw_allowed || audit_passthrough;
     (allowed, would_deny, source_group)
 }
 
