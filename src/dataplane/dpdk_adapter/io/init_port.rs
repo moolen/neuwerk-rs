@@ -164,6 +164,23 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
                     }
                 }
             }
+            let allow_retaless_multi_queue =
+                env_flag_enabled("NEUWERK_DPDK_ALLOW_RETALESS_MULTI_QUEUE");
+            if should_force_single_queue_without_reta(
+                queue_count,
+                use_rss_mq,
+                dev_info.reta_size,
+                allow_retaless_multi_queue,
+            ) {
+                tracing::warn!(
+                    queue_count,
+                    reported_reta_size = dev_info.reta_size,
+                    allow_retaless_multi_queue,
+                    "dpdk: reta_size=0 with multi-queue RSS; forcing single queue (set NEUWERK_DPDK_ALLOW_RETALESS_MULTI_QUEUE=1 to override)"
+                );
+                queue_count = 1;
+                use_rss_mq = false;
+            }
 
             if queue_count > 1 && use_rss_mq {
                 tracing::info!(

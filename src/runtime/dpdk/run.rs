@@ -1,5 +1,5 @@
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -34,9 +34,7 @@ fn run_dpdk_housekeeping(
     adapter: &mut DpdkAdapter,
     io: &mut DpdkWorkerIo,
 ) -> Result<(), String> {
-    if worker_id != 0 {
-        return Ok(());
-    }
+    let emit_dhcp = worker_emits_dhcp_housekeeping(worker_id);
     if let Some(shared) = shared_state {
         let shard = shared
             .get(housekeeping_shard_idx)
@@ -59,8 +57,10 @@ fn run_dpdk_housekeeping(
         if service_lane_enabled {
             adapter.drain_service_lane_egress(&guard, io)?;
         }
-        while let Some(out) = adapter.next_dhcp_frame(&guard) {
-            io.send_frame(&out)?;
+        if emit_dhcp {
+            while let Some(out) = adapter.next_dhcp_frame(&guard) {
+                io.send_frame(&out)?;
+            }
         }
         return Ok(());
     }
@@ -68,70 +68,10 @@ fn run_dpdk_housekeeping(
     if service_lane_enabled {
         adapter.drain_service_lane_egress(local, io)?;
     }
-    while let Some(out) = adapter.next_dhcp_frame(local) {
-        io.send_frame(&out)?;
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
-fn drain_forwarded_host_frames(
-    rx: Option<&std::sync::mpsc::Receiver<Vec<u8>>>,
-    adapter: &mut DpdkAdapter,
-    metrics: &controlplane::metrics::Metrics,
-    queue_depth: Option<&Arc<AtomicUsize>>,
-) -> Result<(), String> {
-    let Some(rx) = rx else {
-        return Ok(());
-    };
-    loop {
-        match rx.try_recv() {
-            Ok(frame) => {
-                if let Some(queue_depth) = queue_depth {
-                    let depth = decrement_queue_depth(queue_depth);
-                    metrics.set_dpdk_service_lane_forward_queue_depth(depth);
-                }
-                adapter.enqueue_host_frame(frame);
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(()),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                return Err("dpdk: service lane host-frame channel disconnected".to_string());
-            }
+    if emit_dhcp {
+        while let Some(out) = adapter.next_dhcp_frame(local) {
+            io.send_frame(&out)?;
         }
-    }
-}
-
-#[allow(dead_code)]
-fn forward_host_frames_to_owner(
-    adapter: &mut DpdkAdapter,
-    tx: Option<&std::sync::mpsc::SyncSender<Vec<u8>>>,
-    metrics: &controlplane::metrics::Metrics,
-    from_worker: usize,
-    queue_depth: Option<&Arc<AtomicUsize>>,
-) -> Result<(), String> {
-    let frames = adapter.take_pending_host_frames();
-    if frames.is_empty() {
-        return Ok(());
-    }
-    let tx = tx.ok_or_else(|| "dpdk: service lane host-frame sender missing".to_string())?;
-    for frame in frames {
-        let queue_depth = queue_depth.cloned();
-        if let Some(queue_depth) = queue_depth.as_ref() {
-            let depth = increment_queue_depth(queue_depth);
-            metrics.set_dpdk_service_lane_forward_queue_depth(depth);
-        }
-        let frame_len = frame.len();
-        let wait_start = Instant::now();
-        if tx.send(frame).is_err() {
-            if let Some(queue_depth) = queue_depth.as_ref() {
-                let depth = decrement_queue_depth(queue_depth);
-                metrics.set_dpdk_service_lane_forward_queue_depth(depth);
-            }
-            return Err("dpdk: service lane host-frame forward failed".to_string());
-        }
-        metrics.observe_dpdk_service_lane_forward_queue_wait(from_worker, wait_start.elapsed());
-        metrics.inc_dpdk_service_lane_forward(from_worker);
-        metrics.add_dpdk_service_lane_forward_bytes(from_worker, frame_len);
     }
     Ok(())
 }
@@ -151,6 +91,10 @@ fn decrement_queue_depth(depth: &AtomicUsize) -> usize {
             Err(next) => current = next,
         }
     }
+}
+
+fn worker_emits_dhcp_housekeeping(worker_id: usize) -> bool {
+    worker_id == 0
 }
 
 fn direct_rx_poll_enabled(shared_rx_owner_only: bool, worker_id: usize) -> bool {
@@ -360,7 +304,7 @@ pub fn run_dataplane(
     dhcp_tx: Option<mpsc::Sender<DhcpRx>>,
     dhcp_rx: Option<mpsc::Receiver<DhcpTx>>,
     mac_publisher: Option<watch::Sender<[u8; 6]>>,
-    shared_intercept_demux: Arc<Mutex<SharedInterceptDemuxState>>,
+    shared_intercept_demux: Arc<SharedInterceptDemuxState>,
     metrics: controlplane::metrics::Metrics,
 ) -> Result<(), String> {
     let observer_policy = policy.clone();
@@ -686,14 +630,6 @@ pub fn run_dataplane(
                 } else {
                     (None, None, None)
                 };
-                let (service_lane_frame_tx, mut service_lane_frame_rx, service_lane_frame_depth) =
-                    if service_lane_enabled && worker_count > 1 {
-                        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4096);
-                        (Some(tx), Some(rx), Some(Arc::new(AtomicUsize::new(0))))
-                    } else {
-                        (None, None, None)
-                    };
-                let service_lane_ready_shared = Arc::new(AtomicBool::new(false));
                 let mut handles = Vec::with_capacity(worker_count);
                 for worker_id in 0..worker_count {
                     let iface = data_plane_iface.clone();
@@ -718,17 +654,6 @@ pub fn run_dataplane(
                         .and_then(|rxs| rxs.get_mut(worker_id))
                         .and_then(Option::take);
                     let flow_steer_depths = flow_steer_depths.clone();
-                    let service_lane_frame_tx = if worker_id == 0 {
-                        None
-                    } else {
-                        service_lane_frame_tx.clone()
-                    };
-                    let service_lane_frame_rx = if worker_id == 0 {
-                        service_lane_frame_rx.take()
-                    } else {
-                        None
-                    };
-                    let service_lane_frame_depth = service_lane_frame_depth.clone();
                     let housekeeping_interval_packets = housekeeping_interval_packets;
                     let housekeeping_interval = housekeeping_interval;
                     let pin_state_shard_guard = pin_state_shard_guard;
@@ -737,7 +662,6 @@ pub fn run_dataplane(
                     let service_lane_enabled = service_lane_enabled;
                     let shard_count = shard_count;
                     let pin_https_demux_owner = pin_https_demux_owner;
-                    let service_lane_ready_shared = service_lane_ready_shared.clone();
                     let allow_direct_rx = direct_rx_poll_enabled(shared_rx_owner_only, worker_id);
                     let mac_publisher = if worker_id == 0 {
                         mac_publisher.clone()
@@ -755,9 +679,6 @@ pub fn run_dataplane(
                                 .as_ref()
                                 .map(|s| worker_id % s.len())
                                 .unwrap_or(0);
-                            let service_lane_frame_tx = service_lane_frame_tx;
-                            let service_lane_frame_depth = service_lane_frame_depth;
-                            let service_lane_frame_rx = service_lane_frame_rx;
                             if let Err(err) = pin_thread_to_core(core_id) {
                                 warn!(worker_id, core_id, error = %err, "dpdk worker core pin failed");
                             } else {
@@ -803,13 +724,7 @@ pub fn run_dataplane(
                                 let service_lane_ready = if !service_lane_enabled {
                                     false
                                 } else {
-                                    if worker_id == 0 {
-                                        let ready = adapter.service_lane_ready();
-                                        service_lane_ready_shared.store(ready, Ordering::Release);
-                                        ready
-                                    } else {
-                                        service_lane_ready_shared.load(Ordering::Acquire)
-                                    }
+                                    adapter.service_lane_ready()
                                 };
                                 let mut from_steer_queue = false;
                                 let mut received_from_io = false;
@@ -843,14 +758,8 @@ pub fn run_dataplane(
                                 if !from_steer_queue {
                                     if !allow_direct_rx {
                                         io.flush()?;
-                                        if service_lane_enabled {
-                                            forward_host_frames_to_owner(
-                                                &mut adapter,
-                                                service_lane_frame_tx.as_ref(),
-                                                &metrics,
-                                                worker_id,
-                                                service_lane_frame_depth.as_ref(),
-                                            )?;
+                                        if service_lane_ready {
+                                            adapter.flush_host_frames(&mut io)?;
                                         }
                                         run_dpdk_housekeeping(
                                             worker_id,
@@ -884,24 +793,8 @@ pub fn run_dataplane(
                                             &mut adapter,
                                             &mut io,
                                         )?;
-                                        if service_lane_enabled {
-                                            if worker_id == 0 {
-                                                drain_forwarded_host_frames(
-                                                    service_lane_frame_rx.as_ref(),
-                                                    &mut adapter,
-                                                    &metrics,
-                                                    service_lane_frame_depth.as_ref(),
-                                                )?;
-                                                adapter.flush_host_frames(&mut io)?;
-                                            } else {
-                                                forward_host_frames_to_owner(
-                                                    &mut adapter,
-                                                    service_lane_frame_tx.as_ref(),
-                                                    &metrics,
-                                                    worker_id,
-                                                    service_lane_frame_depth.as_ref(),
-                                                )?;
-                                            }
+                                        if service_lane_ready {
+                                            adapter.flush_host_frames(&mut io)?;
                                         }
                                         packets_since_housekeeping = 0;
                                         next_housekeeping_at =
@@ -1063,24 +956,8 @@ pub fn run_dataplane(
                                             FrameOut::Owned(frame) => io.send_frame(&frame)?,
                                         }
                                     }
-                                    if service_lane_enabled {
-                                        if worker_id == 0 {
-                                            drain_forwarded_host_frames(
-                                                service_lane_frame_rx.as_ref(),
-                                                &mut adapter,
-                                                &metrics,
-                                                service_lane_frame_depth.as_ref(),
-                                            )?;
-                                            adapter.flush_host_frames(&mut io)?;
-                                        } else {
-                                            forward_host_frames_to_owner(
-                                                &mut adapter,
-                                                service_lane_frame_tx.as_ref(),
-                                                &metrics,
-                                                worker_id,
-                                                service_lane_frame_depth.as_ref(),
-                                            )?;
-                                        }
+                                    if service_lane_ready {
+                                        adapter.flush_host_frames(&mut io)?;
                                     }
                                     if !allow_direct_rx {
                                         io.flush()?;
@@ -1221,5 +1098,12 @@ mod tests {
         assert!(!direct_rx_poll_enabled(true, 2));
         assert!(direct_rx_poll_enabled(false, 0));
         assert!(direct_rx_poll_enabled(false, 1));
+    }
+
+    #[test]
+    fn worker_emits_dhcp_housekeeping_only_on_worker_zero() {
+        assert!(worker_emits_dhcp_housekeeping(0));
+        assert!(!worker_emits_dhcp_housekeeping(1));
+        assert!(!worker_emits_dhcp_housekeeping(2));
     }
 }

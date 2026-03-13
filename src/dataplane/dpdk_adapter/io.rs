@@ -237,6 +237,28 @@ fn queue_caps_look_unreliable(max_rx: u16, max_tx: u16) -> bool {
     max_rx == 0 || max_tx == 0 || max_rx > 4096 || max_tx > 4096
 }
 
+fn parse_truthy_flag(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|raw| parse_truthy_flag(&raw))
+        .unwrap_or(false)
+}
+
+fn should_force_single_queue_without_reta(
+    queue_count: u16,
+    use_rss_mq: bool,
+    reta_size: u16,
+    allow_retaless_multi_queue: bool,
+) -> bool {
+    queue_count > 1 && use_rss_mq && reta_size == 0 && !allow_retaless_multi_queue
+}
+
 fn parse_mbuf_data_room_size() -> u16 {
     let default_size = RTE_MBUF_DEFAULT_BUF_SIZE as u16;
     let Some(raw) = std::env::var("NEUWERK_DPDK_MBUF_DATA_ROOM").ok() else {
@@ -562,5 +584,14 @@ mod tests {
         assert!(four_queues.first().copied().unwrap_or_default() >= 32767);
         assert!(four_queues.contains(&8191));
         assert!(four_queues.contains(&1023));
+    }
+
+    #[test]
+    fn should_force_single_queue_without_reta_when_unavailable_and_not_overridden() {
+        assert!(should_force_single_queue_without_reta(2, true, 0, false));
+        assert!(!should_force_single_queue_without_reta(1, true, 0, false));
+        assert!(!should_force_single_queue_without_reta(2, false, 0, false));
+        assert!(!should_force_single_queue_without_reta(2, true, 128, false));
+        assert!(!should_force_single_queue_without_reta(2, true, 0, true));
     }
 }
