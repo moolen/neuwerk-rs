@@ -54,23 +54,22 @@ impl DpdkAdapter {
         self.pending_host_frames.push_back(host_frame);
     }
 
-    fn with_intercept_demux_map<R>(
-        &mut self,
-        f: impl FnOnce(&mut HashMap<InterceptDemuxKey, InterceptDemuxEntry>) -> R,
-    ) -> R {
-        if let Some(shared) = &self.shared_intercept_demux {
-            if let Ok(mut lock) = shared.lock() {
-                return f(&mut lock.map);
-            }
-        }
-        f(&mut self.intercept_demux)
-    }
-
-    fn gc_intercept_demux_map(map: &mut HashMap<InterceptDemuxKey, InterceptDemuxEntry>) {
-        let now = Instant::now();
+    fn gc_intercept_demux_map(
+        map: &mut HashMap<InterceptDemuxKey, InterceptDemuxEntry>,
+        now: Instant,
+    ) {
         map.retain(|_, entry| {
             now.duration_since(entry.last_seen) <= Duration::from_secs(INTERCEPT_DEMUX_IDLE_SECS)
         });
+    }
+
+    fn maybe_gc_local_intercept_demux(&mut self) {
+        if self.intercept_demux_last_gc.elapsed() < intercept_demux_gc_interval() {
+            return;
+        }
+        let now = Instant::now();
+        Self::gc_intercept_demux_map(&mut self.intercept_demux, now);
+        self.intercept_demux_last_gc = now;
     }
 
     fn upsert_intercept_demux_entry(
@@ -86,20 +85,18 @@ impl DpdkAdapter {
                 return;
             }
         }
-        self.with_intercept_demux_map(|map| {
-            Self::gc_intercept_demux_map(map);
-            map.insert(
-                InterceptDemuxKey {
-                    client_ip,
-                    client_port,
-                },
-                InterceptDemuxEntry {
-                    upstream_ip,
-                    upstream_port,
-                    last_seen: Instant::now(),
-                },
-            );
-        });
+        self.maybe_gc_local_intercept_demux();
+        self.intercept_demux.insert(
+            InterceptDemuxKey {
+                client_ip,
+                client_port,
+            },
+            InterceptDemuxEntry {
+                upstream_ip,
+                upstream_port,
+                last_seen: Instant::now(),
+            },
+        );
     }
 
     fn remove_intercept_demux_entry(&mut self, client_ip: Ipv4Addr, client_port: u16) {
@@ -109,11 +106,9 @@ impl DpdkAdapter {
                 return;
             }
         }
-        self.with_intercept_demux_map(|map| {
-            map.remove(&InterceptDemuxKey {
-                client_ip,
-                client_port,
-            });
+        self.intercept_demux.remove(&InterceptDemuxKey {
+            client_ip,
+            client_port,
         });
     }
 
@@ -133,19 +128,17 @@ impl DpdkAdapter {
                     });
             }
         }
-        self.with_intercept_demux_map(|map| {
-            Self::gc_intercept_demux_map(map);
-            let key = InterceptDemuxKey {
-                client_ip,
-                client_port,
-            };
-            if let Some(entry) = map.get_mut(&key) {
-                entry.last_seen = Instant::now();
-                Some(*entry)
-            } else {
-                None
-            }
-        })
+        self.maybe_gc_local_intercept_demux();
+        let key = InterceptDemuxKey {
+            client_ip,
+            client_port,
+        };
+        if let Some(entry) = self.intercept_demux.get_mut(&key) {
+            entry.last_seen = Instant::now();
+            Some(*entry)
+        } else {
+            None
+        }
     }
 
     fn queue_intercept_host_frame(&mut self, frame: &[u8]) {
@@ -237,6 +230,14 @@ impl DpdkAdapter {
         self.pending_host_frames.pop_front()
     }
 
+    pub fn enqueue_host_frame(&mut self, frame: Vec<u8>) {
+        self.pending_host_frames.push_back(frame);
+    }
+
+    pub fn take_pending_host_frames(&mut self) -> Vec<Vec<u8>> {
+        self.pending_host_frames.drain(..).collect()
+    }
+
     pub fn flush_host_frames<I: FrameIo>(&mut self, io: &mut I) -> Result<(), String> {
         if self.pending_host_frames.is_empty() {
             return Ok(());
@@ -274,23 +275,17 @@ impl DpdkAdapter {
         }
         let mut buf = [0u8; 65536];
         loop {
-            let readable = {
-                let tap = self
-                    .service_lane_tap
-                    .as_ref()
-                    .ok_or_else(|| "dpdk: service lane tap unavailable".to_string())?;
-                service_lane_tap_readable(tap)?
-            };
-            if !readable {
-                break;
-            }
             let n = {
                 let tap = self
                     .service_lane_tap
                     .as_mut()
                     .ok_or_else(|| "dpdk: service lane tap unavailable".to_string())?;
-                tap.read(&mut buf)
-                    .map_err(|err| format!("dpdk: service lane read failed: {err}"))?
+                match tap.read(&mut buf) {
+                    Ok(n) => n,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(err) => return Err(format!("dpdk: service lane read failed: {err}")),
+                }
             };
             if n == 0 {
                 break;

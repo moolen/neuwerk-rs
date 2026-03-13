@@ -28,8 +28,10 @@ use runtime::bootstrap::task_wait::await_runtime_tasks;
 use runtime::cli::{parse_args, usage, CloudProviderKind, DataPlaneMode};
 #[cfg(test)]
 use runtime::dpdk::worker_plan::{
-    choose_dpdk_worker_plan, flow_steer_payload, shared_demux_owner_for_packet,
-    DpdkSingleQueueStrategy, DpdkWorkerMode,
+    choose_dpdk_worker_plan, flow_steer_payload, parse_truthy_flag,
+    service_lane_enabled_with_override, shared_demux_owner_for_packet,
+    shared_demux_owner_for_packet_with_policy, DpdkPerfMode, DpdkSingleQueueStrategy,
+    DpdkWorkerMode,
 };
 use runtime::startup::controlplane_runtime::start_controlplane_runtime;
 use runtime::startup::dataplane_bootstrap::bootstrap_dataplane_runtime;

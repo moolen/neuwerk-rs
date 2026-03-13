@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
@@ -33,7 +33,6 @@ use frame_codec::{
 pub use io_api::{FrameIo, UnwiredDpdkIo};
 use service_lane::{
     intercept_service_ip, intercept_service_port, open_tap, read_interface_mac, select_mac,
-    service_lane_tap_readable,
 };
 
 const ETH_HDR_LEN: usize = 14;
@@ -48,6 +47,7 @@ const TCP_FLAG_ACK: u8 = 0x10;
 const ARP_CACHE_TTL_SECS: u64 = 120;
 const ARP_REQUEST_COOLDOWN_MS: u64 = 500;
 const INTERCEPT_DEMUX_IDLE_SECS: u64 = 300;
+const INTERCEPT_DEMUX_GC_INTERVAL_MS_DEFAULT: u64 = 1_000;
 const SERVICE_LANE_TAP_RETRY_MS: u64 = 1_000;
 const INTERCEPT_SERVICE_IP_DEFAULT: Ipv4Addr = Ipv4Addr::new(169, 254, 255, 1);
 const INTERCEPT_SERVICE_PORT_DEFAULT: u16 = 15443;
@@ -72,6 +72,20 @@ pub struct SharedArpState {
     last_request: HashMap<Ipv4Addr, Instant>,
 }
 
+fn intercept_demux_gc_interval() -> Duration {
+    static INTERVAL: OnceLock<Duration> = OnceLock::new();
+
+    *INTERVAL.get_or_init(|| {
+        let interval_ms = std::env::var("NEUWERK_DPDK_INTERCEPT_DEMUX_GC_INTERVAL_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(INTERCEPT_DEMUX_GC_INTERVAL_MS_DEFAULT);
+        tracing::info!(interval_ms, "dpdk intercept demux gc interval configured");
+        Duration::from_millis(interval_ms)
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct InterceptDemuxKey {
     client_ip: Ipv4Addr,
@@ -85,17 +99,34 @@ struct InterceptDemuxEntry {
     last_seen: Instant,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SharedInterceptDemuxState {
     map: HashMap<InterceptDemuxKey, InterceptDemuxEntry>,
+    last_gc: Instant,
+}
+
+impl Default for SharedInterceptDemuxState {
+    fn default() -> Self {
+        Self {
+            map: HashMap::new(),
+            last_gc: Instant::now(),
+        }
+    }
 }
 
 impl SharedInterceptDemuxState {
-    fn gc(&mut self) {
-        let now = Instant::now();
+    fn gc_expired(&mut self, now: Instant) {
         self.map.retain(|_, entry| {
             now.duration_since(entry.last_seen) <= Duration::from_secs(INTERCEPT_DEMUX_IDLE_SECS)
         });
+        self.last_gc = now;
+    }
+
+    fn maybe_gc(&mut self) {
+        if self.last_gc.elapsed() < intercept_demux_gc_interval() {
+            return;
+        }
+        self.gc_expired(Instant::now());
     }
 
     pub fn upsert(
@@ -105,7 +136,7 @@ impl SharedInterceptDemuxState {
         upstream_ip: Ipv4Addr,
         upstream_port: u16,
     ) {
-        self.gc();
+        self.maybe_gc();
         self.map.insert(
             InterceptDemuxKey {
                 client_ip,
@@ -127,7 +158,7 @@ impl SharedInterceptDemuxState {
     }
 
     pub fn lookup(&mut self, client_ip: Ipv4Addr, client_port: u16) -> Option<(Ipv4Addr, u16)> {
-        self.gc();
+        self.maybe_gc();
         let key = InterceptDemuxKey {
             client_ip,
             client_port,
@@ -151,6 +182,7 @@ pub struct DpdkAdapter {
     shared_arp: Option<Arc<Mutex<SharedArpState>>>,
     shared_intercept_demux: Option<Arc<Mutex<SharedInterceptDemuxState>>>,
     intercept_demux: HashMap<InterceptDemuxKey, InterceptDemuxEntry>,
+    intercept_demux_last_gc: Instant,
     arp_cache: HashMap<Ipv4Addr, ArpEntry>,
     arp_last_request: HashMap<Ipv4Addr, Instant>,
     pending_frames: VecDeque<Vec<u8>>,
@@ -180,6 +212,7 @@ impl DpdkAdapter {
             shared_arp: None,
             shared_intercept_demux: None,
             intercept_demux: HashMap::new(),
+            intercept_demux_last_gc: Instant::now(),
             arp_cache: HashMap::new(),
             arp_last_request: HashMap::new(),
             pending_frames: VecDeque::new(),

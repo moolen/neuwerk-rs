@@ -1,5 +1,5 @@
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -18,7 +18,8 @@ use crate::runtime::cli::DataPlaneMode;
 use super::affinity::{choose_dpdk_worker_core_ids, cpu_core_count, pin_thread_to_core};
 use super::worker_plan::{
     choose_dpdk_worker_plan, dpdk_force_shared_rx_demux, dpdk_lockless_queue_per_worker_enabled,
-    flow_steer_payload, shard_index_for_packet, shared_demux_owner_for_packet, DpdkPerfMode,
+    dpdk_pin_https_demux_owner, dpdk_service_lane_enabled, env_flag_enabled, flow_steer_payload,
+    shard_index_for_packet, shared_demux_owner_for_packet_with_policy, DpdkPerfMode,
     DpdkSingleQueueStrategy, DpdkWorkerMode,
 };
 
@@ -73,9 +74,191 @@ fn run_dpdk_housekeeping(
     Ok(())
 }
 
+#[allow(dead_code)]
+fn drain_forwarded_host_frames(
+    rx: Option<&std::sync::mpsc::Receiver<Vec<u8>>>,
+    adapter: &mut DpdkAdapter,
+    metrics: &controlplane::metrics::Metrics,
+    queue_depth: Option<&Arc<AtomicUsize>>,
+) -> Result<(), String> {
+    let Some(rx) = rx else {
+        return Ok(());
+    };
+    loop {
+        match rx.try_recv() {
+            Ok(frame) => {
+                if let Some(queue_depth) = queue_depth {
+                    let depth = decrement_queue_depth(queue_depth);
+                    metrics.set_dpdk_service_lane_forward_queue_depth(depth);
+                }
+                adapter.enqueue_host_frame(frame);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(()),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err("dpdk: service lane host-frame channel disconnected".to_string());
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn forward_host_frames_to_owner(
+    adapter: &mut DpdkAdapter,
+    tx: Option<&std::sync::mpsc::SyncSender<Vec<u8>>>,
+    metrics: &controlplane::metrics::Metrics,
+    from_worker: usize,
+    queue_depth: Option<&Arc<AtomicUsize>>,
+) -> Result<(), String> {
+    let frames = adapter.take_pending_host_frames();
+    if frames.is_empty() {
+        return Ok(());
+    }
+    let tx = tx.ok_or_else(|| "dpdk: service lane host-frame sender missing".to_string())?;
+    for frame in frames {
+        let queue_depth = queue_depth.cloned();
+        if let Some(queue_depth) = queue_depth.as_ref() {
+            let depth = increment_queue_depth(queue_depth);
+            metrics.set_dpdk_service_lane_forward_queue_depth(depth);
+        }
+        let frame_len = frame.len();
+        let wait_start = Instant::now();
+        if tx.send(frame).is_err() {
+            if let Some(queue_depth) = queue_depth.as_ref() {
+                let depth = decrement_queue_depth(queue_depth);
+                metrics.set_dpdk_service_lane_forward_queue_depth(depth);
+            }
+            return Err("dpdk: service lane host-frame forward failed".to_string());
+        }
+        metrics.observe_dpdk_service_lane_forward_queue_wait(from_worker, wait_start.elapsed());
+        metrics.inc_dpdk_service_lane_forward(from_worker);
+        metrics.add_dpdk_service_lane_forward_bytes(from_worker, frame_len);
+    }
+    Ok(())
+}
+
+fn increment_queue_depth(depth: &AtomicUsize) -> usize {
+    depth.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+fn decrement_queue_depth(depth: &AtomicUsize) -> usize {
+    let mut current = depth.load(Ordering::Acquire);
+    loop {
+        if current == 0 {
+            return 0;
+        }
+        match depth.compare_exchange(current, current - 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return current - 1,
+            Err(next) => current = next,
+        }
+    }
+}
+
+fn direct_rx_poll_enabled(shared_rx_owner_only: bool, worker_id: usize) -> bool {
+    !shared_rx_owner_only || worker_id == 0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowSteerDispatchResult {
+    Dispatched,
+    ProcessLocally,
+}
+
+fn dispatch_flow_steer_packet(
+    flow_steer_tx: Option<&Arc<Vec<std::sync::mpsc::SyncSender<Vec<u8>>>>>,
+    owner: usize,
+    payload: Vec<u8>,
+    worker_id: usize,
+    metrics: &controlplane::metrics::Metrics,
+    queue_depth: Option<&Arc<AtomicUsize>>,
+    dispatch_enabled: &mut bool,
+) -> FlowSteerDispatchResult {
+    if !*dispatch_enabled {
+        if let Some(queue_depth) = queue_depth {
+            let depth = decrement_queue_depth(queue_depth);
+            metrics.set_dpdk_flow_steer_queue_depth(owner, depth);
+        }
+        return FlowSteerDispatchResult::ProcessLocally;
+    }
+
+    let Some(flow_steer_tx) = flow_steer_tx else {
+        if let Some(queue_depth) = queue_depth {
+            let depth = decrement_queue_depth(queue_depth);
+            metrics.set_dpdk_flow_steer_queue_depth(owner, depth);
+        }
+        *dispatch_enabled = false;
+        metrics.inc_dpdk_flow_steer_fail_open_event(worker_id, "tx_missing");
+        warn!(
+            worker_id,
+            owner, "dpdk flow steer tx missing; disabling dispatch and failing open"
+        );
+        return FlowSteerDispatchResult::ProcessLocally;
+    };
+    let Some(tx) = flow_steer_tx.get(owner) else {
+        if let Some(queue_depth) = queue_depth {
+            let depth = decrement_queue_depth(queue_depth);
+            metrics.set_dpdk_flow_steer_queue_depth(owner, depth);
+        }
+        *dispatch_enabled = false;
+        metrics.inc_dpdk_flow_steer_fail_open_event(worker_id, "owner_missing");
+        warn!(
+            worker_id,
+            owner, "dpdk flow steer owner sender missing; disabling dispatch and failing open"
+        );
+        return FlowSteerDispatchResult::ProcessLocally;
+    };
+
+    let payload_len = payload.len();
+    let wait_start = Instant::now();
+    if tx.send(payload).is_err() {
+        if let Some(queue_depth) = queue_depth {
+            let depth = decrement_queue_depth(queue_depth);
+            metrics.set_dpdk_flow_steer_queue_depth(owner, depth);
+        }
+        *dispatch_enabled = false;
+        metrics.inc_dpdk_flow_steer_fail_open_event(worker_id, "dispatch_failed");
+        warn!(
+            worker_id,
+            owner, "dpdk flow steer dispatch failed; disabling dispatch and failing open"
+        );
+        return FlowSteerDispatchResult::ProcessLocally;
+    }
+
+    metrics.observe_dpdk_flow_steer_queue_wait(owner, wait_start.elapsed());
+    metrics.inc_dpdk_flow_steer_dispatch(worker_id, owner);
+    metrics.add_dpdk_flow_steer_bytes(worker_id, owner, payload_len);
+    FlowSteerDispatchResult::Dispatched
+}
+
+struct SharedDpdkIo {
+    io: Arc<Mutex<DpdkIo>>,
+    metrics: controlplane::metrics::Metrics,
+}
+
+impl SharedDpdkIo {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, DpdkIo>, String> {
+        match self.io.try_lock() {
+            Ok(guard) => Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                Err("dpdk: shared io lock poisoned".to_string())
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                self.metrics.inc_dpdk_shared_io_lock_contended();
+                let start = Instant::now();
+                let guard = self
+                    .io
+                    .lock()
+                    .map_err(|_| "dpdk: shared io lock poisoned".to_string())?;
+                self.metrics
+                    .observe_dpdk_shared_io_lock_wait(start.elapsed());
+                Ok(guard)
+            }
+        }
+    }
+}
+
 enum DpdkWorkerIo {
     Dedicated(DpdkIo),
-    Shared(Arc<Mutex<DpdkIo>>),
+    Shared(SharedDpdkIo),
 }
 
 impl DpdkWorkerIo {
@@ -267,10 +450,7 @@ pub fn run_dataplane(
                     .map(|v| v.to_ascii_lowercase()),
                 Some(ref v) if v == "azure"
             ) && requested_workers > 1
-                && std::env::var("NEUWERK_DPDK_ALLOW_AZURE_MULTIWORKER")
-                    .ok()
-                    .as_deref()
-                    != Some("1");
+                && !env_flag_enabled("NEUWERK_DPDK_ALLOW_AZURE_MULTIWORKER");
             if azure_reliability_guard {
                 warn!(
                     requested_workers,
@@ -397,12 +577,21 @@ pub fn run_dataplane(
                 let worker_count = plan.worker_count;
                 let queue_per_worker = matches!(plan.mode, DpdkWorkerMode::QueuePerWorker);
                 let shared_rx_demux = matches!(plan.mode, DpdkWorkerMode::SharedRxDemux);
-                let service_lane_enabled = !perf_aggressive;
+                let pin_https_demux_owner = dpdk_pin_https_demux_owner();
+                let service_lane_enabled = dpdk_service_lane_enabled(dpdk_perf_mode);
                 let lockless_qpw =
                     perf_aggressive && queue_per_worker && dpdk_lockless_queue_per_worker_enabled();
                 info!(worker_count, mode = ?plan.mode, "dpdk starting worker threads");
+                if shared_rx_demux {
+                    info!(
+                        pin_https_demux_owner,
+                        "dpdk shared demux HTTPS owner pin configuration"
+                    );
+                }
                 if !service_lane_enabled {
-                    info!("dpdk perf mode disables service-lane steering and drain");
+                    warn!(
+                        "dpdk service lane disabled via NEUWERK_DPDK_DISABLE_SERVICE_LANE; TLS intercept steering is bypassed"
+                    );
                 }
                 if lockless_qpw {
                     info!("dpdk lockless queue-per-worker enabled");
@@ -476,19 +665,34 @@ pub fn run_dataplane(
                         Some(metrics.clone()),
                     )?)))
                 };
+                // Optional owner-only RX polling for shared-demux + shared-IO mode.
+                // Disabled by default; enable with NEUWERK_DPDK_SHARED_RX_OWNER_ONLY=true.
+                let shared_rx_owner_only = shared_io.is_some()
+                    && shared_rx_demux
+                    && env_flag_enabled("NEUWERK_DPDK_SHARED_RX_OWNER_ONLY");
+                info!(shared_rx_owner_only, "dpdk shared rx owner-only polling");
                 let enable_flow_steer = shared_rx_demux;
-                let (flow_steer_txs, mut flow_steer_rxs) = if enable_flow_steer {
+                let (flow_steer_txs, mut flow_steer_rxs, flow_steer_depths) = if enable_flow_steer {
                     let mut txs = Vec::with_capacity(worker_count);
                     let mut rxs = Vec::with_capacity(worker_count);
+                    let mut depths = Vec::with_capacity(worker_count);
                     for _ in 0..worker_count {
                         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
                         txs.push(tx);
                         rxs.push(Some(rx));
+                        depths.push(Arc::new(AtomicUsize::new(0)));
                     }
-                    (Some(Arc::new(txs)), Some(rxs))
+                    (Some(Arc::new(txs)), Some(rxs), Some(Arc::new(depths)))
                 } else {
-                    (None, None)
+                    (None, None, None)
                 };
+                let (service_lane_frame_tx, mut service_lane_frame_rx, service_lane_frame_depth) =
+                    if service_lane_enabled && worker_count > 1 {
+                        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4096);
+                        (Some(tx), Some(rx), Some(Arc::new(AtomicUsize::new(0))))
+                    } else {
+                        (None, None, None)
+                    };
                 let service_lane_ready_shared = Arc::new(AtomicBool::new(false));
                 let mut handles = Vec::with_capacity(worker_count);
                 for worker_id in 0..worker_count {
@@ -505,10 +709,26 @@ pub fn run_dataplane(
                     let dhcp_rx = if worker_id == 0 { dhcp_rx.take() } else { None };
                     let shared_io = shared_io.clone();
                     let flow_steer_tx = flow_steer_txs.clone();
-                    let flow_steer_rx = flow_steer_rxs
+                    let flow_steer_depth = flow_steer_depths
+                        .as_ref()
+                        .and_then(|depths| depths.get(worker_id))
+                        .cloned();
+                    let mut flow_steer_rx = flow_steer_rxs
                         .as_mut()
                         .and_then(|rxs| rxs.get_mut(worker_id))
                         .and_then(Option::take);
+                    let flow_steer_depths = flow_steer_depths.clone();
+                    let service_lane_frame_tx = if worker_id == 0 {
+                        None
+                    } else {
+                        service_lane_frame_tx.clone()
+                    };
+                    let service_lane_frame_rx = if worker_id == 0 {
+                        service_lane_frame_rx.take()
+                    } else {
+                        None
+                    };
+                    let service_lane_frame_depth = service_lane_frame_depth.clone();
                     let housekeeping_interval_packets = housekeeping_interval_packets;
                     let housekeeping_interval = housekeeping_interval;
                     let pin_state_shard_guard = pin_state_shard_guard;
@@ -516,7 +736,9 @@ pub fn run_dataplane(
                     let lockless_qpw = lockless_qpw;
                     let service_lane_enabled = service_lane_enabled;
                     let shard_count = shard_count;
+                    let pin_https_demux_owner = pin_https_demux_owner;
                     let service_lane_ready_shared = service_lane_ready_shared.clone();
+                    let allow_direct_rx = direct_rx_poll_enabled(shared_rx_owner_only, worker_id);
                     let mac_publisher = if worker_id == 0 {
                         mac_publisher.clone()
                     } else {
@@ -533,6 +755,9 @@ pub fn run_dataplane(
                                 .as_ref()
                                 .map(|s| worker_id % s.len())
                                 .unwrap_or(0);
+                            let service_lane_frame_tx = service_lane_frame_tx;
+                            let service_lane_frame_depth = service_lane_frame_depth;
+                            let service_lane_frame_rx = service_lane_frame_rx;
                             if let Err(err) = pin_thread_to_core(core_id) {
                                 warn!(worker_id, core_id, error = %err, "dpdk worker core pin failed");
                             } else {
@@ -551,7 +776,10 @@ pub fn run_dataplane(
                                 adapter.set_dhcp_rx(rx);
                             }
                             let mut io = if let Some(shared) = shared_io {
-                                DpdkWorkerIo::Shared(shared)
+                                DpdkWorkerIo::Shared(SharedDpdkIo {
+                                    io: shared,
+                                    metrics: metrics.clone(),
+                                })
                             } else {
                                 DpdkWorkerIo::Dedicated(DpdkIo::new_with_queue(
                                     &iface,
@@ -568,6 +796,7 @@ pub fn run_dataplane(
                             let mut pinned_shard_run_len: u32 = 0;
                             let mut pinned_shard_guard: Option<std::sync::MutexGuard<EngineState>> =
                                 None;
+                            let mut flow_steer_dispatch_enabled = flow_steer_tx.is_some();
                             let mut packets_since_housekeeping = 0u64;
                             let mut next_housekeeping_at = Instant::now() + housekeeping_interval;
                             loop {
@@ -583,22 +812,62 @@ pub fn run_dataplane(
                                     }
                                 };
                                 let mut from_steer_queue = false;
+                                let mut received_from_io = false;
                                 if let Some(rx) = flow_steer_rx.as_ref() {
                                     match rx.try_recv() {
                                         Ok(frame) => {
+                                            if let Some(queue_depth) = flow_steer_depth.as_ref() {
+                                                let depth = decrement_queue_depth(queue_depth);
+                                                metrics.set_dpdk_flow_steer_queue_depth(
+                                                    worker_id,
+                                                    depth,
+                                                );
+                                            }
                                             pkt = Packet::new(frame);
                                             from_steer_queue = true;
                                         }
                                         Err(std::sync::mpsc::TryRecvError::Empty) => {}
                                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                            return Err(
-                                                "dpdk: flow steer channel disconnected".to_string()
+                                            flow_steer_rx = None;
+                                            metrics.inc_dpdk_flow_steer_fail_open_event(
+                                                worker_id,
+                                                "rx_disconnected",
+                                            );
+                                            warn!(
+                                                worker_id,
+                                                "dpdk flow steer rx disconnected; failing open to local processing"
                                             );
                                         }
                                     }
                                 }
                                 if !from_steer_queue {
-                                    let n = io.recv_packet(&mut pkt)?;
+                                    if !allow_direct_rx {
+                                        io.flush()?;
+                                        if service_lane_enabled {
+                                            forward_host_frames_to_owner(
+                                                &mut adapter,
+                                                service_lane_frame_tx.as_ref(),
+                                                &metrics,
+                                                worker_id,
+                                                service_lane_frame_depth.as_ref(),
+                                            )?;
+                                        }
+                                        run_dpdk_housekeeping(
+                                            worker_id,
+                                            false,
+                                            service_lane_enabled,
+                                            housekeeping_shard_idx,
+                                            shared_state.as_ref(),
+                                            local_state.as_mut(),
+                                            &mut adapter,
+                                            &mut io,
+                                        )?;
+                                        std::thread::yield_now();
+                                        continue;
+                                    }
+                                    let n = io.recv_packet(&mut pkt).map_err(|err| {
+                                        format!("dpdk worker {worker_id} recv failed: {err}")
+                                    })?;
                                     if n == 0 {
                                         pinned_shard_guard = None;
                                         pinned_shard_idx = None;
@@ -616,36 +885,67 @@ pub fn run_dataplane(
                                             &mut io,
                                         )?;
                                         if service_lane_enabled {
-                                            adapter.flush_host_frames(&mut io)?;
+                                            if worker_id == 0 {
+                                                drain_forwarded_host_frames(
+                                                    service_lane_frame_rx.as_ref(),
+                                                    &mut adapter,
+                                                    &metrics,
+                                                    service_lane_frame_depth.as_ref(),
+                                                )?;
+                                                adapter.flush_host_frames(&mut io)?;
+                                            } else {
+                                                forward_host_frames_to_owner(
+                                                    &mut adapter,
+                                                    service_lane_frame_tx.as_ref(),
+                                                    &metrics,
+                                                    worker_id,
+                                                    service_lane_frame_depth.as_ref(),
+                                                )?;
+                                            }
                                         }
                                         packets_since_housekeeping = 0;
                                         next_housekeeping_at =
                                             Instant::now() + housekeeping_interval;
                                         continue;
                                     }
+                                    received_from_io = true;
                                     if flow_steer_tx.is_some() {
-                                        let owner = shared_demux_owner_for_packet(
+                                        let owner = shared_demux_owner_for_packet_with_policy(
                                             &pkt,
                                             shard_count,
                                             worker_count,
+                                            pin_https_demux_owner,
                                         );
-                                        if owner != worker_id {
+                                        if owner != worker_id && flow_steer_dispatch_enabled {
                                             let payload = flow_steer_payload(&mut pkt);
-                                            flow_steer_tx
+                                            let flow_steer_queue_depth = flow_steer_depths
                                                 .as_ref()
-                                                .ok_or_else(|| {
-                                                    "dpdk: flow steer tx missing".to_string()
-                                                })?
-                                                .get(owner)
-                                                .ok_or_else(|| {
-                                                    "dpdk: flow steer worker missing".to_string()
-                                                })?
-                                                .send(payload)
-                                                .map_err(|_| {
-                                                    "dpdk: flow steer dispatch failed".to_string()
-                                                })?;
-                                            io.finish_rx_packet();
-                                            continue;
+                                                .and_then(|depths| depths.get(owner))
+                                                .cloned();
+                                            if let Some(queue_depth) =
+                                                flow_steer_queue_depth.as_ref()
+                                            {
+                                                let depth = increment_queue_depth(queue_depth);
+                                                metrics.set_dpdk_flow_steer_queue_depth(
+                                                    owner,
+                                                    depth,
+                                                );
+                                            }
+                                            if matches!(
+                                                dispatch_flow_steer_packet(
+                                                    flow_steer_tx.as_ref(),
+                                                    owner,
+                                                    payload,
+                                                    worker_id,
+                                                    &metrics,
+                                                    flow_steer_queue_depth.as_ref(),
+                                                    &mut flow_steer_dispatch_enabled,
+                                                ),
+                                                FlowSteerDispatchResult::Dispatched
+                                            ) {
+                                                io.finish_rx_packet();
+                                                continue;
+                                            }
                                         }
                                     }
                                 }
@@ -764,7 +1064,26 @@ pub fn run_dataplane(
                                         }
                                     }
                                     if service_lane_enabled {
-                                        adapter.flush_host_frames(&mut io)?;
+                                        if worker_id == 0 {
+                                            drain_forwarded_host_frames(
+                                                service_lane_frame_rx.as_ref(),
+                                                &mut adapter,
+                                                &metrics,
+                                                service_lane_frame_depth.as_ref(),
+                                            )?;
+                                            adapter.flush_host_frames(&mut io)?;
+                                        } else {
+                                            forward_host_frames_to_owner(
+                                                &mut adapter,
+                                                service_lane_frame_tx.as_ref(),
+                                                &metrics,
+                                                worker_id,
+                                                service_lane_frame_depth.as_ref(),
+                                            )?;
+                                        }
+                                    }
+                                    if !allow_direct_rx {
+                                        io.flush()?;
                                     }
                                     let now = Instant::now();
                                     if packets_since_housekeeping >= housekeeping_interval_packets
@@ -785,26 +1104,122 @@ pub fn run_dataplane(
                                     }
                                     Ok(())
                                 })();
-                                io.finish_rx_packet();
-                                step_result?;
+                                if received_from_io {
+                                    io.finish_rx_packet();
+                                }
+                                if let Err(err) = step_result {
+                                    warn!(worker_id, error = %err, "dpdk worker exiting on error");
+                                    return Err(err);
+                                }
                             }
                         })
                         .map_err(|err| format!("dpdk worker start failed: {err}"))?;
                     handles.push(handle);
                 }
                 metrics.set_dpdk_init_ok(true);
-                for handle in handles {
+                for (worker_id, handle) in handles.into_iter().enumerate() {
                     if let Err(err) = handle
                         .join()
                         .map_err(|_| "dpdk worker panicked".to_string())?
                     {
                         metrics.set_dpdk_init_ok(false);
                         metrics.inc_dpdk_init_failure();
-                        return Err(err);
+                        return Err(format!("dpdk worker {worker_id} failed: {err}"));
                     }
                 }
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metric_value_with_labels(rendered: &str, metric: &str, labels: &[(&str, &str)]) -> f64 {
+        rendered
+            .lines()
+            .find_map(|line| {
+                if !line.starts_with(metric) {
+                    return None;
+                }
+                let name = line.split_whitespace().next()?;
+                for (key, value) in labels {
+                    let needle = format!(r#"{key}="{value}""#);
+                    if !name.contains(&needle) {
+                        return None;
+                    }
+                }
+                line.split_whitespace().last()?.parse::<f64>().ok()
+            })
+            .unwrap_or(0.0)
+    }
+
+    #[test]
+    fn dispatch_flow_steer_packet_success_keeps_dispatch_enabled() {
+        let metrics = controlplane::metrics::Metrics::new().expect("metrics");
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
+        let txs = Arc::new(vec![tx]);
+        let queue_depth = Arc::new(AtomicUsize::new(1));
+        let mut dispatch_enabled = true;
+
+        let result = dispatch_flow_steer_packet(
+            Some(&txs),
+            0,
+            vec![1, 2, 3],
+            1,
+            &metrics,
+            Some(&queue_depth),
+            &mut dispatch_enabled,
+        );
+
+        assert_eq!(result, FlowSteerDispatchResult::Dispatched);
+        assert!(dispatch_enabled);
+        assert_eq!(queue_depth.load(Ordering::Acquire), 1);
+        assert_eq!(rx.recv().expect("steered payload"), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn dispatch_flow_steer_packet_send_failure_fails_open() {
+        let metrics = controlplane::metrics::Metrics::new().expect("metrics");
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
+        drop(rx);
+        let txs = Arc::new(vec![tx]);
+        let queue_depth = Arc::new(AtomicUsize::new(1));
+        let mut dispatch_enabled = true;
+
+        let result = dispatch_flow_steer_packet(
+            Some(&txs),
+            0,
+            vec![9, 8, 7],
+            2,
+            &metrics,
+            Some(&queue_depth),
+            &mut dispatch_enabled,
+        );
+
+        assert_eq!(result, FlowSteerDispatchResult::ProcessLocally);
+        assert!(!dispatch_enabled);
+        assert_eq!(queue_depth.load(Ordering::Acquire), 0);
+
+        let rendered = metrics.render().expect("render metrics");
+        assert_eq!(
+            metric_value_with_labels(
+                &rendered,
+                "dpdk_flow_steer_fail_open_events_total",
+                &[("worker", "2"), ("event", "dispatch_failed")]
+            ),
+            1.0
+        );
+    }
+
+    #[test]
+    fn direct_rx_poll_enabled_owner_only_allows_only_worker_zero() {
+        assert!(direct_rx_poll_enabled(true, 0));
+        assert!(!direct_rx_poll_enabled(true, 1));
+        assert!(!direct_rx_poll_enabled(true, 2));
+        assert!(direct_rx_poll_enabled(false, 0));
+        assert!(direct_rx_poll_enabled(false, 1));
     }
 }

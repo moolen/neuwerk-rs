@@ -127,7 +127,9 @@ fn drain_service_lane_egress_reads_tap_rewrites_intercept_tuple_and_sends_dpdk_f
         let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
         assert_eq!(rc, 0, "pipe setup failed");
         let mut writer = unsafe { File::from_raw_fd(fds[1]) };
-        adapter.service_lane_tap = Some(unsafe { File::from_raw_fd(fds[0]) });
+        let reader = unsafe { File::from_raw_fd(fds[0]) };
+        super::service_lane::set_file_nonblocking(&reader).expect("set nonblocking");
+        adapter.service_lane_tap = Some(reader);
 
         writer
             .write_all(&egress)
@@ -145,6 +147,58 @@ fn drain_service_lane_egress_reads_tap_rewrites_intercept_tuple_and_sends_dpdk_f
         let tcp = parse_tcp(&io.sent[0], ipv4.l4_offset).expect("tcp");
         assert_eq!(ipv4.src, Ipv4Addr::new(198, 51, 100, 10));
         assert_eq!(tcp.src_port, 443);
+    });
+}
+
+#[test]
+fn shared_intercept_demux_gc_is_amortized_between_lookups() {
+    with_default_intercept_env(|| {
+        let mut demux = SharedInterceptDemuxState::default();
+        let stale_key = InterceptDemuxKey {
+            client_ip: Ipv4Addr::new(10, 0, 0, 10),
+            client_port: 40000,
+        };
+        let fresh_key = InterceptDemuxKey {
+            client_ip: Ipv4Addr::new(10, 0, 0, 11),
+            client_port: 40001,
+        };
+        demux.map.insert(
+            stale_key,
+            InterceptDemuxEntry {
+                upstream_ip: Ipv4Addr::new(198, 51, 100, 10),
+                upstream_port: 443,
+                last_seen: Instant::now()
+                    - Duration::from_secs(INTERCEPT_DEMUX_IDLE_SECS + 1),
+            },
+        );
+        demux.map.insert(
+            fresh_key,
+            InterceptDemuxEntry {
+                upstream_ip: Ipv4Addr::new(198, 51, 100, 11),
+                upstream_port: 443,
+                last_seen: Instant::now(),
+            },
+        );
+
+        demux.last_gc = Instant::now();
+        assert_eq!(
+            demux.lookup(fresh_key.client_ip, fresh_key.client_port),
+            Some((Ipv4Addr::new(198, 51, 100, 11), 443))
+        );
+        assert!(
+            demux.map.contains_key(&stale_key),
+            "stale entries should not be swept on every fast-path lookup"
+        );
+
+        demux.last_gc = Instant::now() - intercept_demux_gc_interval() - Duration::from_millis(1);
+        assert_eq!(
+            demux.lookup(fresh_key.client_ip, fresh_key.client_port),
+            Some((Ipv4Addr::new(198, 51, 100, 11), 443))
+        );
+        assert!(
+            !demux.map.contains_key(&stale_key),
+            "stale entries should still be collected after the gc interval elapses"
+        );
     });
 }
 

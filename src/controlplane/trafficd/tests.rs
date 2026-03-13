@@ -833,6 +833,82 @@ async fn tls_h2_get_paths_same_conn(
     Ok(out)
 }
 
+async fn tls_h2_get_paths_same_conn_sequential(
+    addr: std::net::SocketAddr,
+    host: &str,
+    paths: &[&str],
+) -> Result<Vec<Result<u16, String>>, String> {
+    let io_timeout = Duration::from_secs(10);
+    let connector = upstream_tls::build_insecure_tls_connector(vec![b"h2".to_vec()]);
+    let tcp = tokio::time::timeout(io_timeout, TcpStream::connect(addr))
+        .await
+        .map_err(|_| "client connect timed out".to_string())?
+        .map_err(|err| err.to_string())?;
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+        .map_err(|_| "invalid host".to_string())?;
+    let tls = tokio::time::timeout(io_timeout, connector.connect(server_name, tcp))
+        .await
+        .map_err(|_| "client tls handshake timed out".to_string())?
+        .map_err(|err| err.to_string())?;
+
+    let (mut send_request, connection) =
+        tokio::time::timeout(io_timeout, h2::client::handshake(tls))
+            .await
+            .map_err(|_| "client h2 handshake timed out".to_string())?
+            .map_err(|err| err.to_string())?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri(*path)
+            .header("host", host)
+            .body(())
+            .map_err(|err| format!("build h2 request failed: {err}"))?;
+        let (response_fut, _stream) = send_request
+            .send_request(request, true)
+            .map_err(|err| format!("h2 send request failed: {err}"))?;
+        match tokio::time::timeout(io_timeout, response_fut).await {
+            Ok(Ok(response)) => {
+                let status = response.status().as_u16();
+                let (_parts, mut response_body) = response.into_parts();
+                let mut body_err: Option<String> = None;
+                while let Some(next) = tokio::time::timeout(io_timeout, response_body.data())
+                    .await
+                    .map_err(|_| "h2 response body timed out".to_string())?
+                {
+                    match next {
+                        Ok(chunk) => {
+                            if let Err(err) =
+                                response_body.flow_control().release_capacity(chunk.len())
+                            {
+                                body_err =
+                                    Some(format!("h2 response flow-control release failed: {err}"));
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            body_err = Some(err.to_string());
+                            break;
+                        }
+                    }
+                }
+                if let Some(err) = body_err {
+                    out.push(Err(err));
+                } else {
+                    out.push(Ok(status));
+                }
+            }
+            Ok(Err(err)) => out.push(Err(err.to_string())),
+            Err(_) => out.push(Err("h2 response timed out".to_string())),
+        }
+    }
+    Ok(out)
+}
+
 fn update_peak(peak: &AtomicUsize, candidate: usize) {
     let mut prev = peak.load(Ordering::Acquire);
     while candidate > prev {
@@ -850,6 +926,22 @@ async fn spawn_intercept_runtime_with_policy(
     std::net::SocketAddr,
     tokio::task::JoinHandle<Result<(), String>>,
 ) {
+    spawn_intercept_runtime_with_policy_and_metrics(
+        snapshot,
+        upstream_addr,
+        Metrics::new().unwrap(),
+    )
+    .await
+}
+
+async fn spawn_intercept_runtime_with_policy_and_metrics(
+    snapshot: PolicySnapshot,
+    upstream_addr: std::net::SocketAddr,
+    metrics: Metrics,
+) -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<Result<(), String>>,
+) {
     let intercept_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let intercept_addr = intercept_listener.local_addr().unwrap();
     drop(intercept_listener);
@@ -862,7 +954,7 @@ async fn spawn_intercept_runtime_with_policy(
         upstream_tls_insecure: true,
         intercept_ca_cert_pem: proxy_ca_cert_pem,
         intercept_ca_key_der: proxy_ca_key_der,
-        metrics: Metrics::new().unwrap(),
+        metrics,
         policy_snapshot: policy,
         intercept_demux: Arc::new(Mutex::new(SharedInterceptDemuxState::default())),
         startup_status_tx: Some(startup_tx),
@@ -873,6 +965,43 @@ async fn spawn_intercept_runtime_with_policy(
         .expect("proxy startup dropped");
     startup.expect("proxy startup failed");
     (intercept_addr, proxy_task)
+}
+
+fn metric_value_with_labels(rendered: &str, metric: &str, labels: &[(&str, &str)]) -> f64 {
+    rendered
+        .lines()
+        .find_map(|line| {
+            if !line.starts_with(metric) {
+                return None;
+            }
+            let name = line.split_whitespace().next()?;
+            for (key, value) in labels {
+                let needle = format!(r#"{key}="{value}""#);
+                if !name.contains(&needle) {
+                    return None;
+                }
+            }
+            line.split_whitespace().last()?.parse::<f64>().ok()
+        })
+        .unwrap_or(0.0)
+}
+
+#[test]
+fn tls_intercept_runtime_records_h2_body_timeout_metric() {
+    let metrics = Metrics::new().expect("metrics");
+    record_tls_intercept_connection_error(
+        &metrics,
+        "tls intercept: h2 request body read timed out after 10s with 16384 bytes buffered",
+    );
+    let rendered = metrics.render().expect("render metrics");
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_errors_total",
+            &[("stage", "h2_request_body_read"), ("reason", "timeout")]
+        ),
+        1.0
+    );
 }
 
 #[test]
@@ -943,6 +1072,54 @@ fn request_for_upstream_h2_forwards_client_headers() {
     assert!(
         upstream.headers().get("proxy-connection").is_none(),
         "hop-by-hop proxy-connection header must be stripped"
+    );
+}
+
+#[test]
+fn parsed_request_from_h2_skips_query_and_header_maps_when_not_needed() {
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/webhooks/allowed/intercept?ref=main")
+        .header("host", "upstream.test:443")
+        .header("x-custom", "value")
+        .body(())
+        .unwrap();
+
+    let parsed = http_match::parsed_request_from_h2(&request, false, false);
+    assert_eq!(parsed.method, "POST");
+    assert_eq!(parsed.host, "upstream.test");
+    assert_eq!(parsed.path, "/webhooks/allowed/intercept");
+    assert!(parsed.query.is_empty());
+    assert!(parsed.headers.is_empty());
+}
+
+#[test]
+fn parsed_request_from_h2_includes_query_and_headers_when_requested() {
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/webhooks/allowed/intercept?ref=main")
+        .header("host", "upstream.test")
+        .header("x-custom", "value")
+        .body(())
+        .unwrap();
+
+    let parsed = http_match::parsed_request_from_h2(&request, true, true);
+    assert_eq!(parsed.path, "/webhooks/allowed/intercept");
+    assert_eq!(
+        parsed
+            .query
+            .get("ref")
+            .and_then(|values| values.first())
+            .map(|value| value.as_str()),
+        Some("main")
+    );
+    assert_eq!(
+        parsed
+            .headers
+            .get("x-custom")
+            .and_then(|values| values.first())
+            .map(|value| value.as_str()),
+        Some("value")
     );
 }
 
@@ -1168,6 +1345,299 @@ async fn tls_intercept_runtime_allows_large_h2_request_body() {
         .expect("server did not report body size")
         .expect("server channel dropped");
     assert_eq!(observed_body_len, request_body.len());
+    let _ = server_task.await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tls_intercept_runtime_streams_h2_request_body_upstream_before_completion() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    let (upstream_cert, upstream_key) = cert_der_pair("foo.allowed");
+    let (first_chunk_tx, first_chunk_rx) = oneshot::channel::<usize>();
+    let upstream_task = tokio::spawn(async move {
+        let acceptor = build_tls_acceptor(&upstream_cert, &upstream_key).unwrap();
+        let (stream, _) = upstream_listener
+            .accept()
+            .await
+            .expect("upstream accept failed");
+        let tls = acceptor
+            .accept(stream)
+            .await
+            .expect("upstream tls accept failed");
+        let mut builder = server::Builder::new();
+        builder.max_concurrent_streams(1);
+        let mut conn = tokio::time::timeout(TLS_IO_TIMEOUT, builder.handshake::<_, Bytes>(tls))
+            .await
+            .expect("upstream h2 handshake timeout")
+            .expect("upstream h2 handshake failed");
+        let (request, mut respond) = tokio::time::timeout(TLS_IO_TIMEOUT, conn.accept())
+            .await
+            .expect("upstream request accept timeout")
+            .expect("upstream connection closed")
+            .expect("upstream request accept failed");
+        let mut body = request.into_body();
+        let first_chunk = tokio::time::timeout(Duration::from_secs(5), body.data())
+            .await
+            .expect("upstream did not observe first body chunk in time")
+            .expect("upstream body closed before first chunk")
+            .expect("upstream first chunk read failed");
+        body.flow_control()
+            .release_capacity(first_chunk.len())
+            .expect("release first chunk capacity");
+        let _ = first_chunk_tx.send(first_chunk.len());
+        respond.send_reset(h2::Reason::CANCEL);
+    });
+
+    let (intercept_addr, proxy_task) = spawn_intercept_runtime_with_policy(
+        intercept_h2_passthrough_snapshot(5_001),
+        upstream_addr,
+    )
+    .await;
+
+    let connector = upstream_tls::build_insecure_tls_connector(vec![b"h2".to_vec()]);
+    let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(intercept_addr))
+        .await
+        .expect("client connect timeout")
+        .expect("client connect failed");
+    let server_name =
+        rustls::pki_types::ServerName::try_from("foo.allowed".to_string()).expect("server name");
+    let tls = tokio::time::timeout(Duration::from_secs(10), connector.connect(server_name, tcp))
+        .await
+        .expect("client tls handshake timeout")
+        .expect("client tls handshake failed");
+    let (mut send_request, connection) =
+        tokio::time::timeout(Duration::from_secs(10), h2::client::handshake(tls))
+            .await
+            .expect("client h2 handshake timeout")
+            .expect("client h2 handshake failed");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/streamed-body")
+        .header("host", "foo.allowed")
+        .body(())
+        .expect("request build failed");
+    let (_response_fut, mut send_stream) = send_request
+        .send_request(request, false)
+        .expect("send request failed");
+    send_stream
+        .send_data(Bytes::from(vec![b'x'; 16 * 1024]), false)
+        .expect("send first body chunk failed");
+
+    let first_chunk_len = tokio::time::timeout(Duration::from_secs(3), first_chunk_rx)
+        .await
+        .expect("upstream did not observe first chunk")
+        .expect("first chunk channel dropped");
+    assert_eq!(first_chunk_len, 16 * 1024);
+
+    proxy_task.abort();
+    let _ = upstream_task.await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tls_intercept_runtime_accepts_h2_early_upstream_response_before_body_completion() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    let (upstream_cert, upstream_key) = cert_der_pair("foo.allowed");
+    let (response_sent_tx, response_sent_rx) = oneshot::channel();
+    let upstream_task = tokio::spawn(async move {
+        let acceptor = build_tls_acceptor(&upstream_cert, &upstream_key).unwrap();
+        let (stream, _) = upstream_listener
+            .accept()
+            .await
+            .expect("upstream accept failed");
+        let tls = acceptor
+            .accept(stream)
+            .await
+            .expect("upstream tls accept failed");
+        let mut builder = server::Builder::new();
+        builder.max_concurrent_streams(8);
+        let mut conn = tokio::time::timeout(TLS_IO_TIMEOUT, builder.handshake::<_, Bytes>(tls))
+            .await
+            .expect("upstream h2 handshake timeout")
+            .expect("upstream h2 handshake failed");
+        let (_request, mut respond) = tokio::time::timeout(TLS_IO_TIMEOUT, conn.accept())
+            .await
+            .expect("upstream request accept timeout")
+            .expect("upstream connection closed")
+            .expect("upstream request accept failed");
+        let response = Response::builder()
+            .status(200)
+            .header("content-type", "text/plain")
+            .body(())
+            .expect("response build failed");
+        let mut send = respond
+            .send_response(response, false)
+            .expect("upstream send response failed");
+        send.send_data(Bytes::from_static(b"ok"), true)
+            .expect("upstream send body failed");
+        let _ = response_sent_tx.send(());
+        conn.graceful_shutdown();
+        let _ = tokio::time::timeout(Duration::from_millis(250), conn.accept()).await;
+    });
+
+    let metrics = Metrics::new().unwrap();
+    let (intercept_addr, proxy_task) = spawn_intercept_runtime_with_policy_and_metrics(
+        intercept_h2_passthrough_snapshot(5_002),
+        upstream_addr,
+        metrics.clone(),
+    )
+    .await;
+
+    let connector = upstream_tls::build_insecure_tls_connector(vec![b"h2".to_vec()]);
+    let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(intercept_addr))
+        .await
+        .expect("client connect timeout")
+        .expect("client connect failed");
+    let server_name =
+        rustls::pki_types::ServerName::try_from("foo.allowed".to_string()).expect("server name");
+    let tls = tokio::time::timeout(Duration::from_secs(10), connector.connect(server_name, tcp))
+        .await
+        .expect("client tls handshake timeout")
+        .expect("client tls handshake failed");
+    let (mut send_request, connection) =
+        tokio::time::timeout(Duration::from_secs(10), h2::client::handshake(tls))
+            .await
+            .expect("client h2 handshake timeout")
+            .expect("client h2 handshake failed");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/early-response")
+        .header("host", "foo.allowed")
+        .body(())
+        .expect("request build failed");
+    let (response_fut, mut send_stream) = send_request
+        .send_request(request, false)
+        .expect("send request failed");
+    send_stream
+        .send_data(Bytes::from(vec![b'x'; 16 * 1024]), false)
+        .expect("send first body chunk failed");
+    tokio::time::timeout(Duration::from_secs(3), response_sent_rx)
+        .await
+        .expect("upstream early response signal timeout")
+        .expect("upstream early response signal dropped");
+    send_stream
+        .send_data(Bytes::from(vec![b'y'; 16 * 1024]), true)
+        .expect("send second body chunk failed");
+
+    let response = tokio::time::timeout(Duration::from_secs(10), response_fut)
+        .await
+        .expect("client response timeout")
+        .expect("client response failed");
+    assert_eq!(response.status().as_u16(), 200);
+    let (_parts, mut response_body) = response.into_parts();
+    let mut response_len = 0usize;
+    while let Some(next) = tokio::time::timeout(Duration::from_secs(10), response_body.data())
+        .await
+        .expect("response body timeout")
+    {
+        let chunk = next.expect("response body read failed");
+        response_len = response_len.saturating_add(chunk.len());
+        response_body
+            .flow_control()
+            .release_capacity(chunk.len())
+            .expect("response capacity release failed");
+    }
+    assert_eq!(response_len, 2);
+
+    let rendered = metrics.render().expect("render metrics");
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_errors_total",
+            &[("stage", "upstream_body_send"), ("reason", "failure")]
+        ),
+        0.0
+    );
+
+    proxy_task.abort();
+    let _ = upstream_task.await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tls_intercept_runtime_reports_partial_h2_body_timeout_buffered_bytes() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (cert_chain, key_der) = cert_der_pair("foo.allowed");
+    let acceptor = build_tls_acceptor(&cert_chain, &key_der).unwrap();
+    let (error_tx, error_rx) = oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept failed");
+        let tls = acceptor.accept(stream).await.expect("tls accept failed");
+        let mut builder = server::Builder::new();
+        builder.max_concurrent_streams(1);
+        let mut conn = tokio::time::timeout(TLS_IO_TIMEOUT, builder.handshake::<_, Bytes>(tls))
+            .await
+            .expect("h2 handshake timeout")
+            .expect("h2 handshake failed");
+        let (request, _respond) = tokio::time::timeout(TLS_IO_TIMEOUT, conn.accept())
+            .await
+            .expect("request accept timeout")
+            .expect("connection closed before request")
+            .expect("request accept failed");
+        let err =
+            read_h2_request_body_with_timeout(request.into_body(), Duration::from_millis(100))
+                .await
+                .expect_err("partial body unexpectedly succeeded");
+        let _ = error_tx.send(err);
+    });
+
+    let connector = upstream_tls::build_insecure_tls_connector(vec![b"h2".to_vec()]);
+    let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addr))
+        .await
+        .expect("client connect timeout")
+        .expect("client connect failed");
+    let server_name =
+        rustls::pki_types::ServerName::try_from("foo.allowed".to_string()).expect("server name");
+    let tls = tokio::time::timeout(Duration::from_secs(10), connector.connect(server_name, tcp))
+        .await
+        .expect("client tls handshake timeout")
+        .expect("client tls handshake failed");
+    let (mut send_request, connection) =
+        tokio::time::timeout(Duration::from_secs(10), h2::client::handshake(tls))
+            .await
+            .expect("client h2 handshake timeout")
+            .expect("client h2 handshake failed");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/partial-timeout")
+        .header("host", "foo.allowed")
+        .body(())
+        .expect("request build failed");
+    let (_response_fut, mut send_stream) = send_request
+        .send_request(request, false)
+        .expect("send request failed");
+    send_stream
+        .send_data(Bytes::from(vec![b'x'; 16 * 1024]), false)
+        .expect("send first body chunk failed");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let err = tokio::time::timeout(Duration::from_secs(2), error_rx)
+        .await
+        .expect("server did not report timeout")
+        .expect("server channel dropped");
+    assert!(
+        err.contains("timed out after 0s") && err.contains("16384 bytes buffered"),
+        "unexpected body timeout error: {err}"
+    );
+
     let _ = server_task.await;
 }
 
@@ -1445,6 +1915,376 @@ async fn tls_intercept_runtime_h2_client_to_h2_upstream_succeeds() {
     assert_eq!(body_len, 2);
 
     proxy_task.abort();
+    let _ = upstream_task.await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tls_intercept_runtime_h2_reuses_upstream_connection_for_same_host() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    let (upstream_cert, upstream_key) = cert_der_pair("foo.allowed");
+    let accept_count = Arc::new(AtomicUsize::new(0));
+    let (upstream_shutdown_tx, mut upstream_shutdown_rx) = oneshot::channel();
+    let upstream_task = {
+        let accept_count = accept_count.clone();
+        tokio::spawn(async move {
+            let acceptor = build_tls_acceptor(&upstream_cert, &upstream_key).unwrap();
+            loop {
+                tokio::select! {
+                    _ = &mut upstream_shutdown_rx => break,
+                    accepted = upstream_listener.accept() => {
+                        let Ok((stream, _)) = accepted else {
+                            break;
+                        };
+                        accept_count.fetch_add(1, Ordering::AcqRel);
+                        let acceptor = acceptor.clone();
+                        tokio::spawn(async move {
+                            let tls = match acceptor.accept(stream).await {
+                                Ok(tls) => tls,
+                                Err(_) => return,
+                            };
+                            let mut builder = server::Builder::new();
+                            builder.max_concurrent_streams(8);
+                            let mut conn = match tokio::time::timeout(TLS_IO_TIMEOUT, builder.handshake::<_, Bytes>(tls)).await {
+                                Ok(Ok(conn)) => conn,
+                                _ => return,
+                            };
+                            for _ in 0..2 {
+                                let next = match tokio::time::timeout(TLS_IO_TIMEOUT, conn.accept()).await {
+                                    Ok(next) => next,
+                                    Err(_) => return,
+                                };
+                                let Some(Ok((_request, mut respond))) = next else {
+                                    return;
+                                };
+                                let response = Response::builder()
+                                    .status(200)
+                                    .header("content-type", "text/plain")
+                                    .body(())
+                                    .expect("response build failed");
+                                if let Ok(mut send) = respond.send_response(response, false) {
+                                    let _ = send.send_data(Bytes::from_static(b"ok"), true);
+                                }
+                            }
+                            conn.graceful_shutdown();
+                            let _ = tokio::time::timeout(Duration::from_millis(100), conn.accept()).await;
+                        });
+                    }
+                }
+            }
+        })
+    };
+
+    let metrics = Metrics::new().unwrap();
+    let (intercept_addr, proxy_task) = spawn_intercept_runtime_with_policy_and_metrics(
+        intercept_h2_passthrough_snapshot(16),
+        upstream_addr,
+        metrics.clone(),
+    )
+    .await;
+    let results = tls_h2_get_paths_same_conn_sequential(
+        intercept_addr,
+        "foo.allowed",
+        &["/first", "/second"],
+    )
+    .await
+    .expect("same-connection h2 requests failed");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].as_ref().ok().copied(), Some(200));
+    assert_eq!(results[1].as_ref().ok().copied(), Some(200));
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        accept_count.load(Ordering::Acquire),
+        1,
+        "expected a single upstream TCP connection for repeated same-host h2 requests"
+    );
+
+    let rendered = metrics.render().expect("render metrics");
+    assert!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_upstream_h2_pool_total",
+            &[("result", "miss")]
+        ) >= 1.0
+    );
+    assert!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_upstream_h2_pool_total",
+            &[("result", "hit")]
+        ) >= 1.0
+    );
+    assert!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_phase_seconds_count",
+            &[("phase", "upstream_h2_handshake")]
+        ) >= 1.0
+    );
+
+    proxy_task.abort();
+    let _ = upstream_shutdown_tx.send(());
+    let _ = upstream_task.await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tls_intercept_runtime_h2_reuses_upstream_connection_across_client_connections() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    let (upstream_cert, upstream_key) = cert_der_pair("foo.allowed");
+    let accept_count = Arc::new(AtomicUsize::new(0));
+    let (upstream_shutdown_tx, mut upstream_shutdown_rx) = oneshot::channel();
+    let upstream_task = {
+        let accept_count = accept_count.clone();
+        tokio::spawn(async move {
+            let acceptor = build_tls_acceptor(&upstream_cert, &upstream_key).unwrap();
+            loop {
+                tokio::select! {
+                    _ = &mut upstream_shutdown_rx => break,
+                    accepted = upstream_listener.accept() => {
+                        let Ok((stream, _)) = accepted else {
+                            break;
+                        };
+                        accept_count.fetch_add(1, Ordering::AcqRel);
+                        let acceptor = acceptor.clone();
+                        tokio::spawn(async move {
+                            let tls = match acceptor.accept(stream).await {
+                                Ok(tls) => tls,
+                                Err(_) => return,
+                            };
+                            let mut builder = server::Builder::new();
+                            builder.max_concurrent_streams(8);
+                            let mut conn = match tokio::time::timeout(TLS_IO_TIMEOUT, builder.handshake::<_, Bytes>(tls)).await {
+                                Ok(Ok(conn)) => conn,
+                                _ => return,
+                            };
+                            for _ in 0..2 {
+                                let next = match tokio::time::timeout(TLS_IO_TIMEOUT, conn.accept()).await {
+                                    Ok(next) => next,
+                                    Err(_) => return,
+                                };
+                                let Some(Ok((_request, mut respond))) = next else {
+                                    return;
+                                };
+                                let response = Response::builder()
+                                    .status(200)
+                                    .header("content-type", "text/plain")
+                                    .body(())
+                                    .expect("response build failed");
+                                if let Ok(mut send) = respond.send_response(response, false) {
+                                    let _ = send.send_data(Bytes::from_static(b"ok"), true);
+                                }
+                            }
+                            conn.graceful_shutdown();
+                            let _ = tokio::time::timeout(Duration::from_millis(100), conn.accept()).await;
+                        });
+                    }
+                }
+            }
+        })
+    };
+
+    let metrics = Metrics::new().unwrap();
+    let (intercept_addr, proxy_task) = spawn_intercept_runtime_with_policy_and_metrics(
+        intercept_h2_passthrough_snapshot(17),
+        upstream_addr,
+        metrics.clone(),
+    )
+    .await;
+
+    let (status_a, body_len_a, _) =
+        tls_h2_request_with_headers(intercept_addr, "foo.allowed", "GET", "/first", &[])
+            .await
+            .expect("first h2 request failed");
+    let (status_b, body_len_b, _) =
+        tls_h2_request_with_headers(intercept_addr, "foo.allowed", "GET", "/second", &[])
+            .await
+            .expect("second h2 request failed");
+    assert_eq!(status_a, 200);
+    assert_eq!(body_len_a, 2);
+    assert_eq!(status_b, 200);
+    assert_eq!(body_len_b, 2);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        accept_count.load(Ordering::Acquire),
+        1,
+        "expected a single upstream TCP connection across separate client h2 connections"
+    );
+
+    let rendered = metrics.render().expect("render metrics");
+    assert!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_upstream_h2_pool_total",
+            &[("result", "miss")]
+        ) >= 1.0
+    );
+    assert!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_upstream_h2_pool_total",
+            &[("result", "hit")]
+        ) >= 1.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_phase_seconds_count",
+            &[("phase", "upstream_h2_handshake")]
+        ),
+        1.0
+    );
+
+    proxy_task.abort();
+    let _ = upstream_shutdown_tx.send(());
+    let _ = upstream_task.await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tls_intercept_runtime_h2_reuses_busy_upstream_connection_across_client_connections() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    let (upstream_cert, upstream_key) = cert_der_pair("foo.allowed");
+    let accept_count = Arc::new(AtomicUsize::new(0));
+    let (first_request_seen_tx, first_request_seen_rx) = oneshot::channel();
+    let first_request_seen_tx = Arc::new(std::sync::Mutex::new(Some(first_request_seen_tx)));
+    let (upstream_shutdown_tx, mut upstream_shutdown_rx) = oneshot::channel();
+    let upstream_task = {
+        let accept_count = accept_count.clone();
+        let first_request_seen_tx = first_request_seen_tx.clone();
+        tokio::spawn(async move {
+            let acceptor = build_tls_acceptor(&upstream_cert, &upstream_key).unwrap();
+            loop {
+                tokio::select! {
+                    _ = &mut upstream_shutdown_rx => break,
+                    accepted = upstream_listener.accept() => {
+                        let Ok((stream, _)) = accepted else {
+                            break;
+                        };
+                        let connection_index = accept_count.fetch_add(1, Ordering::AcqRel);
+                        let acceptor = acceptor.clone();
+                        let first_request_seen_tx = first_request_seen_tx.clone();
+                        tokio::spawn(async move {
+                            let tls = match acceptor.accept(stream).await {
+                                Ok(tls) => tls,
+                                Err(_) => return,
+                            };
+                            let mut builder = server::Builder::new();
+                            builder.max_concurrent_streams(8);
+                            let mut conn = match tokio::time::timeout(TLS_IO_TIMEOUT, builder.handshake::<_, Bytes>(tls)).await {
+                                Ok(Ok(conn)) => conn,
+                                _ => return,
+                            };
+                            let response = || {
+                                Response::builder()
+                                    .status(200)
+                                    .header("content-type", "text/plain")
+                                    .body(())
+                                    .expect("response build failed")
+                            };
+
+                            let Some(Ok((_request, mut first_respond))) = (match tokio::time::timeout(TLS_IO_TIMEOUT, conn.accept()).await {
+                                Ok(next) => next,
+                                Err(_) => return,
+                            }) else {
+                                return;
+                            };
+
+                            if connection_index == 0 {
+                                if let Some(tx) = first_request_seen_tx.lock().unwrap().take() {
+                                    let _ = tx.send(());
+                                }
+                                let second_on_same_conn =
+                                    match tokio::time::timeout(Duration::from_millis(500), conn.accept()).await {
+                                        Ok(Some(Ok((_request, respond)))) => Some(respond),
+                                        _ => None,
+                                    };
+                                if let Some(mut second_respond) = second_on_same_conn {
+                                    if let Ok(mut send) = second_respond.send_response(response(), false) {
+                                        let _ = send.send_data(Bytes::from_static(b"ok"), true);
+                                    }
+                                }
+                            }
+
+                            if let Ok(mut send) = first_respond.send_response(response(), false) {
+                                let _ = send.send_data(Bytes::from_static(b"ok"), true);
+                            }
+                            conn.graceful_shutdown();
+                            let _ = tokio::time::timeout(Duration::from_millis(100), conn.accept()).await;
+                        });
+                    }
+                }
+            }
+        })
+    };
+
+    let metrics = Metrics::new().unwrap();
+    let (intercept_addr, proxy_task) = spawn_intercept_runtime_with_policy_and_metrics(
+        intercept_h2_passthrough_snapshot(18),
+        upstream_addr,
+        metrics.clone(),
+    )
+    .await;
+
+    let first = tokio::spawn(async move {
+        tls_h2_request_with_headers(intercept_addr, "foo.allowed", "GET", "/first", &[]).await
+    });
+    tokio::time::timeout(Duration::from_secs(2), first_request_seen_rx)
+        .await
+        .expect("first request signal timeout")
+        .expect("first request signal dropped");
+    let second =
+        tls_h2_request_with_headers(intercept_addr, "foo.allowed", "GET", "/second", &[]).await;
+    let first = first.await.expect("first request task join failed");
+    let (status_a, body_len_a, _) = first.expect("first request failed");
+    let (status_b, body_len_b, _) = second.expect("second request failed");
+    assert_eq!(status_a, 200);
+    assert_eq!(body_len_a, 2);
+    assert_eq!(status_b, 200);
+    assert_eq!(body_len_b, 2);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        accept_count.load(Ordering::Acquire),
+        1,
+        "expected a single upstream TCP connection while multiple upstream h2 streams were in flight"
+    );
+
+    let rendered = metrics.render().expect("render metrics");
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_upstream_h2_pool_total",
+            &[("result", "miss")]
+        ),
+        1.0
+    );
+    assert!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_upstream_h2_pool_total",
+            &[("result", "hit")]
+        ) >= 1.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_phase_seconds_count",
+            &[("phase", "upstream_h2_handshake")]
+        ),
+        1.0
+    );
+
+    proxy_task.abort();
+    let _ = upstream_shutdown_tx.send(());
     let _ = upstream_task.await;
 }
 

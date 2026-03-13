@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
 use axum::http::{Request, Response};
-use h2::RecvStream;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::dataplane::policy::{
@@ -41,32 +40,70 @@ fn parse_h2_headers(headers: &axum::http::HeaderMap) -> BTreeMap<String, Vec<Str
     out
 }
 
-pub(super) fn parsed_request_from_h2(req: &Request<RecvStream>) -> ParsedHttpRequest {
+fn host_from_h2_uri_or_header(uri: &axum::http::Uri, headers: &axum::http::HeaderMap) -> String {
+    uri.authority()
+        .map(|value| value.host().to_ascii_lowercase())
+        .or_else(|| {
+            headers.get(axum::http::header::HOST).map(|value| {
+                let host = value
+                    .to_str()
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|_| String::from_utf8_lossy(value.as_bytes()).to_string());
+                host.split(':')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase()
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn parse_request_path_only(target: &str) -> String {
+    let path_and_query = if target.starts_with('/') {
+        target
+    } else if let Some(scheme_pos) = target.find("://") {
+        let rest = &target[scheme_pos + 3..];
+        if let Some(slash) = rest.find('/') {
+            &rest[slash..]
+        } else {
+            "/"
+        }
+    } else {
+        target
+    };
+    let path = path_and_query
+        .split_once('?')
+        .map(|(path, _)| path)
+        .unwrap_or(path_and_query);
+    if path.is_empty() {
+        "/".to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+pub(super) fn parsed_request_from_h2<B>(
+    req: &Request<B>,
+    include_query: bool,
+    include_headers: bool,
+) -> ParsedHttpRequest {
     let target = req
         .uri()
         .path_and_query()
-        .map(|value| value.as_str().to_string())
-        .unwrap_or_else(|| "/".to_string());
-    let headers = parse_h2_headers(req.headers());
-    let host = req
-        .uri()
-        .authority()
-        .map(|value| value.host().to_ascii_lowercase())
-        .or_else(|| {
-            headers
-                .get("host")
-                .and_then(|values| values.first())
-                .map(|value| {
-                    value
-                        .split(':')
-                        .next()
-                        .unwrap_or("")
-                        .trim()
-                        .to_ascii_lowercase()
-                })
-        })
-        .unwrap_or_default();
-    let (path, query) = parse_request_target(&target);
+        .map(|value| value.as_str())
+        .unwrap_or("/");
+    let headers = if include_headers {
+        parse_h2_headers(req.headers())
+    } else {
+        BTreeMap::new()
+    };
+    let host = host_from_h2_uri_or_header(req.uri(), req.headers());
+    let (path, query) = if include_query {
+        parse_request_target(target)
+    } else {
+        (parse_request_path_only(target), BTreeMap::new())
+    };
     ParsedHttpRequest {
         method: req.method().as_str().to_ascii_uppercase(),
         host,
@@ -77,9 +114,16 @@ pub(super) fn parsed_request_from_h2(req: &Request<RecvStream>) -> ParsedHttpReq
     }
 }
 
-pub(super) fn parsed_response_from_h2(response: &Response<()>) -> ParsedHttpResponse {
+pub(super) fn parsed_response_from_h2(
+    response: &Response<()>,
+    include_headers: bool,
+) -> ParsedHttpResponse {
     ParsedHttpResponse {
-        headers: parse_h2_headers(response.headers()),
+        headers: if include_headers {
+            parse_h2_headers(response.headers())
+        } else {
+            BTreeMap::new()
+        },
         raw: Vec::new(),
     }
 }

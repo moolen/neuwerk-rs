@@ -82,6 +82,36 @@ impl Metrics {
         self.svc_fail_closed.with_label_values(&[component]).inc();
     }
 
+    pub fn inc_svc_tls_intercept_error(&self, stage: &str, reason: &str) {
+        self.svc_tls_intercept_errors
+            .with_label_values(&[stage, reason])
+            .inc();
+    }
+
+    pub fn observe_svc_tls_intercept_phase(&self, phase: &str, duration: Duration) {
+        self.svc_tls_intercept_phase
+            .with_label_values(&[phase])
+            .observe(duration.as_secs_f64());
+    }
+
+    pub fn inc_svc_tls_intercept_inflight(&self, kind: &str) {
+        self.svc_tls_intercept_inflight
+            .with_label_values(&[kind])
+            .inc();
+    }
+
+    pub fn dec_svc_tls_intercept_inflight(&self, kind: &str) {
+        self.svc_tls_intercept_inflight
+            .with_label_values(&[kind])
+            .dec();
+    }
+
+    pub fn inc_svc_tls_intercept_upstream_h2_pool(&self, result: &str) {
+        self.svc_tls_intercept_upstream_h2_pool
+            .with_label_values(&[result])
+            .inc();
+    }
+
     pub fn set_raft_is_leader(&self, is_leader: bool) {
         self.raft_is_leader.set(if is_leader { 1.0 } else { 0.0 });
     }
@@ -245,6 +275,15 @@ impl Metrics {
         self.dp_state_lock_contended.inc();
     }
 
+    pub fn observe_dpdk_shared_io_lock_wait(&self, wait: Duration) {
+        self.dpdk_shared_io_lock_wait_seconds
+            .observe(wait.as_secs_f64());
+    }
+
+    pub fn inc_dpdk_shared_io_lock_contended(&self) {
+        self.dpdk_shared_io_lock_contended.inc();
+    }
+
     pub fn inc_dp_tls_decision(&self, outcome: &str) {
         self.dp_tls_decisions.with_label_values(&[outcome]).inc();
     }
@@ -364,6 +403,68 @@ impl Metrics {
         self.dpdk_tx_dropped_by_queue
             .with_label_values(&[queue])
             .inc_by(count as f64);
+    }
+
+    pub fn inc_dpdk_flow_steer_dispatch(&self, from_worker: usize, to_worker: usize) {
+        let from_worker = from_worker.to_string();
+        let to_worker = to_worker.to_string();
+        self.dpdk_flow_steer_dispatch_packets
+            .with_label_values(&[&from_worker, &to_worker])
+            .inc();
+    }
+
+    pub fn add_dpdk_flow_steer_bytes(&self, from_worker: usize, to_worker: usize, bytes: usize) {
+        let from_worker = from_worker.to_string();
+        let to_worker = to_worker.to_string();
+        self.dpdk_flow_steer_dispatch_bytes
+            .with_label_values(&[&from_worker, &to_worker])
+            .inc_by(bytes as f64);
+    }
+
+    pub fn inc_dpdk_flow_steer_fail_open_event(&self, worker: usize, event: &str) {
+        let worker = worker.to_string();
+        self.dpdk_flow_steer_fail_open_events
+            .with_label_values(&[&worker, event])
+            .inc();
+    }
+
+    pub fn observe_dpdk_flow_steer_queue_wait(&self, to_worker: usize, wait: Duration) {
+        let to_worker = to_worker.to_string();
+        self.dpdk_flow_steer_queue_wait_seconds
+            .with_label_values(&[&to_worker])
+            .observe(wait.as_secs_f64());
+    }
+
+    pub fn set_dpdk_flow_steer_queue_depth(&self, to_worker: usize, depth: usize) {
+        let to_worker = to_worker.to_string();
+        self.dpdk_flow_steer_queue_depth
+            .with_label_values(&[&to_worker])
+            .set(depth as f64);
+    }
+
+    pub fn inc_dpdk_service_lane_forward(&self, from_worker: usize) {
+        let from_worker = from_worker.to_string();
+        self.dpdk_service_lane_forward_packets
+            .with_label_values(&[&from_worker])
+            .inc();
+    }
+
+    pub fn add_dpdk_service_lane_forward_bytes(&self, from_worker: usize, bytes: usize) {
+        let from_worker = from_worker.to_string();
+        self.dpdk_service_lane_forward_bytes
+            .with_label_values(&[&from_worker])
+            .inc_by(bytes as f64);
+    }
+
+    pub fn observe_dpdk_service_lane_forward_queue_wait(&self, from_worker: usize, wait: Duration) {
+        let from_worker = from_worker.to_string();
+        self.dpdk_service_lane_forward_queue_wait_seconds
+            .with_label_values(&[&from_worker])
+            .observe(wait.as_secs_f64());
+    }
+
+    pub fn set_dpdk_service_lane_forward_queue_depth(&self, depth: usize) {
+        self.dpdk_service_lane_forward_queue_depth.set(depth as f64);
     }
 
     pub fn inc_dpdk_health_probe(&self, event: &str) {

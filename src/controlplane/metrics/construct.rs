@@ -112,6 +112,38 @@ impl Metrics {
             &["component"],
         )
         .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_errors = CounterVec::new(
+            Opts::new(
+                "svc_tls_intercept_errors_total",
+                "Service-plane TLS intercept errors by stage and reason",
+            ),
+            &["stage", "reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_phase = HistogramVec::new(
+            HistogramOpts::new(
+                "svc_tls_intercept_phase_seconds",
+                "Service-plane TLS intercept phase latency seconds",
+            ),
+            &["phase"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_inflight = GaugeVec::new(
+            Opts::new(
+                "svc_tls_intercept_inflight",
+                "Service-plane TLS intercept in-flight work",
+            ),
+            &["kind"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_upstream_h2_pool = CounterVec::new(
+            Opts::new(
+                "svc_tls_intercept_upstream_h2_pool_total",
+                "Service-plane TLS intercept upstream HTTP/2 pool events",
+            ),
+            &["result"],
+        )
+        .map_err(|err| err.to_string())?;
         let raft_is_leader = Gauge::with_opts(Opts::new("raft_is_leader", "Raft leader status"))
             .map_err(|err| err.to_string())?;
         let raft_leader_changes = Counter::with_opts(Opts::new(
@@ -247,6 +279,16 @@ impl Metrics {
             "Dataplane state lock contention events",
         ))
         .map_err(|err| err.to_string())?;
+        let dpdk_shared_io_lock_wait_seconds = Histogram::with_opts(HistogramOpts::new(
+            "dpdk_shared_io_lock_wait_seconds",
+            "DPDK shared IO lock wait time (seconds)",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_shared_io_lock_contended = Counter::with_opts(Opts::new(
+            "dpdk_shared_io_lock_contended_total",
+            "DPDK shared IO lock contention events",
+        ))
+        .map_err(|err| err.to_string())?;
         let dp_tls_decisions = CounterVec::new(
             Opts::new("dp_tls_decisions_total", "Dataplane TLS flow decisions"),
             &["outcome"],
@@ -348,6 +390,75 @@ impl Metrics {
             ),
             &["queue"],
         )
+        .map_err(|err| err.to_string())?;
+        let dpdk_flow_steer_dispatch_packets = CounterVec::new(
+            Opts::new(
+                "dpdk_flow_steer_dispatch_packets_total",
+                "DPDK packets dispatched through shared RX software demux",
+            ),
+            &["from_worker", "to_worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_flow_steer_dispatch_bytes = CounterVec::new(
+            Opts::new(
+                "dpdk_flow_steer_dispatch_bytes_total",
+                "DPDK bytes dispatched through shared RX software demux",
+            ),
+            &["from_worker", "to_worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_flow_steer_fail_open_events = CounterVec::new(
+            Opts::new(
+                "dpdk_flow_steer_fail_open_events_total",
+                "DPDK shared RX software demux fail-open events by worker and reason",
+            ),
+            &["worker", "event"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_flow_steer_queue_wait_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "dpdk_flow_steer_queue_wait_seconds",
+                "DPDK shared RX software demux queue wait time (seconds)",
+            ),
+            &["to_worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_flow_steer_queue_depth = GaugeVec::new(
+            Opts::new(
+                "dpdk_flow_steer_queue_depth",
+                "DPDK shared RX software demux queue depth by target worker",
+            ),
+            &["to_worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_service_lane_forward_packets = CounterVec::new(
+            Opts::new(
+                "dpdk_service_lane_forward_packets_total",
+                "DPDK service-lane host frames forwarded to the owner worker",
+            ),
+            &["from_worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_service_lane_forward_bytes = CounterVec::new(
+            Opts::new(
+                "dpdk_service_lane_forward_bytes_total",
+                "DPDK service-lane host-frame bytes forwarded to the owner worker",
+            ),
+            &["from_worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_service_lane_forward_queue_wait_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "dpdk_service_lane_forward_queue_wait_seconds",
+                "DPDK service-lane forward queue wait time (seconds)",
+            ),
+            &["from_worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_service_lane_forward_queue_depth = Gauge::with_opts(Opts::new(
+            "dpdk_service_lane_forward_queue_depth",
+            "DPDK service-lane forward queue depth",
+        ))
         .map_err(|err| err.to_string())?;
         let dpdk_health_probe_packets = CounterVec::new(
             Opts::new(
@@ -476,6 +587,18 @@ impl Metrics {
             .register(Box::new(svc_fail_closed.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(svc_tls_intercept_errors.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_tls_intercept_phase.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_tls_intercept_inflight.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_tls_intercept_upstream_h2_pool.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(raft_is_leader.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -554,6 +677,12 @@ impl Metrics {
             .register(Box::new(dp_state_lock_contended.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dpdk_shared_io_lock_wait_seconds.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_shared_io_lock_contended.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dp_tls_decisions.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -621,6 +750,35 @@ impl Metrics {
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dpdk_tx_dropped_by_queue.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_flow_steer_dispatch_packets.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_flow_steer_dispatch_bytes.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_flow_steer_fail_open_events.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_flow_steer_queue_wait_seconds.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_flow_steer_queue_depth.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_service_lane_forward_packets.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_service_lane_forward_bytes.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(
+                dpdk_service_lane_forward_queue_wait_seconds.clone(),
+            ))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_service_lane_forward_queue_depth.clone()))
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dpdk_health_probe_packets.clone()))
@@ -713,6 +871,18 @@ impl Metrics {
             .inc_by(0.0);
         svc_policy_rst.with_label_values(&["policy"]).inc_by(0.0);
         svc_fail_closed.with_label_values(&["tls"]).inc_by(0.0);
+        svc_tls_intercept_errors
+            .with_label_values(&["other", "failure"])
+            .inc_by(0.0);
+        svc_tls_intercept_phase
+            .with_label_values(&["client_tls_accept"])
+            .observe(0.0);
+        svc_tls_intercept_inflight
+            .with_label_values(&["connections"])
+            .set(0.0);
+        svc_tls_intercept_upstream_h2_pool
+            .with_label_values(&["hit"])
+            .inc_by(0.0);
         dp_packets
             .with_label_values(&["outbound", "other", "deny", "default"])
             .inc_by(0.0);
@@ -775,6 +945,8 @@ impl Metrics {
         dp_nat_port_utilization_ratio.set(0.0);
         dp_state_lock_wait_seconds.observe(0.0);
         dp_state_lock_contended.inc_by(0.0);
+        dpdk_shared_io_lock_wait_seconds.observe(0.0);
+        dpdk_shared_io_lock_contended.inc_by(0.0);
         dpdk_init_ok.set(0.0);
         dpdk_init_failures.inc_by(0.0);
         dpdk_rx_packets.inc_by(0.0);
@@ -797,6 +969,31 @@ impl Metrics {
         dpdk_tx_dropped_by_queue
             .with_label_values(&["0"])
             .inc_by(0.0);
+        dpdk_flow_steer_dispatch_packets
+            .with_label_values(&["0", "0"])
+            .inc_by(0.0);
+        dpdk_flow_steer_dispatch_bytes
+            .with_label_values(&["0", "0"])
+            .inc_by(0.0);
+        dpdk_flow_steer_fail_open_events
+            .with_label_values(&["0", "dispatch_failed"])
+            .inc_by(0.0);
+        dpdk_flow_steer_queue_wait_seconds
+            .with_label_values(&["0"])
+            .observe(0.0);
+        dpdk_flow_steer_queue_depth
+            .with_label_values(&["0"])
+            .set(0.0);
+        dpdk_service_lane_forward_packets
+            .with_label_values(&["1"])
+            .inc_by(0.0);
+        dpdk_service_lane_forward_bytes
+            .with_label_values(&["1"])
+            .inc_by(0.0);
+        dpdk_service_lane_forward_queue_wait_seconds
+            .with_label_values(&["1"])
+            .observe(0.0);
+        dpdk_service_lane_forward_queue_depth.set(0.0);
         for event in [
             "syn_seen",
             "synack_sent",
@@ -855,6 +1052,10 @@ impl Metrics {
             svc_http_denies,
             svc_policy_rst,
             svc_fail_closed,
+            svc_tls_intercept_errors,
+            svc_tls_intercept_phase,
+            svc_tls_intercept_inflight,
+            svc_tls_intercept_upstream_h2_pool,
             raft_is_leader,
             raft_leader_changes,
             raft_current_term,
@@ -885,6 +1086,8 @@ impl Metrics {
             dp_nat_port_utilization_ratio,
             dp_state_lock_wait_seconds,
             dp_state_lock_contended,
+            dpdk_shared_io_lock_wait_seconds,
+            dpdk_shared_io_lock_contended,
             dp_tls_decisions,
             dp_icmp_decisions,
             dp_ipv4_fragments_dropped,
@@ -908,6 +1111,15 @@ impl Metrics {
             dpdk_tx_packets_by_queue,
             dpdk_tx_bytes_by_queue,
             dpdk_tx_dropped_by_queue,
+            dpdk_flow_steer_dispatch_packets,
+            dpdk_flow_steer_dispatch_bytes,
+            dpdk_flow_steer_fail_open_events,
+            dpdk_flow_steer_queue_wait_seconds,
+            dpdk_flow_steer_queue_depth,
+            dpdk_service_lane_forward_packets,
+            dpdk_service_lane_forward_bytes,
+            dpdk_service_lane_forward_queue_wait_seconds,
+            dpdk_service_lane_forward_queue_depth,
             dpdk_health_probe_packets,
             dpdk_xstats,
             dhcp_lease_active,

@@ -55,7 +55,9 @@ pub(super) fn open_tap(name: &str) -> Result<File, String> {
         }
         return Err(format!("dpdk: TUNSETIFF {name} failed: {err}"));
     }
-    Ok(unsafe { File::from_raw_fd(fd) })
+    let file = unsafe { File::from_raw_fd(fd) };
+    set_file_nonblocking(&file)?;
+    Ok(file)
 }
 
 pub(super) fn read_interface_mac(iface: &str) -> Result<[u8; 6], String> {
@@ -81,31 +83,26 @@ pub(super) fn parse_mac_addr(value: &str) -> Result<[u8; 6], String> {
     Ok(bytes)
 }
 
-pub(super) fn service_lane_tap_readable(tap: &File) -> Result<bool, String> {
-    let fd = tap.as_raw_fd();
-    let mut pfd = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let rc = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, 0) };
-    if rc < 0 {
-        let err = std::io::Error::last_os_error();
-        if err.kind() == std::io::ErrorKind::Interrupted {
-            return Ok(false);
-        }
-        return Err(format!("dpdk: service lane poll failed: {}", err));
-    }
-    if rc == 0 {
-        return Ok(false);
-    }
-    if pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+pub(super) fn set_file_nonblocking(file: &File) -> Result<(), String> {
+    let fd = file.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
         return Err(format!(
-            "dpdk: service lane poll error revents=0x{:x}",
-            pfd.revents
+            "dpdk: get nonblocking flags failed: {}",
+            std::io::Error::last_os_error()
         ));
     }
-    Ok(pfd.revents & libc::POLLIN != 0)
+    if flags & libc::O_NONBLOCK != 0 {
+        return Ok(());
+    }
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if rc < 0 {
+        return Err(format!(
+            "dpdk: set nonblocking failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn select_mac(fallback: [u8; 6], candidate: Option<[u8; 6]>) -> [u8; 6] {

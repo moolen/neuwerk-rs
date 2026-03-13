@@ -45,6 +45,25 @@ fn required_runtime_args() -> Vec<String> {
     args
 }
 
+fn metric_value_with_labels(rendered: &str, metric: &str, labels: &[(&str, &str)]) -> f64 {
+    rendered
+        .lines()
+        .find_map(|line| {
+            if !line.starts_with(metric) {
+                return None;
+            }
+            let name = line.split_whitespace().next()?;
+            for (key, value) in labels {
+                let needle = format!(r#"{key}="{value}""#);
+                if !name.contains(&needle) {
+                    return None;
+                }
+            }
+            line.split_whitespace().last()?.parse::<f64>().ok()
+        })
+        .unwrap_or(0.0)
+}
+
 #[test]
 fn parse_args_accepts_repeated_dns_flags() {
     let mut args = base_args();
@@ -187,6 +206,32 @@ fn choose_dpdk_worker_plan_rejects_zero_effective_queues() {
 }
 
 #[test]
+fn parse_truthy_flag_accepts_common_values() {
+    for raw in ["1", "true", "TRUE", " yes ", "On"] {
+        assert!(parse_truthy_flag(raw), "expected truthy parse for '{raw}'");
+    }
+    for raw in ["", "0", "false", "no", "off", "random"] {
+        assert!(!parse_truthy_flag(raw), "expected falsey parse for '{raw}'");
+    }
+}
+
+#[test]
+fn service_lane_stays_enabled_in_aggressive_mode_unless_overridden() {
+    assert!(service_lane_enabled_with_override(
+        DpdkPerfMode::Aggressive,
+        false
+    ));
+    assert!(service_lane_enabled_with_override(
+        DpdkPerfMode::Standard,
+        false
+    ));
+    assert!(!service_lane_enabled_with_override(
+        DpdkPerfMode::Aggressive,
+        true
+    ));
+}
+
+#[test]
 fn shared_demux_owner_pins_https_to_worker_zero() {
     let pkt = build_test_tcp_packet(40000, 443);
     let owner = shared_demux_owner_for_packet(&pkt, 4, 2);
@@ -198,6 +243,25 @@ fn shared_demux_owner_hashes_non_https_flows() {
     let pkt = build_test_tcp_packet(40000, 5201);
     let owner = shared_demux_owner_for_packet(&pkt, 4, 2);
     assert!(owner < 2);
+}
+
+#[test]
+fn shared_demux_owner_https_pin_can_be_disabled() {
+    let mut saw_non_zero_owner = false;
+    for src_port in 40000..40128 {
+        let pkt = build_test_tcp_packet(src_port, 443);
+        let pinned_owner = shared_demux_owner_for_packet_with_policy(&pkt, 4, 4, true);
+        let unpinned_owner = shared_demux_owner_for_packet_with_policy(&pkt, 4, 4, false);
+        assert_eq!(pinned_owner, 0);
+        if unpinned_owner != 0 {
+            saw_non_zero_owner = true;
+            break;
+        }
+    }
+    assert!(
+        saw_non_zero_owner,
+        "expected unpinned HTTPS flows to hash beyond worker 0"
+    );
 }
 
 #[test]
@@ -220,6 +284,100 @@ fn flow_steer_payload_copies_borrowed_packet() {
     assert_eq!(steered, backing);
     assert_ne!(steered.as_ptr(), backing.as_ptr());
     assert!(pkt.is_borrowed());
+}
+
+#[test]
+fn dpdk_shared_demux_observability_metrics_render() {
+    let metrics = controlplane::metrics::Metrics::new().expect("metrics");
+    metrics.inc_dpdk_shared_io_lock_contended();
+    metrics.observe_dpdk_shared_io_lock_wait(std::time::Duration::from_micros(50));
+    metrics.inc_dpdk_flow_steer_dispatch(1, 3);
+    metrics.add_dpdk_flow_steer_bytes(1, 3, 1500);
+    metrics.observe_dpdk_flow_steer_queue_wait(3, std::time::Duration::from_micros(75));
+    metrics.set_dpdk_flow_steer_queue_depth(3, 7);
+    metrics.inc_dpdk_flow_steer_fail_open_event(1, "dispatch_failed");
+    metrics.inc_dpdk_service_lane_forward(2);
+    metrics.add_dpdk_service_lane_forward_bytes(2, 512);
+    metrics.observe_dpdk_service_lane_forward_queue_wait(2, std::time::Duration::from_micros(80));
+    metrics.set_dpdk_service_lane_forward_queue_depth(5);
+
+    let rendered = metrics.render().expect("render metrics");
+    assert_eq!(
+        metric_value_with_labels(&rendered, "dpdk_shared_io_lock_contended_total", &[]),
+        1.0
+    );
+    assert_eq!(
+        metric_value_with_labels(&rendered, "dpdk_shared_io_lock_wait_seconds_count", &[]),
+        2.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "dpdk_flow_steer_dispatch_packets_total",
+            &[("from_worker", "1"), ("to_worker", "3")]
+        ),
+        1.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "dpdk_flow_steer_dispatch_bytes_total",
+            &[("from_worker", "1"), ("to_worker", "3")]
+        ),
+        1500.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "dpdk_flow_steer_queue_wait_seconds_count",
+            &[("to_worker", "3")]
+        ),
+        1.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "dpdk_flow_steer_queue_depth",
+            &[("to_worker", "3")]
+        ),
+        7.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "dpdk_flow_steer_fail_open_events_total",
+            &[("worker", "1"), ("event", "dispatch_failed")]
+        ),
+        1.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "dpdk_service_lane_forward_packets_total",
+            &[("from_worker", "2")]
+        ),
+        1.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "dpdk_service_lane_forward_bytes_total",
+            &[("from_worker", "2")]
+        ),
+        512.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "dpdk_service_lane_forward_queue_wait_seconds_count",
+            &[("from_worker", "2")]
+        ),
+        1.0
+    );
+    assert_eq!(
+        metric_value_with_labels(&rendered, "dpdk_service_lane_forward_queue_depth", &[]),
+        5.0
+    );
 }
 
 #[test]

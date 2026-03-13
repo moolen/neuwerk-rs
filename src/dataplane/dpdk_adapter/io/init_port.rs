@@ -77,7 +77,7 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
             let socket_id_u32 = socket_id as u32;
             let pool_name = CString::new("mbuf_pool")
                 .map_err(|_| "dpdk: invalid mempool name".to_string())?;
-            let mempool = create_mempool(&pool_name, socket_id)?;
+            let mempool = create_mempool(&pool_name, socket_id, queue_count)?;
 
             let mut rss_hf = 0u64;
             let mut use_rss_mq = queue_count > 1;

@@ -25,6 +25,7 @@ const RX_RING_SIZE: u16 = 1024;
 const TX_RING_SIZE: u16 = 1024;
 const MBUF_CACHE_SIZE: u32 = 250;
 const MBUF_PER_POOL: u32 = 8191;
+const MBUF_PER_POOL_MAX_CANDIDATE: u32 = 131071;
 const RX_BURST_SIZE: usize = 32;
 const TX_BURST_SIZE: usize = 32;
 const METRICS_FLUSH_PACKET_THRESHOLD: u64 = 128;
@@ -368,10 +369,60 @@ fn discover_ena_allowance_xstats(port_id: u16) -> Vec<EnaXstatId> {
     out
 }
 
-fn create_mempool(pool_name: &CString, socket_id: i32) -> Result<*mut rte_mempool, String> {
-    let candidates = [MBUF_PER_POOL, 4095, 2047, 1023];
+fn next_pow2_minus_one(mut value: u32) -> u32 {
+    if value <= 1 {
+        return 1;
+    }
+    value = value.saturating_add(1);
+    let mut pow2 = 1u32;
+    while pow2 < value {
+        let next = pow2.saturating_mul(2);
+        if next <= pow2 {
+            return u32::MAX.saturating_sub(1);
+        }
+        pow2 = next;
+    }
+    pow2.saturating_sub(1)
+}
+
+fn mempool_size_candidates(queue_count: u16) -> Vec<u32> {
+    let scaled_target = MBUF_PER_POOL.saturating_mul(queue_count.max(1) as u32);
+    let mut current = next_pow2_minus_one(scaled_target).min(MBUF_PER_POOL_MAX_CANDIDATE);
+    let mut candidates = Vec::with_capacity(8);
+    while current > MBUF_CACHE_SIZE + 1 {
+        if !candidates.contains(&current) {
+            candidates.push(current);
+        }
+        if current <= 1023 {
+            break;
+        }
+        current = next_pow2_minus_one(current / 2);
+    }
+    for fallback in [MBUF_PER_POOL, 4095, 2047, 1023] {
+        if fallback > MBUF_CACHE_SIZE + 1 && !candidates.contains(&fallback) {
+            candidates.push(fallback);
+        }
+    }
+    candidates
+}
+
+fn create_mempool(
+    pool_name: &CString,
+    socket_id: i32,
+    queue_count: u16,
+) -> Result<*mut rte_mempool, String> {
+    let candidates = mempool_size_candidates(queue_count);
     let mut last_errno = 0;
     let data_room_size = parse_mbuf_data_room_size();
+    tracing::info!(
+        queue_count,
+        candidates = %candidates
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        "dpdk mempool size candidates"
+    );
     for count in candidates {
         if count <= MBUF_CACHE_SIZE + 1 {
             continue;
@@ -490,3 +541,26 @@ include!("io/init_port.rs");
 include!("io/runtime.rs");
 include!("io/eal_port_select.rs");
 include!("io/tx_checksum.rs");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn next_pow2_minus_one_rounds_up() {
+        assert_eq!(next_pow2_minus_one(1), 1);
+        assert_eq!(next_pow2_minus_one(8191), 8191);
+        assert_eq!(next_pow2_minus_one(8192), 16383);
+        assert_eq!(next_pow2_minus_one(32764), 32767);
+    }
+
+    #[test]
+    fn mempool_candidates_scale_with_queue_count() {
+        let one_queue = mempool_size_candidates(1);
+        let four_queues = mempool_size_candidates(4);
+        assert_eq!(one_queue.first().copied(), Some(8191));
+        assert!(four_queues.first().copied().unwrap_or_default() >= 32767);
+        assert!(four_queues.contains(&8191));
+        assert!(four_queues.contains(&1023));
+    }
+}

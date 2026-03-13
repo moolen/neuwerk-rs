@@ -1,6 +1,19 @@
 use firewall::dataplane::Packet;
 use tracing::warn;
 
+pub fn parse_truthy_flag(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+pub fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|raw| parse_truthy_flag(&raw))
+        .unwrap_or(false)
+}
+
 pub fn shard_index_for_packet(pkt: &Packet, shard_count: usize) -> usize {
     if shard_count <= 1 {
         return 0;
@@ -155,9 +168,30 @@ impl DpdkPerfMode {
 }
 
 pub fn dpdk_force_shared_rx_demux() -> bool {
-    std::env::var("NEUWERK_DPDK_FORCE_SHARED_RX_DEMUX")
-        .map(|val| matches!(val.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
+    env_flag_enabled("NEUWERK_DPDK_FORCE_SHARED_RX_DEMUX")
+}
+
+pub fn dpdk_pin_https_demux_owner() -> bool {
+    std::env::var("NEUWERK_DPDK_PIN_HTTPS_OWNER")
+        .map(|raw| parse_truthy_flag(&raw))
+        .unwrap_or(true)
+}
+
+pub fn service_lane_enabled_with_override(
+    perf_mode: DpdkPerfMode,
+    disable_service_lane: bool,
+) -> bool {
+    // Keep service-lane steering active by default even in aggressive mode.
+    // TLS intercept relies on this path.
+    let _ = perf_mode;
+    !disable_service_lane
+}
+
+pub fn dpdk_service_lane_enabled(perf_mode: DpdkPerfMode) -> bool {
+    service_lane_enabled_with_override(
+        perf_mode,
+        env_flag_enabled("NEUWERK_DPDK_DISABLE_SERVICE_LANE"),
+    )
 }
 
 pub fn dpdk_lockless_queue_per_worker_enabled() -> bool {
@@ -171,14 +205,24 @@ pub fn shared_demux_owner_for_packet(
     shard_count: usize,
     worker_count: usize,
 ) -> usize {
+    shared_demux_owner_for_packet_with_policy(pkt, shard_count, worker_count, true)
+}
+
+pub fn shared_demux_owner_for_packet_with_policy(
+    pkt: &Packet,
+    shard_count: usize,
+    worker_count: usize,
+    pin_https_owner: bool,
+) -> usize {
     if worker_count <= 1 {
         return 0;
     }
-    if let Some((src_port, dst_port)) = pkt.ports() {
-        // Route common HTTPS flows to worker 0 so service-lane intercept is
-        // handled by the worker that owns the service-lane TAP attachment.
-        if src_port == 443 || dst_port == 443 {
-            return 0;
+    if pin_https_owner {
+        if let Some((src_port, dst_port)) = pkt.ports() {
+            // Keep HTTPS/TLS flows on worker 0, which owns service-lane flush.
+            if src_port == 443 || dst_port == 443 {
+                return 0;
+            }
         }
     }
     let shard_idx = shard_index_for_packet(pkt, shard_count);

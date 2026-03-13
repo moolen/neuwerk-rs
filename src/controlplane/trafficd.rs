@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
@@ -23,13 +24,14 @@ use futures::FutureExt;
 use h2::{client, server};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 const TLS_IO_TIMEOUT: Duration = Duration::from_secs(3);
 const TLS_H2_BODY_IDLE_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
 const TLS_H2_MAX_CONCURRENT_STREAMS_DEFAULT: u32 = 64;
+const TLS_INTERCEPT_LISTEN_BACKLOG_DEFAULT: u32 = 1024;
 const INTERCEPT_LEAF_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 const INTERCEPT_LEAF_CACHE_MAX_ENTRIES: usize = 1024;
 const INTERCEPT_CHAIN: &str = "NEUWERK_TLS_INTERCEPT";
@@ -45,13 +47,33 @@ const SERVICE_LANE_REPLY_FWMARK: u32 = 0x2;
 const SERVICE_LANE_PEER_IP: Ipv4Addr = Ipv4Addr::new(169, 254, 255, 2);
 const SERVICE_LANE_PEER_MAC: &str = "02:00:00:00:00:02";
 
+fn env_positive_u64(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn env_positive_u32(name: &str) -> Option<u32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn tls_io_timeout() -> Duration {
+    static IO_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+    *IO_TIMEOUT.get_or_init(|| {
+        Duration::from_secs(
+            env_positive_u64("NEUWERK_TLS_IO_TIMEOUT_SECS").unwrap_or(TLS_IO_TIMEOUT.as_secs()),
+        )
+    })
+}
+
 fn tls_h2_body_idle_timeout() -> Duration {
     static H2_BODY_IDLE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
     *H2_BODY_IDLE_TIMEOUT.get_or_init(|| {
-        let secs = std::env::var("NEUWERK_TLS_H2_BODY_TIMEOUT_SECS")
-            .ok()
-            .and_then(|raw| raw.parse::<u64>().ok())
-            .filter(|value| *value > 0)
+        let secs = env_positive_u64("NEUWERK_TLS_H2_BODY_TIMEOUT_SECS")
             .unwrap_or(TLS_H2_BODY_IDLE_TIMEOUT_DEFAULT.as_secs());
         Duration::from_secs(secs)
     })
@@ -60,11 +82,16 @@ fn tls_h2_body_idle_timeout() -> Duration {
 fn tls_h2_max_concurrent_streams() -> u32 {
     static H2_MAX_CONCURRENT_STREAMS: OnceLock<u32> = OnceLock::new();
     *H2_MAX_CONCURRENT_STREAMS.get_or_init(|| {
-        std::env::var("NEUWERK_TLS_H2_MAX_CONCURRENT_STREAMS")
-            .ok()
-            .and_then(|raw| raw.parse::<u32>().ok())
-            .filter(|value| *value > 0)
+        env_positive_u32("NEUWERK_TLS_H2_MAX_CONCURRENT_STREAMS")
             .unwrap_or(TLS_H2_MAX_CONCURRENT_STREAMS_DEFAULT)
+    })
+}
+
+fn tls_intercept_listen_backlog() -> u32 {
+    static TLS_INTERCEPT_LISTEN_BACKLOG: OnceLock<u32> = OnceLock::new();
+    *TLS_INTERCEPT_LISTEN_BACKLOG.get_or_init(|| {
+        env_positive_u32("NEUWERK_TLS_INTERCEPT_LISTEN_BACKLOG")
+            .unwrap_or(TLS_INTERCEPT_LISTEN_BACKLOG_DEFAULT)
     })
 }
 
@@ -128,6 +155,54 @@ struct MatchedTlsInterceptPolicy {
     http_policy: Option<TlsInterceptHttpPolicy>,
     enforce_http_policy: bool,
 }
+
+#[derive(Clone)]
+struct InflightMetricGuard {
+    metrics: Metrics,
+    kind: &'static str,
+}
+
+impl InflightMetricGuard {
+    fn new(metrics: &Metrics, kind: &'static str) -> Self {
+        metrics.inc_svc_tls_intercept_inflight(kind);
+        Self {
+            metrics: metrics.clone(),
+            kind,
+        }
+    }
+}
+
+impl Drop for InflightMetricGuard {
+    fn drop(&mut self) {
+        self.metrics.dec_svc_tls_intercept_inflight(self.kind);
+    }
+}
+
+#[derive(Debug)]
+struct UpstreamH2Client {
+    send_request: AsyncMutex<client::SendRequest<Bytes>>,
+    in_flight_streams: AtomicUsize,
+}
+
+#[derive(Clone)]
+struct UpstreamH2StreamGuard {
+    client: Arc<UpstreamH2Client>,
+}
+
+impl UpstreamH2StreamGuard {
+    fn new(client: Arc<UpstreamH2Client>) -> Self {
+        client.in_flight_streams.fetch_add(1, Ordering::AcqRel);
+        Self { client }
+    }
+}
+
+impl Drop for UpstreamH2StreamGuard {
+    fn drop(&mut self) {
+        self.client.in_flight_streams.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+type UpstreamH2Pool = Arc<AsyncMutex<HashMap<String, Vec<Arc<UpstreamH2Client>>>>>;
 
 include!("trafficd/intercept_runtime.rs");
 
