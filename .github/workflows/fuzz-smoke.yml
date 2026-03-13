@@ -15,7 +15,7 @@ jobs:
       NEUWERK_FUZZ_SMOKE_RUNS: "250"
       NEUWERK_FUZZ_SEED: "1337"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
