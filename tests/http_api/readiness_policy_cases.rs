@@ -470,6 +470,9 @@ async fn http_api_tls_intercept_ca_local_settings_round_trip() {
     wait_for_file(&auth_path, Duration::from_secs(2))
         .await
         .unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
     let keyset = api_auth::load_keyset_from_file(&auth_path)
         .unwrap()
         .expect("missing local api keyset");
