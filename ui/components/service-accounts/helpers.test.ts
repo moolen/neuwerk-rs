@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatServiceAccountTimestamp, serviceAccountStatusLabel, serviceAccountStatusStyle } from './helpers';
+import {
+  formatServiceAccountTimestamp,
+  isServiceAccountRoleDowngrade,
+  serviceAccountRoleLabel,
+  serviceAccountRoleStyle,
+  serviceAccountStatusLabel,
+  serviceAccountStatusStyle,
+} from './helpers';
 
 describe('service account helpers', () => {
   it('formats missing timestamps as N/A', () => {
@@ -19,5 +26,22 @@ describe('service account helpers', () => {
     expect(serviceAccountStatusStyle('disabled')).toMatchObject({
       color: 'var(--red)',
     });
+  });
+
+  it('returns role label and style for readonly and admin', () => {
+    expect(serviceAccountRoleLabel('readonly')).toBe('Readonly');
+    expect(serviceAccountRoleLabel('admin')).toBe('Admin');
+    expect(serviceAccountRoleStyle('readonly')).toMatchObject({
+      color: 'var(--text-secondary)',
+    });
+    expect(serviceAccountRoleStyle('admin')).toMatchObject({
+      color: 'var(--accent)',
+    });
+  });
+
+  it('detects only admin to readonly as a downgrade', () => {
+    expect(isServiceAccountRoleDowngrade('admin', 'readonly')).toBe(true);
+    expect(isServiceAccountRoleDowngrade('readonly', 'admin')).toBe(false);
+    expect(isServiceAccountRoleDowngrade('admin', 'admin')).toBe(false);
   });
 });

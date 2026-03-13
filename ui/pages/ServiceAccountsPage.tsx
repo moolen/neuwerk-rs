@@ -1,6 +1,7 @@
 import React from 'react';
 import { Plus } from 'lucide-react';
 import { CreateServiceAccountModal } from '../components/service-accounts/CreateServiceAccountModal';
+import { EditServiceAccountModal } from '../components/service-accounts/EditServiceAccountModal';
 import { ServiceAccountTable } from '../components/service-accounts/ServiceAccountTable';
 import { TokenRevealDialog } from '../components/service-accounts/TokenRevealDialog';
 import { CreateTokenModal } from './service-accounts/components/CreateTokenModal';
@@ -14,6 +15,8 @@ export const ServiceAccountsPage: React.FC = () => {
     error,
     showCreateModal,
     setShowCreateModal,
+    showEditModal,
+    editingAccount,
     showTokenDialog,
     createdToken,
     closeTokenDialog,
@@ -25,7 +28,10 @@ export const ServiceAccountsPage: React.FC = () => {
     setShowTokenModal,
     loadTokens,
     handleCreateSubmit,
+    handleEditSubmit,
     handleDisableAccount,
+    handleOpenEditModal,
+    handleCloseEditModal,
     handleCreateToken,
     handleRevokeToken,
   } = useServiceAccountsPage();
@@ -73,6 +79,7 @@ export const ServiceAccountsPage: React.FC = () => {
         <ServiceAccountTable
           serviceAccounts={serviceAccounts}
           onDisable={handleDisableAccount}
+          onEdit={handleOpenEditModal}
           onSelectTokens={(account) => void loadTokens(account)}
         />
       )}
@@ -97,13 +104,27 @@ export const ServiceAccountsPage: React.FC = () => {
 
       {showTokenModal && selectedAccount && (
         <CreateTokenModal
+          accountRole={selectedAccount.role}
           onClose={() => setShowTokenModal(false)}
           onSubmit={(req) => void handleCreateToken(req)}
         />
       )}
 
+      {showEditModal && editingAccount && (
+        <EditServiceAccountModal
+          account={editingAccount}
+          onSubmit={handleEditSubmit}
+          onClose={handleCloseEditModal}
+        />
+      )}
+
       {showTokenDialog && createdToken && (
-        <TokenRevealDialog token={createdToken.token} name={createdToken.name} onClose={closeTokenDialog} />
+        <TokenRevealDialog
+          token={createdToken.token}
+          name={createdToken.name}
+          role={createdToken.role}
+          onClose={closeTokenDialog}
+        />
       )}
     </div>
   );

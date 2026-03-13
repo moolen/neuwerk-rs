@@ -176,6 +176,169 @@ async fn http_api_local_lifecycle() {
 }
 
 #[tokio::test]
+async fn http_api_policy_by_name_upsert_reuses_record_id_and_rejects_duplicates() {
+    ensure_rustls_provider();
+    let dir = TempDir::new().unwrap();
+    let tls_dir = dir.path().join("http-tls");
+    let local_store_dir = dir.path().join("policies");
+    let bind_addr = next_addr(Ipv4Addr::LOCALHOST);
+    let metrics_addr = next_addr(Ipv4Addr::LOCALHOST);
+
+    let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+    let policy_store_check = policy_store.clone();
+    let local_store = PolicyDiskStore::new(local_store_dir);
+    let local_store_check = local_store.clone();
+    let cfg = HttpApiConfig {
+        bind_addr,
+        advertise_addr: bind_addr,
+        metrics_bind: metrics_addr,
+        tls_dir: tls_dir.clone(),
+        cert_path: None,
+        key_path: None,
+        ca_path: None,
+        san_entries: Vec::new(),
+        management_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        token_path: dir.path().join("token.json"),
+        external_url: None,
+        cluster_tls_dir: None,
+        tls_intercept_ca_ready: None,
+        tls_intercept_ca_generation: None,
+    };
+    let metrics = Metrics::new().unwrap();
+
+    let server = tokio::spawn(async move {
+        http_api::run_http_api(
+            cfg,
+            policy_store,
+            local_store,
+            None,
+            None,
+            None,
+            None,
+            None,
+            metrics,
+        )
+        .await
+        .map_err(|err| format!("http api error: {err}"))
+    });
+
+    wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(2))
+        .await
+        .unwrap();
+    let auth_path = api_auth::local_keyset_path(&tls_dir);
+    wait_for_file(&auth_path, Duration::from_secs(2))
+        .await
+        .unwrap();
+    let keyset = api_auth::load_keyset_from_file(&auth_path)
+        .unwrap()
+        .expect("missing local api keyset");
+    let token = api_auth::mint_token(&keyset, "local-test", None, None).unwrap();
+    let client = http_api_client(&tls_dir).unwrap();
+
+    let first_payload = serde_json::json!({
+        "mode": "enforce",
+        "name": "ignored-body-name",
+        "policy": {
+            "default_policy": "deny",
+            "source_groups": [
+                {
+                    "id": "local",
+                    "sources": { "ips": ["10.0.0.5"] },
+                    "rules": [
+                        {
+                            "id": "allow-dns",
+                            "mode": "enforce",
+                            "action": "allow",
+                            "match": { "dns_hostname": "example.com" }
+                        }
+                    ]
+                }
+            ]
+        }
+    });
+    let create = client
+        .put(format!(
+            "https://{bind_addr}/api/v1/policies/by-name/prod-default"
+        ))
+        .bearer_auth(&token.token)
+        .json(&first_payload)
+        .send()
+        .await
+        .unwrap();
+    assert!(create.status().is_success());
+    let created: PolicyRecord = create.json().await.unwrap();
+    assert_eq!(created.name.as_deref(), Some("prod-default"));
+    assert_eq!(created.mode, PolicyMode::Enforce);
+    assert_eq!(local_store_check.active_id().unwrap(), Some(created.id));
+
+    let fetch = client
+        .get(format!(
+            "https://{bind_addr}/api/v1/policies/by-name/PROD-default"
+        ))
+        .bearer_auth(&token.token)
+        .send()
+        .await
+        .unwrap();
+    assert!(fetch.status().is_success());
+    let fetched: PolicyRecord = fetch.json().await.unwrap();
+    assert_eq!(fetched.id, created.id);
+
+    let second_payload = serde_json::json!({
+        "mode": "disabled",
+        "name": "still-ignored",
+        "policy": {
+            "default_policy": "allow",
+            "source_groups": []
+        }
+    });
+    let update = client
+        .put(format!(
+            "https://{bind_addr}/api/v1/policies/by-name/prod-default"
+        ))
+        .bearer_auth(&token.token)
+        .json(&second_payload)
+        .send()
+        .await
+        .unwrap();
+    assert!(update.status().is_success());
+    let updated: PolicyRecord = update.json().await.unwrap();
+    assert_eq!(updated.id, created.id);
+    assert_eq!(updated.name.as_deref(), Some("prod-default"));
+    assert_eq!(updated.mode, PolicyMode::Disabled);
+    assert_eq!(local_store_check.active_id().unwrap(), None);
+    assert_eq!(policy_store_check.active_policy_id(), None);
+
+    let listed = client
+        .get(format!("https://{bind_addr}/api/v1/policies"))
+        .bearer_auth(&token.token)
+        .send()
+        .await
+        .unwrap();
+    assert!(listed.status().is_success());
+    let records: Vec<PolicyRecord> = listed.json().await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].id, created.id);
+
+    let duplicate = client
+        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .bearer_auth(&token.token)
+        .json(&serde_json::json!({
+            "mode": "audit",
+            "name": "PROD-DEFAULT",
+            "policy": {
+                "default_policy": "deny",
+                "source_groups": []
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(duplicate.status(), reqwest::StatusCode::CONFLICT);
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn http_api_integrations_lifecycle_and_policy_ref_validation() {
     ensure_rustls_provider();
     let dir = TempDir::new().unwrap();

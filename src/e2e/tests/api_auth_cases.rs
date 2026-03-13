@@ -313,11 +313,18 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
             &tls_dir,
             "e2e-sa",
             Some("e2e service account"),
+            ServiceAccountRole::Admin,
             Some(&admin_token),
         )
         .await?;
         if account.status != ServiceAccountStatus::Active {
             return Err(format!("expected active account, got {:?}", account.status));
+        }
+        if account.role != ServiceAccountRole::Admin {
+            return Err(format!(
+                "expected admin account role, got {:?}",
+                account.role
+            ));
         }
 
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -340,6 +347,7 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
             Some("primary"),
             Some("1h"),
             None,
+            Some(ServiceAccountRole::Admin),
             Some(&admin_token),
         )
         .await?;
@@ -355,6 +363,12 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
         if token_resp.token_meta.expires_at.is_none() {
             return Err("expected ttl token to include expires_at".to_string());
         }
+        if token_resp.token_meta.role != ServiceAccountRole::Admin {
+            return Err(format!(
+                "expected admin token role, got {:?}",
+                token_resp.token_meta.role
+            ));
+        }
 
         let status = http_api_status(
             api_addr,
@@ -365,6 +379,41 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
         .await?;
         if !status.is_success() {
             return Err(format!("service account token rejected: {status}"));
+        }
+
+        let readonly_token_resp = http_create_service_account_token(
+            api_addr,
+            &tls_dir,
+            &account.id.to_string(),
+            Some("readonly"),
+            Some("1h"),
+            None,
+            Some(ServiceAccountRole::Readonly),
+            Some(&admin_token),
+        )
+        .await?;
+        if readonly_token_resp.token_meta.role != ServiceAccountRole::Readonly {
+            return Err("readonly token role mismatch".to_string());
+        }
+        let readonly_mutation = http_api_post_raw(
+            api_addr,
+            &tls_dir,
+            "/api/v1/policies",
+            serde_json::to_vec(&serde_json::json!({
+                "mode": "audit",
+                "policy": {
+                    "default_policy": "deny",
+                    "source_groups": []
+                }
+            }))
+            .map_err(|e| e.to_string())?,
+            Some(&readonly_token_resp.token),
+        )
+        .await?;
+        if readonly_mutation != reqwest::StatusCode::FORBIDDEN {
+            return Err(format!(
+                "expected readonly token mutation to be forbidden, got {readonly_mutation}"
+            ));
         }
 
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -441,6 +490,7 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
             Some("eternal"),
             None,
             Some(true),
+            Some(ServiceAccountRole::Admin),
             Some(&admin_token),
         )
         .await?;
@@ -457,6 +507,36 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
         .await?;
         if !status.is_success() {
             return Err(format!("eternal token rejected: {status}"));
+        }
+
+        let downgraded = http_update_service_account(
+            api_addr,
+            &tls_dir,
+            &account.id.to_string(),
+            "e2e-sa",
+            Some("e2e service account"),
+            ServiceAccountRole::Readonly,
+            Some(&admin_token),
+        )
+        .await?;
+        if downgraded.role != ServiceAccountRole::Readonly {
+            return Err(format!(
+                "expected readonly account after downgrade, got {:?}",
+                downgraded.role
+            ));
+        }
+
+        let status = http_api_status(
+            api_addr,
+            &tls_dir,
+            "/api/v1/policies",
+            Some(&eternal_resp.token),
+        )
+        .await?;
+        if status != reqwest::StatusCode::UNAUTHORIZED {
+            return Err(format!(
+                "expected unauthorized after account downgrade, got {status}"
+            ));
         }
 
         let status = http_delete_service_account(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::controlplane::service_accounts::ServiceAccountRole;
 
 pub async fn http_get(addr: SocketAddr, host: &str) -> Result<String, String> {
     http_get_path(addr, host, "/").await
@@ -140,6 +141,45 @@ pub async fn http_set_policy(
         .map_err(|e| format!("policy decode failed: {e}"))
 }
 
+#[derive(Serialize)]
+struct NamedPolicyUpsertRequest<'a> {
+    mode: PolicyMode,
+    policy: &'a PolicyConfig,
+    name: &'a str,
+}
+
+pub async fn http_upsert_policy_by_name(
+    addr: SocketAddr,
+    tls_dir: &Path,
+    name: &str,
+    policy: PolicyConfig,
+    mode: PolicyMode,
+    auth_token: Option<&str>,
+) -> Result<PolicyRecord, String> {
+    let client = http_api_client(tls_dir)?;
+    let req = NamedPolicyUpsertRequest {
+        mode,
+        policy: &policy,
+        name,
+    };
+    let mut builder = client
+        .put(format!("https://{addr}/api/v1/policies/by-name/{name}"))
+        .json(&req);
+    if let Some(token) = auth_token {
+        builder = builder.bearer_auth(token);
+    }
+    let resp = builder
+        .send()
+        .await
+        .map_err(|e| format!("policy upsert by-name failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("policy upsert by-name status {}", resp.status()));
+    }
+    resp.json::<PolicyRecord>()
+        .await
+        .map_err(|e| format!("policy upsert by-name decode failed: {e}"))
+}
+
 pub async fn http_list_policies(
     addr: SocketAddr,
     tls_dir: &Path,
@@ -183,6 +223,29 @@ pub async fn http_get_policy(
     resp.json::<PolicyRecord>()
         .await
         .map_err(|e| format!("policy get decode failed: {e}"))
+}
+
+pub async fn http_get_policy_by_name(
+    addr: SocketAddr,
+    tls_dir: &Path,
+    name: &str,
+    auth_token: Option<&str>,
+) -> Result<PolicyRecord, String> {
+    let client = http_api_client(tls_dir)?;
+    let mut builder = client.get(format!("https://{addr}/api/v1/policies/by-name/{name}"));
+    if let Some(token) = auth_token {
+        builder = builder.bearer_auth(token);
+    }
+    let resp = builder
+        .send()
+        .await
+        .map_err(|e| format!("policy get by-name failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("policy get by-name status {}", resp.status()));
+    }
+    resp.json::<PolicyRecord>()
+        .await
+        .map_err(|e| format!("policy get by-name decode failed: {e}"))
 }
 
 pub async fn http_update_policy(
@@ -242,6 +305,15 @@ struct ServiceAccountCreateRequest<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<&'a str>,
+    role: ServiceAccountRole,
+}
+
+#[derive(Serialize)]
+struct ServiceAccountUpdateRequest<'a> {
+    name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a str>,
+    role: ServiceAccountRole,
 }
 
 #[derive(Serialize)]
@@ -252,6 +324,8 @@ struct ServiceAccountTokenCreateRequest<'a> {
     ttl: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     eternal: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<ServiceAccountRole>,
 }
 
 pub async fn http_create_service_account(
@@ -259,10 +333,15 @@ pub async fn http_create_service_account(
     tls_dir: &Path,
     name: &str,
     description: Option<&str>,
+    role: ServiceAccountRole,
     auth_token: Option<&str>,
 ) -> Result<ServiceAccount, String> {
     let client = http_api_client(tls_dir)?;
-    let payload = ServiceAccountCreateRequest { name, description };
+    let payload = ServiceAccountCreateRequest {
+        name,
+        description,
+        role,
+    };
     let mut builder = client
         .post(format!("https://{addr}/api/v1/service-accounts"))
         .json(&payload);
@@ -279,6 +358,41 @@ pub async fn http_create_service_account(
     resp.json::<ServiceAccount>()
         .await
         .map_err(|e| format!("service account decode failed: {e}"))
+}
+
+pub async fn http_update_service_account(
+    addr: SocketAddr,
+    tls_dir: &Path,
+    account_id: &str,
+    name: &str,
+    description: Option<&str>,
+    role: ServiceAccountRole,
+    auth_token: Option<&str>,
+) -> Result<ServiceAccount, String> {
+    let client = http_api_client(tls_dir)?;
+    let payload = ServiceAccountUpdateRequest {
+        name,
+        description,
+        role,
+    };
+    let mut builder = client
+        .put(format!(
+            "https://{addr}/api/v1/service-accounts/{account_id}"
+        ))
+        .json(&payload);
+    if let Some(token) = auth_token {
+        builder = builder.bearer_auth(token);
+    }
+    let resp = builder
+        .send()
+        .await
+        .map_err(|e| format!("service account update failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("service account update status {}", resp.status()));
+    }
+    resp.json::<ServiceAccount>()
+        .await
+        .map_err(|e| format!("service account update decode failed: {e}"))
 }
 
 pub async fn http_list_service_accounts(
@@ -330,10 +444,16 @@ pub async fn http_create_service_account_token(
     name: Option<&str>,
     ttl: Option<&str>,
     eternal: Option<bool>,
+    role: Option<ServiceAccountRole>,
     auth_token: Option<&str>,
 ) -> Result<ServiceAccountTokenResponse, String> {
     let client = http_api_client(tls_dir)?;
-    let payload = ServiceAccountTokenCreateRequest { name, ttl, eternal };
+    let payload = ServiceAccountTokenCreateRequest {
+        name,
+        ttl,
+        eternal,
+        role,
+    };
     let mut builder = client
         .post(format!(
             "https://{addr}/api/v1/service-accounts/{account_id}/tokens"

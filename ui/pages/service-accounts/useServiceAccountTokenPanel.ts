@@ -3,6 +3,7 @@ import type {
   CreateServiceAccountTokenRequest,
   ServiceAccount,
   ServiceAccountToken,
+  ServiceAccountRole,
 } from '../../types';
 import { toUiError } from './helpers';
 import {
@@ -13,7 +14,11 @@ import {
 
 export function useServiceAccountTokenPanel() {
   const [showTokenDialog, setShowTokenDialog] = useState(false);
-  const [createdToken, setCreatedToken] = useState<{ token: string; name?: string } | null>(null);
+  const [createdToken, setCreatedToken] = useState<{
+    token: string;
+    name?: string;
+    role?: ServiceAccountRole;
+  } | null>(null);
   const [selectedAccount, setSelectedAccount] = useState<ServiceAccount | null>(null);
   const [tokens, setTokens] = useState<ServiceAccountToken[]>([]);
   const [tokenLoading, setTokenLoading] = useState(false);
@@ -38,7 +43,11 @@ export function useServiceAccountTokenPanel() {
     if (!selectedAccount) return;
     try {
       const response = await createServiceAccountTokenRemote(selectedAccount.id, req);
-      setCreatedToken({ token: response.token, name: response.token_meta.name || undefined });
+      setCreatedToken({
+        token: response.token,
+        name: response.token_meta.name || undefined,
+        role: response.token_meta.role,
+      });
       setShowTokenDialog(true);
       setShowTokenModal(false);
       await loadTokens(selectedAccount);
@@ -69,6 +78,10 @@ export function useServiceAccountTokenPanel() {
     setTokens([]);
   };
 
+  const syncSelectedAccount = (account: ServiceAccount | null) => {
+    setSelectedAccount(account);
+  };
+
   return {
     showTokenDialog,
     createdToken,
@@ -83,5 +96,6 @@ export function useServiceAccountTokenPanel() {
     handleRevokeToken,
     closeTokenDialog,
     clearSelection,
+    syncSelectedAccount,
   };
 }

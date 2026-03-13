@@ -1,17 +1,20 @@
 import React from 'react';
 import type { ServiceAccount } from '../../types';
 import { formatServiceAccountTimestamp } from './helpers';
+import { ServiceAccountRoleBadge } from './ServiceAccountRoleBadge';
 import { ServiceAccountStatusBadge } from './ServiceAccountStatusBadge';
 
 interface ServiceAccountTableRowProps {
   account: ServiceAccount;
   onDisable: (id: string) => void;
+  onEdit: (account: ServiceAccount) => void;
   onSelectTokens: (account: ServiceAccount) => void;
 }
 
 export const ServiceAccountTableRow: React.FC<ServiceAccountTableRowProps> = ({
   account,
   onDisable,
+  onEdit,
   onSelectTokens,
 }) => (
   <tr key={account.id} style={{ borderBottom: '1px solid var(--border-glass-subtle, var(--border-glass))' }}>
@@ -27,6 +30,9 @@ export const ServiceAccountTableRow: React.FC<ServiceAccountTableRowProps> = ({
       <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
         {account.description || '-'}
       </span>
+    </td>
+    <td className="py-3 px-4">
+      <ServiceAccountRoleBadge role={account.role} />
     </td>
     <td className="py-3 px-4">
       <ServiceAccountStatusBadge status={account.status} />
@@ -49,6 +55,13 @@ export const ServiceAccountTableRow: React.FC<ServiceAccountTableRowProps> = ({
           style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)' }}
         >
           Tokens
+        </button>
+        <button
+          onClick={() => onEdit(account)}
+          className="px-3 py-1.5 text-xs rounded-lg"
+          style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)' }}
+        >
+          Edit
         </button>
         <button
           onClick={() => onDisable(account.id)}

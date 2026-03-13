@@ -1,14 +1,18 @@
 import React, { useState } from 'react';
+import type { ServiceAccountRole } from '../../types';
+import { serviceAccountRoleLabel } from './helpers';
 
 interface TokenRevealDialogProps {
   token: string;
   name?: string;
+  role?: ServiceAccountRole;
   onClose: () => void;
 }
 
 export const TokenRevealDialog: React.FC<TokenRevealDialogProps> = ({
   token,
   name,
+  role,
   onClose,
 }) => {
   const [copied, setCopied] = useState(false);
@@ -31,6 +35,12 @@ export const TokenRevealDialog: React.FC<TokenRevealDialogProps> = ({
         <p className="mb-4" style={{ color: 'var(--text-secondary)' }}>
           {name ? `Token '${name}' created successfully.` : 'Token created successfully.'}
         </p>
+        {role && (
+          <p className="mb-4 text-sm" style={{ color: 'var(--text-muted)' }}>
+            This token carries the <strong>{serviceAccountRoleLabel(role)}</strong> role and the
+            value is only shown once.
+          </p>
+        )}
 
         <div className="mb-4">
           <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Token</label>

@@ -5,11 +5,13 @@ import {
   getServiceAccounts,
   revokeServiceAccount,
   revokeServiceAccountToken,
+  updateServiceAccount,
 } from '../../services/api';
 import type {
   CreateServiceAccountRequest,
   CreateServiceAccountTokenRequest,
   ServiceAccountToken,
+  UpdateServiceAccountRequest,
 } from '../../types';
 
 export async function loadServiceAccountsRemote() {
@@ -24,6 +26,13 @@ export async function loadServiceAccountTokensRemote(accountId: string): Promise
 
 export async function createServiceAccountRemote(req: CreateServiceAccountRequest): Promise<void> {
   await createServiceAccount(req);
+}
+
+export async function updateServiceAccountRemote(
+  accountId: string,
+  req: UpdateServiceAccountRequest
+): Promise<void> {
+  await updateServiceAccount(accountId, req);
 }
 
 export async function disableServiceAccountRemote(accountId: string): Promise<void> {

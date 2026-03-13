@@ -103,6 +103,10 @@ pub fn cases() -> Vec<TestCase> {
             func: api_policy_get_update_delete,
         },
         TestCase {
+            name: "api_policy_upsert_by_name",
+            func: api_policy_upsert_by_name,
+        },
+        TestCase {
             name: "api_policy_list_ordering",
             func: api_policy_list_ordering,
         },

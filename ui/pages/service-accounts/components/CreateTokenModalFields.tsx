@@ -1,4 +1,5 @@
 import React from 'react';
+import type { ServiceAccountRole } from '../../../types';
 
 import { TOKEN_TTL_PRESETS } from './createTokenForm';
 
@@ -6,18 +7,24 @@ interface CreateTokenModalFieldsProps {
   name: string;
   ttl: string;
   eternal: boolean;
+  accountRole: ServiceAccountRole;
+  role: ServiceAccountRole;
   onNameChange: (next: string) => void;
   onTtlChange: (next: string) => void;
   onEternalChange: (next: boolean) => void;
+  onRoleChange: (next: ServiceAccountRole) => void;
 }
 
 export const CreateTokenModalFields: React.FC<CreateTokenModalFieldsProps> = ({
   name,
   ttl,
   eternal,
+  accountRole,
+  role,
   onNameChange,
   onTtlChange,
   onEternalChange,
+  onRoleChange,
 }) => (
   <>
     <div>
@@ -80,5 +87,51 @@ export const CreateTokenModalFields: React.FC<CreateTokenModalFieldsProps> = ({
       <input type="checkbox" checked={eternal} onChange={() => onEternalChange(!eternal)} />
       Eternal (no expiry)
     </label>
+
+    <div>
+      <label
+        className="block text-sm font-medium mb-1"
+        style={{ color: 'var(--text-secondary)' }}
+      >
+        Token Role
+      </label>
+      {accountRole === 'readonly' ? (
+        <>
+          <div
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={{
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
+              color: 'var(--text)',
+            }}
+          >
+            Readonly
+          </div>
+          <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+            Readonly accounts can only mint readonly tokens.
+          </p>
+        </>
+      ) : (
+        <>
+          <select
+            value={role}
+            onChange={(e) => onRoleChange(e.target.value as ServiceAccountRole)}
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={{
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
+              color: 'var(--text)',
+            }}
+          >
+            <option value="admin">Admin</option>
+            <option value="readonly">Readonly</option>
+          </select>
+          <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+            Tokens inherit the account role by default. Downscope to readonly for non-mutating
+            automation.
+          </p>
+        </>
+      )}
+    </div>
   </>
 );

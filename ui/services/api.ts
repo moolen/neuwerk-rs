@@ -28,6 +28,7 @@ export {
   getServiceAccountTokens,
   revokeServiceAccount,
   revokeServiceAccountToken,
+  updateServiceAccount,
 } from './apiClient/serviceAccounts';
 export {
   downloadClusterSysdump,

@@ -3,12 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   APIError,
   buildSsoStartPath,
+  createServiceAccount,
+  createServiceAccountToken,
   createSsoProvider,
   downloadClusterSysdump,
   listSupportedSsoProviders,
   loginWithToken,
   logout,
   subscribeToWiretap,
+  updateServiceAccount,
   whoAmI,
 } from './api';
 
@@ -164,6 +167,99 @@ describe('api auth transport behavior', () => {
         kind: 'google',
         client_id: 'cid',
         client_secret: 'secret',
+      }),
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+});
+
+describe('service account transport behavior', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('creates service accounts with role in the payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'sa-1', name: 'ci', role: 'readonly' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createServiceAccount({
+      name: 'ci',
+      description: 'pipeline',
+      role: 'readonly',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/service-accounts', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'ci',
+        description: 'pipeline',
+        role: 'readonly',
+      }),
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+
+  it('updates service accounts with role in the payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'sa-1', name: 'ci', role: 'admin' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await updateServiceAccount('sa-1', {
+      name: 'ci',
+      description: 'pipeline',
+      role: 'admin',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/service-accounts/sa-1', {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: 'ci',
+        description: 'pipeline',
+        role: 'admin',
+      }),
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+
+  it('creates service account tokens with role in the payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        token: 'jwt',
+        token_meta: { id: 'tok-1', role: 'readonly' },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createServiceAccountToken('sa-1', {
+      name: 'reader',
+      ttl: '90d',
+      eternal: false,
+      role: 'readonly',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/service-accounts/sa-1/tokens', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'reader',
+        ttl: '90d',
+        eternal: false,
+        role: 'readonly',
       }),
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },

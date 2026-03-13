@@ -5,6 +5,15 @@ struct ServiceAccountCreateRequest {
     name: String,
     #[serde(default)]
     description: Option<String>,
+    role: ServiceAccountRole,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServiceAccountUpdateRequest {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    role: ServiceAccountRole,
 }
 
 #[derive(Debug, Deserialize)]
@@ -15,6 +24,8 @@ struct ServiceAccountTokenCreateRequest {
     ttl: Option<String>,
     #[serde(default)]
     eternal: Option<bool>,
+    #[serde(default)]
+    role: Option<ServiceAccountRole>,
 }
 
 #[derive(Debug, Serialize)]
@@ -58,23 +69,62 @@ pub(super) async fn create_service_account(
     if name.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "name is required".to_string());
     }
-    let description = create.description.and_then(|desc| {
-        let trimmed = desc.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
+    let description = create
+        .description
+        .and_then(|desc| sanitize_optional_field(desc));
     let created_by = auth.claims.sub.clone();
     match state
         .service_accounts
-        .create_account(name.to_string(), description, created_by)
+        .create_account_with_role(name.to_string(), description, created_by, create.role)
         .await
     {
         Ok(account) => Json(account).into_response(),
         Err(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
     }
+}
+
+pub(super) async fn update_service_account(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    mut request: Request,
+) -> Response {
+    request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let account_id = match parse_uuid(&id, "service account id") {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let mut account = match state.service_accounts.get_account(account_id).await {
+        Ok(Some(account)) => account,
+        Ok(None) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "service account not found".to_string(),
+            );
+        }
+        Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+    };
+    let body = match read_body_limited(request.into_body()).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let update: ServiceAccountUpdateRequest = match serde_json::from_slice(&body) {
+        Ok(update) => update,
+        Err(err) => return error_response(StatusCode::BAD_REQUEST, format!("invalid json: {err}")),
+    };
+    let name = update.name.trim();
+    if name.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "name is required".to_string());
+    }
+    account.name = name.to_string();
+    account.description = update.description.and_then(sanitize_optional_field);
+    account.role = update.role;
+    if let Err(err) = state.service_accounts.update_account(&account).await {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, err);
+    }
+    Json(account).into_response()
 }
 
 pub(super) async fn delete_service_account(
@@ -198,6 +248,13 @@ pub(super) async fn create_service_account_token(
             "ttl and eternal are mutually exclusive".to_string(),
         );
     }
+    let requested_role = create.role.unwrap_or(account.role);
+    if !account.role.allows(requested_role) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "token role exceeds account role".to_string(),
+        );
+    }
     let keyset = match state.auth_source.load_keyset() {
         Ok(keyset) => keyset,
         Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
@@ -209,6 +266,7 @@ pub(super) async fn create_service_account_token(
         ttl_secs,
         eternal,
         None,
+        Some(vec![requested_role.as_str().to_string()]),
         now,
     ) {
         Ok(minted) => minted,
@@ -230,20 +288,14 @@ pub(super) async fn create_service_account_token(
         },
         None => None,
     };
-    let token_meta = match TokenMeta::new(
+    let token_meta = match TokenMeta::new_with_role(
         account_id,
-        create.name.and_then(|name| {
-            let trimmed = name.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }),
+        create.name.and_then(sanitize_optional_field),
         auth.claims.sub.clone(),
         minted.kid.clone(),
         expires_at,
         token_id,
+        requested_role,
     ) {
         Ok(meta) => meta,
         Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
@@ -298,4 +350,13 @@ pub(super) async fn revoke_service_account_token(
         }
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+fn sanitize_optional_field(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }

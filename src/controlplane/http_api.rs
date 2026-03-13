@@ -18,7 +18,7 @@ use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use axum_server::Handle;
 use futures::stream::SelectAll;
@@ -45,7 +45,8 @@ use crate::controlplane::policy_repository::{
 };
 use crate::controlplane::ready::ReadinessState;
 use crate::controlplane::service_accounts::{
-    parse_ttl_secs, ServiceAccountStatus, ServiceAccountStore, TokenMeta, TokenStatus,
+    parse_ttl_secs, ServiceAccountRole, ServiceAccountStatus, ServiceAccountStore, TokenMeta,
+    TokenStatus,
 };
 use crate::controlplane::sso::SsoStore;
 use crate::controlplane::wiretap::{DnsMap, WiretapFilter, WiretapHub, WiretapQuery};
@@ -83,16 +84,20 @@ mod wiretap;
 use app_routes::{health_handler, list_dns_cache, ready_handler, stats_handler, ui_handler};
 use audit::{audit_findings, audit_findings_local};
 use auth_routes::{auth_logout, auth_token_login, auth_whoami};
-use cluster_persistence::{delete_cluster_policy, persist_cluster_policy, read_cluster_active};
+use cluster_persistence::{delete_cluster_policy, persist_cluster_policy};
 use extractors::{error_response, parse_uuid, read_body_limited};
 use integrations::{
     create_integration, delete_integration, get_integration, list_integrations, update_integration,
 };
-use policy::{create_policy, delete_policy, get_policy, list_policies, update_policy};
+use policy::{
+    create_policy, delete_policy, get_policy, get_policy_by_name, list_policies, update_policy,
+    upsert_policy_by_name,
+};
 use policy_activation::{enforcement_mode_for_policy_mode, wait_for_policy_activation};
 use service_accounts_api::{
     create_service_account, create_service_account_token, delete_service_account,
     list_service_account_tokens, list_service_accounts, revoke_service_account_token,
+    update_service_account,
 };
 use sso_auth_routes::{auth_sso_callback, auth_sso_start, auth_sso_supported_providers};
 use sso_settings::{
@@ -351,6 +356,10 @@ pub async fn run_http_api_with_shutdown(
         .route("/auth/whoami", get(auth_whoami))
         .route("/policies", get(list_policies).post(create_policy))
         .route(
+            "/policies/by-name/:name",
+            get(get_policy_by_name).put(upsert_policy_by_name),
+        )
+        .route(
             "/policies/:id",
             get(get_policy).put(update_policy).delete(delete_policy),
         )
@@ -368,7 +377,10 @@ pub async fn run_http_api_with_shutdown(
             "/service-accounts",
             get(list_service_accounts).post(create_service_account),
         )
-        .route("/service-accounts/:id", delete(delete_service_account))
+        .route(
+            "/service-accounts/:id",
+            put(update_service_account).delete(delete_service_account),
+        )
         .route(
             "/service-accounts/:id/tokens",
             get(list_service_account_tokens).post(create_service_account_token),

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
-import type { CreateServiceAccountRequest } from '../../types';
+import type { CreateServiceAccountRequest, ServiceAccountRole } from '../../types';
 import { CreateServiceAccountModalActions } from './CreateServiceAccountModalActions';
 import { CreateServiceAccountModalFields } from './CreateServiceAccountModalFields';
 import { buildCreateServiceAccountRequest } from './createForm';
@@ -16,12 +16,14 @@ export const CreateServiceAccountModal: React.FC<CreateServiceAccountModalProps>
 }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [role, setRole] = useState<ServiceAccountRole>('readonly');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setName('');
     setDescription('');
+    setRole('readonly');
     setError(null);
   }, []);
 
@@ -29,7 +31,7 @@ export const CreateServiceAccountModal: React.FC<CreateServiceAccountModalProps>
     e.preventDefault();
     setError(null);
 
-    const result = buildCreateServiceAccountRequest(name, description);
+    const result = buildCreateServiceAccountRequest(name, description, role);
     if (!result.request) {
       setError(result.error ?? 'Invalid request');
       return;
@@ -63,9 +65,11 @@ export const CreateServiceAccountModal: React.FC<CreateServiceAccountModalProps>
           <CreateServiceAccountModalFields
             name={name}
             description={description}
+            role={role}
             loading={loading}
             onNameChange={setName}
             onDescriptionChange={setDescription}
+            onRoleChange={setRole}
           />
 
           <div className="mb-6">

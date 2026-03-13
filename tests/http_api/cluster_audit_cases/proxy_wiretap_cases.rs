@@ -209,6 +209,7 @@ async fn http_api_cluster_proxy_lifecycle() {
 
     let payload = serde_json::json!({
         "mode": "enforce",
+        "name": "cluster-default",
         "policy": {
             "default_policy": "deny",
             "source_groups": [
@@ -250,6 +251,19 @@ async fn http_api_cluster_proxy_lifecycle() {
     );
     let record: PolicyRecord = serde_json::from_slice(&body).unwrap();
     assert_eq!(record.mode, PolicyMode::Enforce);
+    assert_eq!(record.name.as_deref(), Some("cluster-default"));
+
+    let fetched = client
+        .get(format!(
+            "https://{follower_addr}/api/v1/policies/by-name/CLUSTER-default"
+        ))
+        .bearer_auth(&token.token)
+        .send()
+        .await
+        .unwrap();
+    assert!(fetched.status().is_success());
+    let fetched: PolicyRecord = fetched.json().await.unwrap();
+    assert_eq!(fetched.id, record.id);
 
     let active = seed_runtime
         .store
@@ -263,6 +277,7 @@ async fn http_api_cluster_proxy_lifecycle() {
 
     let disabled_payload = serde_json::json!({
         "mode": "disabled",
+        "name": "ignored-body-name",
         "policy": {
             "default_policy": "deny",
             "source_groups": [
@@ -283,8 +298,7 @@ async fn http_api_cluster_proxy_lifecycle() {
     });
     let resp = client
         .put(format!(
-            "https://{follower_addr}/api/v1/policies/{}",
-            record.id
+            "https://{follower_addr}/api/v1/policies/by-name/cluster-default"
         ))
         .bearer_auth(&token.token)
         .json(&disabled_payload)
@@ -293,6 +307,8 @@ async fn http_api_cluster_proxy_lifecycle() {
         .unwrap();
     assert!(resp.status().is_success());
     let updated: PolicyRecord = resp.json().await.unwrap();
+    assert_eq!(updated.id, record.id);
+    assert_eq!(updated.name.as_deref(), Some("cluster-default"));
     assert_eq!(updated.mode, PolicyMode::Disabled);
     wait_for_state_absent(
         &seed_runtime.store,

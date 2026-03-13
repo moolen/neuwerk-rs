@@ -1,3 +1,5 @@
+use crate::e2e::services::{http_get_policy_by_name, http_upsert_policy_by_name};
+
 pub(super) fn api_policy_persisted_local(cfg: &TopologyConfig) -> Result<(), String> {
     let tls_dir = cfg.http_tls_dir.clone();
     wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
@@ -170,6 +172,88 @@ pub(super) fn api_policy_get_update_delete(cfg: &TopologyConfig) -> Result<(), S
         .await?;
         if status != reqwest::StatusCode::NOT_FOUND {
             return Err(format!("expected 404 after delete, got {status}"));
+        }
+        Ok(())
+    })
+}
+
+pub(super) fn api_policy_upsert_by_name(cfg: &TopologyConfig) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let token = api_auth_token(cfg)?;
+    let policy_name = "terraform-prod";
+    let baseline_policy = parse_policy(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/e2e_policy.yaml"
+    )))?;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+        let created = http_upsert_policy_by_name(
+            api_addr,
+            &tls_dir,
+            policy_name,
+            baseline_policy.clone(),
+            PolicyMode::Audit,
+            Some(&token),
+        )
+        .await?;
+        if created.name.as_deref() != Some(policy_name) {
+            return Err("policy upsert by-name returned wrong name".to_string());
+        }
+
+        let fetched = http_get_policy_by_name(api_addr, &tls_dir, policy_name, Some(&token)).await?;
+        if fetched.id != created.id {
+            return Err("policy get by-name returned wrong record".to_string());
+        }
+
+        let mut updated_policy = baseline_policy.clone();
+        updated_policy.default_policy = Some(PolicyValue::String("allow".to_string()));
+        let updated = http_upsert_policy_by_name(
+            api_addr,
+            &tls_dir,
+            policy_name,
+            updated_policy,
+            PolicyMode::Enforce,
+            Some(&token),
+        )
+        .await?;
+        if updated.id != created.id {
+            return Err("policy upsert by-name did not preserve stable id".to_string());
+        }
+        if updated.name.as_deref() != Some(policy_name) {
+            return Err("policy upsert by-name changed stable name".to_string());
+        }
+        let updated_default = match updated.policy.default_policy {
+            Some(PolicyValue::String(value)) => value,
+            _ => "missing".to_string(),
+        };
+        if updated_default != "allow" {
+            return Err(format!(
+                "unexpected by-name updated default_policy {}",
+                updated_default
+            ));
+        }
+
+        let list = http_list_policies(api_addr, &tls_dir, Some(&token)).await?;
+        let matching: Vec<&PolicyRecord> = list
+            .iter()
+            .filter(|record| record.name.as_deref() == Some(policy_name))
+            .collect();
+        if matching.len() != 1 {
+            return Err(format!(
+                "expected exactly one policy named {policy_name}, found {}",
+                matching.len()
+            ));
+        }
+        if matching[0].id != created.id {
+            return Err("policy list returned wrong record for stable name".to_string());
         }
         Ok(())
     })

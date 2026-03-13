@@ -38,10 +38,11 @@ pub use http_api::{
     http_auth_token_login, http_auth_whoami, http_create_service_account,
     http_create_service_account_token, http_delete_policy, http_delete_service_account,
     http_delete_tls_intercept_ca, http_get, http_get_audit_findings, http_get_dns_cache,
-    http_get_path, http_get_policy, http_get_stats, http_list_policies,
+    http_get_path, http_get_policy, http_get_policy_by_name, http_get_stats, http_list_policies,
     http_list_service_account_tokens, http_list_service_accounts,
     http_put_tls_intercept_ca_from_http_ca, http_revoke_service_account_token, http_set_policy,
-    http_stream, http_stream_path, http_update_policy, http_wait_for_health,
+    http_stream, http_stream_path, http_update_policy, http_update_service_account,
+    http_upsert_policy_by_name, http_wait_for_health,
 };
 pub use models::{AuthUser, DnsCacheEntry, DnsCacheResponse};
 #[cfg(test)]

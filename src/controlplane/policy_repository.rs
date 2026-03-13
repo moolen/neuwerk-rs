@@ -150,6 +150,44 @@ impl PolicyDiskStore {
         read_json(&path)
     }
 
+    pub fn read_record_by_name(&self, name: &str) -> io::Result<Option<PolicyRecord>> {
+        let index = self.read_index()?;
+        let matches: Vec<_> = index
+            .policies
+            .into_iter()
+            .filter(|meta| {
+                meta.name
+                    .as_deref()
+                    .map(|candidate| policy_names_equal(candidate, name))
+                    .unwrap_or(false)
+            })
+            .collect();
+        match matches.as_slice() {
+            [] => Ok(None),
+            [meta] => self.read_record(meta.id),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("duplicate policy name: {}", name.trim()),
+            )),
+        }
+    }
+
+    pub fn name_in_use_by_other_record(
+        &self,
+        name: &str,
+        exclude_id: Option<Uuid>,
+    ) -> io::Result<bool> {
+        let index = self.read_index()?;
+        Ok(index.policies.iter().any(|meta| {
+            exclude_id.map(|id| meta.id != id).unwrap_or(true)
+                && meta
+                    .name
+                    .as_deref()
+                    .map(|candidate| policy_names_equal(candidate, name))
+                    .unwrap_or(false)
+        }))
+    }
+
     pub fn set_active(&self, id: Option<Uuid>) -> io::Result<()> {
         let path = self.active_path();
         match id {
@@ -226,6 +264,10 @@ fn to_io_err(err: impl std::fmt::Display) -> io::Error {
 pub fn sanitize_policy_name(name: Option<String>) -> Option<String> {
     name.map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+pub fn policy_names_equal(lhs: &str, rhs: &str) -> bool {
+    lhs.trim().eq_ignore_ascii_case(rhs.trim())
 }
 
 #[cfg(test)]
@@ -327,6 +369,63 @@ default_policy: deny
             .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
             .count();
         assert_eq!(tmp_files, 0, "atomic write leaked temporary files");
+    }
+
+    #[test]
+    fn read_record_by_name_matches_case_insensitively() {
+        let dir = TempDir::new().unwrap();
+        let store = PolicyDiskStore::new(dir.path().to_path_buf());
+        let record = sample_record();
+        store.write_record(&record).unwrap();
+
+        let fetched = store
+            .read_record_by_name("  TEST-policy ")
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.id, record.id);
+    }
+
+    #[test]
+    fn read_record_by_name_rejects_duplicates() {
+        let dir = TempDir::new().unwrap();
+        let store = PolicyDiskStore::new(dir.path().to_path_buf());
+        let first = sample_record();
+        let second = PolicyRecord::new(
+            PolicyMode::Audit,
+            sample_policy(),
+            Some("TEST-policy".to_string()),
+        )
+        .unwrap();
+        store.write_record(&first).unwrap();
+        store.write_record(&second).unwrap();
+
+        let err = store
+            .read_record_by_name("test-policy")
+            .expect_err("expected duplicate-name error");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("duplicate policy name"));
+    }
+
+    #[test]
+    fn name_in_use_by_other_record_excludes_target_record() {
+        let dir = TempDir::new().unwrap();
+        let store = PolicyDiskStore::new(dir.path().to_path_buf());
+        let first = sample_record();
+        let second = PolicyRecord::new(
+            PolicyMode::Audit,
+            sample_policy(),
+            Some("other-policy".to_string()),
+        )
+        .unwrap();
+        store.write_record(&first).unwrap();
+        store.write_record(&second).unwrap();
+
+        assert!(!store
+            .name_in_use_by_other_record("TEST-policy", Some(first.id))
+            .unwrap());
+        assert!(store
+            .name_in_use_by_other_record("test-policy", Some(second.id))
+            .unwrap());
     }
 
     #[test]

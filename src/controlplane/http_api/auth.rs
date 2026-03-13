@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::controlplane::api_auth;
 use crate::controlplane::service_accounts::{
-    parse_rfc3339, ServiceAccountStatus, TokenMeta, TokenStatus,
+    parse_rfc3339, ServiceAccountRole, ServiceAccountStatus, TokenMeta, TokenStatus,
 };
 
 use super::{error_response, ApiState, AuthContext, AUTH_COOKIE_NAME};
@@ -195,7 +195,7 @@ pub(super) async fn auth_middleware(
     };
 
     let now = OffsetDateTime::now_utc();
-    let claims = match api_auth::validate_token_allow_missing_exp(&token, &keyset, now) {
+    let mut claims = match api_auth::validate_token_allow_missing_exp(&token, &keyset, now) {
         Ok(claims) => claims,
         Err(err) => {
             state
@@ -216,11 +216,16 @@ pub(super) async fn auth_middleware(
     }
 
     if let Some(sa_id) = &claims.sa_id {
-        if let Err(err) = validate_service_account_claims(&state, &claims, sa_id, now).await {
-            state
-                .metrics
-                .observe_http_auth("deny", AuthFailureReason::InvalidToken.as_label());
-            return error_response(axum::http::StatusCode::UNAUTHORIZED, err);
+        match validate_service_account_claims(&state, &claims, sa_id, now).await {
+            Ok(role) => {
+                claims.roles = Some(vec![role.as_str().to_string()]);
+            }
+            Err(err) => {
+                state
+                    .metrics
+                    .observe_http_auth("deny", AuthFailureReason::InvalidToken.as_label());
+                return error_response(axum::http::StatusCode::UNAUTHORIZED, err);
+            }
         }
     }
 
@@ -265,7 +270,7 @@ pub(super) async fn validate_service_account_claims(
     claims: &api_auth::JwtClaims,
     sa_id: &str,
     now: OffsetDateTime,
-) -> Result<(), String> {
+) -> Result<ServiceAccountRole, String> {
     let account_id =
         Uuid::parse_str(sa_id).map_err(|_| "invalid service account id".to_string())?;
     if claims.sub != sa_id {
@@ -291,6 +296,10 @@ pub(super) async fn validate_service_account_claims(
     if account.status != ServiceAccountStatus::Active {
         return Err("service account disabled".to_string());
     }
+    if !account.role.allows(token.role) {
+        return Err("token role exceeds current account role".to_string());
+    }
+    validate_service_account_claimed_roles(claims.roles.as_ref(), token.role)?;
     if let Some(expires_at) = &token.expires_at {
         if claims.exp.is_none() {
             return Err("missing jwt exp".to_string());
@@ -304,6 +313,26 @@ pub(super) async fn validate_service_account_claims(
         if let Ok(updated_at) = now.format(&Rfc3339) {
             token.last_used_at = Some(updated_at);
             let _ = state.service_accounts.write_token(&token).await;
+        }
+    }
+    Ok(token.role)
+}
+
+fn validate_service_account_claimed_roles(
+    claims_roles: Option<&Vec<String>>,
+    effective_role: ServiceAccountRole,
+) -> Result<(), String> {
+    let Some(claims_roles) = claims_roles else {
+        return Ok(());
+    };
+    for role in claims_roles {
+        let claimed = match role.trim().to_ascii_lowercase().as_str() {
+            "readonly" => ServiceAccountRole::Readonly,
+            "admin" => ServiceAccountRole::Admin,
+            _ => return Err("invalid service account role claim".to_string()),
+        };
+        if !effective_role.allows(claimed) {
+            return Err("jwt role exceeds stored token role".to_string());
         }
     }
     Ok(())
@@ -359,7 +388,9 @@ mod tests {
     use crate::controlplane::integrations::IntegrationStore;
     use crate::controlplane::metrics::Metrics;
     use crate::controlplane::policy_repository::PolicyDiskStore;
-    use crate::controlplane::service_accounts::{ServiceAccountStore, TokenMeta};
+    use crate::controlplane::service_accounts::{
+        ServiceAccountRole, ServiceAccountStore, TokenMeta,
+    };
     use crate::controlplane::sso::SsoStore;
     use crate::controlplane::PolicyStore;
     use crate::dataplane::policy::DefaultPolicy;
@@ -435,5 +466,53 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, "token revoked");
+    }
+
+    #[tokio::test]
+    async fn validate_service_account_claims_rejects_broader_token_than_account() {
+        let dir = TempDir::new().unwrap();
+        let store = ServiceAccountStore::local(dir.path().join("service-accounts"));
+        let mut account = store
+            .create_account_with_role(
+                "svc".to_string(),
+                None,
+                "creator".to_string(),
+                ServiceAccountRole::Admin,
+            )
+            .await
+            .unwrap();
+        let token_id = Uuid::new_v4();
+        let token = TokenMeta::new_with_role(
+            account.id,
+            Some("token".to_string()),
+            "creator".to_string(),
+            "kid".to_string(),
+            None,
+            token_id,
+            ServiceAccountRole::Admin,
+        )
+        .unwrap();
+        store.write_token(&token).await.unwrap();
+        account.role = ServiceAccountRole::Readonly;
+        store.update_account(&account).await.unwrap();
+
+        let state = test_api_state(&dir, store);
+        let now = OffsetDateTime::now_utc();
+        let claims = api_auth::JwtClaims {
+            iss: "neuwerk".to_string(),
+            aud: "neuwerk-api".to_string(),
+            sub: account.id.to_string(),
+            exp: None,
+            iat: now.unix_timestamp(),
+            jti: token_id.to_string(),
+            sa_id: Some(account.id.to_string()),
+            scope: None,
+            roles: Some(vec!["admin".to_string()]),
+        };
+
+        let err = validate_service_account_claims(&state, &claims, &account.id.to_string(), now)
+            .await
+            .unwrap_err();
+        assert_eq!(err, "token role exceeds current account role");
     }
 }

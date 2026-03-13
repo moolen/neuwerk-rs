@@ -1,5 +1,6 @@
 import React from 'react';
 import type { ServiceAccount, ServiceAccountToken } from '../../../types';
+import { ServiceAccountRoleBadge } from '../../../components/service-accounts/ServiceAccountRoleBadge';
 import { ServiceAccountTokensTable } from './ServiceAccountTokensTable';
 
 interface ServiceAccountTokensPanelProps {
@@ -28,9 +29,12 @@ export const ServiceAccountTokensPanel: React.FC<ServiceAccountTokensPanelProps>
         <h2 className="text-lg font-semibold" style={{ color: 'var(--text)' }}>
           Tokens for {account.name}
         </h2>
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          {account.id}
-        </p>
+        <div className="mt-1 flex items-center gap-2">
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            {account.id}
+          </p>
+          <ServiceAccountRoleBadge role={account.role} />
+        </div>
       </div>
       <button
         onClick={onCreateToken}

@@ -354,3 +354,177 @@ async fn firewall_binary_sigterm_flips_readiness_false_before_exit_and_restarts(
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn firewall_binary_policy_upsert_by_name_preserves_stable_id_across_restart() {
+    let dir = TempDir::new().unwrap();
+    let tls_dir = dir.path().join("http-tls");
+    let local_root = dir.path().join("var-lib");
+    let http_bind = next_addr(Ipv4Addr::LOCALHOST);
+    let metrics_bind = next_addr(Ipv4Addr::LOCALHOST);
+    let dataplane_iface = format!("nwtestb{}", std::process::id());
+    let _cleanup = NetworkCleanup {
+        dataplane_iface: dataplane_iface.clone(),
+    };
+
+    cleanup_service_lane_state();
+    if let Err(err) = create_tun_interface(&dataplane_iface, "10.9.1.2/24") {
+        eprintln!("skipping runtime by-name case: tun interface setup unavailable: {err}");
+        return;
+    }
+
+    let mut child = spawn_firewall(
+        &tls_dir,
+        &local_root,
+        http_bind,
+        metrics_bind,
+        &dataplane_iface,
+    )
+    .unwrap();
+
+    wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(5))
+        .await
+        .unwrap();
+    let client = http_client(&tls_dir).unwrap();
+    wait_for_ready(&client, http_bind, true, Duration::from_secs(5))
+        .await
+        .unwrap();
+
+    let auth_path = api_auth::local_keyset_path(&tls_dir);
+    wait_for_file(&auth_path, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let keyset = api_auth::load_keyset_from_file(&auth_path)
+        .unwrap()
+        .expect("missing api keyset");
+    let token = api_auth::mint_token(&keyset, "by-name-test", None, None).unwrap();
+
+    let first_payload = serde_json::json!({
+        "mode": "audit",
+        "name": "ignored-body-name",
+        "policy": {
+            "default_policy": "deny",
+            "source_groups": [
+                {
+                    "id": "sigterm",
+                    "sources": { "ips": ["10.0.0.5"] },
+                    "rules": [
+                        {
+                            "id": "allow-dns",
+                            "mode": "enforce",
+                            "action": "allow",
+                            "match": { "dns_hostname": "example.com" }
+                        }
+                    ]
+                }
+            ]
+        }
+    });
+    let create = client
+        .put(format!(
+            "https://{http_bind}/api/v1/policies/by-name/terraform-prod"
+        ))
+        .bearer_auth(&token.token)
+        .json(&first_payload)
+        .send()
+        .await
+        .unwrap();
+    assert!(create.status().is_success());
+    let created: serde_json::Value = create.json().await.unwrap();
+    let created_id = created
+        .get("id")
+        .and_then(|value| value.as_str())
+        .expect("missing created id")
+        .to_string();
+    assert_eq!(
+        created.get("name").and_then(|value| value.as_str()),
+        Some("terraform-prod")
+    );
+
+    let fetched = client
+        .get(format!(
+            "https://{http_bind}/api/v1/policies/by-name/TERRAFORM-prod"
+        ))
+        .bearer_auth(&token.token)
+        .send()
+        .await
+        .unwrap();
+    assert!(fetched.status().is_success());
+    let fetched: serde_json::Value = fetched.json().await.unwrap();
+    assert_eq!(
+        fetched.get("id").and_then(|value| value.as_str()),
+        Some(created_id.as_str())
+    );
+
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).unwrap();
+    wait_for_ready_false_before_exit(&mut child, &client, http_bind, Duration::from_secs(3))
+        .await
+        .unwrap();
+    wait_for_child_exit(&mut child, Duration::from_secs(5))
+        .await
+        .unwrap();
+    wait_for_tcp_closed(http_bind, Duration::from_secs(5))
+        .await
+        .unwrap();
+    wait_for_tcp_closed(metrics_bind, Duration::from_secs(5))
+        .await
+        .unwrap();
+
+    let mut restarted = spawn_firewall(
+        &tls_dir,
+        &local_root,
+        http_bind,
+        metrics_bind,
+        &dataplane_iface,
+    )
+    .unwrap();
+    wait_for_ready(&client, http_bind, true, Duration::from_secs(5))
+        .await
+        .unwrap();
+
+    let second_payload = serde_json::json!({
+        "mode": "enforce",
+        "policy": {
+            "default_policy": "allow",
+            "source_groups": []
+        }
+    });
+    let update = client
+        .put(format!(
+            "https://{http_bind}/api/v1/policies/by-name/terraform-prod"
+        ))
+        .bearer_auth(&token.token)
+        .json(&second_payload)
+        .send()
+        .await
+        .unwrap();
+    assert!(update.status().is_success());
+    let updated: serde_json::Value = update.json().await.unwrap();
+    assert_eq!(
+        updated.get("id").and_then(|value| value.as_str()),
+        Some(created_id.as_str())
+    );
+    assert_eq!(
+        updated.get("name").and_then(|value| value.as_str()),
+        Some("terraform-prod")
+    );
+
+    let listed = client
+        .get(format!("https://{http_bind}/api/v1/policies"))
+        .bearer_auth(&token.token)
+        .send()
+        .await
+        .unwrap();
+    assert!(listed.status().is_success());
+    let records: Vec<serde_json::Value> = listed.json().await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].get("id").and_then(|value| value.as_str()),
+        Some(created_id.as_str())
+    );
+
+    kill(Pid::from_raw(restarted.id() as i32), Signal::SIGTERM).unwrap();
+    wait_for_child_exit(&mut restarted, Duration::from_secs(5))
+        .await
+        .unwrap();
+}

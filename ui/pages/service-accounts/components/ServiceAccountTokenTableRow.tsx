@@ -1,6 +1,7 @@
 import React from 'react';
 
 import type { ServiceAccountToken } from '../../../types';
+import { ServiceAccountRoleBadge } from '../../../components/service-accounts/ServiceAccountRoleBadge';
 import { canRevokeToken, formatTokenTimestamp } from './tokenTableHelpers';
 
 interface ServiceAccountTokenTableRowProps {
@@ -15,6 +16,9 @@ export const ServiceAccountTokenTableRow: React.FC<ServiceAccountTokenTableRowPr
   <tr style={{ borderBottom: '1px solid var(--border-glass-subtle, var(--border-glass))' }}>
     <td className="py-2 px-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
       {token.name || '-'}
+    </td>
+    <td className="py-2 px-2 text-xs">
+      <ServiceAccountRoleBadge role={token.role} />
     </td>
     <td className="py-2 px-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
       {token.status}

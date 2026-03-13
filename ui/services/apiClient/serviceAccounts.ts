@@ -4,6 +4,7 @@ import type {
   CreateServiceAccountTokenResponse,
   ServiceAccount,
   ServiceAccountToken,
+  UpdateServiceAccountRequest,
 } from '../../types';
 import { fetchJSON } from './transport';
 
@@ -14,6 +15,16 @@ export async function getServiceAccounts(): Promise<ServiceAccount[]> {
 export async function createServiceAccount(req: CreateServiceAccountRequest): Promise<ServiceAccount> {
   return fetchJSON<ServiceAccount>('/service-accounts', {
     method: 'POST',
+    body: JSON.stringify(req),
+  });
+}
+
+export async function updateServiceAccount(
+  id: string,
+  req: UpdateServiceAccountRequest
+): Promise<ServiceAccount> {
+  return fetchJSON<ServiceAccount>(`/service-accounts/${encodeURIComponent(id)}`, {
+    method: 'PUT',
     body: JSON.stringify(req),
   });
 }

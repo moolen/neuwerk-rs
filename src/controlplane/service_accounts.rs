@@ -37,6 +37,34 @@ pub enum ServiceAccountStatus {
     Disabled,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceAccountRole {
+    #[default]
+    Readonly,
+    Admin,
+}
+
+impl ServiceAccountRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ServiceAccountRole::Readonly => "readonly",
+            ServiceAccountRole::Admin => "admin",
+        }
+    }
+
+    pub fn allows(self, requested: ServiceAccountRole) -> bool {
+        self.rank() >= requested.rank()
+    }
+
+    fn rank(self) -> u8 {
+        match self {
+            ServiceAccountRole::Readonly => 0,
+            ServiceAccountRole::Admin => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceAccount {
     pub id: Uuid,
@@ -44,6 +72,8 @@ pub struct ServiceAccount {
     pub description: Option<String>,
     pub created_at: String,
     pub created_by: String,
+    #[serde(default)]
+    pub role: ServiceAccountRole,
     pub status: ServiceAccountStatus,
 }
 
@@ -52,6 +82,15 @@ impl ServiceAccount {
         name: String,
         description: Option<String>,
         created_by: String,
+    ) -> Result<Self, String> {
+        Self::new_with_role(name, description, created_by, ServiceAccountRole::Readonly)
+    }
+
+    pub fn new_with_role(
+        name: String,
+        description: Option<String>,
+        created_by: String,
+        role: ServiceAccountRole,
     ) -> Result<Self, String> {
         let created_at = OffsetDateTime::now_utc()
             .format(&Rfc3339)
@@ -62,6 +101,7 @@ impl ServiceAccount {
             description,
             created_at,
             created_by,
+            role,
             status: ServiceAccountStatus::Active,
         })
     }
@@ -85,6 +125,8 @@ pub struct TokenMeta {
     pub revoked_at: Option<String>,
     pub last_used_at: Option<String>,
     pub kid: String,
+    #[serde(default)]
+    pub role: ServiceAccountRole,
     pub status: TokenStatus,
 }
 
@@ -96,6 +138,26 @@ impl TokenMeta {
         kid: String,
         expires_at: Option<String>,
         token_id: Uuid,
+    ) -> Result<Self, String> {
+        Self::new_with_role(
+            service_account_id,
+            name,
+            created_by,
+            kid,
+            expires_at,
+            token_id,
+            ServiceAccountRole::Readonly,
+        )
+    }
+
+    pub fn new_with_role(
+        service_account_id: Uuid,
+        name: Option<String>,
+        created_by: String,
+        kid: String,
+        expires_at: Option<String>,
+        token_id: Uuid,
+        role: ServiceAccountRole,
     ) -> Result<Self, String> {
         let created_at = OffsetDateTime::now_utc()
             .format(&Rfc3339)
@@ -110,6 +172,7 @@ impl TokenMeta {
             revoked_at: None,
             last_used_at: None,
             kid,
+            role,
             status: TokenStatus::Active,
         })
     }
@@ -380,7 +443,18 @@ impl ServiceAccountStore {
         description: Option<String>,
         created_by: String,
     ) -> Result<ServiceAccount, String> {
-        let account = ServiceAccount::new(name, description, created_by)?;
+        self.create_account_with_role(name, description, created_by, ServiceAccountRole::Readonly)
+            .await
+    }
+
+    pub async fn create_account_with_role(
+        &self,
+        name: String,
+        description: Option<String>,
+        created_by: String,
+        role: ServiceAccountRole,
+    ) -> Result<ServiceAccount, String> {
+        let account = ServiceAccount::new_with_role(name, description, created_by, role)?;
         match self {
             ServiceAccountStore::Cluster(store) => {
                 store.write_account(&account).await?;
@@ -548,29 +622,33 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = ServiceAccountDiskStore::new(dir.path().join("sa"));
 
-        let account = ServiceAccount::new(
+        let account = ServiceAccount::new_with_role(
             "svc".to_string(),
             Some("desc".to_string()),
             "creator".to_string(),
+            ServiceAccountRole::Admin,
         )
         .unwrap();
         store.write_account(&account).unwrap();
         let loaded = store.read_account(account.id).unwrap().unwrap();
         assert_eq!(loaded.name, "svc");
+        assert_eq!(loaded.role, ServiceAccountRole::Admin);
 
-        let token = TokenMeta::new(
+        let token = TokenMeta::new_with_role(
             account.id,
             Some("tok".to_string()),
             "creator".to_string(),
             "kid".to_string(),
             None,
             Uuid::new_v4(),
+            ServiceAccountRole::Admin,
         )
         .unwrap();
         store.write_token(&token).unwrap();
         let tokens = store.list_tokens(account.id).unwrap();
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].kid, "kid");
+        assert_eq!(tokens[0].role, ServiceAccountRole::Admin);
     }
 
     #[cfg(unix)]
@@ -635,6 +713,7 @@ mod tests {
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, account.id);
         assert_eq!(accounts[0].name, "svc");
+        assert_eq!(accounts[0].role, ServiceAccountRole::Readonly);
 
         let mut persisted_token = restarted
             .get_token(token_id)
@@ -642,6 +721,7 @@ mod tests {
             .unwrap()
             .expect("token after restart");
         assert_eq!(persisted_token.status, TokenStatus::Active);
+        assert_eq!(persisted_token.role, ServiceAccountRole::Readonly);
         persisted_token.status = TokenStatus::Revoked;
         persisted_token.revoked_at = Some("2026-03-09T12:00:00Z".to_string());
         restarted.write_token(&persisted_token).await.unwrap();
@@ -709,6 +789,7 @@ mod tests {
         assert_eq!(accounts[0].id, account_id);
         assert_eq!(accounts[0].name, "svc");
         assert_eq!(accounts[0].description, None);
+        assert_eq!(accounts[0].role, ServiceAccountRole::Readonly);
         assert_eq!(accounts[0].status, ServiceAccountStatus::Active);
     }
 
@@ -752,6 +833,15 @@ mod tests {
         assert_eq!(tokens[0].expires_at, None);
         assert_eq!(tokens[0].revoked_at, None);
         assert_eq!(tokens[0].last_used_at, None);
+        assert_eq!(tokens[0].role, ServiceAccountRole::Readonly);
         assert_eq!(tokens[0].status, TokenStatus::Active);
+    }
+
+    #[test]
+    fn service_account_role_allows_narrower_roles_only() {
+        assert!(ServiceAccountRole::Admin.allows(ServiceAccountRole::Readonly));
+        assert!(ServiceAccountRole::Admin.allows(ServiceAccountRole::Admin));
+        assert!(ServiceAccountRole::Readonly.allows(ServiceAccountRole::Readonly));
+        assert!(!ServiceAccountRole::Readonly.allows(ServiceAccountRole::Admin));
     }
 }

@@ -20,6 +20,9 @@ export const ServiceAccountTokensTable: React.FC<ServiceAccountTokensTableProps>
             Name
           </th>
           <th className="text-left py-2 px-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+            Role
+          </th>
+          <th className="text-left py-2 px-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
             Status
           </th>
           <th className="text-left py-2 px-2 text-xs" style={{ color: 'var(--text-secondary)' }}>

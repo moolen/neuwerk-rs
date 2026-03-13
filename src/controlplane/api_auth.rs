@@ -388,6 +388,7 @@ pub fn mint_service_account_token(
     ttl_secs: Option<i64>,
     eternal: bool,
     kid: Option<&str>,
+    roles: Option<Vec<String>>,
     now: OffsetDateTime,
 ) -> Result<MintedServiceToken, String> {
     if service_account_id.trim().is_empty() {
@@ -423,7 +424,7 @@ pub fn mint_service_account_token(
         jti: uuid::Uuid::new_v4().to_string(),
         sa_id: Some(service_account_id.to_string()),
         scope: None,
-        roles: None,
+        roles: normalize_roles(roles),
     };
     let token = sign_jwt(&key.kid, private_key, &claims)?;
     Ok(MintedServiceToken {
@@ -610,8 +611,16 @@ mod tests {
     fn jwt_allows_missing_exp_for_service_accounts() {
         let keyset = new_keyset().unwrap();
         let now = OffsetDateTime::now_utc();
-        let minted =
-            mint_service_account_token(&keyset, "service-account", None, true, None, now).unwrap();
+        let minted = mint_service_account_token(
+            &keyset,
+            "service-account",
+            None,
+            true,
+            None,
+            Some(vec!["readonly".to_string()]),
+            now,
+        )
+        .unwrap();
         assert!(validate_token_allow_missing_exp(&minted.token, &keyset, now).is_ok());
         assert!(validate_token_at(&minted.token, &keyset, now).is_err());
     }

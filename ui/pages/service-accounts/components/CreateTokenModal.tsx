@@ -1,22 +1,32 @@
-import React, { useState } from 'react';
-import type { CreateServiceAccountTokenRequest } from '../../../types';
+import React, { useEffect, useState } from 'react';
+import type { CreateServiceAccountTokenRequest, ServiceAccountRole } from '../../../types';
 import { CreateTokenModalActions } from './CreateTokenModalActions';
 import { CreateTokenModalFields } from './CreateTokenModalFields';
 import { buildCreateTokenRequest } from './createTokenForm';
 
 interface CreateTokenModalProps {
+  accountRole: ServiceAccountRole;
   onClose: () => void;
   onSubmit: (req: CreateServiceAccountTokenRequest) => void;
 }
 
-export const CreateTokenModal: React.FC<CreateTokenModalProps> = ({ onClose, onSubmit }) => {
+export const CreateTokenModal: React.FC<CreateTokenModalProps> = ({
+  accountRole,
+  onClose,
+  onSubmit,
+}) => {
   const [name, setName] = useState('');
   const [ttl, setTtl] = useState('');
   const [eternal, setEternal] = useState(false);
+  const [role, setRole] = useState<ServiceAccountRole>(accountRole);
+
+  useEffect(() => {
+    setRole(accountRole);
+  }, [accountRole]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit(buildCreateTokenRequest(name, ttl, eternal));
+    onSubmit(buildCreateTokenRequest(name, ttl, eternal, role));
   };
 
   return (
@@ -34,9 +44,12 @@ export const CreateTokenModal: React.FC<CreateTokenModalProps> = ({ onClose, onS
             name={name}
             ttl={ttl}
             eternal={eternal}
+            accountRole={accountRole}
+            role={role}
             onNameChange={setName}
             onTtlChange={setTtl}
             onEternalChange={setEternal}
+            onRoleChange={setRole}
           />
           <CreateTokenModalActions onClose={onClose} />
         </form>
