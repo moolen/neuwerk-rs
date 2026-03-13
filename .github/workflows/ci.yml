@@ -167,5 +167,6 @@ jobs:
 
       - name: Run Terraform provider contract suite
         run: |
-          sudo --preserve-env=PATH,HOME,RUSTUP_HOME,CARGO_HOME \
-            cargo test --test terraform_provider_e2e -- --test-threads=1
+          CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"
+          sudo --preserve-env=HOME,RUSTUP_HOME,CARGO_HOME \
+            "$CARGO_BIN" test --test terraform_provider_e2e -- --test-threads=1
