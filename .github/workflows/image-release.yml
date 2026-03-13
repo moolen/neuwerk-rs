@@ -155,16 +155,16 @@ jobs:
             )
             archive_name="${PROVIDER_NAME}_${version}_${goos}_${goarch}.zip"
             STAGE_DIR="$stage_dir" ASSET_DIR="$asset_dir" ARCHIVE_NAME="$archive_name" python3 - <<'PY'
-import os
-import pathlib
-import zipfile
+            import os
+            import pathlib
+            import zipfile
 
-stage = pathlib.Path(os.environ["STAGE_DIR"])
-archive = pathlib.Path(os.environ["ASSET_DIR"]) / os.environ["ARCHIVE_NAME"]
-with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-    for path in stage.iterdir():
-        zf.write(path, path.name)
-PY
+            stage = pathlib.Path(os.environ["STAGE_DIR"])
+            archive = pathlib.Path(os.environ["ASSET_DIR"]) / os.environ["ARCHIVE_NAME"]
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for path in stage.iterdir():
+                    zf.write(path, path.name)
+            PY
             rm -rf "$stage_dir"
           done
 
