@@ -6,7 +6,7 @@
       {
         "id": "consumers",
         "sources": {
-          "cidrs": ["10.40.3.0/24"]
+          "cidrs": ["10.30.3.0/24"]
         },
         "default_action": "deny",
         "rules": [
@@ -20,26 +20,11 @@
             }
           },
           {
-            "id": "allow-http-and-tcp-throughput",
+            "id": "allow-webhook-https",
             "action": "allow",
             "match": {
               "proto": "tcp",
-              "dst_ports": [80, 443, 9000, 5201, 5202]
-            }
-          },
-          {
-            "id": "allow-udp-throughput",
-            "action": "allow",
-            "match": {
-              "proto": "udp",
-              "dst_ports": [5201, 5202]
-            }
-          },
-          {
-            "id": "allow-icmp",
-            "action": "allow",
-            "match": {
-              "proto": "icmp"
+              "dst_ports": [443, 8443, 9443]
             }
           }
         ]

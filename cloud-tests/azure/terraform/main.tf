@@ -119,23 +119,24 @@ module "upstream_vm" {
 }
 
 module "consumer_vms" {
-  source              = "./modules/consumer_vms"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  name_prefix         = local.name_prefix
-  vm_size             = var.consumer_vm_size
-  instance_count      = var.consumer_count
-  admin_username      = var.admin_username
-  ssh_public_key      = file(var.ssh_public_key_path)
-  subnet_id           = module.network.consumer_subnet_id
-  gwlb_frontend_id    = ""
-  attach_gwlb         = var.consumer_attach_gwlb
-  public_ip_enabled   = var.consumer_public_ip_enabled
-  tags                = var.tags
-  image_publisher     = var.image_publisher
-  image_offer         = var.image_offer
-  image_sku           = var.image_sku
-  image_version       = var.image_version
+  source                     = "./modules/consumer_vms"
+  resource_group_name        = azurerm_resource_group.main.name
+  location                   = azurerm_resource_group.main.location
+  name_prefix                = local.name_prefix
+  vm_size                    = var.consumer_vm_size
+  instance_count             = var.consumer_count
+  secondary_private_ip_count = var.consumer_secondary_private_ip_count
+  admin_username             = var.admin_username
+  ssh_public_key             = file(var.ssh_public_key_path)
+  subnet_id                  = module.network.consumer_subnet_id
+  gwlb_frontend_id           = ""
+  attach_gwlb                = var.consumer_attach_gwlb
+  public_ip_enabled          = var.consumer_public_ip_enabled
+  tags                       = var.tags
+  image_publisher            = var.image_publisher
+  image_offer                = var.image_offer
+  image_sku                  = var.image_sku
+  image_version              = var.image_version
 }
 
 module "jumpbox" {

@@ -174,6 +174,17 @@ variable "consumer_count" {
   default = 1
 }
 
+variable "consumer_secondary_private_ip_count" {
+  type        = number
+  default     = 7
+  description = "Additional Azure private IP configurations to allocate per consumer NIC."
+
+  validation {
+    condition     = var.consumer_secondary_private_ip_count >= 0 && floor(var.consumer_secondary_private_ip_count) == var.consumer_secondary_private_ip_count
+    error_message = "consumer_secondary_private_ip_count must be a non-negative integer."
+  }
+}
+
 variable "dns_zone_name" {
   type    = string
   default = "upstream.test"

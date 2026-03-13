@@ -20,26 +20,17 @@
             }
           },
           {
-            "id": "allow-http-and-tcp-throughput",
+            "id": "allow-webhook-sni",
             "action": "allow",
             "match": {
               "proto": "tcp",
-              "dst_ports": [80, 443, 9000, 5201, 5202]
-            }
-          },
-          {
-            "id": "allow-udp-throughput",
-            "action": "allow",
-            "match": {
-              "proto": "udp",
-              "dst_ports": [5201, 5202]
-            }
-          },
-          {
-            "id": "allow-icmp",
-            "action": "allow",
-            "match": {
-              "proto": "icmp"
+              "dst_ports": [443, 8443, 9443],
+              "tls": {
+                "sni": {
+                  "exact": ["upstream.test"]
+                },
+                "tls13_uninspectable": "allow"
+              }
             }
           }
         ]

@@ -5,6 +5,7 @@ packages:
   - curl
   - dnsutils
   - ethtool
+  - iproute2
   - iperf3
   - socat
   - wrk
@@ -15,6 +16,88 @@ write_files:
     permissions: "0644"
     content: |
       Acquire::ForceIPv4 "true";
+%{ if secondary_private_ip_count > 0 ~}
+  - path: /usr/local/sbin/azure-consumer-secondary-ips
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      metadata_url="http://169.254.169.254/metadata/instance/network/interface?api-version=2021-02-01"
+      primary_iface="$(ip route show default | awk '/default/ {print $5; exit}')"
+      if [ -z "$primary_iface" ]; then
+        echo "failed to detect primary interface" >&2
+        exit 1
+      fi
+
+      mac_addr="$(cat "/sys/class/net/$primary_iface/address" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+      if [ -z "$mac_addr" ]; then
+        echo "failed to detect MAC address on $primary_iface" >&2
+        exit 1
+      fi
+
+      prefix_len="$(ip -4 -o addr show dev "$primary_iface" scope global primary | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[2]}')"
+      if [ -z "$prefix_len" ]; then
+        prefix_len="$(ip -4 -o addr show dev "$primary_iface" scope global | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[2]}')"
+      fi
+      if [ -z "$prefix_len" ]; then
+        echo "failed to detect IPv4 prefix length on $primary_iface" >&2
+        exit 1
+      fi
+
+      primary_ip="$(ip -4 -o addr show dev "$primary_iface" scope global primary | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[1]}')"
+      if [ -z "$primary_ip" ]; then
+        primary_ip="$(ip -4 -o addr show dev "$primary_iface" scope global | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[1]}')"
+      fi
+      if [ -z "$primary_ip" ]; then
+        echo "failed to detect primary IPv4 address on $primary_iface" >&2
+        exit 1
+      fi
+
+      expected_secondary_count=${secondary_private_ip_count}
+      secondary_seen=0
+      while IFS= read -r private_ip; do
+        [ -n "$private_ip" ] || continue
+        if [ "$private_ip" = "$primary_ip" ]; then
+          continue
+        fi
+        secondary_seen=$((secondary_seen + 1))
+        if ip -4 -o addr show dev "$primary_iface" to "$private_ip" | grep -Fq "$private_ip/"; then
+          continue
+        fi
+        ip addr replace "$private_ip/$prefix_len" dev "$primary_iface"
+      done < <(
+        curl -fsS -H Metadata:true "$metadata_url" \
+          | jq -r --arg mac "$mac_addr" '
+              map(select((.macAddress // "" | ascii_downcase) == $mac))
+              | .[0].ipv4.ipAddress[]?.privateIpAddress // empty
+            '
+      )
+
+      if [ "$secondary_seen" -lt "$expected_secondary_count" ]; then
+        echo "expected at least $expected_secondary_count secondary private IPs on $primary_iface, found $secondary_seen" >&2
+        exit 1
+      fi
+  - path: /etc/systemd/system/azure-consumer-secondary-ips.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Configure Azure consumer secondary private IPs
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/azure-consumer-secondary-ips
+      RemainAfterExit=true
+
+      [Install]
+      WantedBy=multi-user.target
+%{ endif ~}
 
 runcmd:
-  - ethtool -K eth0 rx off tx off gro off gso off tso off lro off || true
+  - PRIMARY_IFACE="$(ip route show default | awk '/default/ {print $5; exit}')"; if [ -n "$PRIMARY_IFACE" ]; then ethtool -K "$PRIMARY_IFACE" rx off tx off gro off gso off tso off lro off || true; fi
+%{ if secondary_private_ip_count > 0 ~}
+  - systemctl daemon-reload
+  - systemctl enable --now azure-consumer-secondary-ips.service
+%{ endif ~}

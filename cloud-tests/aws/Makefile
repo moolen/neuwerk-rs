@@ -9,7 +9,7 @@ INDEX ?= 0
 RESOLVE_FW_IPS ?= $(CURDIR)/scripts/resolve-firewall-mgmt-ips.sh
 MINT_API_TOKEN ?= $(CURDIR)/scripts/mint-api-token.sh
 
-.PHONY: ssh.jumpbox ssh.consumer ssh.upstream ssh.firewall health policy-smoke run-tests lifecycle-rollout
+.PHONY: ssh.jumpbox ssh.consumer ssh.upstream ssh.firewall health policy-smoke run-tests lifecycle-rollout throughput.matrix http-perf.setup http-perf.run http-perf.quick scaling.report
 
 ssh.jumpbox:
 	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
@@ -96,3 +96,54 @@ run-tests:
 lifecycle-rollout:
 	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
 		"$(CURDIR)/scripts/lifecycle-rollout.sh"
+
+throughput.matrix:
+	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
+	@command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
+	@command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+	@command -v aws >/dev/null || { echo "aws CLI is required" >&2; exit 1; }
+	@if [ ! -f "$(KEY_PATH)" ]; then echo "missing SSH key at $(KEY_PATH)" >&2; exit 1; fi
+	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
+		"$(CURDIR)/scripts/throughput-matrix.sh"
+
+http-perf.setup:
+	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
+	@command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
+	@command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+	@command -v aws >/dev/null || { echo "aws CLI is required" >&2; exit 1; }
+	@if [ ! -f "$(KEY_PATH)" ]; then echo "missing SSH key at $(KEY_PATH)" >&2; exit 1; fi
+	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
+		"$(CURDIR)/scripts/http-perf-setup.sh"
+
+http-perf.run:
+	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
+	@command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
+	@command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+	@command -v aws >/dev/null || { echo "aws CLI is required" >&2; exit 1; }
+	@if [ ! -f "$(KEY_PATH)" ]; then echo "missing SSH key at $(KEY_PATH)" >&2; exit 1; fi
+	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
+		"$(CURDIR)/scripts/http-perf-matrix.sh"
+
+http-perf.quick:
+	@command -v terraform >/dev/null || { echo "terraform is required" >&2; exit 1; }
+	@command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
+	@command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+	@command -v aws >/dev/null || { echo "aws CLI is required" >&2; exit 1; }
+	@if [ ! -f "$(KEY_PATH)" ]; then echo "missing SSH key at $(KEY_PATH)" >&2; exit 1; fi
+	@TF_DIR="$(TF_DIR)" KEY_PATH="$(KEY_PATH)" SSH_USER="$(SSH_USER)" \
+		HTTP_PERF_SCENARIOS="$${HTTP_PERF_SCENARIOS:-http_l34_allow}" \
+		RPS_TIERS="$${RPS_TIERS:-500}" \
+		PAYLOAD_TIERS="$${PAYLOAD_TIERS:-1024}" \
+		CONNECTION_MODES="$${CONNECTION_MODES:-keep_alive}" \
+		HTTP_REPEATS="$${HTTP_REPEATS:-1}" \
+		"$(CURDIR)/scripts/http-perf-matrix.sh"
+
+scaling.report:
+	@command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
+	@command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+	@if [ -z "$${THROUGHPUT_RESULT:-}" ] || [ -z "$${HTTP_MATRIX_SUMMARY:-}" ]; then \
+		echo "set THROUGHPUT_RESULT and HTTP_MATRIX_SUMMARY" >&2; exit 1; \
+	fi
+	@OUT_DIR="$${OUT_DIR:-$(CURDIR)/artifacts/scaling-report-$$(date -u +%Y%m%dT%H%M%SZ)}"; \
+	"$(CURDIR)/../common/generate-scaling-recommendations.sh" "$${THROUGHPUT_RESULT}" "$${HTTP_MATRIX_SUMMARY}" "$$OUT_DIR"; \
+	echo "report dir: $$OUT_DIR"

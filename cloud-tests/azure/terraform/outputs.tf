@@ -26,6 +26,10 @@ output "consumer_private_ips" {
   value = module.consumer_vms.private_ips
 }
 
+output "consumer_all_private_ips" {
+  value = module.consumer_vms.all_private_ips
+}
+
 output "consumer_public_ips" {
   value = module.consumer_vms.public_ips
 }

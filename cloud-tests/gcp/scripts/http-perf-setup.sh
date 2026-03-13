@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
-KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/azure_e2e}"
+KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/gcp_e2e}"
 RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
 COMMON_SETUP="${ROOT_DIR}/../common/http-perf-setup.sh"
 UPSTREAM_CONFIGURE_SCRIPT="${UPSTREAM_CONFIGURE_SCRIPT:-${ROOT_DIR}/../common/http-perf-upstream-configure.sh}"
@@ -12,7 +12,7 @@ UPSTREAM_CONFIGURE_SCRIPT="${UPSTREAM_CONFIGURE_SCRIPT:-${ROOT_DIR}/../common/ht
 source "${ROOT_DIR}/../common/lib.sh"
 
 require_bin terraform
-require_bin az
+require_bin gcloud
 require_bin jq
 require_bin ssh
 
@@ -24,10 +24,10 @@ if [ ! -x "$COMMON_SETUP" ]; then
   echo "missing executable common setup script: ${COMMON_SETUP}" >&2
   exit 1
 fi
-az account show >/dev/null 2>&1 || {
-  echo "az login required" >&2
+if ! gcloud auth application-default print-access-token >/dev/null 2>&1; then
+  echo "gcloud application-default auth required (run: gcloud auth application-default login)" >&2
   exit 1
-}
+fi
 
 pushd "$TF_DIR" >/dev/null
 JUMPBOX_IP="$(terraform output -raw jumpbox_public_ip)"

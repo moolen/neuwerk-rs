@@ -18,6 +18,16 @@ variable "instance_count" {
   type = number
 }
 
+variable "secondary_private_ip_count" {
+  type    = number
+  default = 0
+
+  validation {
+    condition     = var.secondary_private_ip_count >= 0 && floor(var.secondary_private_ip_count) == var.secondary_private_ip_count
+    error_message = "secondary_private_ip_count must be a non-negative integer."
+  }
+}
+
 variable "admin_username" {
   type = string
 }

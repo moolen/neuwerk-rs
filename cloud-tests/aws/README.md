@@ -21,7 +21,11 @@ This folder provisions an AWS verification bench for:
 6. `make health`
 7. `make policy-smoke`
 8. `make run-tests`
-9. `cd terraform && terraform destroy`
+9. `make throughput.matrix`
+10. `make http-perf.setup`
+11. `make http-perf.quick`
+12. `make http-perf.run`
+13. `cd terraform && terraform destroy`
 
 ## Architecture Switch
 - `traffic_architecture=gwlb` (default): keeps the existing GWLB endpoint + GENEVE path.
@@ -34,6 +38,10 @@ This folder provisions an AWS verification bench for:
 - `eni_no_encap` remains single-firewall-instance oriented for deterministic direct-route verification.
 - SSH key defaults to `cloud-tests/.secrets/ssh/aws_e2e`.
 - `policy-smoke` reuses the common cloud runner and skips standalone throughput; `run-tests` includes throughput.
+- Raw IP throughput matrix is available via `make throughput.matrix` and writes standardized artifacts (`context.json`, `workload.json`, `result.json`, `matrix-summary.json`) under `cloud-tests/aws/artifacts/throughput-matrix-*` using the shared runner `cloud-tests/common/run-throughput-matrix.sh`.
+- Cross-cloud HTTP/HTTPS/DPI matrix is available via `make http-perf.run` (quick single-combo smoke: `make http-perf.quick`), powered by common scripts under `cloud-tests/common/http-perf-*`.
+- `http-perf.run` now includes payload and connection dimensions by default (`PAYLOAD_TIERS=1024,32768`, `CONNECTION_MODES=keep_alive,new_connection_heavy`) and writes `matrix-summary.json`.
+- Build recommendation tables with `make scaling.report THROUGHPUT_RESULT=<.../throughput/result.json> HTTP_MATRIX_SUMMARY=<.../http-perf-matrix/matrix-summary.json>`.
 - ASG lifecycle rollout experiment: `make lifecycle-rollout` (writes `cloud-tests/aws/artifacts/aws-connectivity-rollout-*.{log,consumer-flow.log,result.json}`).
 - AWS smoke defaults exclude `tls_intercept_http_path_enforcement`; override with `RUNNER_ARGS` (or `AWS_RUNNER_TESTS`) to run a custom test set.
 - Throughput-sensitive knobs: `firewall_encap_mtu` (default `1800`), `firewall_dpdk_mbuf_data_room` (default `4096`), `firewall_dpdk_port_mtu` (GWLB default `1800`; set `0` to disable), `firewall_dpdk_port_mtu_no_encap` (eni_no_encap default `1800`; set `0` to disable), optional `firewall_dpdk_queue_override` (default `0`), `firewall_dpdk_state_shards` (default `32`), and `firewall_dpdk_overlay_debug` (keep `false` for perf).

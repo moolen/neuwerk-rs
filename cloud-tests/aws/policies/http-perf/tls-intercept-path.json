@@ -20,26 +20,25 @@
             }
           },
           {
-            "id": "allow-http-and-tcp-throughput",
+            "id": "allow-intercept-path-allowed",
             "action": "allow",
             "match": {
               "proto": "tcp",
-              "dst_ports": [80, 443, 9000, 5201, 5202]
-            }
-          },
-          {
-            "id": "allow-udp-throughput",
-            "action": "allow",
-            "match": {
-              "proto": "udp",
-              "dst_ports": [5201, 5202]
-            }
-          },
-          {
-            "id": "allow-icmp",
-            "action": "allow",
-            "match": {
-              "proto": "icmp"
+              "dst_ports": [443],
+              "tls": {
+                "mode": "intercept",
+                "http": {
+                  "request": {
+                    "host": {
+                      "exact": ["upstream.test"]
+                    },
+                    "methods": ["POST"],
+                    "path": {
+                      "prefix": ["/webhooks/allowed/"]
+                    }
+                  }
+                }
+              }
             }
           }
         ]

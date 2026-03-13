@@ -21,7 +21,9 @@ This folder provisions the Azure test bench described in `ROADMAP/AZURE-E2E.md`.
 9. Run termination drain-path validation with `make lifecycle-termination-drain` (targets one VMSS instance, triggers lifecycle action, and asserts termination/drain metrics via streamed max values). Use `TRIGGER_ACTION=terminate` (default) or `TRIGGER_ACTION=reboot`.
 10. Run HTTP webhook perf setup with `make http-perf.setup`.
 11. Run a quick single-scenario HTTP webhook perf run with `make http-perf.quick`.
-12. Run the full HTTP webhook perf matrix with `make http-perf.run` (override with `HTTP_PERF_SCENARIOS` and `RPS_TIERS`).
+12. Run the full HTTP webhook perf matrix with `make http-perf.run` (override with `HTTP_PERF_SCENARIOS`, `RPS_TIERS`, `PAYLOAD_TIERS`, `CONNECTION_MODES`, `HTTP_REPEATS`).
+13. Run raw IP throughput matrix (TCP+UDP stream sweep with repeated runs) via `make throughput.matrix`.
+14. Build recommendation tables with `make scaling.report THROUGHPUT_RESULT=<.../throughput/result.json> HTTP_MATRIX_SUMMARY=<.../http-perf-matrix/matrix-summary.json>`.
 
 ## Notes
 - Readiness checks use `https://<mgmt-ip>:8443/ready`.
@@ -35,3 +37,10 @@ This folder provisions the Azure test bench described in `ROADMAP/AZURE-E2E.md`.
 - DNS service args now use repeated `--dns-target-ip` and `--dns-upstream`; Terraform inputs are `dns_target_ips` and `dns_upstreams` (both lists). Empty values default to management IP target and upstream VM `:53`.
 - `scripts/run-tests.sh` now validates both UDP and TCP DNS queries and enforces strict TLS intercept allow/deny behavior (`/external-secrets/*` allowed, `/moolen` reset/refused).
 - HTTP webhook perf scripts live under `scripts/http-perf-*.sh`, use k6 from consumer VMs, and store JSON artifacts under `cloud-tests/azure/artifacts/http-perf-*`.
+- HTTP webhook perf setup now tunes consumer socket capacity for connection-heavy runs: wider ephemeral port range, `tcp_tw_reuse`, shorter `tcp_fin_timeout`, and higher `nofile` limits.
+- Azure consumers now allocate `consumer_secondary_private_ip_count` additional private IPs per NIC by default for HTTP perf runs; the current default is `7`, giving one consumer VM `8` total source IPs for connection-heavy load generation.
+- HTTP webhook perf runs now classify load-generator-limited cases as `status: "invalid"` in `result.json` and `matrix-summary.json` when k6 reports conditions such as `cannot assign requested address`, `Insufficient VUs`, or `too many open files`.
+- `new_connection_heavy` fanout uses all resolved consumer VMs automatically and splits target RPS across them; single-consumer runs remain valid for debugging but are more likely to be generator-limited.
+- HTTP perf artifacts now include consumer-side source-IP and socket diagnostics in `consumer-source-ips.json`, per-run `raw/pre.consumer-sockets.*.json` and `raw/post.consumer-sockets.*.json`, plus `consumer-socket-summary.json` with local-IP count and tuple-budget estimates.
+- Raw IP throughput matrix wrapper lives at `scripts/throughput-matrix.sh` and uses the shared runner `cloud-tests/common/run-throughput-matrix.sh` to emit `context.json`, `workload.json`, `result.json`, and `matrix-summary.json` under `cloud-tests/azure/artifacts/throughput-matrix-*`.
+- HTTP perf now supports explicit connection-mode and payload dimensions (`keep_alive` and `new_connection_heavy`; `1024` and `32768` bytes by default) via shared cross-cloud core scripts in `cloud-tests/common`.

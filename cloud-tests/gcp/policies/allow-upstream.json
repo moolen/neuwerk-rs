@@ -20,11 +20,19 @@
             }
           },
           {
-            "id": "allow-http",
+            "id": "allow-http-and-tcp-throughput",
             "action": "allow",
             "match": {
               "proto": "tcp",
               "dst_ports": [80, 443, 9000, 5201, 5202]
+            }
+          },
+          {
+            "id": "allow-udp-throughput",
+            "action": "allow",
+            "match": {
+              "proto": "udp",
+              "dst_ports": [5201, 5202]
             }
           },
           {

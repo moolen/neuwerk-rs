@@ -18,10 +18,22 @@ resource "azurerm_network_interface" "consumer" {
 
   ip_configuration {
     name                                               = "primary"
+    primary                                            = true
     subnet_id                                          = var.subnet_id
     private_ip_address_allocation                      = "Dynamic"
     public_ip_address_id                               = var.public_ip_enabled ? azurerm_public_ip.consumer[count.index].id : null
     gateway_load_balancer_frontend_ip_configuration_id = (var.attach_gwlb && var.public_ip_enabled) ? var.gwlb_frontend_id : null
+  }
+
+  dynamic "ip_configuration" {
+    for_each = range(var.secondary_private_ip_count)
+
+    content {
+      name                          = "secondary-${ip_configuration.value + 1}"
+      primary                       = false
+      subnet_id                     = var.subnet_id
+      private_ip_address_allocation = "Dynamic"
+    }
   }
 }
 
@@ -53,5 +65,7 @@ resource "azurerm_linux_virtual_machine" "consumer" {
     caching              = "ReadWrite"
   }
 
-  custom_data = base64encode(templatefile("${path.module}/../../cloud-init/consumer.yaml.tmpl", {}))
+  custom_data = base64encode(templatefile("${path.module}/../../cloud-init/consumer.yaml.tmpl", {
+    secondary_private_ip_count = var.secondary_private_ip_count
+  }))
 }
