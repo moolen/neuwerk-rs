@@ -1,5 +1,51 @@
 use super::*;
 
+fn service_account_policy_payload(name: &str) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(&serde_json::json!({
+        "name": name,
+        "mode": "audit",
+        "policy": {
+            "default_policy": "deny",
+            "source_groups": []
+        }
+    }))
+    .map_err(|err| format!("policy payload encode failed: {err}"))
+}
+
+async fn create_admin_service_account_token(
+    api_addr: SocketAddr,
+    tls_dir: &std::path::Path,
+    bootstrap_token: &str,
+    account_name: &str,
+    token_name: &str,
+) -> Result<(String, String, String), String> {
+    let account = http_create_service_account(
+        api_addr,
+        tls_dir,
+        account_name,
+        Some("e2e service account auth"),
+        ServiceAccountRole::Admin,
+        Some(bootstrap_token),
+    )
+    .await?;
+    let token = http_create_service_account_token(
+        api_addr,
+        tls_dir,
+        &account.id.to_string(),
+        Some(token_name),
+        Some("1h"),
+        None,
+        Some(ServiceAccountRole::Admin),
+        Some(bootstrap_token),
+    )
+    .await?;
+    Ok((
+        account.id.to_string(),
+        token.token,
+        token.token_meta.id.to_string(),
+    ))
+}
+
 pub(super) fn api_health_ok(cfg: &TopologyConfig) -> Result<(), String> {
     let tls_dir = cfg.http_tls_dir.clone();
     wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
@@ -598,6 +644,230 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
         if status != reqwest::StatusCode::UNAUTHORIZED {
             return Err(format!(
                 "expected unauthorized after account delete, got {status}"
+            ));
+        }
+
+        Ok(())
+    })
+}
+
+pub(super) fn api_service_account_admin_token_allows_mutation(
+    cfg: &TopologyConfig,
+) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let bootstrap_token = api_auth_token(cfg)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+
+        let (account_id, service_token, _token_id) = create_admin_service_account_token(
+            api_addr,
+            &tls_dir,
+            &bootstrap_token,
+            "e2e-admin-mutation",
+            "mutating-admin",
+        )
+        .await?;
+        let policy_name = "e2e-sa-admin-mutation";
+        let policy_body = service_account_policy_payload(policy_name)?;
+
+        let status = http_api_post_raw(
+            api_addr,
+            &tls_dir,
+            "/api/v1/policies",
+            policy_body,
+            Some(&service_token),
+        )
+        .await?;
+        if !status.is_success() {
+            return Err(format!(
+                "expected admin service-account token mutation to succeed, got {status}"
+            ));
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let created_policy_id = loop {
+            let policies = http_list_policies(api_addr, &tls_dir, Some(&service_token)).await?;
+            if let Some(policy) = policies
+                .iter()
+                .find(|policy| policy.name.as_deref() == Some(policy_name))
+            {
+                break policy.id.to_string();
+            }
+            if Instant::now() >= deadline {
+                return Err("mutated policy not visible via service-account token".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+
+        let delete_status = http_delete_policy(
+            api_addr,
+            &tls_dir,
+            &created_policy_id,
+            Some(&bootstrap_token),
+        )
+        .await?;
+        if delete_status != reqwest::StatusCode::NO_CONTENT {
+            return Err(format!(
+                "unexpected cleanup delete status after admin mutation: {delete_status}"
+            ));
+        }
+
+        let account_delete =
+            http_delete_service_account(api_addr, &tls_dir, &account_id, Some(&bootstrap_token))
+                .await?;
+        if account_delete != reqwest::StatusCode::NO_CONTENT {
+            return Err(format!(
+                "unexpected service-account cleanup delete status: {account_delete}"
+            ));
+        }
+
+        Ok(())
+    })
+}
+
+pub(super) fn api_service_account_rejects_malformed_and_revoked_tokens(
+    cfg: &TopologyConfig,
+) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let bootstrap_token = api_auth_token(cfg)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+
+        let malformed_status = http_api_post_raw(
+            api_addr,
+            &tls_dir,
+            "/api/v1/policies",
+            service_account_policy_payload("e2e-sa-malformed-token")?,
+            Some("definitely-not-a-jwt"),
+        )
+        .await?;
+        if malformed_status != reqwest::StatusCode::UNAUTHORIZED {
+            return Err(format!(
+                "expected malformed bearer token to be unauthorized, got {malformed_status}"
+            ));
+        }
+
+        let (account_id, service_token, service_token_id) = create_admin_service_account_token(
+            api_addr,
+            &tls_dir,
+            &bootstrap_token,
+            "e2e-revoked-mutation",
+            "revoked-admin",
+        )
+        .await?;
+
+        let revoke_status = http_revoke_service_account_token(
+            api_addr,
+            &tls_dir,
+            &account_id,
+            &service_token_id,
+            Some(&bootstrap_token),
+        )
+        .await?;
+        if revoke_status != reqwest::StatusCode::NO_CONTENT {
+            return Err(format!(
+                "unexpected service-account token revoke status: {revoke_status}"
+            ));
+        }
+
+        let revoked_status = http_api_post_raw(
+            api_addr,
+            &tls_dir,
+            "/api/v1/policies",
+            service_account_policy_payload("e2e-sa-revoked-token")?,
+            Some(&service_token),
+        )
+        .await?;
+        if revoked_status != reqwest::StatusCode::UNAUTHORIZED {
+            return Err(format!(
+                "expected revoked service-account token to be unauthorized, got {revoked_status}"
+            ));
+        }
+
+        let account_delete =
+            http_delete_service_account(api_addr, &tls_dir, &account_id, Some(&bootstrap_token))
+                .await?;
+        if account_delete != reqwest::StatusCode::NO_CONTENT {
+            return Err(format!(
+                "unexpected service-account cleanup delete status: {account_delete}"
+            ));
+        }
+
+        Ok(())
+    })
+}
+
+pub(super) fn api_service_account_readonly_token_cannot_modify_resource(
+    cfg: &TopologyConfig,
+) -> Result<(), String> {
+    let tls_dir = cfg.http_tls_dir.clone();
+    wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
+    let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
+    let bootstrap_token = api_auth_token(cfg)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime error: {e}"))?;
+    rt.block_on(async {
+        http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
+
+        let account = http_create_service_account(
+            api_addr,
+            &tls_dir,
+            "e2e-readonly-mutation",
+            Some("e2e readonly service account"),
+            ServiceAccountRole::Admin,
+            Some(&bootstrap_token),
+        )
+        .await?;
+        let readonly_token = http_create_service_account_token(
+            api_addr,
+            &tls_dir,
+            &account.id.to_string(),
+            Some("readonly-mutation"),
+            Some("1h"),
+            None,
+            Some(ServiceAccountRole::Readonly),
+            Some(&bootstrap_token),
+        )
+        .await?;
+
+        let status = http_api_post_raw(
+            api_addr,
+            &tls_dir,
+            "/api/v1/policies",
+            service_account_policy_payload("e2e-sa-readonly-token")?,
+            Some(&readonly_token.token),
+        )
+        .await?;
+        if status != reqwest::StatusCode::FORBIDDEN {
+            return Err(format!(
+                "expected readonly service-account token mutation to be forbidden, got {status}"
+            ));
+        }
+
+        let account_delete = http_delete_service_account(
+            api_addr,
+            &tls_dir,
+            &account.id.to_string(),
+            Some(&bootstrap_token),
+        )
+        .await?;
+        if account_delete != reqwest::StatusCode::NO_CONTENT {
+            return Err(format!(
+                "unexpected readonly service-account cleanup delete status: {account_delete}"
             ));
         }
 

@@ -1,0 +1,54 @@
+terraform {
+  required_providers {
+    neuwerk = {
+      source  = "moolen/neuwerk"
+      version = "{{PROVIDER_VERSION}}"
+    }
+  }
+}
+
+provider "neuwerk" {
+  endpoints       = ["{{ENDPOINT}}"]
+  token           = "{{TOKEN}}"
+  ca_cert_file    = "{{CA_CERT_FILE}}"
+  request_timeout = "30s"
+  retry_timeout   = "5s"
+}
+
+resource "neuwerk_policy" "main" {
+  name           = "terraform-dns-sugar"
+  mode           = "enforce"
+  default_action = "deny"
+
+  source_group = [
+    {
+      id       = "corp-clients"
+      priority = 10
+
+      sources = {
+        cidrs = ["10.20.0.0/16"]
+      }
+
+      rule = [
+        {
+          id       = "allow-dns"
+          priority = 10
+          action   = "allow"
+          dns = {
+            exact    = ["GitHub.com", "api.github.com"]
+            suffixes = ["example.com"]
+          }
+        },
+        {
+          id     = "allow-https"
+          action = "allow"
+          destination = {
+            protocol = "tcp"
+            ports    = [443]
+            cidrs    = ["203.0.113.0/24"]
+          }
+        }
+      ]
+    }
+  ]
+}

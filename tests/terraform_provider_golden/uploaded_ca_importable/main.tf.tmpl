@@ -1,0 +1,26 @@
+terraform {
+  required_providers {
+    neuwerk = {
+      source  = "moolen/neuwerk"
+      version = "{{PROVIDER_VERSION}}"
+    }
+  }
+}
+
+provider "neuwerk" {
+  endpoints       = ["{{ENDPOINT}}"]
+  token           = "{{TOKEN}}"
+  ca_cert_file    = "{{CA_CERT_FILE}}"
+  request_timeout = "30s"
+  retry_timeout   = "5s"
+}
+
+resource "neuwerk_tls_intercept_ca" "main" {
+  ca_cert_pem = <<-PEM
+{{UPLOADED_CA_CERT_PEM}}
+PEM
+
+  ca_key_pem = <<-PEM
+{{UPLOADED_CA_KEY_PEM}}
+PEM
+}

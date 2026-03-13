@@ -47,6 +47,18 @@ pub fn cases() -> Vec<TestCase> {
             func: api_service_accounts_lifecycle,
         },
         TestCase {
+            name: "api_service_account_admin_token_allows_mutation",
+            func: api_service_account_admin_token_allows_mutation,
+        },
+        TestCase {
+            name: "api_service_account_rejects_malformed_and_revoked_tokens",
+            func: api_service_account_rejects_malformed_and_revoked_tokens,
+        },
+        TestCase {
+            name: "api_service_account_readonly_token_cannot_modify_resource",
+            func: api_service_account_readonly_token_cannot_modify_resource,
+        },
+        TestCase {
             name: "dpdk_dhcp_l2_hairpin",
             func: dpdk_dhcp_l2_hairpin,
         },

@@ -1,0 +1,62 @@
+terraform {
+  required_providers {
+    neuwerk = {
+      source = "moolen/neuwerk"
+    }
+  }
+}
+
+provider "neuwerk" {
+  endpoints       = ["https://fw-a.example.com", "https://fw-b.example.com"]
+  token           = var.neuwerk_service_account_token
+  ca_cert_pem     = file("${path.module}/neuwerk-ca.crt")
+  request_timeout = "30s"
+  retry_timeout   = "5s"
+}
+
+resource "neuwerk_kubernetes_integration" "prod" {
+  name                  = "prod-k8s"
+  api_server_url        = "https://10.0.0.10:6443"
+  ca_cert_pem           = file("${path.module}/k8s-ca.pem")
+  service_account_token = var.k8s_service_account_token
+}
+
+resource "neuwerk_tls_intercept_ca" "main" {
+  generate = true
+}
+
+resource "neuwerk_policy" "main" {
+  name           = "prod-default"
+  mode           = "enforce"
+  default_action = "deny"
+
+  source_group = [
+    {
+      id = "corp-clients"
+
+      sources = {
+        cidrs = ["10.20.0.0/16"]
+      }
+
+      rule = [
+        {
+          id     = "allow-dns"
+          action = "allow"
+          dns = {
+            exact = ["github.com"]
+          }
+        }
+      ]
+    }
+  ]
+}
+
+variable "neuwerk_service_account_token" {
+  type      = string
+  sensitive = true
+}
+
+variable "k8s_service_account_token" {
+  type      = string
+  sensitive = true
+}

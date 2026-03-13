@@ -1,0 +1,71 @@
+terraform {
+  required_providers {
+    neuwerk = {
+      source  = "moolen/neuwerk"
+      version = "{{PROVIDER_VERSION}}"
+    }
+  }
+}
+
+provider "neuwerk" {
+  endpoints       = ["{{ENDPOINT}}"]
+  token           = "{{TOKEN}}"
+  ca_cert_file    = "{{CA_CERT_FILE}}"
+  request_timeout = "30s"
+  retry_timeout   = "5s"
+}
+
+resource "neuwerk_kubernetes_integration" "prod" {
+  name                  = "prod-k8s"
+  api_server_url        = "https://10.0.0.10:6443"
+  ca_cert_pem           = <<-PEM
+-----BEGIN CERTIFICATE-----
+MIIB
+-----END CERTIFICATE-----
+PEM
+  service_account_token = "{{K8S_SERVICE_ACCOUNT_TOKEN}}"
+}
+
+resource "neuwerk_policy" "main" {
+  name = "terraform-contract-raw"
+  mode = "enforce"
+
+  document_json = <<-JSON
+{
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "pods",
+      "priority": 10,
+      "sources": {
+        "kubernetes": [
+          {
+            "integration": "prod-k8s",
+            "pod_selector": {
+              "namespace": "apps",
+              "match_labels": {
+                "app": "api"
+              }
+            }
+          }
+        ]
+      },
+      "rules": [
+        {
+          "id": "allow-https",
+          "priority": 10,
+          "action": "allow",
+          "mode": "enforce",
+          "match": {
+            "proto": "tcp",
+            "dst_ports": [
+              443
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+JSON
+}

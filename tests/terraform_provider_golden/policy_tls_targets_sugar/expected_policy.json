@@ -1,0 +1,92 @@
+{
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "corp-clients",
+      "sources": {
+        "ips": [
+          "10.0.0.5"
+        ]
+      },
+      "rules": [
+        {
+          "id": "allow-external-secrets-1",
+          "action": "allow",
+          "mode": "enforce",
+          "match": {
+            "proto": "tcp",
+            "dst_ports": [
+              443
+            ],
+            "tls": {
+              "mode": "intercept",
+              "http": {
+                "request": {
+                  "methods": [
+                    "GET"
+                  ],
+                  "host": {
+                    "exact": [
+                      "vault-a.example.com",
+                      "vault-b.example.com"
+                    ]
+                  },
+                  "path": {
+                    "prefix": [
+                      "/external-secrets/"
+                    ]
+                  }
+                },
+                "response": {
+                  "headers": {
+                    "deny_present": [
+                      "x-forbidden"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "id": "allow-external-secrets-2",
+          "action": "allow",
+          "mode": "enforce",
+          "match": {
+            "proto": "tcp",
+            "dst_ports": [
+              443
+            ],
+            "tls": {
+              "mode": "intercept",
+              "http": {
+                "request": {
+                  "methods": [
+                    "GET"
+                  ],
+                  "host": {
+                    "exact": [
+                      "secrets.internal.example.com"
+                    ]
+                  },
+                  "path": {
+                    "prefix": [
+                      "/v1/"
+                    ]
+                  }
+                },
+                "response": {
+                  "headers": {
+                    "deny_present": [
+                      "x-forbidden"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

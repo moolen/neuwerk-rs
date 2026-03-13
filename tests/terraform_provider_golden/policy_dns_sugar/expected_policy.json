@@ -1,0 +1,39 @@
+{
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "corp-clients",
+      "priority": 10,
+      "sources": {
+        "cidrs": [
+          "10.20.0.0/16"
+        ]
+      },
+      "rules": [
+        {
+          "id": "allow-dns",
+          "priority": 10,
+          "action": "allow",
+          "mode": "enforce",
+          "match": {
+            "dns_hostname": "^(?:api\\.github\\.com|github\\.com|(?:.+\\.)?example\\.com)$"
+          }
+        },
+        {
+          "id": "allow-https",
+          "action": "allow",
+          "mode": "enforce",
+          "match": {
+            "proto": "tcp",
+            "dst_ports": [
+              443
+            ],
+            "dst_cidrs": [
+              "203.0.113.0/24"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

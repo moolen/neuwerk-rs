@@ -1,0 +1,64 @@
+terraform {
+  required_providers {
+    neuwerk = {
+      source  = "moolen/neuwerk"
+      version = "{{PROVIDER_VERSION}}"
+    }
+  }
+}
+
+provider "neuwerk" {
+  endpoints       = ["{{ENDPOINT}}"]
+  token           = "{{TOKEN}}"
+  ca_cert_file    = "{{CA_CERT_FILE}}"
+  request_timeout = "30s"
+  retry_timeout   = "5s"
+}
+
+resource "neuwerk_policy" "main" {
+  name           = "terraform-tls-targets"
+  mode           = "enforce"
+  default_action = "deny"
+
+  source_group = [
+    {
+      id = "corp-clients"
+
+      sources = {
+        ips = ["10.0.0.5"]
+      }
+
+      rule = [
+        {
+          id     = "allow-external-secrets"
+          action = "allow"
+
+          destination = {
+            protocol = "tcp"
+            ports    = [443]
+          }
+
+          tls = {
+            mode = "intercept"
+            request = {
+              methods = ["get"]
+              target = [
+                {
+                  hosts       = ["vault-a.example.com", "vault-b.example.com"]
+                  path_prefix = ["/external-secrets/"]
+                },
+                {
+                  hosts       = ["secrets.internal.example.com"]
+                  path_prefix = ["/v1/"]
+                }
+              ]
+            }
+            response = {
+              deny_headers = ["x-forbidden"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
