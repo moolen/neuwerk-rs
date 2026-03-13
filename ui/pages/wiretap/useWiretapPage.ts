@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WiretapEvent } from '../../types';
+import { getPerformanceModeStatus } from '../../services/api';
 import { aggregateWiretapFlows, filterWiretapEvents, MAX_WIRETAP_EVENTS } from './helpers';
 import {
   defaultWiretapFilters,
@@ -16,6 +17,9 @@ export function useWiretapPage() {
   const [filters, setFilters] = useState<WiretapFiltersState>(defaultWiretapFilters);
   const [paused, setPaused] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('live');
+  const [performanceModeEnabled, setPerformanceModeEnabled] = useState(true);
+  const [performanceModeLoading, setPerformanceModeLoading] = useState(true);
+  const [performanceModeError, setPerformanceModeError] = useState<string | null>(null);
   const pausedRef = useRef(false);
 
   useEffect(() => {
@@ -30,7 +34,49 @@ export function useWiretapPage() {
     setEvents((prev) => upsertWiretapEvent(prev, event, MAX_WIRETAP_EVENTS));
   }, []);
 
-  const { connected, error } = useWiretapConnection(handleWiretapEvent);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        setPerformanceModeLoading(true);
+        setPerformanceModeError(null);
+        const status = await getPerformanceModeStatus();
+        if (cancelled) {
+          return;
+        }
+        setPerformanceModeEnabled(status.enabled);
+      } catch (err) {
+        if (cancelled) {
+          return;
+        }
+        setPerformanceModeEnabled(true);
+        setPerformanceModeError(
+          err instanceof Error ? err.message : 'Failed to load performance mode status'
+        );
+      } finally {
+        if (!cancelled) {
+          setPerformanceModeLoading(false);
+        }
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!performanceModeEnabled) {
+      setPaused(false);
+      setBufferedEvents([]);
+      setEvents([]);
+    }
+  }, [performanceModeEnabled]);
+
+  const { connected, error } = useWiretapConnection(
+    handleWiretapEvent,
+    performanceModeEnabled && !performanceModeLoading
+  );
 
   const filteredEvents = useMemo(
     () => filterWiretapEvents(events, filters),
@@ -65,6 +111,9 @@ export function useWiretapPage() {
     bufferedCount: bufferedEvents.length,
     connected,
     error,
+    performanceModeEnabled,
+    performanceModeLoading,
+    performanceModeError,
     viewMode,
     setViewMode,
     setFilters,

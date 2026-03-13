@@ -1074,6 +1074,91 @@ async fn sso_settings_create_and_update_redacts_and_preserves_secret() {
 }
 
 #[tokio::test]
+async fn performance_mode_settings_round_trip_local_state() {
+    let dir = TempDir::new().unwrap();
+    let keyset_path = test_auth_setup(&dir);
+    let admin_token = mint_admin_token(&keyset_path);
+    let state = test_state(&dir, keyset_path, Metrics::new().unwrap());
+
+    let app = Router::new()
+        .route(
+            "/api/v1/settings/performance-mode",
+            get(get_performance_mode).put(put_performance_mode),
+        )
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::auth_middleware,
+        ));
+
+    let get_default = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/settings/performance-mode")
+                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_default.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(get_default.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        payload.get("enabled").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    let put_disable = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/settings/performance-mode")
+                .header(CONTENT_TYPE, "application/json")
+                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::from(r#"{"enabled":false}"#.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put_disable.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(put_disable.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        payload.get("enabled").and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+
+    let get_updated = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/settings/performance-mode")
+                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_updated.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(get_updated.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        payload.get("enabled").and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+}
+
+#[tokio::test]
 async fn cluster_sysdump_requires_cluster_mode() {
     let dir = TempDir::new().unwrap();
     let keyset_path = test_auth_setup(&dir);

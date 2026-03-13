@@ -10,6 +10,16 @@ pub(super) async fn audit_findings(
         Ok(request) => request,
         Err(response) => return response,
     };
+    let perf_enabled = match super::performance_mode::performance_mode_enabled(&state) {
+        Ok(enabled) => enabled,
+        Err(response) => return response,
+    };
+    if !perf_enabled {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "performance mode is disabled; audit is unavailable".to_string(),
+        );
+    }
     if state.cluster.is_none() {
         return audit_findings_local_response(&state, &query);
     }
@@ -21,6 +31,16 @@ pub(super) async fn audit_findings_local(
     Query(query): Query<AuditQuery>,
     _request: Request,
 ) -> Response {
+    let perf_enabled = match super::performance_mode::performance_mode_enabled(&state) {
+        Ok(enabled) => enabled,
+        Err(response) => return response,
+    };
+    if !perf_enabled {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "performance mode is disabled; audit is unavailable".to_string(),
+        );
+    }
     // Intentionally bypass leader proxying so cluster leaders can fan out to
     // every node and aggregate local audit stores.
     audit_findings_local_response(&state, &query)

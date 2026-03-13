@@ -10,6 +10,7 @@ interface WiretapConnectionState {
 
 export function useWiretapConnection(
   onEvent: (event: WiretapEvent) => void,
+  streamEnabled: boolean
 ): WiretapConnectionState {
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,6 +21,12 @@ export function useWiretapConnection(
   }, [onEvent]);
 
   useEffect(() => {
+    if (!streamEnabled) {
+      setConnected(false);
+      setError(null);
+      return;
+    }
+
     let reconnectTimeout: number | null = null;
     let cleanup: (() => void) | null = null;
 
@@ -51,7 +58,7 @@ export function useWiretapConnection(
         clearTimeout(reconnectTimeout);
       }
     };
-  }, []);
+  }, [streamEnabled]);
 
   return { connected, error };
 }

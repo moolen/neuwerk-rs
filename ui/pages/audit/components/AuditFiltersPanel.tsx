@@ -7,6 +7,7 @@ interface AuditFiltersPanelProps {
   sourceGroup: string;
   policyId: string;
   loading: boolean;
+  disabled?: boolean;
   onTypeFilterChange: (value: AuditFindingType | 'all') => void;
   onSourceGroupChange: (value: string) => void;
   onPolicyIdChange: (value: string) => void;
@@ -18,6 +19,7 @@ export const AuditFiltersPanel: React.FC<AuditFiltersPanelProps> = ({
   sourceGroup,
   policyId,
   loading,
+  disabled = false,
   onTypeFilterChange,
   onSourceGroupChange,
   onPolicyIdChange,
@@ -30,6 +32,7 @@ export const AuditFiltersPanel: React.FC<AuditFiltersPanelProps> = ({
     <select
       value={typeFilter}
       onChange={(e) => onTypeFilterChange(e.target.value as AuditFindingType | 'all')}
+      disabled={disabled}
       className="rounded-lg px-3 py-2 text-sm"
       style={{ background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text)' }}
     >
@@ -43,6 +46,7 @@ export const AuditFiltersPanel: React.FC<AuditFiltersPanelProps> = ({
     <input
       value={sourceGroup}
       onChange={(e) => onSourceGroupChange(e.target.value)}
+      disabled={disabled}
       placeholder="Source group"
       className="rounded-lg px-3 py-2 text-sm"
       style={{ background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text)' }}
@@ -50,15 +54,16 @@ export const AuditFiltersPanel: React.FC<AuditFiltersPanelProps> = ({
     <input
       value={policyId}
       onChange={(e) => onPolicyIdChange(e.target.value)}
+      disabled={disabled}
       placeholder="Policy ID"
       className="rounded-lg px-3 py-2 text-sm md:col-span-2"
       style={{ background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text)' }}
     />
     <button
       onClick={onRefresh}
-      disabled={loading}
+      disabled={loading || disabled}
       className="px-4 py-2 text-white rounded-lg font-medium"
-      style={{ background: loading ? 'var(--text-muted)' : 'var(--accent)' }}
+      style={{ background: loading || disabled ? 'var(--text-muted)' : 'var(--accent)' }}
     >
       {loading ? 'Loading...' : 'Refresh'}
     </button>

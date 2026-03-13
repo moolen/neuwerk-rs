@@ -33,8 +33,10 @@ export {
 export {
   downloadClusterSysdump,
   generateTlsInterceptCa,
+  getPerformanceModeStatus,
   getTlsInterceptCaCertPem,
   getTlsInterceptCaStatus,
+  updatePerformanceMode,
   updateTlsInterceptCa,
 } from './apiClient/settings';
 export {

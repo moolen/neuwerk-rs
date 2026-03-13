@@ -6,6 +6,7 @@ import type { WiretapFilterValues } from './wiretap/types';
 interface WiretapFiltersProps {
   filters: WiretapFilterValues;
   onFiltersChange: (filters: WiretapFilterValues) => void;
+  disabled?: boolean;
   paused: boolean;
   onPauseToggle: () => void;
   onClear: () => void;
@@ -16,6 +17,7 @@ interface WiretapFiltersProps {
 export const WiretapFilters: React.FC<WiretapFiltersProps> = ({
   filters,
   onFiltersChange,
+  disabled = false,
   paused,
   onPauseToggle,
   onClear,
@@ -24,13 +26,14 @@ export const WiretapFilters: React.FC<WiretapFiltersProps> = ({
 }) => {
   return (
     <div className="bg-slate-800 rounded-lg border border-slate-700 p-4 space-y-4">
-      <WiretapFilterFields filters={filters} onChange={onFiltersChange} />
+      <WiretapFilterFields filters={filters} onChange={onFiltersChange} disabled={disabled} />
       <WiretapStreamControls
         paused={paused}
         connected={connected}
         eventCount={eventCount}
         onPauseToggle={onPauseToggle}
         onClear={onClear}
+        disabled={disabled}
       />
     </div>
   );

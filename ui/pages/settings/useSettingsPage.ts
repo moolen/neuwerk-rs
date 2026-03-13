@@ -4,14 +4,16 @@ import {
   createSsoProvider,
   deleteSsoProvider,
   generateTlsInterceptCa,
+  getPerformanceModeStatus,
   getTlsInterceptCaCertPem,
   getTlsInterceptCaStatus,
   listSsoProviders,
   testSsoProvider,
+  updatePerformanceMode,
   updateSsoProvider,
   updateTlsInterceptCa,
 } from '../../services/api';
-import type { SsoProviderView, TlsInterceptCaStatus } from '../../types';
+import type { PerformanceModeStatus, SsoProviderView, TlsInterceptCaStatus } from '../../types';
 import { validateTlsInterceptCaInput } from './helpers';
 import {
   buildSsoCreateRequest,
@@ -24,7 +26,9 @@ import {
 
 export function useSettingsPage() {
   const [status, setStatus] = useState<TlsInterceptCaStatus | null>(null);
+  const [performanceMode, setPerformanceMode] = useState<PerformanceModeStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [performanceModeSaving, setPerformanceModeSaving] = useState(false);
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -47,8 +51,12 @@ export function useSettingsPage() {
     try {
       setLoading(true);
       setError(null);
-      const current = await getTlsInterceptCaStatus();
+      const [current, perf] = await Promise.all([
+        getTlsInterceptCaStatus(),
+        getPerformanceModeStatus(),
+      ]);
       setStatus(current);
+      setPerformanceMode(perf);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
@@ -174,6 +182,21 @@ export function useSettingsPage() {
     }
   };
 
+  const savePerformanceMode = async (enabled: boolean) => {
+    setError(null);
+    setSuccess(null);
+    try {
+      setPerformanceModeSaving(true);
+      const next = await updatePerformanceMode(enabled);
+      setPerformanceMode(next);
+      setSuccess(`Performance mode ${next.enabled ? 'enabled' : 'disabled'}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update performance mode');
+    } finally {
+      setPerformanceModeSaving(false);
+    }
+  };
+
   const createNewSsoDraft = () => {
     setSsoError(null);
     setSsoSuccess(null);
@@ -256,7 +279,9 @@ export function useSettingsPage() {
 
   return {
     status,
+    performanceMode,
     loading,
+    performanceModeSaving,
     saving,
     generating,
     downloading,
@@ -272,6 +297,7 @@ export function useSettingsPage() {
     downloadCert,
     sysdumpDownloading,
     downloadClusterBundle,
+    savePerformanceMode,
     ssoProviders,
     ssoLoading,
     ssoSaving,

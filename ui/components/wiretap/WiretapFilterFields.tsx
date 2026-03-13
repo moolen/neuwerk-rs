@@ -4,6 +4,7 @@ import type { WiretapFilterValues } from './types';
 interface WiretapFilterFieldsProps {
   filters: WiretapFilterValues;
   onChange: (next: WiretapFilterValues) => void;
+  disabled?: boolean;
 }
 
 interface FieldDef {
@@ -19,7 +20,11 @@ const FIELD_DEFS: readonly FieldDef[] = [
   { id: 'port', label: 'Port', placeholder: 'Filter by port' },
 ];
 
-export const WiretapFilterFields: React.FC<WiretapFilterFieldsProps> = ({ filters, onChange }) => {
+export const WiretapFilterFields: React.FC<WiretapFilterFieldsProps> = ({
+  filters,
+  onChange,
+  disabled = false,
+}) => {
   const updateField = (id: keyof WiretapFilterValues, value: string) => {
     onChange({ ...filters, [id]: value });
   };
@@ -36,6 +41,7 @@ export const WiretapFilterFields: React.FC<WiretapFilterFieldsProps> = ({ filter
             type="text"
             value={filters[id]}
             onChange={(e) => updateField(id, e.target.value)}
+            disabled={disabled}
             placeholder={placeholder}
             className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white text-sm font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
           />

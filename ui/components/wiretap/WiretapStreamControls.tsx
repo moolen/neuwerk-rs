@@ -7,6 +7,7 @@ interface WiretapStreamControlsProps {
   eventCount: number;
   onPauseToggle: () => void;
   onClear: () => void;
+  disabled?: boolean;
 }
 
 export const WiretapStreamControls: React.FC<WiretapStreamControlsProps> = ({
@@ -15,16 +16,18 @@ export const WiretapStreamControls: React.FC<WiretapStreamControlsProps> = ({
   eventCount,
   onPauseToggle,
   onClear,
+  disabled = false,
 }) => (
   <div className="flex items-center justify-between pt-2 border-t border-slate-700">
     <div className="flex items-center space-x-4">
       <button
         onClick={onPauseToggle}
+        disabled={disabled}
         className={`flex items-center space-x-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
           paused
             ? 'bg-amber-600 hover:bg-amber-700 text-white'
             : 'bg-blue-600 hover:bg-blue-700 text-white'
-        }`}
+        } ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
       >
         {paused ? (
           <>
@@ -41,7 +44,10 @@ export const WiretapStreamControls: React.FC<WiretapStreamControlsProps> = ({
 
       <button
         onClick={onClear}
-        className="flex items-center space-x-2 px-4 py-2 text-sm font-medium text-slate-300 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors"
+        disabled={disabled}
+        className={`flex items-center space-x-2 px-4 py-2 text-sm font-medium text-slate-300 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors ${
+          disabled ? 'opacity-60 cursor-not-allowed' : ''
+        }`}
       >
         <Trash2 className="w-4 h-4" />
         <span>Clear</span>

@@ -1,4 +1,4 @@
-import type { TlsInterceptCaStatus } from '../../types';
+import type { PerformanceModeStatus, TlsInterceptCaStatus } from '../../types';
 import { fetchBlob, fetchJSON, fetchText } from './transport';
 
 export async function getTlsInterceptCaStatus(): Promise<TlsInterceptCaStatus> {
@@ -26,6 +26,17 @@ export async function generateTlsInterceptCa(): Promise<TlsInterceptCaStatus> {
 
 export async function getTlsInterceptCaCertPem(): Promise<string> {
   return fetchText('/settings/tls-intercept-ca/cert');
+}
+
+export async function getPerformanceModeStatus(): Promise<PerformanceModeStatus> {
+  return fetchJSON<PerformanceModeStatus>('/settings/performance-mode');
+}
+
+export async function updatePerformanceMode(enabled: boolean): Promise<PerformanceModeStatus> {
+  return fetchJSON<PerformanceModeStatus>('/settings/performance-mode', {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
 }
 
 export async function downloadClusterSysdump(): Promise<{

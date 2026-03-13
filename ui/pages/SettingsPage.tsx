@@ -1,4 +1,5 @@
 import React from 'react';
+import { PerformanceModeCard } from './settings/components/PerformanceModeCard';
 import { SettingsStatusCard } from './settings/components/SettingsStatusCard';
 import { SsoProvidersForm } from './settings/components/SsoProvidersForm';
 import { SupportBundleCard } from './settings/components/SupportBundleCard';
@@ -8,7 +9,9 @@ import { useSettingsPage } from './settings/useSettingsPage';
 export const SettingsPage: React.FC = () => {
   const {
     status,
+    performanceMode,
     loading,
+    performanceModeSaving,
     saving,
     generating,
     downloading,
@@ -24,6 +27,7 @@ export const SettingsPage: React.FC = () => {
     downloadCert,
     sysdumpDownloading,
     downloadClusterBundle,
+    savePerformanceMode,
     ssoProviders,
     ssoLoading,
     ssoSaving,
@@ -45,9 +49,16 @@ export const SettingsPage: React.FC = () => {
       <div className="mb-6">
         <h1 className="text-2xl font-bold mb-1" style={{ color: 'var(--text)' }}>Settings</h1>
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Manage DPI TLS interception CA material and SSO providers.
+          Manage performance mode, DPI TLS interception CA material, and SSO providers.
         </p>
       </div>
+
+      <PerformanceModeCard
+        status={performanceMode}
+        loading={loading}
+        saving={performanceModeSaving}
+        onToggle={(enabled) => void savePerformanceMode(enabled)}
+      />
 
       <SettingsStatusCard status={status} loading={loading} onRefresh={() => void refresh()} />
 

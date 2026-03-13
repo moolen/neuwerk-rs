@@ -70,6 +70,7 @@ mod cluster_persistence;
 mod extractors;
 mod integrations;
 mod metrics;
+mod performance_mode;
 mod policy;
 mod policy_activation;
 mod proxy;
@@ -89,6 +90,7 @@ use extractors::{error_response, parse_uuid, read_body_limited};
 use integrations::{
     create_integration, delete_integration, get_integration, list_integrations, update_integration,
 };
+use performance_mode::{get_performance_mode, put_performance_mode};
 use policy::{
     create_policy, delete_policy, get_policy, get_policy_by_name, list_policies, update_policy,
     upsert_policy_by_name,
@@ -400,6 +402,10 @@ pub async fn run_http_api_with_shutdown(
             get(tls_intercept::get_tls_intercept_ca)
                 .put(tls_intercept::put_tls_intercept_ca)
                 .delete(tls_intercept::delete_tls_intercept_ca),
+        )
+        .route(
+            "/settings/performance-mode",
+            get(get_performance_mode).put(put_performance_mode),
         )
         .route(
             "/settings/tls-intercept-ca/cert",

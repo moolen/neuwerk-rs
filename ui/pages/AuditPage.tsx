@@ -19,6 +19,9 @@ export const AuditPage: React.FC = () => {
     policyId,
     setPolicyId,
     load,
+    performanceModeEnabled,
+    performanceModeLoading,
+    performanceModeError,
   } = useAuditPage();
 
   const filtered = useMemo(() => items, [items]);
@@ -39,11 +42,38 @@ export const AuditPage: React.FC = () => {
         sourceGroup={sourceGroup}
         policyId={policyId}
         loading={loading}
+        disabled={!performanceModeEnabled}
         onTypeFilterChange={setTypeFilter}
         onSourceGroupChange={setSourceGroup}
         onPolicyIdChange={setPolicyId}
         onRefresh={() => void load()}
       />
+
+      {performanceModeError && (
+        <div
+          className="rounded-lg p-4"
+          style={{
+            background: 'var(--yellow-bg, rgba(245, 158, 11, 0.12))',
+            border: '1px solid var(--yellow-border, rgba(245, 158, 11, 0.4))',
+            color: 'var(--text)',
+          }}
+        >
+          {performanceModeError}
+        </div>
+      )}
+
+      {!performanceModeLoading && !performanceModeEnabled && (
+        <div
+          className="rounded-lg p-4"
+          style={{
+            background: 'var(--yellow-bg, rgba(245, 158, 11, 0.12))',
+            border: '1px solid var(--yellow-border, rgba(245, 158, 11, 0.4))',
+            color: 'var(--text)',
+          }}
+        >
+          Performance mode is disabled. Audit is unavailable until it is re-enabled in Settings.
+        </div>
+      )}
 
       {error && (
         <div

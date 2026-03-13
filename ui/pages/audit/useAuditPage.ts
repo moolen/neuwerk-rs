@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getAuditFindings } from '../../services/api';
+import { getAuditFindings, getPerformanceModeStatus } from '../../services/api';
 import type { AuditFinding, AuditFindingType } from '../../types';
 
 export function useAuditPage() {
@@ -12,8 +12,20 @@ export function useAuditPage() {
   const [typeFilter, setTypeFilter] = useState<AuditFindingType | 'all'>('all');
   const [sourceGroup, setSourceGroup] = useState('');
   const [policyId, setPolicyId] = useState('');
+  const [performanceModeEnabled, setPerformanceModeEnabled] = useState(true);
+  const [performanceModeLoading, setPerformanceModeLoading] = useState(true);
+  const [performanceModeError, setPerformanceModeError] = useState<string | null>(null);
 
   const load = async () => {
+    if (!performanceModeEnabled) {
+      setLoading(false);
+      setItems([]);
+      setPartial(false);
+      setNodes({ queried: 0, responded: 0 });
+      setNodeErrors([]);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
@@ -35,7 +47,40 @@ export function useAuditPage() {
   };
 
   useEffect(() => {
-    void load();
+    let cancelled = false;
+    const init = async () => {
+      try {
+        setPerformanceModeLoading(true);
+        setPerformanceModeError(null);
+        const status = await getPerformanceModeStatus();
+        if (cancelled) {
+          return;
+        }
+        setPerformanceModeEnabled(status.enabled);
+        if (status.enabled) {
+          await load();
+        } else {
+          setLoading(false);
+        }
+      } catch (err) {
+        if (cancelled) {
+          return;
+        }
+        setPerformanceModeEnabled(true);
+        setPerformanceModeError(
+          err instanceof Error ? err.message : 'Failed to load performance mode status'
+        );
+        await load();
+      } finally {
+        if (!cancelled) {
+          setPerformanceModeLoading(false);
+        }
+      }
+    };
+    void init();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return {
@@ -52,5 +97,8 @@ export function useAuditPage() {
     policyId,
     setPolicyId,
     load,
+    performanceModeEnabled,
+    performanceModeLoading,
+    performanceModeError,
   };
 }

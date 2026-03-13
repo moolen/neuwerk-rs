@@ -5,6 +5,17 @@ pub(super) async fn wiretap_stream(
     headers: HeaderMap,
     request: Request,
 ) -> Response {
+    let perf_enabled = match super::performance_mode::performance_mode_enabled(&state) {
+        Ok(enabled) => enabled,
+        Err(response) => return response,
+    };
+    if !perf_enabled {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "performance mode is disabled; wiretap is unavailable".to_string(),
+        );
+    }
+
     let raw_query = request.uri().query().unwrap_or("");
     let query: WiretapQuery = match serde_urlencoded::from_str(raw_query) {
         Ok(query) => query,
