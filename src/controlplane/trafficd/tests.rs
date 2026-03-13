@@ -1779,36 +1779,44 @@ async fn tls_intercept_runtime_h2_processes_parallel_streams_without_serial_queu
                                 Ok(tls) => tls,
                                 Err(_) => return,
                             };
-                            let mut builder = server::Builder::new();
-                            builder.max_concurrent_streams(1);
-                            let mut conn = match tokio::time::timeout(TLS_IO_TIMEOUT, builder.handshake::<_, Bytes>(tls)).await {
-                                Ok(Ok(conn)) => conn,
-                                _ => return,
-                            };
-                            let next = match tokio::time::timeout(TLS_IO_TIMEOUT, conn.accept()).await {
+                        let mut builder = server::Builder::new();
+                        builder.max_concurrent_streams(32);
+                        let mut conn = match tokio::time::timeout(TLS_IO_TIMEOUT, builder.handshake::<_, Bytes>(tls)).await {
+                            Ok(Ok(conn)) => conn,
+                            _ => return,
+                        };
+                        let mut stream_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+                        loop {
+                            let next = match tokio::time::timeout(Duration::from_millis(500), conn.accept()).await {
                                 Ok(next) => next,
-                                Err(_) => return,
+                                Err(_) => break,
                             };
                             let Some(Ok((_request, mut respond))) = next else {
-                                return;
+                                break;
                             };
-                            let now = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
-                            update_peak(&peak_in_flight, now);
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                            let response = Response::builder()
-                                .status(200)
-                                .header("content-type", "text/plain")
-                                .body(())
-                                .expect("response build failed");
-                            if let Ok(mut send) = respond.send_response(response, false) {
-                                let _ = send.send_data(Bytes::from_static(b"ok"), true);
-                            }
-                            conn.graceful_shutdown();
-                            let _ = tokio::time::timeout(Duration::from_millis(50), conn.accept()).await;
-                            in_flight.fetch_sub(1, Ordering::AcqRel);
-                        });
-                    }
+                            let in_flight = in_flight.clone();
+                            let peak_in_flight = peak_in_flight.clone();
+                            stream_tasks.spawn(async move {
+                                let now = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+                                update_peak(&peak_in_flight, now);
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                                let response = Response::builder()
+                                    .status(200)
+                                    .header("content-type", "text/plain")
+                                    .body(())
+                                    .expect("response build failed");
+                                if let Ok(mut send) = respond.send_response(response, false) {
+                                    let _ = send.send_data(Bytes::from_static(b"ok"), true);
+                                }
+                                in_flight.fetch_sub(1, Ordering::AcqRel);
+                            });
+                        }
+                        while stream_tasks.join_next().await.is_some() {}
+                        conn.graceful_shutdown();
+                        let _ = tokio::time::timeout(Duration::from_millis(50), conn.accept()).await;
+                    });
                 }
+            }
             }
         })
     };
@@ -1992,8 +2000,16 @@ async fn tls_intercept_runtime_h2_reuses_upstream_connection_for_same_host() {
     .await
     .expect("same-connection h2 requests failed");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].as_ref().ok().copied(), Some(200));
-    assert_eq!(results[1].as_ref().ok().copied(), Some(200));
+    assert_eq!(
+        results[0].as_ref().ok().copied(),
+        Some(200),
+        "unexpected h2 audit result set: {results:?}"
+    );
+    assert_eq!(
+        results[1].as_ref().ok().copied(),
+        Some(200),
+        "unexpected h2 audit result set: {results:?}"
+    );
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
@@ -2587,18 +2603,20 @@ async fn tls_intercept_runtime_h2_enforce_denied_stream_does_not_break_allowed_s
                             Ok(Ok(conn)) => conn,
                             _ => return,
                         };
-                        let next = match tokio::time::timeout(TLS_IO_TIMEOUT, conn.accept()).await {
-                            Ok(next) => next,
-                            Err(_) => return,
-                        };
-                        let Some(Ok((_request, mut respond))) = next else { return; };
-                        let response = Response::builder()
-                            .status(200)
-                            .header("content-type", "text/plain")
-                            .body(())
-                            .expect("response build failed");
-                        if let Ok(mut send) = respond.send_response(response, false) {
-                            let _ = send.send_data(Bytes::from_static(b"ok"), true);
+                        loop {
+                            let next = match tokio::time::timeout(Duration::from_millis(500), conn.accept()).await {
+                                Ok(next) => next,
+                                Err(_) => break,
+                            };
+                            let Some(Ok((_request, mut respond))) = next else { break; };
+                            let response = Response::builder()
+                                .status(200)
+                                .header("content-type", "text/plain")
+                                .body(())
+                                .expect("response build failed");
+                            if let Ok(mut send) = respond.send_response(response, false) {
+                                let _ = send.send_data(Bytes::from_static(b"ok"), true);
+                            }
                         }
                         conn.graceful_shutdown();
                         let _ = tokio::time::timeout(Duration::from_millis(100), conn.accept()).await;
@@ -2887,7 +2905,7 @@ async fn tls_intercept_runtime_h2_audit_mode_allows_mixed_policy_streams() {
     snapshot.set_enforcement_mode(EnforcementMode::Audit);
     let (intercept_addr, proxy_task) =
         spawn_intercept_runtime_with_policy(snapshot, upstream_addr).await;
-    let results = tls_h2_get_paths_same_conn(
+    let results = tls_h2_get_paths_same_conn_sequential(
         intercept_addr,
         "foo.allowed",
         &[
@@ -2897,8 +2915,16 @@ async fn tls_intercept_runtime_h2_audit_mode_allows_mixed_policy_streams() {
     )
     .await
     .expect("batch request failed");
-    assert_eq!(results[0].as_ref().ok().copied(), Some(200));
-    assert_eq!(results[1].as_ref().ok().copied(), Some(200));
+    assert_eq!(
+        results[0].as_ref().ok().copied(),
+        Some(200),
+        "unexpected h2 audit result set: {results:?}"
+    );
+    assert_eq!(
+        results[1].as_ref().ok().copied(),
+        Some(200),
+        "unexpected h2 audit result set: {results:?}"
+    );
 
     proxy_task.abort();
     let _ = upstream_shutdown_tx.send(());
