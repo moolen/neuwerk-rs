@@ -30,7 +30,9 @@ jobs:
       - name: Setup Go (for Dex build fallback)
         uses: actions/setup-go@v6
         with:
-          go-version: "1.22"
+          # Dex source fallback currently requires newer Go directives.
+          go-version: "1.24"
+          cache: false
 
       - name: Install Dex
         run: |
