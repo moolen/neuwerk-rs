@@ -1,6 +1,8 @@
-/target
+/target/
 /cloud-tests/runner/target/
 /cloud-tests/.secrets/
+/cloud-tests/**/artifacts/
+/cloud-tests/**/run-tests.log
 /third_party/dpdk/src/
 /third_party/dpdk/build/
 /third_party/dpdk/install/
@@ -10,3 +12,5 @@
 /artifacts/image-build/
 /.packer.d/
 /packer_cache/
+/.bin/
+**/__pycache__/
