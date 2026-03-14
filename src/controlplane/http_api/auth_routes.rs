@@ -4,6 +4,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use utoipa::ToSchema;
 
 use crate::controlplane::api_auth;
 
@@ -12,7 +13,7 @@ use super::{
     AUTH_LOGIN_MAX_TOKEN_LEN,
 };
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct AuthUser {
     sub: String,
     sa_id: Option<String>,
@@ -31,11 +32,24 @@ impl AuthUser {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct TokenLoginRequest {
     token: String,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/token-login",
+    tag = "Auth",
+    request_body = TokenLoginRequest,
+    responses(
+        (status = 200, description = "Accepted token and created browser session", body = AuthUser),
+        (status = 400, description = "Malformed request", body = super::openapi::ErrorBody),
+        (status = 401, description = "Invalid token", body = super::openapi::ErrorBody),
+        (status = 429, description = "Too many login attempts", body = super::openapi::ErrorBody),
+        (status = 500, description = "Keyset or internal error", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn auth_token_login(State(state): State<ApiState>, request: Request) -> Response {
     let client_hint = auth_login_client_hint(&request);
     let malformed_bucket = format!("{client_hint}:malformed");
@@ -118,10 +132,31 @@ pub(super) async fn auth_token_login(State(state): State<ApiState>, request: Req
     resp
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/whoami",
+    tag = "Auth",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    responses(
+        (status = 200, description = "Authenticated identity", body = AuthUser),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn auth_whoami(Extension(auth): Extension<AuthContext>) -> Response {
     Json(AuthUser::from_claims(&auth.claims)).into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/logout",
+    tag = "Auth",
+    responses(
+        (status = 204, description = "Cleared browser session cookie")
+    )
+)]
 pub(super) async fn auth_logout() -> Response {
     let mut resp = axum::http::StatusCode::NO_CONTENT.into_response();
     if let Ok(header) = clear_auth_cookie() {

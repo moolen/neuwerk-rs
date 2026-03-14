@@ -1,261 +1,93 @@
 ---
 title: TLS Interception
-description: How TLS metadata matching and active HTTP-over-TLS interception work today.
+description: TLS-aware policy can either inspect handshake metadata or actively intercept HTTP inside TLS.
 order: 3
 ---
 
-This page describes the current TLS-aware policy features in the firewall. It covers both passive
-TLS metadata matching and active interception.
+Use this guide when you need policy decisions based on TLS details.
 
-It is not about the control-plane HTTPS certificate used by the web UI and HTTP API. The
-interception CA is a separate trust root with its own lifecycle.
+Neuwerk supports two distinct TLS behaviors:
 
-## Two TLS Modes
+- `metadata` mode inspects handshake metadata without terminating TLS
+- `intercept` mode terminates the client TLS session, opens a new upstream TLS session, and applies
+  HTTP-aware policy inside the encrypted stream
 
-The policy model currently supports two distinct TLS behaviors:
+Choose the lighter mode that solves your problem.
 
-- `tls.mode: metadata`
-  The dataplane inspects handshake metadata such as SNI and certificate fields without acting as a
-  TLS endpoint.
-- `tls.mode: intercept`
-  The service runtime terminates the client TLS session, opens a new upstream TLS session, and
-  applies HTTP request and response policy inside the encrypted stream.
+## Start With Metadata Mode When Possible
 
-Those modes are mutually exclusive in a single rule.
+Metadata mode is easier to operate because clients do not need to trust a new certificate
+authority.
 
-## Metadata Mode
+Available matchers include:
 
-Metadata mode is the lighter-weight path. It relies on the TLS parser and verifier used during
-normal packet evaluation.
+- SNI
+- certificate SAN and CN fields
+- certificate fingerprint
+- explicit trust anchors
 
-Available metadata matchers include:
+Use this mode when the decision can be made from handshake and certificate metadata alone.
 
-- `sni`
-- `server_san`
-- `server_cn`
-- `fingerprint_sha256`
-- `trust_anchors_pem`
+## Use Intercept Mode Only For HTTP-Aware Policy
 
-Example:
-
-```yaml
-default_policy: deny
-source_groups:
-  - id: "tls"
-    sources:
-      cidrs: ["10.0.0.0/24"]
-    rules:
-      - id: "allow-foo"
-        action: allow
-        match:
-          dst_ips: ["203.0.113.10"]
-          proto: tcp
-          dst_ports: [443]
-          tls:
-            sni:
-              exact: ["foo.allowed"]
-```
-
-### TLS 1.3 Behavior In Metadata Mode
-
-SNI matching still works with TLS 1.3 because it is derived from the client hello. Certificate
-based matching is treated more conservatively.
-
-If a metadata rule depends on certificate validation or certificate fields, the rule uses
-`tls13_uninspectable` to decide what to do for TLS 1.3:
-
-- `allow`
-- `deny`
-
-If omitted, the default is `deny`.
-
-## Intercept Mode
-
-Intercept mode is the deeper DPI path.
-
-Example:
-
-```yaml
-default_policy: deny
-source_groups:
-  - id: "tls-intercept"
-    sources:
-      cidrs: ["10.0.0.0/24"]
-    rules:
-      - id: "intercept-http"
-        action: allow
-        match:
-          proto: tcp
-          dst_ports: [443]
-          tls:
-            mode: intercept
-            http:
-              request:
-                host:
-                  exact: ["foo.allowed"]
-                methods: ["GET"]
-                path:
-                  prefix: ["/external-secrets/"]
-```
-
-Important constraints:
-
-- `tls.mode: intercept` requires `tls.http`
-- `tls.mode: intercept` cannot be combined with metadata matchers such as `sni`, `server_san`,
-  fingerprints, or trust anchors
-- interception is currently an HTTP-over-TLS feature, not a generic raw TLS proxy
-
-That means interception is intended for HTTP/1.1 and HTTP/2 traffic inside TLS, where the firewall
-can parse method, host, path, query, headers, and selected response headers.
-
-## What Gets Matched
-
-For intercepted HTTP traffic, the policy language supports:
+Intercept mode is for cases where you need to match on HTTP details such as:
 
 - request host
-- request methods
-- request path exact, prefix, or regex
-- request query key presence, exact values, or regex values
-- request headers
-- response headers
+- request method
+- request path
+- query parameters
+- headers
+- selected response headers
 
-This is evaluated after the connection has already been selected for interception by the normal
-source-group, destination, protocol, and port matchers.
+This mode is an active MITM boundary. It should be enabled only when the operational cost is worth
+the extra visibility.
 
-## Runtime Activation
+## Prerequisites For Intercept Mode
 
-The interception runtime is not always active.
-
-It only becomes operational when both of these are true:
+Interception becomes usable only when both of these are true:
 
 - the active policy contains at least one `tls.mode: intercept` rule
-- TLS intercept CA material is present
+- the firewall has TLS intercept CA material available
 
-If there is no intercept policy, the supervisor stays idle. If the policy exists but the CA is
-missing, the intercept runtime remains not-ready until CA material is configured.
+The intercept CA is separate from the management HTTPS CA.
 
-## Internal Architecture
+API endpoints exist to:
 
-The same control-plane runtime that starts the DNS path also owns the interception service.
+- generate a new intercept CA
+- upload an existing one
+- download the current certificate for client trust distribution
 
-Current wiring:
+## What Clients Must Trust
 
-- an internal intercept listener runs on port `15443`
-- in soft-mode deployments, kernel intercept steering is enabled and the listener binds on
-  `0.0.0.0:15443`
-- in DPDK deployments, the listener binds on the service-lane IP and uses the shared intercept
-  demux path instead of kernel steering
+When interception is enabled, the firewall mints leaf certificates on demand from the intercept CA.
 
-Both paths feed the same Rust interception runtime and HTTP policy logic.
+That means clients must trust the intercept CA. If they do not, TLS sessions will fail even if the
+policy itself is correct.
 
-## Certificate Authority Lifecycle
+## Enforcement Behavior
 
-The intercept CA is separate from the normal control-plane HTTPS CA.
+Metadata mode stays in the normal dataplane decision flow.
 
-Local mode stores the interception CA here:
+Intercept mode behaves differently:
 
-- `http-tls/intercept-ca.crt`
-- `http-tls/intercept-ca.key`
+- traffic is selected for interception by the policy
+- the service runtime terminates the TLS session
+- HTTP request and response policy is evaluated inside the intercepted stream
 
-Cluster mode stores the CA certificate plus an encrypted key envelope in cluster state. The
-private key is not stored as a plain file in that mode.
+In enforce mode, intercepted denials fail closed. In audit mode, the policy still evaluates but the
+firewall does not actively block the request or response.
 
-### HTTP API Management
+## Current Limits
 
-The control-plane API exposes these CA management endpoints:
+- Intercept mode is for HTTP-over-TLS, not arbitrary non-HTTP protocols on port `443`.
+- Metadata matchers and intercept matchers cannot be mixed in the same TLS block.
+- Some certificate-based metadata decisions need explicit `tls13_uninspectable` behavior for TLS
+  1.3.
+- The active intercept path currently supports IPv4 peers and IPv4 upstream destinations.
 
-- `GET /api/v1/settings/tls-intercept-ca`
-- `GET /api/v1/settings/tls-intercept-ca/cert`
-- `PUT /api/v1/settings/tls-intercept-ca`
-- `POST /api/v1/settings/tls-intercept-ca/generate`
-- `DELETE /api/v1/settings/tls-intercept-ca`
+## Safe Rollout Advice
 
-Operationally, that gives you three patterns:
-
-- generate a fresh root CA on the firewall
-- upload an existing enterprise MITM CA
-- download the current root certificate for client trust distribution
-
-## Rotation And Reload
-
-CA updates are hot-reloaded.
-
-When the intercept CA is created, replaced, or deleted, the runtime increments a generation
-counter. The supervisor notices that change, restarts the intercept runtime, and begins minting new
-leaf certificates from the new root CA.
-
-This does not require a full process restart.
-
-## Leaf Certificate Behavior
-
-During interception, the firewall mints server certificates on demand from the intercept CA.
-
-Current behavior:
-
-- the minted leaf name comes from the client-requested server name when available
-- invalid or missing names fall back to `intercept.local`
-- minted leaf certificates are cached for 15 minutes
-- the cache holds up to 1024 entries before evicting the oldest entry
-- the server advertises both `h2` and `http/1.1` over ALPN
-
-Clients therefore need to trust the intercept CA, not just the upstream origin certificate.
-
-## Upstream TLS Behavior
-
-After terminating the client session, the firewall opens a fresh upstream TLS session to the
-original destination.
-
-By default, upstream verification is strict and uses the host system's native root certificates.
-There is also an insecure mode for upstream verification controlled by the
-`NEUWERK_TLS_INTERCEPT_UPSTREAM_VERIFY` environment variable.
-
-Supported values are:
-
-- `strict`
-- `insecure`
-
-Use `insecure` only for controlled test environments.
-
-## Enforcement Semantics
-
-Interception always starts from an `allow` rule. Once inside the intercepted HTTP flow:
-
-- request policy can deny before the upstream request is sent
-- response policy can deny after the upstream response headers are received
-
-In enforce mode:
-
-- HTTP/1.1 denials fail closed by resetting the client TCP connection
-- HTTP/2 denials fail closed by resetting the affected stream
-- internal runtime failures are also treated as fail-closed for interception traffic
-
-In audit mode:
-
-- the HTTP policy logic still evaluates
-- deny conditions are counted in metrics
-- the request or response is not actively blocked
-
-## Practical Tradeoffs
-
-- Metadata mode is simpler to deploy because clients do not need to trust a new root CA.
-- Intercept mode enables precise HTTP policy, but it introduces an active MITM trust boundary.
-- CA distribution and rotation become an operational responsibility.
-- Protocols that are merely "TLS on port 443" but are not HTTP are not a good fit for intercept
-  mode.
-
-## Current Limitations
-
-- The active intercept runtime only supports IPv4 peers and IPv4 upstream destinations.
-- Intercept mode is HTTP-specific. It is not documented or implemented as a generic arbitrary TCP
-  tunnel after TLS termination.
-- `tls.mode: intercept` rules with non-`allow` actions do not produce a useful HTTP policy path.
-  The practical pattern is `action: allow` plus restrictive `tls.http` constraints.
-- Metadata matchers and intercept matchers cannot be combined in the same TLS block.
-- Certificate-based metadata rules need explicit `tls13_uninspectable` behavior because the
-  implementation treats TLS 1.3 certificate inspection as a special case.
-
-## Related Pages
-
-- Policy Model
-- Configuration Schema
-- HTTP API
+- Start with metadata mode if SNI or certificate fields are enough.
+- Distribute and validate the intercept CA before enabling intercept rules broadly.
+- Roll interception out to a narrow source group first.
+- Watch `svc_fail_closed_total` and intercept error metrics closely after enabling it.

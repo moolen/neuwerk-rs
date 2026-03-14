@@ -13,6 +13,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use utoipa::ToSchema;
 
 use crate::controlplane::audit::{AuditEvent, AuditFindingType};
 use crate::controlplane::sso::{SsoEndpoints, SsoProvider, SsoProviderKind};
@@ -24,7 +25,7 @@ const OIDC_CACHE_TTL_SECS: i64 = 600;
 const GOOGLE_DEFAULT_ISSUER: &str = "https://accounts.google.com";
 const GOOGLE_DEFAULT_JWKS_URI: &str = "https://www.googleapis.com/oauth2/v3/certs";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct SsoSupportedProvider {
     id: Uuid,
     name: String,
@@ -127,6 +128,15 @@ static OIDC_DISCOVERY_CACHE: OnceLock<Mutex<HashMap<String, CacheEntry<OidcDisco
 static OIDC_JWKS_CACHE: OnceLock<Mutex<HashMap<String, CacheEntry<JwkSet>>>> = OnceLock::new();
 static SSO_CALLBACK_REPLAY_GUARD: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/sso/providers",
+    tag = "Auth",
+    responses(
+        (status = 200, description = "Enabled SSO providers", body = [SsoSupportedProvider]),
+        (status = 500, description = "Provider store error", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn auth_sso_supported_providers(State(state): State<ApiState>) -> Response {
     match state.sso.list_enabled_provider_views().await {
         Ok(providers) => {

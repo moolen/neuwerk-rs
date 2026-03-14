@@ -2,6 +2,7 @@ use std::net::Ipv4Addr;
 
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::dataplane::policy::{
     CidrV4, DefaultPolicy, DynamicIpSetV4, HttpHeadersMatcher, HttpPathMatcher, HttpQueryMatcher,
@@ -22,7 +23,7 @@ pub struct CompiledPolicy {
     pub kubernetes_bindings: Vec<KubernetesSelectorBinding>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PolicyMode {
     Disabled,
@@ -41,7 +42,7 @@ impl PolicyMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleMode {
     Audit,
@@ -153,7 +154,7 @@ pub struct DnsRule {
     pub hostname: Regex,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PolicyConfig {
     pub default_policy: Option<PolicyValue>,
     #[serde(default)]
@@ -205,7 +206,7 @@ pub struct KubernetesSelectorBinding {
     pub dynamic_set: DynamicIpSetV4,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SourceGroupConfig {
     pub id: String,
     pub priority: Option<u32>,
@@ -257,7 +258,7 @@ impl SourceGroupConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SourcesConfig {
     #[serde(default)]
     pub cidrs: Vec<String>,
@@ -314,7 +315,7 @@ struct CompiledSourcesConfig {
     kubernetes_bindings: Vec<KubernetesSelectorBinding>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct KubernetesSourceConfig {
     pub integration: String,
     #[serde(default)]
@@ -323,14 +324,14 @@ pub struct KubernetesSourceConfig {
     pub node_selector: Option<KubernetesNodeSelectorConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct KubernetesPodSelectorConfig {
     pub namespace: String,
     #[serde(default)]
     pub match_labels: std::collections::BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct KubernetesNodeSelectorConfig {
     #[serde(default)]
     pub match_labels: std::collections::BTreeMap<String, String>,
@@ -410,7 +411,7 @@ fn normalize_match_labels(
     Ok(out)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RuleConfig {
     pub id: String,
     pub priority: Option<u32>,
@@ -447,7 +448,7 @@ impl RuleConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RuleMatchConfig {
     #[serde(default)]
     pub dst_cidrs: Vec<String>,
@@ -544,20 +545,20 @@ impl RuleMatchConfig {
 }
 
 include!("policy_config/tls_http.rs");
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum PolicyValue {
     String(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum ProtoValue {
     String(String),
     Number(u8),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum PortSpec {
     Number(u16),

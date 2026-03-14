@@ -70,6 +70,7 @@ mod cluster_persistence;
 mod extractors;
 mod integrations;
 mod metrics;
+pub mod openapi;
 mod performance_mode;
 mod policy;
 mod policy_activation;
@@ -347,6 +348,7 @@ pub async fn run_http_api_with_shutdown(
     }
 
     let api_public = Router::new()
+        .route("/openapi.json", get(openapi::openapi_json))
         .route("/auth/token-login", post(auth_token_login))
         .route("/auth/logout", post(auth_logout))
         .route("/auth/sso/providers", get(auth_sso_supported_providers))

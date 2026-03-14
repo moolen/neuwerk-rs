@@ -1,377 +1,131 @@
 ---
 title: Policy Model
-description: How firewall policy configuration is evaluated and translated into enforcement behavior.
+description: Policy is evaluated in ordered source groups and ordered rules, with different fallback rules for packets and DNS.
 order: 1
 ---
 
-This page explains the behavior of the firewall policy model. It is about evaluation semantics and
-operator intent, not just field inventory. For the raw request and schema shape, see the
-Configuration Schema reference.
+The policy model is built for operators who need to answer two questions quickly:
 
-## Mental Model
+1. which sources does this policy apply to
+2. what happens to traffic from those sources when no rule matches
+
+The schema reference tells you which fields exist. This page explains how the firewall turns those
+fields into behavior.
+
+## The Three Layers
 
 A policy has three layers:
 
-1. A top-level policy mode
-2. A set of source groups
-3. A set of ordered rules inside each source group
+1. a top-level policy mode
+2. one or more source groups
+3. ordered rules inside each source group
 
-At runtime, the control plane compiles the configuration into two related products:
+The control plane compiles that input into:
 
-- a dataplane packet policy for L3, L4, ICMP, and TLS decisions
-- a DNS policy for hostname-based allow and deny decisions
+- packet policy for dataplane decisions
+- DNS policy for hostname-based decisions
 
-Those two products share the same source-group definitions but do not behave identically in every
-edge case.
+Those products share the same source-group model, but they do not use the same fallback behavior.
 
 ## Top-Level Policy Mode
 
-Each stored policy record carries a top-level mode:
+Every stored policy record has one of these modes:
 
 - `disabled`
 - `audit`
 - `enforce`
 
-Semantics:
+Behavior:
 
-- `disabled`
-  The policy record exists in storage, but it is not applied as the active dataplane policy.
-- `enforce`
-  Normal enforcement mode. A deny decision remains a deny decision.
-- `audit`
-  The compiled policy is still evaluated, but deny decisions are converted to allow at the final
-  enforcement step.
+- `disabled` keeps the record in storage without making it the active policy
+- `enforce` applies normal allow and deny behavior
+- `audit` evaluates the policy but converts final deny outcomes into allow
 
-That last point matters: top-level `audit` mode does not mean “ignore the policy.” It means “run
-the policy logic, but pass traffic instead of enforcing denies.”
+Audit mode is therefore a dry run of policy logic, not a bypass around policy evaluation.
 
 ## Source Groups
 
-Source groups are the unit that binds traffic sources to policy intent.
-
-```json
-{
-  "id": "branch-office",
-  "priority": 100,
-  "sources": {
-    "cidrs": ["10.10.0.0/16"]
-  },
-  "default_action": "deny",
-  "rules": []
-}
-```
-
-Each source group contains:
-
-- an `id`
-- an optional `priority`
-- a required `sources` block
-- an optional `default_action`
-- zero or more `rules`
-
-### Source Membership
-
-The current model supports these source selectors:
+Source groups bind traffic sources to policy intent. A source group can match traffic using:
 
 - static CIDRs
-- static individual IPs
-- Kubernetes dynamic selectors via an integration
+- static IPs
+- Kubernetes-backed dynamic selectors
 
-The control plane rejects a source group whose effective source set is empty.
+Source groups are evaluated in ascending priority. If no explicit priority is given, list order is
+used instead.
 
-### Source Group Ordering
+Practical rule:
 
-Source groups are sorted by ascending priority before evaluation. If `priority` is omitted, the
-compiler falls back to the group’s list position.
-
-This gives two practical rules:
-
-- lower numeric priority wins over higher numeric priority
-- if priorities are omitted, earlier list entries win
+- lower numeric priority wins
+- otherwise earlier groups win
 
 ## Rules
 
-Rules live inside a source group and are also sorted by ascending priority before evaluation.
-
-```json
-{
-  "id": "allow-web",
-  "priority": 10,
-  "action": "allow",
-  "mode": "enforce",
-  "match": {
-    "proto": "tcp",
-    "dst_ports": [443]
-  }
-}
-```
+Rules are evaluated in ascending priority inside a matching source group. The first matching rule
+wins.
 
 Each rule has:
 
-- an `id`
-- an optional `priority`
 - an `action` of `allow` or `deny`
-- a per-rule `mode`
-- a required `match` block
+- a `mode` of `enforce` or `audit`
+- a `match` block
 
-### First-Match Wins
+Rule mode and policy mode do different jobs:
 
-Within a matching source group, rules are evaluated in priority order and the first matching rule
-terminates evaluation.
-
-That applies to:
-
-- packet policy evaluation
-- DNS policy evaluation
-- TLS metadata and intercept matching
-
-## Rule Mode vs Policy Mode
-
-There are two distinct mode concepts:
-
-- top-level policy `mode`
-- per-rule `mode`
-
-Per-rule `mode` can be:
-
-- `enforce`
-- `audit`
-
-Semantics:
-
-- `enforce` rules participate in normal dataplane enforcement
-- `audit` rules are excluded from the enforce path and are only visible through audit evaluation
-
-This separation is important:
-
-- a top-level `audit` policy still evaluates its `enforce` rules, but deny outcomes are converted
-  to allow at the end
-- a rule with `mode: audit` does not enforce even when the policy is in `enforce` mode
-
-In other words:
-
-- top-level policy mode changes how final enforcement behaves
-- rule mode changes which rule set a decision belongs to
+- policy mode changes what happens to the final decision
+- rule mode decides whether a rule participates in enforce logic or only in audit evaluation
 
 ## Packet Evaluation Order
 
-For non-DNS packet policy, the runtime evaluation flow is:
+For packet traffic, the firewall evaluates policy like this:
 
-1. Find source groups whose `sources` contain the packet source IP
-2. Walk those source groups in priority order
-3. Inside each matching source group, walk rules in priority order
-4. Return on the first matching rule
-5. If no rule matched and the source group has `default_action`, return that action
-6. If no matching source group produced a decision, fall back to top-level `default_policy`
+1. find source groups that contain the source IP
+2. walk matching source groups in priority order
+3. walk rules in each matching source group in priority order
+4. stop at the first matching rule
+5. if no rule matches, use the source group's `default_action` if it has one
+6. if no source group produces a decision, use the top-level `default_policy`
 
-That means `default_action` is stronger than the top-level `default_policy` once a source group
-claims the source IP.
+This means `default_action` is stronger than `default_policy` once a source group has claimed the
+source IP.
 
-## DNS Evaluation Semantics
+## DNS Evaluation Is Stricter
 
-DNS policy uses the same source-group structure, but its fallback behavior is stricter.
+DNS policy uses the same source-group and rule ordering, but the fallback is intentionally tighter.
 
-When a source IP belongs to a source group:
+Once a source group claims the source IP:
 
-- matching DNS rules are evaluated in priority order
-- the first match wins
-- if no DNS rule matches, the source group is treated as default-deny for enforcement
+- the first matching DNS rule wins
+- if no DNS rule matches, the result is deny
 
-This is a deliberate behavior difference from packet policy. DNS does not use `default_action` in
-the same way the dataplane rule engine does. Once a source group claims a source IP, absence of a
-matching DNS rule means deny.
+If no source group contains the source IP, the result is also deny.
 
-Practical consequence:
-
-- if you want hostname-based access for a source group, you need explicit DNS allow rules for the
-  hostnames you intend to permit
-
-## Defaults And Fallbacks
-
-There are three relevant fallback points:
-
-- rule hit
-- source-group `default_action`
-- top-level `default_policy`
-
-For packet policy:
-
-- if a rule matches, its action wins
-- else if the source group has `default_action`, that wins
-- else the evaluator continues to later matching source groups
-- if no source group yields a decision, `default_policy` is used
-
-For DNS policy:
-
-- if a DNS rule matches, its action wins
-- else a matching source group defaults to deny during enforcement evaluation
-- if no source group contains the source IP, the result is also deny during enforcement evaluation
+Operationally, that means hostname-based access requires explicit DNS allow rules. There is no
+implicit "allow if packet policy would have allowed it" behavior.
 
 ## Match Semantics
 
-The `match` block is additive. A rule only matches when all populated selectors match together.
+The `match` block is additive. If you set multiple selectors, all of them must match together.
 
-Current selector families:
+Current selector families include:
 
-- destination CIDRs and destination IPs
+- destination IPs and CIDRs
 - protocol
-- source and destination ports
-- ICMP type and code filters
+- ports
+- ICMP fields
 - DNS hostname regex
-- TLS metadata matchers
-- TLS intercept HTTP request and response matchers
+- TLS metadata
+- intercepted HTTP request and response fields
 
-### Protocol Semantics
+More specific rules should therefore be given higher precedence through priority, not by hoping the
+engine will infer specificity.
 
-`proto` accepts either a string or a protocol number. Common string forms are:
+## Safe Authoring Habits
 
-- `tcp`
-- `udp`
-- `icmp`
-- `any`
+- Start with narrow source groups.
+- Put explicit deny-before-allow exceptions ahead of broad allow rules.
+- Treat hostname policy as a separate allow surface that needs explicit DNS rules.
+- Use audit workflows before broadening a new rule to large source populations.
 
-If `proto` is omitted, the compiler treats it as `any`.
-
-### Port Semantics
-
-Ports can be expressed as:
-
-- a single integer
-- a range string such as `"1000-2000"`
-
-If a port list is empty, that dimension is treated as unconstrained.
-
-### ICMP Semantics
-
-ICMP matching has extra validation rules:
-
-- ICMP type and code filters require `proto` to be `icmp` or `any`
-- ICMP rules cannot also constrain `src_ports` or `dst_ports`
-- if an ICMP rule sets `proto: icmp` and leaves both type and code empty, the compiler injects a
-  default set of common ICMP controls
-
-That default set is:
-
-- types: `0`, `3`, `11`
-- codes: `0`, `4`
-
-## DNS Hostname Semantics
-
-`dns_hostname` is compiled as a case-insensitive regex matcher. Hostnames are normalized before
-matching, including trailing-dot handling.
-
-Practical consequences:
-
-- case differences do not matter
-- invalid regex patterns are rejected at write time
-- empty regex strings are rejected
-- explicit priority is the way to express “specific deny before broad allow”
-
-Example:
-
-```yaml
-source_groups:
-  - id: dns
-    sources:
-      ips: ["192.0.2.2"]
-    rules:
-      - id: deny-specific
-        priority: 0
-        action: deny
-        match:
-          dns_hostname: '^bar\.allowed$'
-      - id: allow-wildcard
-        priority: 1
-        action: allow
-        match:
-          dns_hostname: '.*\.allowed$'
-```
-
-Here, `bar.allowed` is denied while `baz.allowed` is allowed.
-
-## TLS Policy Semantics
-
-TLS matching lives under `match.tls` and has two major modes:
-
-- `metadata`
-- `intercept`
-
-### Metadata Mode
-
-Metadata mode evaluates TLS properties such as:
-
-- SNI
-- SAN
-- CN
-- certificate fingerprint
-- trust anchors
-
-If a metadata-based TLS rule matches, its allow or deny action is returned.
-
-If the TLS observation required for the match is not available yet, the dataplane can return a
-`PendingTls` decision while waiting for enough information.
-
-### Intercept Mode
-
-Intercept mode is for HTTP-aware policy on top of TLS interception.
-
-Important constraints:
-
-- `tls.http` is only valid when `tls.mode` is `intercept`
-- `tls.mode: intercept` requires actual HTTP constraints under `tls.http`
-- intercept mode cannot be combined with metadata-oriented TLS name matchers
-
-The intercept path is intentionally stricter because it changes how traffic is handled at runtime.
-
-## HTTP Matchers Inside TLS Intercept
-
-When using `tls.http`, the model currently supports:
-
-- request host matching
-- request method matching
-- request path matching
-- request query matching
-- request header matching
-- response header matching
-
-Method names are normalized to uppercase during compilation.
-
-This is not a generic HTTP policy DSL. It is specifically the HTTP policy surface supported by the
-TLS intercept runtime today.
-
-## Kubernetes-Derived Sources
-
-Kubernetes source selectors let a source group track pod or node IPs dynamically through an
-integration.
-
-Two rules matter here:
-
-- exactly one of `pod_selector` or `node_selector` must be present
-- the referenced `integration` must exist when the policy is written through the HTTP API
-
-This keeps source discovery in the control plane and out of the dataplane, which matches the
-repository’s architectural split.
-
-## Writing Policies Safely
-
-A few practical guidelines follow directly from the current evaluator:
-
-- Use explicit low priorities for specific exceptions before broad rules.
-- Use `default_action` when you want a source group to own its traffic posture.
-- Use top-level `default_policy` as the last resort, not as a substitute for source-group intent.
-- Treat DNS allowlists as explicit allowlists. Once a source group owns a source IP, unmatched DNS
-  lookups are denied in enforcement mode.
-- Use rule-level `mode: audit` for exploratory rules without changing the whole policy’s runtime
-  behavior.
-- Use top-level `mode: audit` when you want to observe the full policy without enforcing denies.
-
-## Relationship To The Schema Reference
-
-Use this page for behavior and evaluation order.
-
-Use the Configuration Schema reference for:
-
-- exact field names
-- accepted JSON shapes
-- untagged enum forms such as string-or-number and string-or-list
-- OpenAPI component names used by tooling
+Read [Configuration Schema](/docs/reference/configuration-schema) when you need the exact request
+shape.

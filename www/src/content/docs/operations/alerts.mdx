@@ -1,262 +1,59 @@
 ---
 title: Alerts
-description: Alerting inputs the runtime exposes today and how to interpret them.
+description: Build alerts from readiness first, then add cluster, capacity, and service-plane error signals.
 order: 5
 ---
 
-This repository does not ship built-in alert rule files, Alertmanager configuration, or pager
-policy definitions.
+Neuwerk exposes alerting signals, but it does not ship a bundled alert rule pack. Build alerts
+from the runtime surfaces that already exist.
 
-What it does ship is the signal surface those alerts should be built from:
+## First Alert To Create
 
-- `GET /health`
-- `GET /ready`
-- `GET /metrics`
-- `GET /api/v1/stats`
-- `GET /api/v1/audit/findings`
+If you only create one urgent alert per node, start with:
 
-This page describes the alert inputs that are clearly supported by the current runtime and which of
-them are high-signal versus merely workload-descriptive.
+- `/ready` returning `503`
 
-## What The Repo Does And Does Not Define
+Readiness is the best first-line signal because it already combines several conditions that matter
+to operators.
 
-The codebase defines:
+## Alert Classes
 
-- readiness checks
-- Prometheus metric families
-- stats snapshots
-- audit and wiretap diagnostics
+The most useful alert groups are:
 
-It does not define:
+- node availability: `/health` and `/ready`
+- cluster health: `cluster`, `policy_replication`, and Raft-related metrics
+- dataplane capacity: active flows and NAT port utilization
+- service-plane failures: TLS interception and fail-closed counters
+- integration failures: integration error counters when cloud or other integrations are active
 
-- alert severity thresholds
-- escalation targets
-- on-call ownership
-- a bundled Prometheus rule pack
+## Better For Alerts
 
-So the right way to use this page is:
+High-signal alert inputs include:
 
-1. take the signals from the runtime
-2. set thresholds in your monitoring system
-3. tune them against your own traffic and deployment size
+- readiness failures
+- sustained cluster peer errors
+- sustained NAT port saturation
+- sustained `svc_fail_closed_total`
+- integration error counters
 
-## Start With Readiness
+## Better For Dashboards Or Investigation
 
-If you only wire one high-priority alert per node, it should be based on:
+These are usually better as dashboards or trend alerts than immediate pages:
 
-- `GET /ready`
+- total DNS query volume
+- total deny volume
+- general HTTP request volume
+- other workload-shaped counters
 
-`/ready` already aggregates the node's operational gating conditions and returns `503` when one or
-more of them fail.
+A spike in deny counters may mean a problem, or it may mean policy is working exactly as designed.
 
-The current readiness snapshot includes these checks:
+## Use Stats And Audit After The Alert Fires
 
-- `dataplane_running`
-- `dataplane_config`
-- `policy_ready`
-- `dns_allowlist`
-- `service_plane`
-- `draining`
-- `cluster`
-- `policy_replication`
-
-That makes readiness the best first-line alert input for “this node is up but not actually able to
-do its intended job.”
-
-## Suggested Alert Classes
-
-The repository naturally breaks into a few alert classes.
-
-### 1. Node Availability
-
-Use:
-
-- `GET /health`
-- `GET /ready`
-
-Interpretation:
-
-- `/health` failing means the management HTTP process itself is down or unreachable
-- `/ready` failing means the process is alive but the node is not ready for normal operation
-
-Operator response:
-
-- page immediately for lost process or broad readiness loss
-- inspect the readiness payload before jumping into lower-level metrics
-
-### 2. Cluster Control-Plane Degradation
-
-Relevant in cluster mode:
-
-- readiness check `cluster`
-- readiness check `policy_replication`
-- `raft_is_leader`
-- `raft_current_term`
-- `raft_last_log_index`
-- `raft_last_applied`
-- `raft_peer_errors_total`
-- `raft_peer_rtt_seconds`
-
-Interpretation:
-
-- `cluster` failing usually means leader discovery or cluster health is degraded
-- `policy_replication` failing means the cluster may have state, but this node has not replayed the
-  active policy locally yet
-- rising Raft peer errors or sustained replication lag suggests control-plane instability even if
-  some API reads still work
-
-Operator response:
-
-- verify whether the cluster currently has a stable leader
-- compare leader and follower lag
-- confirm that the active policy has been replayed locally on affected nodes
-
-### 3. Dataplane Saturation
-
-High-signal metrics already exposed include:
-
-- `dp_active_flows`
-- `dp_active_flows_shard`
-- `dp_active_flows_by_source_group`
-- `dp_nat_port_utilization_ratio`
-
-Interpretation:
-
-- active-flow growth is primarily a capacity and load signal
-- NAT port utilization is the more direct alert candidate when SNAT exhaustion risk matters
-
-Operator response:
-
-- treat sustained high NAT utilization as a capacity or traffic-shape problem
-- use per-shard and per-source-group flow gauges to localize skew before assuming a generic outage
-
-## Error Metrics Versus Decision Metrics
-
-Not every counter should page an operator.
-
-### Good Alert Inputs
-
-Metrics with explicit failure or error semantics are strong alert candidates:
-
-- `raft_peer_errors_total`
-- `integration_protection_errors_total`
-- `integration_termination_poll_errors_total`
-- `integration_termination_publish_errors_total`
-- `integration_termination_complete_errors_total`
-- `svc_fail_closed_total`
-- `svc_tls_intercept_errors_total`
-- `dns_upstream_mismatch_total`
-
-These represent runtime malfunctions, failed coordination, or degraded control/service-plane
-behavior.
-
-### Usually Better As Dashboards Or Trend Alerts
-
-Metrics that describe workload or policy outcomes are often noisy if used as immediate incident
-pages:
-
-- `dns_queries_total`
-- `dns_nxdomain_total`
-- `dp_tls_decisions_total`
-- `svc_http_requests_total`
-- `svc_http_denies_total`
-
-Those can still matter operationally, but they usually need deployment-specific thresholds and
-context. A deny spike may mean a bad rollout, a threat event, or simply policy doing exactly what
-it was configured to do.
-
-## Service-Plane And DPI Alerts
-
-If you are using TLS interception or other service-plane processing, watch these metric families
-closely:
-
-- `svc_tls_intercept_flows_total`
-- `svc_tls_intercept_errors_total`
-- `svc_tls_intercept_phase_seconds`
-- `svc_http_requests_total`
-- `svc_http_denies_total`
-- `svc_policy_rst_total`
-- `svc_fail_closed_total`
-
-High-signal interpretation:
-
-- `svc_fail_closed_total` should be treated as urgent
-- TLS intercept error counters are strong candidates for warning or critical alerts depending on
-  volume and persistence
-- latency histograms are better for SLO-style alerting than for binary “is broken” paging
-
-## Integration Lifecycle Alerts
-
-If cloud or integration mode is enabled, the runtime exposes dedicated integration metrics:
-
-- `integration_route_changes_total`
-- `integration_assignment_changes_total`
-- `integration_termination_events_total`
-- `integration_termination_complete_total`
-- `integration_protection_errors_total`
-- `integration_termination_poll_errors_total`
-- `integration_termination_publish_errors_total`
-- `integration_termination_complete_errors_total`
-- `integration_drain_duration_seconds`
-- `integration_termination_drain_start_seconds`
-
-Use these to distinguish:
-
-- normal routing and assignment churn
-- expected drain events
-- actual integration failures
-
-The error counters are the main alert inputs. The duration histograms are better suited to trend or
-SLO alerts.
-
-## Authentication Alerts
-
-The HTTP layer also exposes auth-related metrics:
-
-- `http_auth_total`
-- `http_auth_sso_total`
-- `http_auth_sso_latency_seconds`
-
-These are useful for:
-
-- spotting broad login failures
-- detecting SSO provider regressions
-- separating user auth issues from generic API availability issues
-
-As with other counters, the specific thresholds are deployment-specific. The repo only defines the
-metric surface.
-
-## Use Stats And Audit For Triage, Not Primary Paging
-
-Two other surfaces are extremely useful after an alert fires:
+After an alert fires, move to:
 
 - `GET /api/v1/stats`
 - `GET /api/v1/audit/findings`
 
-`/api/v1/stats` is best for:
+Those two surfaces help distinguish a component failure from a deliberate policy outcome.
 
-- checking cluster catch-up state
-- confirming dataplane counters quickly
-- getting a compact operational snapshot without parsing raw Prometheus output
-
-`/api/v1/audit/findings` is best for:
-
-- checking whether traffic denies are widespread
-- understanding whether a policy rollout changed behavior
-- separating intentional policy enforcement from component failure
-
-These are usually triage tools rather than primary alert transports.
-
-## Practical Minimum
-
-If you want the smallest useful alert set for the current implementation, start with:
-
-1. `/health` down
-2. `/ready` returning `503`
-3. sustained `raft_peer_errors_total` growth in cluster mode
-4. sustained `dp_nat_port_utilization_ratio` saturation where SNAT matters
-5. any sustained growth in `svc_fail_closed_total`
-6. sustained growth in integration error counters when cloud integration mode is enabled
-
-That set stays close to the current codebase and avoids depending on aspirational observability
-features that are not implemented here.
+If audit is unavailable, verify performance mode before assuming the audit subsystem is broken.

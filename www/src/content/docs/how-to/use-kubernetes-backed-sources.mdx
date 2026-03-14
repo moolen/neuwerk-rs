@@ -1,0 +1,151 @@
+---
+title: Use Kubernetes-Backed Sources
+description: Create a Kubernetes integration, reference it from a source group, and verify that the control plane resolves the expected IP set.
+order: 4
+---
+
+Use this guide when you want policy to follow Kubernetes pods or nodes instead of relying on static
+source IP lists.
+
+The workflow is:
+
+1. create a Kubernetes integration
+2. reference it from a source group
+3. activate the policy
+4. verify that the control plane resolves the expected source IPs
+
+## Step 1: Create The Integration
+
+Create a named Kubernetes integration through the management API:
+
+```json
+POST /api/v1/integrations
+{
+  "name": "cluster-a",
+  "kind": "kubernetes",
+  "api_server_url": "https://10.0.0.1:6443",
+  "ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
+  "service_account_token": "..."
+}
+```
+
+The service-account token and CA certificate must allow the firewall to list and watch the objects
+you plan to select.
+
+## Step 2: Add A Kubernetes Selector To A Source Group
+
+Reference the integration from policy. Pod selector example:
+
+```json
+{
+  "mode": "enforce",
+  "name": "payments-egress",
+  "policy": {
+    "default_policy": "deny",
+    "source_groups": [
+      {
+        "id": "payments-pods",
+        "sources": {
+          "kubernetes": [
+            {
+              "integration": "cluster-a",
+              "pod_selector": {
+                "namespace": "payments",
+                "match_labels": {
+                  "app": "api"
+                }
+              }
+            }
+          ]
+        },
+        "default_action": "deny",
+        "rules": [
+          {
+            "id": "allow-webhook",
+            "action": "allow",
+            "match": {
+              "proto": "tcp",
+              "dst_ips": ["203.0.113.20"],
+              "dst_ports": [443]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Node selector example:
+
+```json
+{
+  "integration": "cluster-a",
+  "node_selector": {
+    "match_labels": {
+      "topology.kubernetes.io/zone": "eu-central-1a"
+    }
+  }
+}
+```
+
+Rules:
+
+- set exactly one of `pod_selector` or `node_selector`
+- `pod_selector.namespace` is required for pod selectors
+- `match_labels` keys and values must be non-empty
+
+## Step 3: Activate The Policy
+
+Write the policy through the normal policy API:
+
+```bash
+curl -sk \
+  -H "Authorization: Bearer $NEUWERK_TOKEN" \
+  -H "Content-Type: application/json" \
+  -X PUT \
+  https://firewall.example/api/v1/policies/by-name/payments-egress \
+  --data @policy.json
+```
+
+The write fails if the referenced integration does not exist.
+
+## Step 4: Verify Resolution
+
+After activation, verify:
+
+```text
+GET /ready
+GET /api/v1/stats
+```
+
+Then test traffic from a pod or node that should now belong to the source group.
+
+What you are looking for:
+
+- the node is ready
+- policy replay succeeded
+- traffic from the selected Kubernetes source behaves like traffic from the intended source group
+
+## Troubleshoot The Common Failure Modes
+
+If the policy looks correct but traffic does not match:
+
+- confirm the integration name is correct
+- confirm the namespace and labels are correct
+- confirm the Kubernetes credentials and CA PEM are valid
+- confirm the selected objects actually have the expected pod IPs or node InternalIPs
+
+Kubernetes-backed source failures usually appear as source-membership problems, not as explicit
+dataplane errors.
+
+## Warning
+
+This feature solves dynamic source resolution. It does not define how to deploy the firewall itself
+inside Kubernetes.
+
+## Related Pages
+
+- [Kubernetes](/docs/deployment/kubernetes)
+- [Configuration Schema](/docs/reference/configuration-schema)
+- [Troubleshoot Enforcement](/docs/operations/troubleshooting)

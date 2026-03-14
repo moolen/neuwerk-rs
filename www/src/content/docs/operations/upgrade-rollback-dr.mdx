@@ -1,10 +1,68 @@
 ---
 title: Upgrade, Rollback & DR
-description: Placeholder for lifecycle and disaster recovery guidance.
+description: Upgrade cautiously, validate readiness after every step, and treat disaster recovery as a state-restoration exercise.
 order: 4
 ---
 
-The imported source content was removed.
+Neuwerk does not currently provide a one-command upgrade, rollback, or disaster-recovery workflow.
+The safe operational model is to control change at the deployment layer and validate the firewall's
+state after every step.
 
-Document upgrade order, rollback triggers, and disaster-recovery expectations for both single-node
-and clustered environments.
+## Upgrade Principles
+
+- back up state before changing binaries or runtime images
+- make one meaningful change at a time
+- validate readiness and stats after every restart
+- in cluster mode, avoid changing every node at once
+
+## Single-Node Upgrade Flow
+
+For a single node:
+
+1. back up the local data root
+2. stage the new binary or image
+3. restart the node
+4. verify `GET /health`, `GET /ready`, and `GET /api/v1/stats`
+5. confirm critical policy behavior
+
+## Cluster Upgrade Flow
+
+For a clustered deployment:
+
+1. back up state first
+2. upgrade one node at a time
+3. wait for the upgraded node to become ready
+4. confirm `cluster` and `policy_replication` are healthy
+5. continue to the next node only after the cluster stabilizes
+
+This minimizes the chance of turning an upgrade into a cluster-wide control-plane outage.
+
+## Rollback Guidance
+
+If the new version fails:
+
+1. stop the rollout
+2. restore the previous binary or image
+3. keep the node's matching state files in place
+4. verify readiness and policy behavior again
+
+If state migrations or secret-material changes are involved, pair rollback decisions with the
+backup point you took before the upgrade.
+
+## Disaster Recovery
+
+Disaster recovery is primarily a restore problem:
+
+- restore the authoritative state
+- restore matching node identity and secret material
+- restart the node or cluster
+- verify health, readiness, and policy replay
+
+See [Backup & Restore](/docs/operations/backup-restore) for the state boundaries that matter most.
+
+## Current Documentation Gap
+
+This page describes the safe operating posture, not a turnkey runbook. A future production doc set
+should add version-specific upgrade ordering, migration notes, and explicit rollback triggers.
+
+For a conservative rolling procedure you can apply today, see [Upgrade A Cluster](/docs/how-to/upgrade-a-cluster).

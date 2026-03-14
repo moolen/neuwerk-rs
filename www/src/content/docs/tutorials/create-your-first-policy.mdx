@@ -1,0 +1,124 @@
+---
+title: Create Your First Policy
+description: Upload a simple policy, activate it, and verify that the firewall is enforcing the result you intended.
+order: 2
+---
+
+This tutorial shows a safe first policy workflow:
+
+1. create a named policy through the management API
+2. activate it immediately by writing it in `enforce` mode
+3. verify that the firewall accepted and replayed it
+
+This tutorial assumes:
+
+- your node is already running
+- you have an admin bearer token
+- you know the management URL
+
+If you do not yet have admin access, start with [Get Admin Access](/docs/how-to/get-admin-access).
+
+## Choose A Small First Policy
+
+Start with one source group and one allow rule. The example below allows one internal network to
+reach one HTTPS destination and denies everything else.
+
+```json
+{
+  "mode": "enforce",
+  "name": "office-egress",
+  "policy": {
+    "default_policy": "deny",
+    "source_groups": [
+      {
+        "id": "branch-office",
+        "sources": {
+          "cidrs": ["10.10.0.0/16"]
+        },
+        "default_action": "deny",
+        "rules": [
+          {
+            "id": "allow-web",
+            "action": "allow",
+            "match": {
+              "dst_ips": ["203.0.113.10"],
+              "proto": "tcp",
+              "dst_ports": [443]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Why start here:
+
+- the source population is explicit
+- the allowed destination is narrow
+- the default behavior is deny
+- the outcome is easy to verify
+
+## Upload The Policy
+
+Write the policy by stable name:
+
+```bash
+curl -sk \
+  -H "Authorization: Bearer $NEUWERK_TOKEN" \
+  -H "Content-Type: application/json" \
+  -X PUT \
+  https://firewall.example/api/v1/policies/by-name/office-egress \
+  --data @policy.json
+```
+
+Using `mode: enforce` makes this policy the active policy immediately after the control plane
+accepts and compiles it.
+
+## Verify That The Policy Became Active
+
+Check the stored record:
+
+```text
+GET /api/v1/policies/by-name/office-egress
+```
+
+Then check node readiness and runtime state:
+
+```text
+GET /ready
+GET /api/v1/stats
+```
+
+What you want to see:
+
+- the policy record exists
+- the node is ready
+- stats show the dataplane and policy state as healthy
+
+## Verify The Behavioral Result
+
+Use a test host inside `10.10.0.0/16` and confirm:
+
+- traffic to `203.0.113.10:443` is allowed
+- other unmatched traffic is denied
+
+If the firewall denies more than you expected, inspect:
+
+- `GET /api/v1/audit/findings`
+- `GET /api/v1/dns-cache` when hostname policy is involved
+- `GET /api/v1/wiretap/stream` when you need live confirmation
+
+## Warning
+
+Changing a policy in `enforce` mode changes the active policy immediately. For larger rollouts,
+test in a narrow source group first or use audit workflows before broadening enforcement.
+
+## Next Steps
+
+- Read [Roll Out A Policy Safely](/docs/how-to/roll-out-a-policy-with-audit-mode) before moving a
+  larger source population into enforcement.
+- Read [Policy Model](/docs/configuration/policy-model) to understand evaluation order.
+- Read [Configure DNS Enforcement](/docs/configuration/dns-handling) before using hostname-based rules.
+- Read [Enable TLS Interception](/docs/configuration/tls-interception) before turning on active inspection.

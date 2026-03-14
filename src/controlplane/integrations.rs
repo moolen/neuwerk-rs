@@ -13,6 +13,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::controlplane::cluster::bootstrap::ca::{decrypt_ca_key, encrypt_ca_key, CaEnvelope};
@@ -26,7 +27,7 @@ pub(crate) fn integration_item_key(id: Uuid) -> Vec<u8> {
     format!("integrations/item/{id}").into_bytes()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum IntegrationKind {
     Kubernetes,
@@ -184,7 +185,7 @@ impl IntegrationSecretSealer {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct IntegrationView {
     pub id: Uuid,
     pub created_at: String,

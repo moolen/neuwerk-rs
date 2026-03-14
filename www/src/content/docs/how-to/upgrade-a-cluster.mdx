@@ -1,0 +1,123 @@
+---
+title: Upgrade A Cluster
+description: "Use a conservative rolling process: back up first, upgrade one node at a time, and validate cluster health after every step."
+order: 3
+---
+
+Use this guide when you need to upgrade a clustered deployment without turning the change into a
+cluster-wide control-plane outage.
+
+This is a conservative runbook, not a version-specific migration matrix.
+
+## Before You Start
+
+Make sure:
+
+- the cluster is healthy before you touch it
+- you have a recent backup
+- you know which node is currently the leader
+- you have the new binary or image ready on every node
+
+Pre-check with:
+
+```text
+GET /ready
+GET /api/v1/stats
+POST /api/v1/support/sysdump/cluster
+```
+
+If `cluster` or `policy_replication` is already failing, fix that first. Do not start an upgrade
+from a degraded baseline.
+
+## Recommended Order
+
+Prefer this sequence:
+
+1. followers first
+2. leader last
+
+This is operational advice, not a protocol requirement. Upgrading followers first usually reduces
+management disruption during the rollout.
+
+## Step 1: Back Up State
+
+Back up the relevant Neuwerk state on every node before the first restart.
+
+At minimum, preserve:
+
+- the cluster data store
+- cluster TLS material
+- `node_id`
+- `bootstrap-token`
+
+If you want the simplest safe rule, back up the full Neuwerk data root on each node.
+
+## Step 2: Upgrade One Follower
+
+Choose a follower and:
+
+1. stop the old process
+2. replace the binary or runtime image
+3. start the node again
+
+Do not move to another node yet.
+
+## Step 3: Verify The Upgraded Node
+
+Wait for the node to become healthy again:
+
+```text
+GET /health
+GET /ready
+GET /api/v1/stats
+```
+
+What you want to see:
+
+- the node is alive
+- `cluster` is healthy
+- `policy_replication` is healthy
+- the node has caught up to the active cluster state
+
+## Step 4: Repeat For Remaining Followers
+
+Upgrade the remaining followers one at a time, repeating the same verification after every node.
+
+If any node fails readiness or falls behind replication, stop the rollout and investigate before
+changing more nodes.
+
+## Step 5: Upgrade The Leader Last
+
+Once every follower is healthy on the new version, upgrade the leader.
+
+After the leader restart, expect a short control-plane disruption while leadership stabilizes. Then
+re-run the cluster validation sequence:
+
+```text
+GET /ready
+GET /api/v1/stats
+POST /api/v1/support/sysdump/cluster
+```
+
+## Roll Back If The Upgrade Fails
+
+If the rollout fails on a node:
+
+1. stop the rollout
+2. restore the previous binary or image on that node
+3. keep the matching state files in place
+4. verify readiness and cluster health again
+
+If the problem is version-specific and affects multiple upgraded nodes, roll back one node at a
+time in the reverse order you upgraded them.
+
+## Warning
+
+Do not mix state from one backup point with identity or secret material from another unless you are
+prepared to repair auth and CA state manually.
+
+## Related Pages
+
+- [Upgrade, Rollback & DR](/docs/operations/upgrade-rollback-dr)
+- [Backup & Restore](/docs/operations/backup-restore)
+- [Cluster Replication](/docs/architecture/cluster-replication)

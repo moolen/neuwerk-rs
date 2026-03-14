@@ -1,194 +1,59 @@
 ---
 title: System Overview
-description: Runtime composition and the boundary between the dataplane and control plane.
+description: The firewall is split into a dataplane for enforcement and a control plane for policy, DNS, management, and replication.
 order: 1
 ---
 
-This page describes the current runtime shape of the firewall as implemented in `main.rs` and the
-startup modules.
+Neuwerk is built around a strict boundary:
 
-The key architectural rule in this repository is a strict split between dataplane responsibilities
-and control-plane responsibilities. The dataplane owns packet handling and stateful enforcement.
-The control plane owns DNS proxying, cluster replication, management APIs, policy distribution, and
-service-plane features such as active TLS interception.
+- the dataplane handles packets, forwarding state, NAT, and enforcement
+- the control plane handles management, DNS proxying, cluster replication, and higher-layer services
 
-## High-Level Runtime Shape
+That split is the main idea to keep in mind while reading the rest of the docs. If a feature needs
+DNS parsing, cluster state, or management APIs, it belongs in the control plane. If a feature
+decides whether packets are dropped, forwarded, translated, or steered, it belongs in the
+dataplane.
 
-At startup, the process assembles four major subsystems:
+## The Four Main Runtime Pieces
 
-1. Cluster runtime, if cluster mode is enabled
-2. Control-plane service runtime
-3. Management HTTP API runtime
-4. Dataplane runtime
+A running firewall is made up of four major pieces:
 
-Those pieces share policy state and readiness state, but they do not collapse into a single
-monolithic request path.
+1. cluster services, when clustering is enabled
+2. the management HTTP runtime
+3. the service runtime for DNS proxying and TLS interception
+4. the dataplane runtime
 
-## Main Process Orchestration
+Those parts cooperate, but they do not collapse into one request path. That is why the firewall can
+serve a management API, answer DNS queries aimed at the firewall itself, and enforce client
+traffic without treating all of it as the same kind of workload.
 
-The `main` entrypoint is primarily a bootstrap coordinator.
+## Why The Split Matters
 
-It performs these steps:
+This design keeps the packet engine simpler and more predictable.
 
-1. Parse CLI flags and resolve listener bindings
-2. Initialize the local policy store and related control-plane state
-3. Optionally start the cluster runtime
-4. Start the control-plane service runtime
-5. Start the dataplane bootstrap path
-6. Start the dataplane runtime
-7. Wait for runtime tasks and shutdown signals
+Operator impact:
 
-The actual long-lived runtimes are then split into dedicated threads and Tokio runtimes.
+- DNS policy is enforced through the control-plane DNS proxy, not by teaching the dataplane to
+  parse DNS itself
+- clustering replicates control-plane state, not active dataplane flow state
+- TLS interception is a service-plane feature that is enabled only when policy and CA material
+  require it
 
-## Control Plane
+## Deployment Shapes
 
-The control plane in this repository is broader than just “the HTTP API”.
+The same architectural boundary stays in place in every deployment shape:
 
-Current control-plane responsibilities include:
+- single-node deployments keep all authoritative state on local disk
+- clustered deployments replicate control-plane state across nodes
+- every node still enforces its own traffic locally
 
-- HTTPS management API and embedded web UI
-- Prometheus metrics endpoint
-- policy persistence and activation
-- DNS proxying for hostname-based policy
-- dynamic DNS allowlist maintenance
-- service-account and SSO auth management
-- Kubernetes-backed source resolution
-- cluster replication and cluster admin RPCs
-- wiretap and audit aggregation
-- active TLS interception runtime and intercept CA lifecycle
+High availability therefore improves control-plane continuity. It does not turn the dataplane into
+a distributed shared engine.
 
-In practice, the control plane is spread across two long-lived runtimes:
+## Where To Go Next
 
-- the HTTP runtime
-- the `trafficd` runtime that owns DNS proxying and the TLS intercept service path
-
-That is why the control plane can serve management HTTPS on one listener while also handling
-service-facing DNS and interception flows separately.
-
-## Dataplane
-
-The dataplane is the packet-processing side of the firewall.
-
-Current dataplane responsibilities include:
-
-- packet classification and policy evaluation
-- flow tracking
-- stateful NAT
-- optional overlay encapsulation
-- DHCP handoff and dataplane address bootstrap support
-- TLS metadata observation used by policy evaluation
-- wiretap and audit event emission
-- optional DPDK I/O path
-- software `tun` or `tap` I/O path
-
-The dataplane does not own DNS parsing, SSO, cluster RPCs, or the management API.
-
-## Shared Contract Between The Two Planes
-
-The two planes coordinate through a small set of shared state objects and channels.
-
-Important shared surfaces:
-
-- `PolicyStore`
-  Holds the compiled policy snapshots and activation trackers
-- DNS allowlist
-  Populated by the control-plane DNS proxy and consumed by the dataplane
-- shared intercept demux state
-  Used to carry original-destination context into the interception runtime
-- wiretap and audit emitters
-  Produced by the dataplane and bridged into control-plane storage and streams
-- readiness and drain control
-  Shared operational state used during startup and shutdown
-
-This is the core contract:
-
-- the control plane compiles and distributes policy
-- the dataplane enforces packet policy
-- the control plane handles hostname resolution and service-plane inspection features that would
-  otherwise contaminate the dataplane with higher-layer logic
-
-## Why DNS Lives In The Control Plane
-
-Hostname-based policy depends on a DNS proxy and a dynamic IP allowlist.
-
-The repository keeps that logic out of the dataplane on purpose:
-
-- the dataplane only recognizes DNS-target flows and permits the service path
-- the control-plane DNS proxy evaluates source-IP-aware hostname rules
-- successful answers populate the dynamic IPv4 allowlist
-- later dataplane packets match against that allowlist
-
-This keeps DNS parsing and upstream resolution outside the packet engine itself.
-
-## Why TLS Interception Lives In The Control Plane
-
-TLS metadata observation starts in the dataplane because it is part of packet policy evaluation.
-Active interception is different.
-
-When a rule requires `tls.mode: intercept`:
-
-- the dataplane identifies that the flow needs service-plane handling
-- the service path steers the flow to the interception runtime
-- the control plane terminates client TLS, opens a new upstream TLS session, and evaluates HTTP
-  policy inside the stream
-
-That keeps full HTTP parsing and certificate-minting logic out of the dataplane.
-
-## Optional Cluster Layer
-
-Cluster mode is an overlay on top of the local control plane, not a separate product.
-
-When enabled, the cluster subsystem adds:
-
-- Raft replication
-- cluster join/bootstrap handling
-- replicated policy, auth, and integration admin RPCs
-- leader-aware HTTP API behavior
-- cross-node wiretap and audit collection
-
-Single-node mode still uses the same control-plane and dataplane split, just without the
-replication layer.
-
-## Runtime Threads And Executors
-
-The current implementation uses multiple dedicated runtime threads:
-
-- a DNS runtime thread for `trafficd`
-- an HTTP runtime thread for the management API
-- a dataplane runtime thread
-- bridge threads for wiretap and audit enrichment
-- optional cluster server tasks
-- optional integration manager task
-
-This means “the firewall” is a coordinated set of runtimes inside one process, not one giant async
-loop.
-
-## Data Path Summary
-
-The common steady-state path looks like this:
-
-1. Policy is compiled and activated through the control plane
-2. The dataplane receives packets and evaluates the compiled snapshot
-3. DNS-target and intercept-required flows are steered to service runtimes when needed
-4. Allowed non-service traffic is forwarded, NATed, and optionally encapsulated by the dataplane
-5. Audit and wiretap events flow back toward the control plane for storage and streaming
-
-## Non-Goals Of The Dataplane
-
-The current architecture explicitly avoids putting these concerns into the dataplane:
-
-- DNS upstream resolution
-- DNS hostname regex compilation
-- cluster replication
-- management authentication
-- HTTP API handling
-- SSO login flows
-- HTTP request and response parsing for intercepted TLS traffic
-
-## Related Pages
-
-- Control Plane
-- Dataplane
-- Traffic Flows
-- DNS Handling
-- TLS Interception
+- Read [Traffic Flows](/docs/architecture/traffic-flows) to see which traffic classes are handled
+  by which runtime.
+- Read [Dataplane](/docs/architecture/dataplane) to understand enforcement decisions.
+- Read [Control Plane](/docs/architecture/control-plane) to understand management, DNS, and
+  clustering behavior.

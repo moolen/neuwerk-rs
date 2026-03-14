@@ -1,21 +1,18 @@
 ---
 title: HTTP API
-description: Source-derived reference for the control-plane management API.
+description: Reference for the control-plane management API, including transport, auth, and cluster-aware behavior.
 order: 1
 ---
 
-This page documents the current control-plane HTTP API as implemented in the Axum route table and
-handler modules.
+This page is the reference for the control-plane HTTP API.
 
-A generated OpenAPI document is now produced from the Rust HTTP API layer:
+The authoritative machine-readable description is the generated OpenAPI document:
 
 - static docs artifact: `/openapi/firewall-v1.json`
 - runtime endpoint: `GET /api/v1/openapi.json`
-- exporter entrypoint: `src/bin/export_openapi.rs`
 
-The generated spec currently covers the core management surface: auth, policies, integrations,
-service accounts, performance mode, TLS-intercept CA management, DNS cache, and stats. This page
-still carries the narrative reference details that are not yet encoded into the spec.
+Use the OpenAPI document for exact request and response shapes. Use this page for the transport and
+behavioral details that matter when integrating with the API.
 
 ## Scope
 
@@ -25,9 +22,6 @@ The control-plane listener exposes three kinds of surfaces:
 - `GET /ready` for readiness checks on the primary HTTPS listener
 - `GET /metrics` on the separate metrics listener
 - `/api/v1/...` for the authenticated management API
-
-Everything documented below is based on the current code path in `src/controlplane/http_api.rs`
-and its handler modules.
 
 ## Transport And Base Paths
 
@@ -51,6 +45,8 @@ The session-oriented login endpoint accepts a JSON body:
   "token": "Bearer eyJ..."
 }
 ```
+
+If performance mode is disabled, these endpoints return `503`.
 
 On success, `POST /api/v1/auth/token-login` returns the decoded identity and sets the
 `neuwerk_auth` cookie. `POST /api/v1/auth/logout` clears that cookie.
@@ -344,6 +340,8 @@ data: {"flow_id":"...","src_ip":"10.0.0.10","dst_ip":"203.0.113.20","src_port":5
 
 The stream emits both `flow` and `flow_end` events.
 
+If performance mode is disabled, this endpoint returns `503`.
+
 ### Runtime Settings
 
 | Method | Path | Purpose | Notes |
@@ -369,6 +367,14 @@ Performance mode request:
   "enabled": true
 }
 ```
+
+Performance mode notes:
+
+- the default is enabled when no explicit setting has been written yet
+- `source: "local"` means the setting is stored on the node
+- `source: "cluster"` means the setting is coming from replicated cluster state
+- `source: null` means the runtime is using the built-in default
+- disabling performance mode makes the audit and wiretap APIs unavailable
 
 TLS intercept CA upload request:
 

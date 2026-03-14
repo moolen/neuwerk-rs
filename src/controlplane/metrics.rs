@@ -7,11 +7,12 @@ use prometheus::{
     Registry, TextEncoder,
 };
 use serde::Serialize;
+use utoipa::ToSchema;
 
 mod construct;
 mod methods;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct StatsSnapshot {
     pub dataplane: DataplaneStats,
     pub dns: DnsStats,
@@ -20,7 +21,7 @@ pub struct StatsSnapshot {
     pub cluster: ClusterStats,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DataplaneStats {
     pub active_flows: u64,
     pub active_nat_entries: u64,
@@ -33,14 +34,14 @@ pub struct DataplaneStats {
     pub ipv4_ttl_exceeded: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DecisionCounters {
     pub allow: u64,
     pub deny: u64,
     pub pending_tls: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DnsStats {
     pub queries_allow: u64,
     pub queries_deny: u64,
@@ -48,19 +49,19 @@ pub struct DnsStats {
     pub nxdomain_upstream: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct TlsStats {
     pub allow: u64,
     pub deny: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DhcpStats {
     pub lease_active: bool,
     pub lease_expiry_epoch: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ClusterStats {
     pub is_leader: bool,
     pub current_term: u64,
@@ -72,7 +73,7 @@ pub struct ClusterStats {
     pub nodes: Vec<ClusterNodeCatchup>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ClusterNodeCatchup {
     pub node_id: String,
     pub addr: String,
@@ -106,6 +107,16 @@ pub struct Metrics {
     svc_tls_intercept_phase: HistogramVec,
     svc_tls_intercept_inflight: GaugeVec,
     svc_tls_intercept_upstream_h2_pool: CounterVec,
+    svc_tls_intercept_upstream_h2_shard_select: CounterVec,
+    svc_tls_intercept_upstream_h2_send_wait: HistogramVec,
+    svc_tls_intercept_upstream_h2_selected_inflight: Histogram,
+    svc_tls_intercept_upstream_h2_pool_width: Histogram,
+    svc_tls_intercept_upstream_h2_ready_errors: CounterVec,
+    svc_tls_intercept_upstream_response_errors: CounterVec,
+    svc_tls_intercept_upstream_h2_conn_closed: CounterVec,
+    svc_tls_intercept_upstream_h2_conn_termination: CounterVec,
+    svc_tls_intercept_upstream_h2_retry: CounterVec,
+    svc_tls_intercept_upstream_h2_selected_inflight_peak: Gauge,
     raft_is_leader: Gauge,
     raft_leader_changes: Counter,
     raft_current_term: Gauge,

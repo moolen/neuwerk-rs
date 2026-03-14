@@ -1,0 +1,147 @@
+---
+title: Roll Out A Policy With Audit Mode
+description: Evaluate a new policy without enforcing its denies, review the results, and then promote it to enforce mode.
+order: 2
+---
+
+Use this guide when you want to test a policy before it starts blocking traffic.
+
+The safe pattern is:
+
+1. write the policy in top-level `audit` mode
+2. confirm performance mode is enabled if you plan to use audit findings or wiretap
+3. generate representative traffic
+4. review audit evidence
+5. tighten the policy if needed
+6. promote the same policy to `enforce`
+
+## Do Not Confuse Policy Mode And Rule Mode
+
+Top-level policy mode and per-rule mode do different things.
+
+- top-level `mode: audit` evaluates the policy but converts final deny outcomes into allow
+- per-rule `mode: audit` excludes that rule from the enforce path even if the policy is otherwise
+  enforcing
+
+For rollout safety, start by changing the top-level policy mode.
+
+## Check Performance Mode First
+
+The audit and wiretap APIs depend on performance mode. Verify the setting before starting your dry
+run:
+
+```text
+GET /api/v1/settings/performance-mode
+```
+
+If it is disabled, enable it first with:
+
+```json
+{
+  "enabled": true
+}
+```
+
+Write that body to:
+
+```text
+PUT /api/v1/settings/performance-mode
+```
+
+## Step 1: Write The Policy In Audit Mode
+
+Use the same policy body you intend to enforce, but set:
+
+```json
+{
+  "mode": "audit"
+}
+```
+
+Write it by stable name:
+
+```bash
+curl -sk \
+  -H "Authorization: Bearer $NEUWERK_TOKEN" \
+  -H "Content-Type: application/json" \
+  -X PUT \
+  https://firewall.example/api/v1/policies/by-name/office-egress \
+  --data @policy.json
+```
+
+## Step 2: Verify The Node Is Ready
+
+After the write succeeds, check:
+
+```text
+GET /ready
+GET /api/v1/stats
+```
+
+This confirms the policy was accepted, compiled, and replayed locally.
+
+## Step 3: Generate Representative Traffic
+
+Exercise the flows the policy is meant to allow and the flows it is meant to deny.
+
+Be deliberate here:
+
+- use real client source IPs when possible
+- test both expected allows and expected denies
+- include DNS traffic if hostname policy is involved
+
+## Step 4: Review Audit Evidence
+
+Use the evidence surfaces that fit the change:
+
+- `GET /api/v1/audit/findings`
+- `GET /api/v1/dns-cache` for hostname-policy validation
+- `GET /api/v1/wiretap/stream` for live confirmation
+
+Audit findings are the most useful signal when they are available, because they show what the
+firewall would have denied without turning the deny into an outage.
+
+## Step 5: Tighten The Policy
+
+Common reasons to revise the policy before enforcement:
+
+- a source group is broader than intended
+- a hostname rule is missing
+- a deny rule needs higher priority than a broad allow
+- a destination or port matcher is too narrow or too broad
+
+Revise the same named policy and repeat the audit cycle until the results are clean enough to
+promote.
+
+## Step 6: Promote To Enforce
+
+When you are ready, change only the top-level mode:
+
+```json
+{
+  "mode": "enforce"
+}
+```
+
+Keep the rest of the policy unchanged unless you are intentionally revising it.
+
+After promotion, verify:
+
+```text
+GET /ready
+GET /api/v1/stats
+GET /api/v1/audit/findings
+```
+
+## Warning
+
+Moving a policy from `audit` to `enforce` changes the active behavior immediately. Promote narrow
+source groups first when the blast radius matters.
+
+## Next Steps
+
+- Read [Policy Model](/docs/configuration/policy-model) for the exact evaluation semantics.
+- Read [Performance Mode](/docs/operations/performance-mode) for the operational meaning of the
+  audit and wiretap gate.
+- Read [Troubleshoot Enforcement](/docs/operations/troubleshooting) if the post-promotion behavior
+  is not what you expected.

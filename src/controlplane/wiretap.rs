@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use utoipa::ToSchema;
 
 use crate::controlplane::cluster::rpc::{self, WiretapHandler, WiretapStream};
 use crate::dataplane::policy::{CidrV4, PortRange, Proto};
@@ -24,9 +25,10 @@ pub struct DnsMap {
     inner: Arc<RwLock<HashMap<Ipv4Addr, DnsEntry>>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DnsCacheEntry {
     pub hostname: String,
+    #[schema(value_type = Vec<String>)]
     pub ips: Vec<Ipv4Addr>,
     pub last_seen: u64,
 }

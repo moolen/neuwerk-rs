@@ -1,6 +1,7 @@
 use super::*;
+use utoipa::ToSchema;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct ServiceAccountCreateRequest {
     name: String,
     #[serde(default)]
@@ -8,7 +9,7 @@ struct ServiceAccountCreateRequest {
     role: ServiceAccountRole,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct ServiceAccountUpdateRequest {
     name: String,
     #[serde(default)]
@@ -16,7 +17,7 @@ struct ServiceAccountUpdateRequest {
     role: ServiceAccountRole,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct ServiceAccountTokenCreateRequest {
     #[serde(default)]
     name: Option<String>,
@@ -28,12 +29,25 @@ struct ServiceAccountTokenCreateRequest {
     role: Option<ServiceAccountRole>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct ServiceAccountTokenResponse {
     token: String,
     token_meta: TokenMeta,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/service-accounts",
+    tag = "Service Accounts",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    responses(
+        (status = 200, description = "Service accounts", body = [crate::controlplane::service_accounts::ServiceAccount]),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn list_service_accounts(
     State(state): State<ApiState>,
     request: Request,
@@ -48,6 +62,22 @@ pub(super) async fn list_service_accounts(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/service-accounts",
+    tag = "Service Accounts",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    request_body = ServiceAccountCreateRequest,
+    responses(
+        (status = 200, description = "Created service account", body = crate::controlplane::service_accounts::ServiceAccount),
+        (status = 400, description = "Invalid request", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn create_service_account(
     State(state): State<ApiState>,
     Extension(auth): Extension<AuthContext>,
@@ -83,6 +113,26 @@ pub(super) async fn create_service_account(
     }
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/service-accounts/{id}",
+    tag = "Service Accounts",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Service account UUID")
+    ),
+    request_body = ServiceAccountUpdateRequest,
+    responses(
+        (status = 200, description = "Updated service account", body = crate::controlplane::service_accounts::ServiceAccount),
+        (status = 400, description = "Invalid request", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody),
+        (status = 404, description = "Service account not found", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn update_service_account(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -127,6 +177,25 @@ pub(super) async fn update_service_account(
     Json(account).into_response()
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/service-accounts/{id}",
+    tag = "Service Accounts",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Service account UUID")
+    ),
+    responses(
+        (status = 204, description = "Disabled service account and revoked tokens"),
+        (status = 400, description = "Invalid service account id", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody),
+        (status = 404, description = "Service account not found", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn delete_service_account(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -177,6 +246,23 @@ pub(super) async fn delete_service_account(
     StatusCode::NO_CONTENT.into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/service-accounts/{id}/tokens",
+    tag = "Service Accounts",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Service account UUID")
+    ),
+    responses(
+        (status = 200, description = "Service account token metadata", body = [crate::controlplane::service_accounts::TokenMeta]),
+        (status = 400, description = "Invalid service account id", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn list_service_account_tokens(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -196,6 +282,26 @@ pub(super) async fn list_service_account_tokens(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/service-accounts/{id}/tokens",
+    tag = "Service Accounts",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Service account UUID")
+    ),
+    request_body = ServiceAccountTokenCreateRequest,
+    responses(
+        (status = 200, description = "Minted service account token", body = ServiceAccountTokenResponse),
+        (status = 400, description = "Invalid token request", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody),
+        (status = 404, description = "Service account not found", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn create_service_account_token(
     State(state): State<ApiState>,
     Extension(auth): Extension<AuthContext>,
@@ -310,6 +416,26 @@ pub(super) async fn create_service_account_token(
     .into_response()
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/service-accounts/{id}/tokens/{token_id}",
+    tag = "Service Accounts",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Service account UUID"),
+        ("token_id" = String, Path, description = "Token UUID")
+    ),
+    responses(
+        (status = 204, description = "Revoked token"),
+        (status = 400, description = "Invalid account or token id", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody),
+        (status = 404, description = "Token not found", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn revoke_service_account_token(
     State(state): State<ApiState>,
     Path((id, token_id)): Path<(String, String)>,

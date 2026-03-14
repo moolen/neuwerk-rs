@@ -1,185 +1,65 @@
 ---
 title: Control Plane
-description: Management, DNS, TLS interception, and state distribution responsibilities.
+description: The control plane owns management, DNS proxying, cluster state, observability, and service-plane processing.
 order: 3
 ---
 
-This page describes the current control-plane responsibilities in the repository and how they are
-assembled at runtime.
+The control plane is the operational side of the firewall.
 
-The control plane is intentionally broader than the management HTTP API. It includes every runtime
-concern that would otherwise pull DNS parsing, cluster state, identity, or higher-layer protocol
-handling into the packet engine.
+It owns:
 
-## What The Control Plane Owns
-
-The current control plane owns these major responsibilities:
-
-- management HTTPS API and embedded UI
-- Prometheus metrics endpoint
-- policy persistence, activation, and in-memory distribution
+- the management HTTPS API and web UI
+- metrics, health, and readiness surfaces
+- policy persistence and activation
 - DNS proxying for hostname-based policy
 - dynamic DNS allowlist maintenance
-- service accounts and SSO configuration
-- Kubernetes-backed source resolution
-- wiretap fan-out and audit storage
-- TLS interception runtime and intercept CA lifecycle
-- cluster replication and cluster admin surfaces
+- service accounts and SSO
+- integrations such as Kubernetes-backed source resolution
+- audit and wiretap aggregation
+- TLS interception runtime and CA management
+- cluster replication and leader-aware management behavior
 
-Those responsibilities live under `src/controlplane/` and are started from the startup runtime
-modules rather than from the dataplane.
+## Why DNS And TLS Interception Live Here
 
-## Runtime Shape
+Both features require more than packet forwarding:
 
-At startup, the process creates two long-lived control-plane runtimes:
+- DNS policy needs query parsing, upstream resolution, and hostname-to-IP bookkeeping
+- TLS interception needs certificate management, HTTP parsing, and a service runtime
 
-1. the HTTP runtime
-2. the `trafficd` runtime
+Keeping those concerns in the control plane preserves the dataplane boundary and makes it clearer
+which failures are packet-engine failures versus service failures.
 
-The HTTP runtime serves the management API, UI, and metrics-adjacent operational endpoints.
+## The Main Operational Surfaces
 
-The `trafficd` runtime handles service-facing network features that are still part of the control
-plane:
+Operators interact with the control plane through:
 
-- DNS proxying on the management address
-- TLS interception listeners and service-lane steering support
-- intercept CA loading and readiness tracking
+- the main HTTPS listener for the UI and management API
+- the metrics listener
+- the DNS listener on the management address
+- cluster listeners when HA is enabled
 
-This split matters because the repository treats “control plane” as a set of management and
-service-plane runtimes, not as a single web server.
+The control plane is therefore broader than "the web API". It is every runtime surface that turns
+configuration into behavior or provides higher-layer services around enforcement.
 
-## HTTP Runtime
+## State Ownership
 
-The HTTP runtime is built from `src/controlplane/http_api.rs` and related modules.
+The control plane is the source of truth for control-plane records such as:
 
-It currently exposes or coordinates:
+- policies and active policy selection
+- service accounts
+- integrations
+- SSO configuration
+- management and intercept CA material
+- audit history
 
-- policy CRUD and policy activation
-- readiness, health, stats, and support endpoints
-- service-account token management
-- SSO provider configuration and login flows
-- integration configuration
-- audit queries
-- wiretap streaming
-- cluster-aware API behavior when cluster mode is enabled
-- the runtime OpenAPI document at `/api/v1/openapi.json`
+In single-node mode that state is local. In clustered mode it is replicated and leader-aware.
 
-The same runtime also ensures management TLS material and carries control-plane state such as the
-active `PolicyStore`, local policy repository, integration store, SSO store, and readiness state.
+## Operator Implications
 
-## DNS Proxy And Hostname Policy
+- If the management API is healthy but the node is not ready, the control plane may still be
+  waiting for dataplane, DNS, service-plane, or cluster readiness.
+- Hostname-based policy failures should be investigated from the DNS proxy outward.
+- TLS interception depends on both policy and intercept CA availability.
 
-Hostname-based policy is implemented as a control-plane service, not as a dataplane parser.
-
-The DNS proxy:
-
-- listens on the firewall management IP and port `53`
-- parses UDP and TCP DNS requests
-- evaluates the client source IP and queried name against the compiled `DnsPolicy`
-- returns `NXDOMAIN` for denied requests
-- forwards allowed requests to configured upstream resolvers
-- extracts IPv4 answers into the shared DNS allowlist and DNS map
-- emits DNS-related metrics and audit findings
-
-This is the core mechanism that turns hostname policy into later dataplane allow decisions without
-teaching the dataplane how to do recursive DNS work.
-
-## TLS Interception And The Service Lane
-
-Active TLS interception is also control-plane work.
-
-When policy uses `tls.mode: intercept`, the dataplane marks the flow as requiring service-plane
-handling. The control plane then owns the rest:
-
-- loading or replicating the intercept CA material
-- tracking whether intercept CA material is ready
-- installing service-lane steering support
-- accepting the intercepted client connection
-- creating a separate upstream TLS connection
-- evaluating HTTP policy inside the intercepted stream
-
-The implementation keeps full HTTP parsing, certificate minting, and upstream TLS session handling
-out of the dataplane.
-
-## Policy Distribution And Shared State
-
-The control plane is the source of truth for compiled policy state.
-
-Important shared objects produced or updated by the control plane include:
-
-- `PolicyStore`
-  Holds the compiled packet policy snapshot, DNS policy, active policy ID, and generation trackers
-- DNS allowlist
-  Populated by the DNS proxy and consumed by the dataplane
-- shared intercept demux
-  Used to carry original-destination context into the TLS intercept runtime
-- readiness state
-  Updated during startup and policy activation
-- wiretap and audit stores
-  Fed by bridge threads that enrich dataplane events with control-plane context
-
-The contract is deliberately narrow: the control plane compiles and distributes state, and the
-dataplane enforces it.
-
-## Event Aggregation
-
-The dataplane does not write final audit or wiretap records directly into control-plane storage.
-
-Instead, the runtime starts dedicated bridge threads that:
-
-- receive dataplane wiretap events
-- enrich them with DNS-name context
-- publish them into the control-plane wiretap hub
-- receive dataplane audit events
-- translate them into persisted control-plane audit findings
-
-That keeps the packet path focused on emitting compact events while the control plane owns storage,
-querying, and stream distribution.
-
-## Cluster-Aware Behavior
-
-Cluster mode does not replace the control plane. It extends it.
-
-When enabled, the control plane additionally takes responsibility for:
-
-- running the local Raft node
-- serving cluster policy, auth, and integration RPCs
-- replaying replicated policy state into the local `PolicyStore`
-- loading shared auth and intercept CA material from cluster-backed storage
-- exposing leader-aware management behavior through the HTTP API
-
-Single-node mode still uses the same local control-plane subsystems, just without the replicated
-state layer.
-
-## What Stays Out Of The Control Plane
-
-The control plane does not own ordinary packet forwarding.
-
-It is not responsible for:
-
-- the fast-path packet loop
-- flow tracking
-- stateful NAT
-- overlay encapsulation
-- ordinary L3/L4 allow or deny decisions
-
-Those remain dataplane responsibilities even when a shared policy snapshot or shared readiness
-state is involved.
-
-## Practical Reading Guide
-
-If you are tracing a control-plane feature through the codebase:
-
-1. Start with `src/runtime/startup/controlplane_runtime.rs`
-2. Follow either `src/controlplane/http_api.rs` or `src/controlplane/trafficd.rs`
-3. Check whether the feature feeds shared state into `PolicyStore`, DNS allowlist, readiness, or
-   bridge channels
-4. Only then look at the dataplane side if the feature affects enforcement
-
-## Related Pages
-
-- System Overview
-- Dataplane
-- DNS Handling
-- TLS Interception
-- HTTP API
+Read [Cluster Replication](/docs/architecture/cluster-replication) for the HA-specific control
+plane behavior.

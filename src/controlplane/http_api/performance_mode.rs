@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::controlplane::cluster::types::ClusterCommand;
 
@@ -15,13 +16,13 @@ use super::{
 const PERFORMANCE_MODE_ENABLED_KEY: &[u8] = b"settings/performance_mode/enabled";
 const PERFORMANCE_MODE_DEFAULT_ENABLED: bool = true;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub(super) struct PerformanceModeStatus {
     pub enabled: bool,
     pub source: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct PerformanceModeUpdateRequest {
     enabled: bool,
 }
@@ -31,6 +32,19 @@ struct PerformanceModeDisk {
     enabled: bool,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/settings/performance-mode",
+    tag = "Settings",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    responses(
+        (status = 200, description = "Performance mode status", body = PerformanceModeStatus),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn get_performance_mode(
     State(state): State<ApiState>,
     request: Request,
@@ -45,6 +59,22 @@ pub(super) async fn get_performance_mode(
     }
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/settings/performance-mode",
+    tag = "Settings",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    request_body = PerformanceModeUpdateRequest,
+    responses(
+        (status = 200, description = "Updated performance mode status", body = PerformanceModeStatus),
+        (status = 400, description = "Invalid request", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn put_performance_mode(
     State(state): State<ApiState>,
     mut request: Request,

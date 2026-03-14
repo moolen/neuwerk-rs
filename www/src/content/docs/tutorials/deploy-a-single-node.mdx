@@ -1,0 +1,105 @@
+---
+title: Deploy A Single Node
+description: Bring up one firewall node, verify it is reachable, and confirm the management surfaces are live.
+order: 1
+---
+
+This tutorial gets a single firewall node running with the smallest supported shape: one process,
+no cluster replication, one management interface, and one data-plane interface.
+
+If you are unsure whether you should be thinking in terms of image requirements or binary
+requirements, read [Requirements](/docs/deployment/requirements) first.
+
+You will finish with:
+
+- the firewall process running
+- the management HTTPS endpoint answering
+- the metrics endpoint answering
+- enough context to add your first policy safely
+
+## Before You Start
+
+Have these values ready:
+
+- a management interface with an IPv4 address
+- a separate data-plane interface
+- at least one DNS target IP that clients will send DNS traffic to
+- at least one upstream DNS resolver
+
+Important constraints:
+
+- the management and data-plane interfaces must be different
+- DNS policy depends on the firewall receiving client DNS traffic
+- the smallest deployment shape still runs both the control plane and the dataplane
+
+## Start The Firewall
+
+The smallest accepted command shape is:
+
+```text
+firewall \
+  --management-interface mgmt0 \
+  --data-plane-interface data0 \
+  --dns-target-ip 10.0.0.53 \
+  --dns-upstream 1.1.1.1:53
+```
+
+What this does:
+
+- enables the management HTTPS listener on the management IP
+- enables the metrics listener on the management IP
+- enables the DNS proxy on the management IP at port `53`
+- leaves cluster replication disabled
+
+## Verify The Process
+
+Check that the management process is alive:
+
+```text
+GET /health
+```
+
+Then confirm that metrics are exposed:
+
+```text
+GET /metrics
+```
+
+If you already have management credentials, also check readiness:
+
+```text
+GET /ready
+GET /api/v1/stats
+```
+
+Readiness matters more than liveness. A healthy node is up; a ready node is able to enforce
+traffic with the dataplane, DNS proxy, and service plane in a usable state.
+
+## Confirm The Listener Layout
+
+Unless you override the defaults, a single node listens on:
+
+- `management-ip:8443` for the web UI and management API
+- `management-ip:8080` for Prometheus metrics
+- `management-ip:53` for DNS proxy traffic
+
+The node does not start cluster listeners in this mode.
+
+## What To Check If Startup Fails
+
+Start with these questions:
+
+- does the management interface have an IPv4 address
+- are the management and data-plane interfaces different
+- did you provide at least one `--dns-target-ip`
+- did you provide at least one `--dns-upstream`
+
+If the process is alive but not ready, continue with [Troubleshoot Enforcement](/docs/operations/troubleshooting).
+
+## Next Steps
+
+If you do not yet have an admin token or browser session, start with [Get Admin
+Access](/docs/how-to/get-admin-access).
+
+Then continue with [Create Your First Policy](/docs/tutorials/create-your-first-policy) to put the
+node into useful service.

@@ -1,0 +1,129 @@
+---
+title: Get Admin Access
+description: Use an existing bearer token, browser token login, SSO, or the cluster auth CLI to obtain operator access.
+order: 1
+---
+
+Use this guide when you need to access the web UI or management API as an administrator.
+
+There are four practical access paths:
+
+1. use an existing bearer token directly with the API
+2. exchange an existing bearer token for a browser session
+3. log in through SSO if an admin-mapped provider is already configured
+4. mint a temporary admin token through the cluster auth CLI in clustered deployments
+
+## Use A Bearer Token Directly
+
+If you already have a valid admin token, send it with:
+
+```text
+Authorization: Bearer <token>
+```
+
+Verify the token and its roles with:
+
+```text
+GET /api/v1/auth/whoami
+```
+
+Protected `POST`, `PUT`, and `DELETE` requests require the `admin` role.
+
+## Create A Browser Session From A Token
+
+If you want to use the web UI, exchange the token for a session cookie:
+
+```bash
+curl -sk \
+  -H 'Content-Type: application/json' \
+  -X POST \
+  https://firewall.example/api/v1/auth/token-login \
+  --data '{"token":"Bearer '"$NEUWERK_TOKEN"'"}'
+```
+
+On success, the firewall sets the `neuwerk_auth` cookie and returns the decoded identity.
+
+## Use SSO When It Is Already Configured
+
+If the firewall already has an SSO provider configured, use the normal UI login flow.
+
+Admin access through SSO depends on the provider mapping rules. Your identity must match the
+configured admin subjects, groups, or email-domain rules for that provider.
+
+After login, confirm the assigned roles with:
+
+```text
+GET /api/v1/auth/whoami
+```
+
+## Mint A Temporary Admin Token In Cluster Mode
+
+Clustered deployments expose an auth administration CLI that can mint tokens through the cluster
+RPC layer.
+
+Example:
+
+```text
+firewall auth token mint \
+  --sub operator@example.com \
+  --roles admin \
+  --cluster-addr 10.0.0.11:9600
+```
+
+Notes:
+
+- `--roles admin` is what makes the token usable for admin writes
+- `--cluster-tls-dir` defaults to `/var/lib/neuwerk/cluster/tls` if you do not override it
+- the command prints the raw token to standard output
+
+Use this path for bootstrap and break-glass access in clustered deployments.
+
+## Create An Automation Token From An Existing Admin Session
+
+Once you already have admin access, create a service account for automation:
+
+1. create the account
+2. mint a token for it
+3. store the returned token securely
+
+Create the account:
+
+```json
+POST /api/v1/service-accounts
+{
+  "name": "terraform",
+  "description": "automation account",
+  "role": "admin"
+}
+```
+
+Mint a token:
+
+```json
+POST /api/v1/service-accounts/{id}/tokens
+{
+  "name": "ci",
+  "ttl": "24h",
+  "role": "admin"
+}
+```
+
+The raw token value is returned only once. Later list operations return token metadata, not the
+secret value.
+
+## Important Limitation
+
+Single-node deployments without pre-existing admin credentials or pre-configured SSO do not
+currently have a documented self-serve first-admin bootstrap workflow in the product docs.
+
+Operationally, that means one of these must already exist before normal admin use begins:
+
+- a valid bearer token
+- a working admin-mapped SSO provider
+- a clustered deployment where an operator can use the cluster auth CLI
+
+## Next Steps
+
+- Continue with [Create Your First Policy](/docs/tutorials/create-your-first-policy) once you can
+  authenticate as an admin.
+- Read [HTTP API](/docs/interfaces/http-api) for the full auth and service-account reference.

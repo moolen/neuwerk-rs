@@ -1,55 +1,45 @@
 ---
 title: Observability
-description: Metrics, readiness, diagnostics, and runtime signal surfaces.
+description: Use health, readiness, metrics, stats, audit, and wiretap together to understand node health and enforcement behavior.
 order: 1
 ---
 
-This page describes the observability surfaces that exist in the current codebase.
+Neuwerk exposes several different observability surfaces because no single endpoint answers every
+operational question.
 
-The implementation today is centered on:
+The main ones are:
 
-- Prometheus metrics
-- health and readiness endpoints
-- a structured runtime stats snapshot
-- audit findings
-- live wiretap streams
-- logs
-- support sysdump archives
+- `/health` for process liveness
+- `/ready` for operational readiness
+- `/metrics` for Prometheus metrics
+- `/api/v1/stats` for a compact runtime snapshot
+- `/api/v1/audit/findings` for structured deny history
+- `/api/v1/wiretap/stream` for live traffic observation
+- process logs for runtime detail
 
-It does not currently expose a built-in distributed tracing backend such as OTLP, Jaeger, or
-Zipkin.
+Audit and wiretap depend on performance mode. If performance mode is disabled, those API surfaces
+return `503` until it is enabled again.
 
-## What To Check First
+## Start Here First
 
-If you are trying to decide whether a node is healthy, start with these signals in order:
+When you need a quick health check, use this order:
 
-1. `/health`
-   Confirms the HTTP process is alive
-2. `/ready`
-   Shows whether dataplane, policy, DNS, service-plane, drain, and cluster checks are all ready
-3. `/metrics`
-   Gives the raw Prometheus view for alerting and dashboards
-4. `/api/v1/stats`
-   Gives a compact JSON snapshot of the current dataplane, DNS, TLS, DHCP, and cluster state
-5. `/api/v1/audit/findings` and `/api/v1/wiretap/stream`
-   Explain what traffic is currently being denied or observed
+1. `GET /health`
+2. `GET /ready`
+3. `GET /metrics`
+4. `GET /api/v1/stats`
 
-That sequence matches the actual runtime layering: process liveness first, then readiness gates,
-then counters and event-level diagnostics.
+That sequence separates "is the process up" from "is the node actually ready to enforce traffic".
 
 ## Liveness And Readiness
 
-The management HTTP runtime exposes two basic operational endpoints:
+`/health` answers whether the management process is alive.
 
-- `GET /health`
-- `GET /ready`
+`/ready` answers whether the node is ready to do useful work. It returns `200` only when the
+dataplane, policy state, DNS proxy, service plane, and any cluster-specific checks are in a usable
+state.
 
-`/health` is a simple process-liveness response.
-
-`/ready` is the more important operator signal. It returns HTTP `200` only when all readiness
-checks currently pass, and returns HTTP `503` when one or more checks fail.
-
-The readiness snapshot currently includes checks for:
+Important readiness checks include:
 
 - `dataplane_running`
 - `dataplane_config`
@@ -60,201 +50,53 @@ The readiness snapshot currently includes checks for:
 - `cluster`
 - `policy_replication`
 
-In cluster mode, readiness also depends on cluster membership and replicated policy state catching
-up locally.
+## Metrics
 
-## Prometheus Metrics
+`/metrics` is the raw Prometheus surface. Use it for:
 
-The runtime exposes Prometheus metrics on a dedicated listener at:
+- dashboards
+- alerting
+- capacity trend analysis
+- error-rate monitoring
 
-- `GET /metrics`
+Metrics are best for trends and saturation. They are not always the fastest path to an incident
+answer, which is why `/ready` and `/api/v1/stats` are better first checks.
 
-This listener is separate from the main API router and is intentionally left outside the normal API
-auth middleware. `/health` is also unauthenticated.
+## Runtime Snapshot
 
-The implementation also includes a guardrail for public metrics exposure. If the configured metrics
-bind address appears public, startup fails unless `NEUWERK_ALLOW_PUBLIC_METRICS_BIND=1` is set.
+`/api/v1/stats` is the fastest compact view of the running node.
 
-## Metric Families
+Use it when you want:
 
-The current metrics registry covers several distinct runtime areas.
+- dataplane counters
+- DNS state summary
+- TLS and service-plane state
+- cluster catch-up context
 
-Important metric prefixes and examples:
+It is easier to interpret during incident response than parsing the entire Prometheus surface.
 
-- HTTP API metrics
-  `http_*`
-- DNS proxy metrics
-  `dns_*`
-- service-plane DNS and TLS intercept metrics
-  `svc_dns_*`, `svc_tls_intercept_*`, `svc_http_*`
-- cluster and storage metrics
-  `raft_*`, `rocksdb_*`
-- dataplane packet and state metrics
-  `dp_*`
-- DPDK-specific metrics
-  `dpdk_*`
-- DHCP metrics
-  `dhcp_*`
-- integration lifecycle metrics
-  `integration_*`
+## Audit And Wiretap
 
-High-signal examples already surfaced into the stats snapshot include:
+Audit and wiretap answer different questions:
 
-- `dp_active_flows`
-- `dp_active_nat_entries`
-- `dp_nat_port_utilization_ratio`
-- `dns_queries_total`
-- `dns_nxdomain_total`
-- `dp_tls_decisions_total`
-- `raft_is_leader`
-- `raft_current_term`
+- audit shows persisted structured findings about denies and selected auth events
+- wiretap shows live traffic observation
 
-## Stats Snapshot API
+Use audit when you need evidence of repeated policy outcomes. Use wiretap when you need to confirm
+what is happening right now on a live path.
 
-The management API exposes a structured summary at:
-
-- `GET /api/v1/stats`
-
-This endpoint is useful when you want a compact status view without scraping the full Prometheus
-output.
-
-The current snapshot contains:
-
-- dataplane counters and active state
-- DNS allow and deny counts
-- TLS allow and deny counts
-- DHCP lease status
-- cluster leadership and catch-up information
-
-In cluster mode, the response is enriched with per-node catch-up details such as leader/follower
-role, matched log index, lag, and whether a follower is caught up.
-
-## DNS Cache Introspection
-
-The HTTP API also exposes:
-
-- `GET /api/v1/dns-cache`
-
-This is the control-plane view of the grouped hostname-to-IP cache used to support hostname-based
-policy decisions. It is useful when you need to verify that allowed DNS answers are actually being
-translated into allowlist state.
-
-## Audit Findings
-
-The runtime persists summarized audit findings in the control plane and exposes them through:
-
-- `GET /api/v1/audit/findings`
-- `GET /api/v1/audit/findings/local`
-
-The stored finding types currently include:
-
-- `dns_deny`
-- `l4_deny`
-- `tls_deny`
-- `icmp_deny`
-- `auth_sso`
-
-Important behavior:
-
-- single-node mode returns local findings directly
-- cluster mode fans out from the leader and merges findings from all nodes
-- the response marks itself as partial when one or more nodes fail to answer
-
-This makes the audit API the best source when you need a node-aware answer to “what is the system
-denying right now?”
-
-## Wiretap Stream
-
-Live traffic observation is exposed through:
-
-- `GET /api/v1/wiretap/stream`
-
-The endpoint serves server-sent events and supports filters for:
-
-- source CIDR
-- destination CIDR
-- hostname regex
-- protocol
-- source port
-- destination port
-
-Wiretap events are emitted by the dataplane, enriched in the control plane with DNS context, and
-published through a broadcast hub. In cluster mode, the leader can fan out subscriptions across the
-current membership and merge the event streams.
-
-This is the best built-in tool for watching live flow observations rather than only aggregated
-denies.
+Both surfaces are intentionally gated by performance mode. Read [Performance Mode](/docs/operations/performance-mode)
+if those workflows are unavailable.
 
 ## Logs
 
-The process uses `tracing_subscriber`-based logging and supports two formats:
+Logs remain the best source for startup failures, component crashes, and explicit runtime errors.
 
-- plain compact logs
-- JSON logs
+Use JSON logs when you need to ship events into an external logging system. Use compact logs when
+you need local readability.
 
-The current environment variables are:
+## Practical Rule
 
-- `NEUWERK_LOG_LEVEL`
-- `RUST_LOG`
-- `NEUWERK_LOG_FORMAT`
-
-JSON logs are the better fit if logs are being shipped into an external system. Plain logs are the
-default local operator view.
-
-## Support Sysdump
-
-For broader support collection, the API exposes:
-
-- `POST /api/v1/support/sysdump/node`
-- `POST /api/v1/support/sysdump/cluster`
-
-These endpoints build tarball archives with runtime summaries and, in cluster mode, can fan out to
-peer nodes and assemble a combined archive with per-node results and failure reporting.
-
-This is not a streaming observability surface, but it is part of the current diagnostic workflow
-implemented in the codebase.
-
-## Performance-Mode Caveats
-
-There are two observability caveats worth calling out because they directly affect what operators
-can see.
-
-First, the HTTP audit and wiretap endpoints require the current performance-mode setting to be
-enabled:
-
-- `GET /api/v1/settings/performance-mode`
-- `PUT /api/v1/settings/performance-mode`
-
-If that setting is disabled, both audit and wiretap return `503`.
-
-Second, DPDK aggressive performance mode disables dataplane state metrics, audit emission, and
-wiretap emission in the dataplane runtime itself. In that mode, you should expect reduced
-visibility in exchange for a lower-overhead data path.
-
-## What Does Not Exist Yet
-
-The current repository does not expose these as built-in observability features:
-
-- distributed trace export
-- span collection backend configuration
-- a documented built-in dashboard pack
-- alert rule definitions in the runtime itself
-
-Those may be added later, but they are not part of the implemented observability surface today.
-
-## Practical Reading Guide
-
-If you are tracing observability behavior through the code:
-
-1. Start with `src/controlplane/metrics.rs`
-2. Read `src/controlplane/ready.rs`
-3. Check `src/controlplane/http_api/app_routes.rs` and `src/controlplane/http_api/metrics.rs`
-4. Follow `src/controlplane/audit.rs` and `src/controlplane/http_api/audit.rs`
-5. Follow `src/controlplane/wiretap.rs` and `src/controlplane/http_api/wiretap.rs`
-
-## Related Pages
-
-- Control Plane
-- Dataplane
-- HTTP API
-- Traffic Flows
+Start with readiness, confirm with stats, then use metrics, audit, wiretap, and logs to narrow the
+problem. That order usually gets you to the right runtime faster than jumping straight into raw
+counters.

@@ -1,12 +1,12 @@
 ---
 title: Web UI
-description: Shipped management UI, its page model, and how it talks to the control plane.
+description: Reference for the built-in management UI and how it is served and authenticated.
 order: 2
 ---
 
-This repository includes a real management web UI under `ui/`.
+Neuwerk includes a built-in management UI.
 
-The current UI is:
+The UI is:
 
 - a React application
 - built with Vite
@@ -14,7 +14,7 @@ The current UI is:
 - embedded into the Rust HTTP server and served from the same HTTPS listener as the control-plane
   API
 
-It is not a separate SPA deployment tier or a separate backend-for-frontend service.
+It is not a separate backend tier or a separate deployable that you operate on its own.
 
 ## How The UI Is Served
 
@@ -43,8 +43,7 @@ The built artifact lives under:
 The runtime packaging scripts also expect `ui/dist` to exist when producing staged runtime
 artifacts.
 
-Operationally, that means the management UI currently ships as part of the firewall runtime image,
-not as a separately versioned deployable.
+Operationally, the UI ships with the firewall itself.
 
 ## Authentication Model
 
@@ -186,6 +185,9 @@ The settings page currently bundles several admin workflows:
 - TLS intercept CA upload, generation, and certificate download
 - support bundle download
 - SSO provider create, update, delete, and test flows
+
+Performance mode is the main UI switch that gates the audit and wiretap workflows. When it is
+disabled, those pages remain visible but the interactive data path is unavailable.
 
 ## Role Handling
 

@@ -6,6 +6,7 @@ use axum::Json;
 use include_dir::{include_dir, Dir};
 use mime_guess::MimeGuess;
 use serde_json::json;
+use utoipa::ToSchema;
 
 use crate::controlplane::metrics::{ClusterNodeCatchup, StatsSnapshot};
 use crate::controlplane::wiretap::DnsCacheEntry;
@@ -13,6 +14,11 @@ use crate::controlplane::wiretap::DnsCacheEntry;
 use super::{error_response, maybe_proxy, ApiState, HttpApiCluster};
 
 static UI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
+
+#[derive(Debug, serde::Serialize, ToSchema)]
+struct DnsCacheResponse {
+    entries: Vec<DnsCacheEntry>,
+}
 
 pub(super) async fn health_handler() -> Response {
     Json(json!({ "status": "ok" })).into_response()
@@ -68,6 +74,20 @@ fn embedded_file_response(path: &str, file: &include_dir::File<'_>) -> Response 
     resp
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/dns-cache",
+    tag = "Diagnostics",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    responses(
+        (status = 200, description = "Grouped DNS cache entries", body = DnsCacheResponse),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 503, description = "DNS cache unavailable", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn list_dns_cache(State(state): State<ApiState>, request: Request) -> Response {
     let _request = match maybe_proxy(&state, request).await {
         Ok(request) => request,
@@ -80,9 +100,22 @@ pub(super) async fn list_dns_cache(State(state): State<ApiState>, request: Reque
         );
     };
     let entries: Vec<DnsCacheEntry> = dns_map.snapshot_grouped();
-    Json(json!({ "entries": entries })).into_response()
+    Json(DnsCacheResponse { entries }).into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/stats",
+    tag = "Diagnostics",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    responses(
+        (status = 200, description = "Runtime statistics snapshot", body = StatsSnapshot),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn stats_handler(State(state): State<ApiState>, request: Request) -> Response {
     let _request = match maybe_proxy(&state, request).await {
         Ok(request) => request,

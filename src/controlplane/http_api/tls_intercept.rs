@@ -13,6 +13,7 @@ use base64::Engine as _;
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use utoipa::ToSchema;
 
 use crate::controlplane::cluster::bootstrap::ca::{encrypt_ca_key, CaSigner};
 use crate::controlplane::cluster::bootstrap::token::TokenStore;
@@ -24,14 +25,14 @@ use crate::controlplane::intercept_tls::{
 
 use super::{error_response, maybe_proxy, read_body_limited, sha256_hex, ApiState};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct TlsInterceptCaStatus {
     configured: bool,
     source: Option<String>,
     fingerprint_sha256: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct TlsInterceptCaUpdateRequest {
     ca_cert_pem: String,
     #[serde(default)]
@@ -40,6 +41,19 @@ struct TlsInterceptCaUpdateRequest {
     ca_key_der_b64: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/settings/tls-intercept-ca",
+    tag = "Settings",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    responses(
+        (status = 200, description = "TLS intercept CA status", body = TlsInterceptCaStatus),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn get_tls_intercept_ca(
     State(state): State<ApiState>,
     request: Request,
@@ -63,6 +77,20 @@ pub(super) async fn get_tls_intercept_ca(
     .into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/settings/tls-intercept-ca/cert",
+    tag = "Settings",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    responses(
+        (status = 200, description = "TLS intercept CA certificate PEM", content_type = "application/x-pem-file", body = String),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 404, description = "TLS intercept CA is not configured", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn get_tls_intercept_ca_cert(
     State(state): State<ApiState>,
     request: Request,
@@ -95,6 +123,22 @@ pub(super) async fn get_tls_intercept_ca_cert(
     response
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/settings/tls-intercept-ca",
+    tag = "Settings",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    request_body = TlsInterceptCaUpdateRequest,
+    responses(
+        (status = 200, description = "Persisted TLS intercept CA material", body = TlsInterceptCaStatus),
+        (status = 400, description = "Invalid CA material", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn put_tls_intercept_ca(
     State(state): State<ApiState>,
     mut request: Request,
@@ -135,6 +179,20 @@ pub(super) async fn put_tls_intercept_ca(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/settings/tls-intercept-ca/generate",
+    tag = "Settings",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    responses(
+        (status = 200, description = "Generated and persisted TLS intercept CA", body = TlsInterceptCaStatus),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn generate_tls_intercept_ca(
     State(state): State<ApiState>,
     request: Request,
@@ -155,6 +213,20 @@ pub(super) async fn generate_tls_intercept_ca(
     }
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/settings/tls-intercept-ca",
+    tag = "Settings",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    responses(
+        (status = 200, description = "Removed TLS intercept CA material", body = TlsInterceptCaStatus),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn delete_tls_intercept_ca(
     State(state): State<ApiState>,
     request: Request,

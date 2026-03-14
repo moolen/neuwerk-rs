@@ -1,226 +1,89 @@
 ---
 title: Dataplane
-description: Packet enforcement, flow state, NAT, and I/O responsibilities.
+description: The dataplane classifies packets, applies compiled policy, maintains flow state, and forwards traffic.
 order: 2
 ---
 
-This page describes the current dataplane responsibilities and the boundaries that keep it focused
-on packet enforcement rather than control-plane services.
+The dataplane is the part of the firewall that handles packet-by-packet enforcement.
 
-The dataplane exists to classify packets, apply compiled policy, maintain forwarding state, and
-move traffic through either the software adapter or the DPDK path.
+Its job is to:
 
-## What The Dataplane Owns
+- classify traffic
+- evaluate compiled policy
+- keep flow and NAT state
+- forward packets on the selected I/O path
 
-The current dataplane owns these core functions:
+It does not own DNS parsing, cluster logic, SSO, or the management API.
 
-- packet parsing and classification
-- source-group-based policy evaluation against a compiled snapshot
-- flow tracking
-- stateful NAT
-- ICMP handling
-- optional overlay decapsulation and encapsulation
-- TLS metadata observation used by policy evaluation
-- drain-state-aware forwarding behavior
-- wiretap and audit event emission
-- software `tun` or `tap` I/O
-- DPDK I/O and worker sharding
+## What The Dataplane Decides
 
-These pieces live under `src/dataplane/` and are wired together by the dataplane runtime thread.
-
-## Runtime Shape
-
-The dataplane is started on its own dedicated runtime thread and builds an `EngineState` that
-holds the enforcement snapshot and mutable forwarding state.
-
-That state currently includes:
-
-- the active `PolicySnapshot`
-- flow and NAT tables
-- internal network information
-- public IP and output port configuration
-- dynamic DNS allowlist input
-- dataplane address configuration
-- overlay and SNAT configuration
-- optional wiretap and audit emitters
-- policy-generation trackers
-- optional drain control
-
-The packet engine then runs behind one of two I/O adapters:
-
-- software mode via `SoftAdapter`
-- DPDK mode via `run_dataplane`
-
-The policy model is the same in both modes even though the I/O mechanics differ.
-
-## Packet Decision Model
-
-The engine reduces a packet to one of three outcomes:
+For each packet, the dataplane reduces the decision to one of three outcomes:
 
 - `Drop`
 - `Forward`
 - `ToHost`
 
-`Drop` and `Forward` are the ordinary dataplane fast-path outcomes.
+`Drop` and `Forward` are the normal enforcement outcomes.
 
-`ToHost` is the boundary-preserving escape hatch for service-plane handling. It is used when the
-packet still belongs to a managed flow but must leave the pure dataplane path for a control-plane
-service such as DNS-target handling or active TLS interception.
+`ToHost` is used when traffic needs a control-plane service instead of pure packet forwarding. The
+important examples are DNS traffic aimed at the firewall and traffic that has been selected for
+active TLS interception.
 
-## Policy Evaluation
+## What Inputs It Uses
 
-Packet policy is evaluated against the compiled `PolicySnapshot`.
-
-The evaluation path matches on:
+The dataplane evaluates traffic against a compiled policy snapshot. Depending on the traffic, that
+can include:
 
 - source-group membership
 - destination IPs
 - protocol
 - source and destination ports
-- ICMP fields when relevant
-- TLS metadata when a rule contains TLS matching
+- ICMP type and code
+- TLS metadata when TLS-aware rules are in use
 
-For metadata-only TLS rules, the dataplane observes handshake state and can temporarily return a
-pending decision until enough information has been seen.
+When hostname-based policy is in use, the dataplane also relies on the dynamic allowlist that the
+DNS proxy maintains from successful DNS answers.
 
-For `tls.mode: intercept` rules, policy evaluation marks the flow as requiring service handling
-instead of trying to perform full intercepted HTTP processing inside the dataplane.
+## Stateful Behavior
 
-## Flow Tracking And NAT
+The dataplane is not a stateless ACL engine. It maintains:
 
-The dataplane is stateful.
+- active flow state
+- NAT state
+- forwarding context
+- optional overlay state
 
-It keeps:
+That state is local to each node. In clustered deployments, policy is replicated, but active flow
+tables are not.
 
-- a flow table for established traffic state
-- a NAT table and reverse lookup state
-- idle-timeout-driven eviction
+## I/O Paths
 
-That state is part of the packet engine, not part of the control plane. The control plane provides
-policy and operational signals, but the dataplane owns the forwarding state needed to translate and
-continue packets correctly.
+The same enforcement model is used in both supported I/O shapes:
 
-## DNS-Target Handling
+- software mode through `tun` or `tap`
+- DPDK mode for higher-throughput deployments
 
-The dataplane knows about DNS-target traffic, but only as a steering rule.
+The I/O mechanics differ, but the policy model stays the same. From an operator perspective, that
+means policy semantics should not change just because the node uses DPDK.
 
-If a packet is:
+## What The Dataplane Does Not Do
 
-- sourced from an internal address
-- TCP or UDP
-- destined to port `53`
-- destined to one of the configured DNS target IPs
+The dataplane intentionally does not:
 
-the dataplane treats it as traffic for the firewall DNS service path rather than as ordinary egress
-traffic.
+- parse DNS requests as a policy feature
+- store cluster membership or replicated admin state
+- terminate management HTTPS
+- own the TLS intercept CA lifecycle
 
-That does not mean the dataplane parses DNS policy itself. It only recognizes the flow shape and
-hands it to the control-plane DNS proxy path.
+That boundary is what keeps packet handling separate from service-plane and management-plane logic.
 
-## TLS Observation Versus TLS Interception
+## Operator Implications
 
-There are two separate TLS-related responsibilities in the current architecture.
+- A packet-policy issue usually shows up as a source-group, rule-order, default-action, or flow
+  state problem.
+- A hostname-policy issue usually starts in DNS behavior, not in the packet engine.
+- A cluster issue may stop policy from being replayed locally, but the dataplane still remains a
+  per-node runtime.
 
-The dataplane does own:
-
-- TLS ClientHello observation
-- SNI and certificate metadata extraction used for policy evaluation
-- flow state that tracks whether a TLS decision is pending, allowed, or denied
-
-The dataplane does not own:
-
-- certificate minting
-- terminating client TLS
-- opening the upstream TLS session
-- HTTP request and response policy inside an intercepted tunnel
-
-Those remain control-plane responsibilities even though the dataplane is the first component that
-detects an intercept-required flow.
-
-## Software Path
-
-In software mode, the dataplane runs through `SoftAdapter` on a `tun` or `tap` device.
-
-The software adapter:
-
-- reads raw frames from the configured device
-- optionally decapsulates overlay traffic
-- passes packets into the engine
-- writes forwarded or host-steered packets back out
-
-This path keeps the architecture simple and mirrors the same engine semantics used in DPDK mode.
-
-## DPDK Path
-
-In DPDK mode, the dataplane runtime sets up worker placement, performance mode, queue handling, and
-service-lane coordination around the same core engine.
-
-The DPDK path additionally supports:
-
-- worker-core selection and sharding
-- a shared intercept demux for service-lane handoff
-- dataplane address bootstrap through DHCP
-- IMDS fallback if DHCP does not supply configuration in time
-- DPDK-specific performance mode controls
-
-The key distinction is that DPDK changes how packets arrive and how service detours are steered,
-not which plane owns DNS parsing or management logic.
-
-## Dataplane Bootstrap
-
-When DPDK mode is enabled and dataplane addressing is not already known, the runtime starts a
-bootstrap path before steady-state packet handling.
-
-That bootstrap can:
-
-- exchange DHCP messages through control-plane helper logic
-- learn MAC information from the dataplane side
-- fall back to IMDS-derived configuration after a timeout
-
-The resulting dataplane IP, prefix, gateway, and MAC are stored in the shared dataplane config
-store and then used by the packet engine.
-
-## Metrics, Audit, And Wiretap
-
-The dataplane emits telemetry, but it does not own long-term storage or query APIs for it.
-
-It can emit:
-
-- wiretap events
-- audit-deny events
-- dataplane state metrics
-
-Bridge threads and control-plane services consume those outputs later. This keeps the dataplane on
-event production rather than API-serving or persistence.
-
-## What Stays Out Of The Dataplane
-
-The dataplane intentionally does not implement:
-
-- upstream DNS resolution
-- DNS question parsing for hostname policy
-- management HTTP routing
-- service-account or SSO logic
-- cluster RPCs and replication
-- HTTP parsing for intercepted application traffic
-
-That boundary is the main architectural rule in this repository, not an incidental implementation
-detail.
-
-## Practical Reading Guide
-
-If you are tracing dataplane behavior through the codebase:
-
-1. Start with `src/runtime/dpdk/run.rs` for runtime assembly
-2. Read `src/dataplane/engine.rs` and the `engine/` helpers for decisions
-3. Follow `src/dataplane/policy/evaluation.rs` for matching semantics
-4. Then inspect either `src/dataplane/soft_adapter.rs` or the DPDK adapter path depending on the
-   runtime mode
-
-## Related Pages
-
-- System Overview
-- Control Plane
-- Traffic Flows
-- Policy Model
-- Ports And Protocols
+Read [Policy Model](/docs/configuration/policy-model) next if you want the exact rule evaluation
+semantics.

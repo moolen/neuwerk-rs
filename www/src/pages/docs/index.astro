@@ -5,30 +5,39 @@ import { docsNavigation } from '../../data/docsNavigation';
 
 <DocsLayout
   title="Neuwerk Firewall Documentation"
-  description="A stripped-down documentation scaffold organized around how the firewall is designed, deployed, and operated."
+  description="Operator-focused documentation for deploying, configuring, running, and integrating the firewall."
 >
   <p>
-    This docs scaffold is ready for product documentation, not contributor onboarding. The current
-    hierarchy starts with the system model, then moves into configuration, deployment, operations,
-    interfaces, and reference material.
+    These docs are organized by what you are trying to do. Start with a tutorial if you are new to
+    the product, use a how-to guide when you need a specific outcome, read the explanations to
+    understand the model behind the firewall, and use the reference section for exact API and
+    schema details.
   </p>
 
-  <h2 id="recommended-structure">Recommended Structure</h2>
+  <h2 id="recommended-structure">How To Use These Docs</h2>
   <p>
-    Start by filling in the architecture pages first. They establish the dataplane and control-plane
-    split, the supported traffic flows, and the cluster model that the rest of the docs depend on.
+    Most operators should begin with <a href="/docs/tutorials/deploy-a-single-node">Deploy A
+    Single Node</a> and <a href="/docs/tutorials/create-your-first-policy">Create Your First
+    Policy</a>. If you are planning a clustered rollout, continue with <a
+    href="/docs/tutorials/build-a-two-node-cluster">Build A Two-Node Cluster</a>.
   </p>
 
   <p>
-    After that, document configuration and deployment together so operators can move from policy
-    concepts into concrete rollout shapes. Operations should come next, followed by interface and
-    reference pages once the main workflows are stable.
+    The concepts pages describe the control-plane and dataplane split, policy behavior, DNS
+    enforcement, TLS inspection, cluster replication, and observability. Those pages are where to
+    go when you need to understand why the firewall behaves a certain way before making a change.
   </p>
 
   <div class="not-prose mt-10 grid gap-4 md:grid-cols-2">
     {docsNavigation.map((section) => (
       <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
         <h3 class="text-lg font-semibold text-white">{section.title}</h3>
+        <p class="mt-2 text-sm text-slate-400">
+          {section.title === 'Tutorials' && 'Guided paths for a first deployment, first policy, and first cluster.'}
+          {section.title === 'How-To Guides' && 'Task-focused instructions for access, policy authoring, safer rollout, upgrades, integrations, and recovery work.'}
+          {section.title === 'Concepts' && 'Conceptual pages that explain firewall behavior, boundaries, tradeoffs, and operational switches.'}
+          {section.title === 'Reference' && 'Precise schemas, endpoints, interfaces, and fixed protocol details.'}
+        </p>
         <ul class="mt-4 space-y-2 text-sm text-slate-300">
           {section.items.map((item) => (
             <li>

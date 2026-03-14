@@ -1,12 +1,10 @@
 ---
 title: Glossary
-description: Stable definitions for repository-specific terminology.
+description: Stable definitions for product terms used throughout the firewall documentation.
 order: 3
 ---
 
-This page collects the main project-specific terms used throughout the documentation.
-
-The definitions here are tied to the current implementation, not to aspirational product language.
+This page collects the main terms used throughout the firewall documentation.
 
 ## Active Policy
 
@@ -56,8 +54,9 @@ and the active policy pointer on a node.
 
 ## Performance Mode
 
-A control-plane setting that gates certain heavier observability and inspection workflows. In the
-current UI and operational docs, wiretap and audit workflows explicitly depend on it.
+A control-plane setting that gates heavier observability and inspection workflows. Audit queries
+and wiretap streaming explicitly depend on it, and those API surfaces return `503` when the mode is
+disabled.
 
 ## Policy Record
 

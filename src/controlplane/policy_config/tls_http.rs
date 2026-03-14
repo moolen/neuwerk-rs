@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TlsMatchConfig {
     #[serde(default)]
     pub mode: Option<TlsModeValue>,
@@ -16,7 +16,7 @@ pub struct TlsMatchConfig {
     pub http: Option<HttpPolicyConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TlsModeValue {
     Metadata,
@@ -32,7 +32,7 @@ impl From<TlsModeValue> for TlsMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Tls13UninspectableValue {
     Allow,
@@ -48,7 +48,7 @@ impl From<Tls13UninspectableValue> for Tls13Uninspectable {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum TlsNameMatchConfig {
     String(String),
@@ -60,7 +60,7 @@ pub enum TlsNameMatchConfig {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct HttpPolicyConfig {
     #[serde(default)]
     pub request: Option<HttpRequestPolicyConfig>,
@@ -68,7 +68,7 @@ pub struct HttpPolicyConfig {
     pub response: Option<HttpResponsePolicyConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct HttpRequestPolicyConfig {
     #[serde(default)]
     pub host: Option<HttpStringMatcherConfig>,
@@ -82,13 +82,13 @@ pub struct HttpRequestPolicyConfig {
     pub headers: Option<HttpHeadersMatcherConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct HttpResponsePolicyConfig {
     #[serde(default)]
     pub headers: Option<HttpHeadersMatcherConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct HttpStringMatcherConfig {
     #[serde(default)]
     pub exact: Vec<String>,
@@ -96,7 +96,7 @@ pub struct HttpStringMatcherConfig {
     pub regex: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct HttpPathMatcherConfig {
     #[serde(default)]
     pub exact: Vec<String>,
@@ -106,7 +106,7 @@ pub struct HttpPathMatcherConfig {
     pub regex: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct HttpQueryMatcherConfig {
     #[serde(default)]
     pub keys_present: Vec<String>,
@@ -116,7 +116,7 @@ pub struct HttpQueryMatcherConfig {
     pub key_values_regex: std::collections::BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct HttpHeadersMatcherConfig {
     #[serde(default)]
     pub require_present: Vec<String>,

@@ -1,59 +1,41 @@
 ---
 title: Logging & Audit
-description: Process logs, persisted audit findings, and investigation workflow.
+description: Logs explain runtime events, audit findings summarize repeated deny behavior, and wiretap shows live traffic.
 order: 2
 ---
 
-This page describes the logging and audit surfaces that exist in the current implementation.
+Operators usually need three different evidence sources:
 
-The repository treats logs and audit as different products:
+- logs for runtime events and failures
+- audit findings for repeated policy outcomes
+- wiretap for live traffic confirmation
 
-- logs are process-oriented runtime output from `tracing`
-- audit findings are structured control-plane records about denied traffic and selected auth events
+Treat them as complementary tools rather than interchangeable ones.
 
-There is also a third related surface, wiretap, but wiretap is live flow observation rather than
-persisted audit history.
+## Logs
 
-## Process Logs
+Logs are the process-oriented event stream. Use them for:
 
-Runtime logging is initialized through `src/logging.rs` and currently supports:
+- startup failures
+- component crashes
+- explicit runtime errors
+- integration failures
 
-- plain compact logs
-- JSON logs
-
-The relevant environment variables are:
+The runtime supports plain and JSON log output through:
 
 - `NEUWERK_LOG_LEVEL`
 - `RUST_LOG`
 - `NEUWERK_LOG_FORMAT`
 
-`NEUWERK_LOG_LEVEL` takes precedence over `RUST_LOG`, and the default level is `info`.
+## Audit Findings
 
-`NEUWERK_LOG_FORMAT` accepts:
+Audit findings are structured records about repeated deny or auth-related events. They are not raw
+packet captures.
 
-- `plain`
-- `text`
-- `compact`
-- `json`
+Audit queries depend on performance mode. If performance mode is disabled, the audit API is
+unavailable until it is re-enabled.
 
-If JSON output is needed for shipping into an external log system, that is already supported by the
-runtime. There is no separate in-repo log shipper.
-
-## Secret Handling In Logs
-
-The logging module also provides explicit secret-redaction helpers.
-
-The current redaction behavior does not preserve the original secret value. It only emits a marker
-such as `redacted(len=18)`.
-
-That is a useful boundary to understand when reviewing code or future logging changes: the runtime
-already has an opinion that secrets should be hidden rather than partially masked.
-
-## What Audit Stores
-
-The audit subsystem stores structured findings, not raw packet-by-packet logs.
-
-Current finding types are:
+Current finding types include:
 
 - `dns_deny`
 - `l4_deny`
@@ -61,190 +43,41 @@ Current finding types are:
 - `icmp_deny`
 - `auth_sso`
 
-Each stored finding can include fields such as:
+Use audit when you want to answer questions like:
 
-- active `policy_id`
-- `source_group`
-- destination IP and port
-- protocol
-- FQDN
-- SNI
-- ICMP type and code
-- first-seen and last-seen timestamps
-- occurrence count
-- node IDs that observed the finding
+- which source group is being denied most often
+- which hostname or destination is being blocked
+- whether a rollout changed deny patterns
 
-This means the audit API is primarily an aggregated evidence surface, not a forensic packet capture.
+## Wiretap
 
-## Where Audit Data Lives
+Wiretap is for live observation rather than long-term history.
 
-The control plane creates an `AuditStore` under the local control-plane data root:
+Use it when you need to:
 
-- default root: `/var/lib/neuwerk`
-- override: `NEUWERK_LOCAL_DATA_DIR`
-- audit store path: `audit-store/snapshot.json`
+- confirm what is happening right now
+- compare real traffic against expected policy
+- investigate intermittent behavior that is not obvious from counters
 
-By default, the audit store is capped at `100 * 1024 * 1024` bytes.
+Wiretap also depends on performance mode. If performance mode is disabled, the stream endpoint is
+unavailable.
 
-When the persisted snapshot would exceed that size, the implementation removes the oldest findings
-until the snapshot fits again. This is a size-based cap, not a time-based retention policy.
+## Storage Boundaries
 
-## Audit Is Aggregated, Not Append-Only
+Audit history is persisted. Logs and wiretap are operational streams.
 
-The audit store deduplicates findings by a computed key rather than writing every event as a unique
-row.
+That distinction matters:
 
-Examples of the grouping behavior:
+- audit is useful for historical evidence and trend review
+- logs are useful for runtime diagnosis
+- wiretap is useful for immediate live confirmation
 
-- repeated L4 denies for the same policy, source group, destination IP, port, protocol, and FQDN
-  are merged
-- repeated DNS denies for the same policy, source group, and hostname are merged
-- repeated SSO audit events for the same provider and outcome grouping are merged
+## Practical Investigation Order
 
-Merged findings keep:
+When policy behavior looks wrong:
 
-- the earliest `first_seen`
-- the latest `last_seen`
-- a growing `count`
-- the union of `node_ids`
+1. check audit findings for repeated denies
+2. use wiretap if you need live confirmation
+3. read logs for runtime or integration errors
 
-That is why audit is good for answering “what keeps happening?” but not for reconstructing every
-single individual packet event in exact order.
-
-## Audit Event Sources
-
-Audit findings currently come from multiple runtime paths.
-
-Implemented sources include:
-
-- dataplane deny events, bridged into the control plane
-- DNS policy denies in the DNS proxy
-- SSO auth observations in the HTTP auth flow
-
-The bridge thread that handles dataplane audit converts low-level dataplane deny events into
-control-plane findings and enriches them with DNS-map context when available.
-
-DNS denies are generated directly in the control-plane DNS proxy, because hostname-policy decisions
-happen there rather than in the dataplane.
-
-`auth_sso` findings are generated by the SSO auth routes and are meant to record control-plane auth
-activity rather than packet-policy outcomes.
-
-## Audit API
-
-Operators can query persisted findings through:
-
-- `GET /api/v1/audit/findings`
-- `GET /api/v1/audit/findings/local`
-
-The main query parameters currently supported are:
-
-- `policy_id`
-- `finding_type`
-- `source_group`
-- `since`
-- `until`
-- `limit`
-
-Query behavior worth knowing:
-
-- default limit is `500`
-- maximum limit is `10_000`
-- invalid `finding_type` or invalid UUID input returns `400`
-- the response is already sorted by newest `last_seen`, then by highest `count`
-
-`/api/v1/audit/findings/local` always queries the local node only.
-
-`/api/v1/audit/findings` is the higher-level operational endpoint and, in cluster mode, can fan
-out across nodes and return a merged response.
-
-## Cluster Behavior
-
-In cluster mode, audit querying is leader-oriented.
-
-The leader:
-
-- queries its own local audit store
-- calls `/api/v1/audit/findings/local` on peer nodes
-- merges all returned findings
-- marks the response as partial if one or more nodes fail to respond
-
-The response also includes:
-
-- `partial`
-- `node_errors`
-- `nodes_queried`
-- `nodes_responded`
-
-That gives operators a way to distinguish “no findings” from “cluster query was incomplete”.
-
-## Relationship To Wiretap
-
-Audit and wiretap are related but serve different jobs.
-
-Audit:
-
-- persisted
-- aggregated
-- focused on denies and selected auth events
-- query-oriented
-
-Wiretap:
-
-- live
-- flow-oriented
-- better for watching current traffic movement
-- not the same as an audit record
-
-In practice, audit is the better starting point for “why is this being blocked?”, while wiretap is
-better for “what is this flow doing right now?”
-
-## Performance Caveat
-
-Audit visibility is not unconditional.
-
-If the control-plane performance-mode setting is disabled, the audit HTTP endpoints return `503`.
-
-Separately, aggressive DPDK performance mode disables dataplane audit emission entirely, along with
-dataplane state metrics and wiretap emission. In that mode, packet-path visibility is intentionally
-reduced.
-
-## Investigation Workflow
-
-For a policy-deny investigation, the implemented workflow is:
-
-1. Query `/api/v1/audit/findings` for recent denies
-2. Filter by `finding_type`, `source_group`, or `policy_id`
-3. Check the matching destination IP, FQDN, or SNI fields
-4. Use `/api/v1/dns-cache` when hostname-based policy is involved
-5. Use `/api/v1/wiretap/stream` if you need live confirmation of current flows
-
-That sequence matches the current runtime surfaces better than starting from logs alone.
-
-## What This Is Not
-
-The current audit subsystem is not:
-
-- a raw packet capture
-- a full append-only security event ledger
-- a configurable time-retention engine
-- a distributed tracing system
-
-It is a compact, persisted control-plane view of important denies and selected auth events.
-
-## Practical Reading Guide
-
-If you are tracing logging or audit behavior through the code:
-
-1. Start with `src/logging.rs`
-2. Read `src/controlplane/audit.rs`
-3. Check `src/runtime/startup/bridges.rs`
-4. Follow `src/controlplane/dns_proxy.rs` for DNS deny ingestion
-5. Follow `src/controlplane/http_api/audit.rs` for query behavior and cluster fan-out
-
-## Related Pages
-
-- Observability
-- Control Plane
-- DNS Handling
-- HTTP API
+That sequence usually separates a real policy decision from a component failure.

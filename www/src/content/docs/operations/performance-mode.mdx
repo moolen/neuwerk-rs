@@ -1,0 +1,99 @@
+---
+title: Performance Mode
+description: Performance mode controls whether heavier observability workflows such as audit queries and wiretap streaming are available.
+order: 3
+---
+
+Performance mode is a control-plane setting that gates heavier observability workflows.
+
+Today, it directly controls whether these surfaces are available:
+
+- `GET /api/v1/audit/findings`
+- `GET /api/v1/audit/findings/local`
+- `GET /api/v1/wiretap/stream`
+- the audit and wiretap workflows in the web UI
+
+## What It Does Not Control
+
+Performance mode is not:
+
+- a packet-policy mode
+- a global maintenance mode
+- a cluster enablement switch
+
+It does not change how allow and deny decisions are computed. It changes whether certain
+observability paths are exposed.
+
+## Default Behavior
+
+If you have never written an explicit performance-mode setting, the firewall defaults to:
+
+- enabled
+
+The API exposes both the current value and where it came from:
+
+- `source: "local"` for node-local state
+- `source: "cluster"` for replicated cluster state
+- `source: null` when the built-in default is in effect
+
+## What Happens When It Is Disabled
+
+When performance mode is disabled:
+
+- audit queries return `503`
+- wiretap streaming returns `503`
+- the UI keeps those workflows visible but cannot use the underlying data path
+
+This is the main behavior operators notice during troubleshooting.
+
+## How To Check It
+
+Read the current status:
+
+```text
+GET /api/v1/settings/performance-mode
+```
+
+Example response:
+
+```json
+{
+  "enabled": true,
+  "source": "cluster"
+}
+```
+
+## How To Change It
+
+Set the mode through the management API with:
+
+```json
+{
+  "enabled": true
+}
+```
+
+Write that body to:
+
+```text
+PUT /api/v1/settings/performance-mode
+```
+
+In clustered deployments, the setting is replicated. In single-node deployments, it is stored
+locally.
+
+## When To Care About It
+
+Performance mode matters most when:
+
+- a policy rollout depends on audit evidence
+- you want live wiretap confirmation during incident response
+- an operator reports that audit or wiretap suddenly became unavailable
+
+If those workflows return `503`, check performance mode early.
+
+## Related Pages
+
+- [Observability](/docs/operations/observability)
+- [Logs, Audit, And Wiretap](/docs/operations/logging-audit)
+- [Roll Out A Policy Safely](/docs/how-to/roll-out-a-policy-with-audit-mode)

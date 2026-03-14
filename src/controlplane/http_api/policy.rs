@@ -13,6 +13,25 @@ struct PolicyUpsertRequest {
     name: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct PolicyFormatQuery {
+    format: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/policies",
+    tag = "Policies",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    responses(
+        (status = 200, description = "Policy records", body = [super::openapi::OpenApiPolicyRecord]),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 503, description = "Leader unknown or activation wait failed", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn list_policies(State(state): State<ApiState>, request: Request) -> Response {
     let _request = match maybe_proxy(&state, request).await {
         Ok(request) => request,
@@ -25,11 +44,25 @@ pub(super) async fn list_policies(State(state): State<ApiState>, request: Reques
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub(super) struct PolicyFormatQuery {
-    format: Option<String>,
-}
-
+#[utoipa::path(
+    get,
+    path = "/api/v1/policies/{id}",
+    tag = "Policies",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Policy UUID"),
+        ("format" = Option<String>, Query, description = "Use `yaml` to return application/yaml")
+    ),
+    responses(
+        (status = 200, description = "Policy record", body = super::openapi::OpenApiPolicyRecord),
+        (status = 400, description = "Invalid policy id", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 404, description = "Policy not found", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn get_policy(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -52,6 +85,26 @@ pub(super) async fn get_policy(
     policy_record_response(record, query)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/policies/by-name/{name}",
+    tag = "Policies",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    params(
+        ("name" = String, Path, description = "Stable policy name"),
+        ("format" = Option<String>, Query, description = "Use `yaml` to return application/yaml")
+    ),
+    responses(
+        (status = 200, description = "Policy record", body = super::openapi::OpenApiPolicyRecord),
+        (status = 400, description = "Invalid policy name", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 404, description = "Policy not found", body = super::openapi::ErrorBody),
+        (status = 409, description = "Duplicate policy name conflict", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn get_policy_by_name(
     State(state): State<ApiState>,
     Path(name): Path<String>,
@@ -95,6 +148,24 @@ fn policy_record_response(record: PolicyRecord, query: PolicyFormatQuery) -> Res
     Json(record).into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/policies",
+    tag = "Policies",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    request_body = super::openapi::OpenApiPolicyUpsertRequest,
+    responses(
+        (status = 200, description = "Created policy record", body = super::openapi::OpenApiPolicyRecord),
+        (status = 400, description = "Invalid request or policy compile failure", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody),
+        (status = 409, description = "Policy name already exists", body = super::openapi::ErrorBody),
+        (status = 503, description = "Activation wait failed or leader unknown", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn create_policy(State(state): State<ApiState>, mut request: Request) -> Response {
     request = match maybe_proxy(&state, request).await {
         Ok(request) => request,
@@ -150,6 +221,28 @@ async fn validate_policy_integration_refs(
     Ok(())
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/policies/{id}",
+    tag = "Policies",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Policy UUID")
+    ),
+    request_body = super::openapi::OpenApiPolicyUpsertRequest,
+    responses(
+        (status = 200, description = "Updated policy record", body = super::openapi::OpenApiPolicyRecord),
+        (status = 400, description = "Invalid request or policy compile failure", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody),
+        (status = 404, description = "Policy not found", body = super::openapi::ErrorBody),
+        (status = 409, description = "Policy name already exists", body = super::openapi::ErrorBody),
+        (status = 503, description = "Activation wait failed or leader unknown", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn update_policy(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -191,6 +284,27 @@ pub(super) async fn update_policy(
     Json(record).into_response()
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/policies/by-name/{name}",
+    tag = "Policies",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    params(
+        ("name" = String, Path, description = "Stable policy name")
+    ),
+    request_body = super::openapi::OpenApiPolicyUpsertRequest,
+    responses(
+        (status = 200, description = "Created or updated policy record", body = super::openapi::OpenApiPolicyRecord),
+        (status = 400, description = "Invalid request or policy compile failure", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody),
+        (status = 409, description = "Duplicate policy name conflict", body = super::openapi::ErrorBody),
+        (status = 503, description = "Activation wait failed or leader unknown", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn upsert_policy_by_name(
     State(state): State<ApiState>,
     Path(name): Path<String>,
@@ -233,6 +347,26 @@ pub(super) async fn upsert_policy_by_name(
     Json(record).into_response()
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/policies/{id}",
+    tag = "Policies",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Policy UUID")
+    ),
+    responses(
+        (status = 204, description = "Deleted policy record"),
+        (status = 400, description = "Invalid policy id", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody),
+        (status = 404, description = "Policy not found", body = super::openapi::ErrorBody),
+        (status = 503, description = "Activation wait failed or leader unknown", body = super::openapi::ErrorBody)
+    )
+)]
 pub(super) async fn delete_policy(
     State(state): State<ApiState>,
     Path(id): Path<String>,

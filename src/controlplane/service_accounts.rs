@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::controlplane::cluster::store::ClusterStore;
@@ -30,14 +31,14 @@ pub(crate) fn token_item_key(token_id: Uuid) -> Vec<u8> {
     format!("auth/service-accounts/tokens/item/{token_id}").into_bytes()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceAccountStatus {
     Active,
     Disabled,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceAccountRole {
     #[default]
@@ -65,7 +66,7 @@ impl ServiceAccountRole {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ServiceAccount {
     pub id: Uuid,
     pub name: String,
@@ -107,14 +108,14 @@ impl ServiceAccount {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TokenStatus {
     Active,
     Revoked,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TokenMeta {
     pub id: Uuid,
     pub service_account_id: Uuid,

@@ -1,0 +1,104 @@
+---
+title: Build A Two-Node Cluster
+description: Start a seed node, join a second node, and verify that clustered control-plane state is healthy.
+order: 3
+---
+
+This tutorial introduces the clustered deployment shape. In Neuwerk, clustering replicates the
+control plane. Each node still enforces traffic locally in its own dataplane.
+
+You will finish with:
+
+- one seed node
+- one joining node
+- replicated control-plane state
+- a simple post-join verification sequence
+
+## Before You Start
+
+Have these values ready for both nodes:
+
+- a management interface with an IPv4 address
+- a separate data-plane interface
+- a bootstrap token file
+- routable cluster bind and advertise addresses
+- matching DNS target and upstream settings for the deployment
+
+Cluster mode adds two network surfaces:
+
+- the main cluster RPC listener for steady-state node-to-node traffic
+- the join listener for bootstrap enrollment
+
+## Start The Seed Node
+
+Start the first node without a `--join` flag:
+
+```text
+firewall \
+  --management-interface mgmt0 \
+  --data-plane-interface data0 \
+  --dns-target-ip 10.0.0.53 \
+  --dns-upstream 1.1.1.1:53 \
+  --cluster-bind 10.0.0.11:9600 \
+  --cluster-join-bind 10.0.0.11:9601 \
+  --cluster-advertise 10.0.0.11:9600 \
+  --bootstrap-token-path /var/lib/neuwerk/bootstrap-token
+```
+
+This node becomes the initial seed because clustering is enabled and no join target is provided.
+
+## Join The Second Node
+
+Start the second node with the seed node's join address:
+
+```text
+firewall \
+  --management-interface mgmt0 \
+  --data-plane-interface data0 \
+  --dns-target-ip 10.0.0.53 \
+  --dns-upstream 1.1.1.1:53 \
+  --cluster-bind 10.0.0.12:9600 \
+  --cluster-join-bind 10.0.0.12:9601 \
+  --cluster-advertise 10.0.0.12:9600 \
+  --join 10.0.0.11:9601 \
+  --bootstrap-token-path /var/lib/neuwerk/bootstrap-token
+```
+
+The join path is separate from the steady-state cluster RPC path on purpose. It is only for node
+enrollment.
+
+## Verify Cluster Health
+
+After both nodes start, verify:
+
+```text
+GET /health
+GET /ready
+GET /api/v1/stats
+```
+
+In a healthy cluster:
+
+- both nodes are live
+- both nodes are ready
+- the cluster has a known leader
+- policy replication is caught up locally on each node
+
+## Verify Leader-Aware Management
+
+Write or read policy through the management API on either node. Most cluster-aware API calls are
+routed to the leader automatically, so clients do not need separate leader discovery.
+
+If a node cannot determine the leader, state-changing requests fail with `503`. Treat that as a
+cluster problem, not just an API problem.
+
+## Warning
+
+HA improves control-plane availability. It does not turn the dataplane into a shared distributed
+engine. Each node still has its own local enforcement state and local forwarding behavior.
+
+## Next Steps
+
+- Read [Run An HA Cluster](/docs/deployment/high-availability) for the operational model.
+- Read [Cluster Replication](/docs/architecture/cluster-replication) for the failure and recovery boundaries.
+- Read [Back Up And Restore State](/docs/operations/backup-restore) before relying on the cluster in production.

@@ -14,6 +14,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::controlplane::cluster::bootstrap::ca::{decrypt_ca_key, encrypt_ca_key, CaEnvelope};
@@ -28,7 +29,7 @@ pub(crate) fn sso_provider_item_key(id: Uuid) -> Vec<u8> {
     format!("auth/sso/providers/item/{id}").into_bytes()
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum SsoProviderKind {
     Google,

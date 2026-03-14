@@ -10,53 +10,52 @@ export interface DocsNavSection {
 
 export const docsNavigation: DocsNavSection[] = [
   {
-    title: 'Architecture',
+    title: 'Tutorials',
+    items: [
+      { href: '/docs/tutorials/deploy-a-single-node', label: 'Deploy A Single Node' },
+      { href: '/docs/tutorials/create-your-first-policy', label: 'Create Your First Policy' },
+      { href: '/docs/tutorials/build-a-two-node-cluster', label: 'Build A Two-Node Cluster' },
+    ],
+  },
+  {
+    title: 'How-To Guides',
+    items: [
+      { href: '/docs/how-to/get-admin-access', label: 'Get Admin Access' },
+      { href: '/docs/how-to/policy-examples', label: 'Policy Examples' },
+      { href: '/docs/how-to/roll-out-a-policy-with-audit-mode', label: 'Roll Out A Policy Safely' },
+      { href: '/docs/deployment/requirements', label: 'Deployment Requirements' },
+      { href: '/docs/deployment/single-node', label: 'Run A Single Node' },
+      { href: '/docs/deployment/high-availability', label: 'Run An HA Cluster' },
+      { href: '/docs/how-to/upgrade-a-cluster', label: 'Upgrade A Cluster' },
+      { href: '/docs/configuration/dns-handling', label: 'Configure DNS Enforcement' },
+      { href: '/docs/configuration/tls-interception', label: 'Enable TLS Interception' },
+      { href: '/docs/how-to/use-kubernetes-backed-sources', label: 'Use Kubernetes-Backed Sources' },
+      { href: '/docs/operations/backup-restore', label: 'Back Up And Restore State' },
+      { href: '/docs/operations/troubleshooting', label: 'Troubleshoot Enforcement' },
+    ],
+  },
+  {
+    title: 'Concepts',
     items: [
       { href: '/docs/architecture/system-overview', label: 'System Overview' },
       { href: '/docs/architecture/traffic-flows', label: 'Traffic Flows' },
       { href: '/docs/architecture/dataplane', label: 'Dataplane' },
       { href: '/docs/architecture/control-plane', label: 'Control Plane' },
       { href: '/docs/architecture/cluster-replication', label: 'Cluster Replication' },
-    ],
-  },
-  {
-    title: 'Configuration',
-    items: [
       { href: '/docs/configuration/policy-model', label: 'Policy Model' },
-      { href: '/docs/configuration/dns-handling', label: 'DNS Handling' },
-      { href: '/docs/configuration/tls-interception', label: 'TLS Interception' },
-    ],
-  },
-  {
-    title: 'Deployment',
-    items: [
-      { href: '/docs/deployment/single-node', label: 'Single Node' },
-      { href: '/docs/deployment/high-availability', label: 'High Availability' },
-      { href: '/docs/deployment/kubernetes', label: 'Kubernetes' },
-    ],
-  },
-  {
-    title: 'Operations',
-    items: [
-      { href: '/docs/operations/observability', label: 'Observability' },
-      { href: '/docs/operations/logging-audit', label: 'Logging & Audit' },
-      { href: '/docs/operations/backup-restore', label: 'Backup & Restore' },
-      { href: '/docs/operations/upgrade-rollback-dr', label: 'Upgrade, Rollback & DR' },
-      { href: '/docs/operations/alerts', label: 'Alerts' },
-      { href: '/docs/operations/troubleshooting', label: 'Troubleshooting' },
-    ],
-  },
-  {
-    title: 'Interfaces',
-    items: [
-      { href: '/docs/interfaces/http-api', label: 'HTTP API' },
-      { href: '/docs/interfaces/web-ui', label: 'Web UI' },
-      { href: '/docs/interfaces/terraform-provider', label: 'Terraform Provider' },
+      { href: '/docs/deployment/kubernetes', label: 'Kubernetes-Backed Sources' },
+      { href: '/docs/operations/observability', label: 'Observability Model' },
+      { href: '/docs/operations/performance-mode', label: 'Performance Mode' },
+      { href: '/docs/operations/logging-audit', label: 'Logs, Audit, And Wiretap' },
+      { href: '/docs/operations/alerts', label: 'Alerting Signals' },
     ],
   },
   {
     title: 'Reference',
     items: [
+      { href: '/docs/interfaces/http-api', label: 'HTTP API' },
+      { href: '/docs/interfaces/web-ui', label: 'Web UI' },
+      { href: '/docs/interfaces/terraform-provider', label: 'Terraform Provider' },
       { href: '/docs/reference/configuration-schema', label: 'Configuration Schema' },
       { href: '/docs/reference/ports-protocols', label: 'Ports & Protocols' },
       { href: '/docs/reference/glossary', label: 'Glossary' },

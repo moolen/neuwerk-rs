@@ -1,0 +1,154 @@
+---
+title: Requirements
+description: The shipped artifact is an image that already carries the matching DPDK runtime; custom binary deployments must provide the same runtime and service assumptions explicitly.
+order: 0
+---
+
+Start here if you want to know what the firewall expects from its runtime environment.
+
+The most important point is this:
+
+- the primary shipped artifact is an image, not a naked binary
+- that image already contains the matching DPDK runtime
+- the requirements are therefore different for image-based deployment and custom binary deployment
+
+## What We Primarily Distribute
+
+Today, the intended deployment artifact is the appliance image built for the current target:
+
+- Ubuntu 24.04 LTS
+- `amd64` / `x86_64`
+
+The image build stages:
+
+- a release firewall binary built with the DPDK feature enabled
+- the UI
+- a vendored DPDK runtime under `/opt/neuwerk/runtime`
+- launch and bootstrap scripts
+- the systemd unit used to start the firewall correctly
+
+Operationally, that means most operators should think in terms of "run the image" rather than
+"install a binary and find matching DPDK libraries yourself."
+
+## If You Use The Shipped Image
+
+If you boot the supported image, the DPDK runtime is already part of the appliance.
+
+The image currently includes:
+
+- vendored DPDK `23.11.2`
+- DPDK shared-library ABI `.so.24`
+- the matching shared libraries and PMD driver `.so` files
+- runtime packages such as `libnuma1`, `iproute2`, `ethtool`, `pciutils`, `ca-certificates`, and
+  other base OS tooling the appliance expects
+
+The bootstrap and launch flow also sets:
+
+- `LD_LIBRARY_PATH` to the bundled DPDK library directories
+- `RTE_EAL_PMD_PATH` to the bundled PMD directory
+- `NEUWERK_DATA_PLANE_MODE=dpdk` by default
+
+So for the image case, you do **not** separately install system DPDK packages just to satisfy the
+firewall binary.
+
+## What The Image Still Expects From The Host
+
+Even though the image bundles DPDK, the runtime still expects the host environment to provide:
+
+- two distinct network surfaces: one management interface and one dataplane interface
+- a management interface with an IPv4 address
+- at least one DNS target IP and one upstream DNS resolver
+- enough privilege to perform packet I/O and runtime bootstrap
+
+The appliance bootstrap prefers:
+
+- `mgmt0` for the management interface when present
+- `data0` for the dataplane interface when present
+
+If those names are not present, it falls back to the routing view and local interface inventory.
+
+## Runtime Privileges And Service Assumptions
+
+The packaged systemd service is part of the supported runtime contract.
+
+If you use the image as intended, the service already grants what the firewall expects, including:
+
+- `CAP_NET_ADMIN`
+- `CAP_NET_BIND_SERVICE`
+- `CAP_NET_RAW`
+- `CAP_SYS_ADMIN`
+- `CAP_IPC_LOCK`
+- `LimitMEMLOCK=infinity`
+
+These settings matter because the DPDK dataplane needs locked memory and low-level network access.
+
+## Cloud And NIC Driver Expectations
+
+The current image target bundles PMD sets for:
+
+- generic drivers
+- AWS ENA
+- Azure MANA / NetVSC-related paths
+- GCP GVE
+
+The bootstrap path can derive dataplane selectors from:
+
+- an interface name
+- a `pci:<addr>` selector
+- a `mac:<addr>` selector
+
+That is especially important on cloud platforms where the dataplane NIC may not be best expressed
+as a plain Linux interface name.
+
+## If You Run The Binary Outside The Image
+
+Custom binary deployment is possible, but it is no longer the primary packaging model.
+
+If you run the binary outside the image, you must provide the runtime contract yourself:
+
+- the binary must be built against the same DPDK major ABI you deploy
+- the matching DPDK shared libraries must be present at runtime
+- the matching PMD driver `.so` files must be present at runtime
+- `LD_LIBRARY_PATH` and `RTE_EAL_PMD_PATH` must point at those bundled libraries
+- equivalent memlock and capability settings must be in place
+
+For the current target, that means matching:
+
+- DPDK `23.11.2`
+- ABI `.so.24`
+
+If that contract is wrong, the process may fail at dynamic linking time or fail later when DPDK
+tries to initialize EAL or load the PMDs it needs.
+
+## Build-Time Versus Run-Time Requirements
+
+For local builds, the repository expects a DPDK install prefix or a usable `pkg-config` entry so
+the Rust `dpdk-sys` crate can find headers and libraries.
+
+That is a build-time concern.
+
+For operators consuming the shipped image, the more relevant fact is the runtime side:
+
+- the image already carries the matching DPDK runtime
+- the launch flow already points the process at it
+
+## Practical Recommendation
+
+Use the shipped image unless you have a strong reason not to.
+
+That path avoids:
+
+- hand-managing DPDK shared-library compatibility
+- hand-managing PMD search paths
+- reproducing the packaged capability and memlock settings
+- drifting away from the supported target runtime
+
+If you do need a custom deployment model, treat the packaged image and runtime scripts as the
+source of truth for what your environment must reproduce.
+
+## Related Pages
+
+- [Deploy A Single Node](/docs/tutorials/deploy-a-single-node)
+- [Run A Single Node](/docs/deployment/single-node)
+- [Run An HA Cluster](/docs/deployment/high-availability)
+- [HTTP API](/docs/interfaces/http-api)

@@ -1,281 +1,81 @@
 ---
 title: Kubernetes
-description: Kubernetes-backed source resolution and integration behavior.
+description: Kubernetes support is a control-plane integration for dynamic source resolution, not a full in-cluster deployment package.
 order: 3
 ---
 
-This page documents the Kubernetes-related behavior that is actually implemented in the repository
-today.
+Neuwerk can use Kubernetes as a source of dynamic identities for policy. It does not currently
+define a full in-cluster deployment pattern, Helm chart, or operator.
 
-The important boundary is this:
+## What Kubernetes Support Means
 
-- the repo does implement Kubernetes-backed source resolution for policy
-- the repo does not currently ship a full in-repo Kubernetes deployment recipe, Helm chart, or CNI
-  guidance
-
-So this page is about the current Kubernetes integration model, not a speculative install guide.
-
-## What Kubernetes Support Means Here
-
-In the current codebase, Kubernetes support means:
+Kubernetes support in the current product means:
 
 - storing a Kubernetes API integration in the control plane
 - referencing that integration from policy source groups
 - resolving pod IPs or node InternalIPs from the Kubernetes API
 - feeding those resolved IPs into dynamic source sets used by policy evaluation
 
-This is a control-plane feature. The dataplane does not talk to Kubernetes directly.
+This is a control-plane integration. The dataplane does not query Kubernetes directly.
 
 ## What It Does Not Mean
 
-The current implementation does not, by itself, define:
+These items are not defined by the current product docs or runtime:
 
-- how to run the firewall process as a Kubernetes `Deployment` or `DaemonSet`
-- how to expose the management API through a Kubernetes `Service`
-- which CNI plugin must be used
-- a required `LoadBalancer` or `Ingress` setup
-- a bundled Helm chart or operator
+- a prescribed `Deployment` or `DaemonSet` layout
+- bundled RBAC manifests
+- a bundled Helm chart
+- required CNI guidance
+- a fixed Service or Ingress pattern
 
-Those decisions are not encoded in the runtime today, so this page intentionally stays narrower.
+## How The Integration Works
 
-## Integration Model
+You create a named integration with:
 
-Kubernetes access is configured as a named control-plane integration.
+- API server URL
+- CA certificate PEM
+- service-account token
 
-The runtime currently supports one integration kind:
-
-- `kubernetes`
-
-An integration record currently contains:
-
-- `name`
-- `kind`
-- `api_server_url`
-- `ca_cert_pem`
-- `service_account_token`
-
-The corresponding management API endpoints are:
-
-- `GET /api/v1/integrations`
-- `POST /api/v1/integrations`
-- `GET /api/v1/integrations/{name}`
-- `PUT /api/v1/integrations/{name}`
-- `DELETE /api/v1/integrations/{name}`
-
-The create and update flow is explicit. The runtime does not auto-discover in-cluster credentials or
-read a kubeconfig file in the main control-plane path.
-
-## How Policy Uses Kubernetes
-
-Kubernetes is only used through policy source groups.
-
-The current source model supports:
-
-- static CIDRs
-- static individual IPs
-- Kubernetes dynamic selectors
-
-A source group can include Kubernetes sources like:
+Policy source groups can then reference that integration with either:
 
 - a pod selector
 - a node selector
 
-Each Kubernetes source must specify:
+The control plane continuously resolves and refreshes those selectors over time.
 
-- an `integration` name
-- exactly one of `pod_selector` or `node_selector`
+## Operational Behavior
 
-For pod selectors, `namespace` is required.
+Kubernetes-backed sources are not baked into policy once and left alone. The control plane:
 
-For both pod and node selectors, `match_labels` entries must have non-empty keys and values.
+1. watches the active policy
+2. identifies referenced Kubernetes selectors
+3. lists matching objects
+4. watches for changes
+5. updates the dynamic source IP set used by policy evaluation
 
-## Selector Semantics
+If resolution becomes stale for long enough, the dynamic set is cleared rather than trusted
+forever.
 
-The current selector forms are:
+## Failure Model
 
-- pod selector
-  Resolves pod IPs from `status.podIP`
-- node selector
-  Resolves node `InternalIP` addresses from the node status
+When Kubernetes-backed sources fail, the symptoms usually look like source-membership problems:
 
-Pod selectors query:
+- a source group no longer matches the traffic you expected
+- policy seems correct, but the dynamic IP set is stale or empty
 
-- `api/v1/namespaces/{namespace}/pods`
+Start troubleshooting with:
 
-Node selectors query:
-
-- `api/v1/nodes`
-
-When labels are configured, the resolver turns them into a Kubernetes `labelSelector` query string.
-
-## Runtime Behavior
-
-The control plane starts the Kubernetes resolver automatically as part of control-plane startup.
-
-At a high level, the resolver:
-
-1. watches the compiled policy generation
-2. extracts Kubernetes bindings from the active policy
-3. starts one worker per unique binding
-4. lists matching Kubernetes objects
-5. watches for updates
-6. updates the dynamic IP set attached to the source group
-
-This means Kubernetes-backed sources are not baked into policy once at creation time. They are
-continuously refreshed by the control plane.
-
-## Local Versus Clustered Storage
-
-The integration backing store depends on the deployment shape.
-
-Single-node mode:
-
-- integrations are stored locally under the local control-plane data root
-
-Cluster mode:
-
-- integrations are stored in the replicated cluster store
-
-That matters because Kubernetes-backed source resolution is still available in both shapes, but the
-source of truth for the integration record changes.
-
-## Secret Handling
-
-The Kubernetes integration record includes a service-account token.
-
-The runtime does not keep that token as plain unprotected JSON forever:
-
-- in local mode, secrets are sealed with a local secret key
-- in cluster mode, secrets are sealed with cluster bootstrap-token-backed material
-
-This is still an explicit credential model. Operators provide the API server URL, CA PEM, and
-service-account token through the integration API.
-
-## Reconcile And Staleness Behavior
-
-The resolver has two important timing controls:
-
-- reconcile interval
-- stale grace interval
-
-Current defaults:
-
-- reconcile interval: `5s`
-- stale grace: `300s`
-
-Environment overrides:
-
-- `NEUWERK_KUBERNETES_RECONCILE_INTERVAL_SECS`
-- `NEUWERK_KUBERNETES_STALE_GRACE_SECS`
-
-Operationally, this means:
-
-- policy changes are noticed quickly
-- Kubernetes objects are watched continuously
-- if a binding stops succeeding for long enough, the dynamic IP set is cleared after the stale grace
-  window
-
-That fail-safe behavior matters because stale dynamic IP membership should not live forever after
-the resolver loses a good view of Kubernetes.
-
-## Watch Behavior
-
-After the initial list call, the resolver uses Kubernetes watch requests with:
-
-- `watch=true`
-- `timeoutSeconds=30`
-- `allowWatchBookmarks=true`
-
-If Kubernetes returns resource-version expiration behavior such as HTTP `410 Gone`, the resolver
-re-lists and resumes watching.
-
-This is a practical detail, but it explains why the resolver is designed as a long-lived worker
-rather than a one-shot sync job.
-
-## Failure Behavior
-
-Resolver workers can fail for ordinary operational reasons, including:
-
-- integration not found
-- invalid CA PEM
-- HTTP client construction failure
-- failed list request
-- failed watch request
-- malformed Kubernetes response payloads
-
-The worker logs errors and retries with exponential backoff up to a bounded ceiling.
-
-This means Kubernetes-backed policy sources degrade through control-plane resolution behavior, not
-through dataplane code paths.
-
-## What You Need To Configure
-
-To use Kubernetes-backed sources in the current implementation, you need three things:
-
-1. a named Kubernetes integration created through the HTTP API
-2. a policy source group that references that integration
-3. either a pod selector or node selector in that source group
-
-Without all three, the runtime has nothing to resolve.
-
-## Practical Operator Model
-
-The intended operational model today is:
-
-1. create a Kubernetes integration with API server URL, CA PEM, and service-account token
-2. create or update policy with Kubernetes source bindings
-3. activate the policy
-4. let the control-plane resolver maintain the dynamic source IP sets over time
-5. verify behavior through policy readiness, stats, audit, and troubleshooting surfaces
-
-This is much closer to “external identity source for policy” than to “run the firewall inside
-Kubernetes in a prescribed way.”
-
-## What To Check When It Does Not Work
-
-If Kubernetes-backed sources are not behaving as expected, start with:
-
-- the configured integration record
-- the active policy's Kubernetes source definitions
+- the integration record
+- the active policy's selector definitions
 - `/ready`
 - `/api/v1/stats`
-- audit findings and troubleshooting diagnostics
 
-High-signal failure points from the code are:
+## Use This Feature For
 
-- integration name not found
-- invalid CA certificate PEM
-- Kubernetes API list or watch request failures
-- stale bindings being cleared after the grace period
+- policy that follows pods or nodes without manual IP maintenance
+- separating source identity management from packet matching
 
-Because the resolved IPs flow into dynamic source sets, policy symptoms usually look like source
-group membership problems rather than like an explicit “Kubernetes mode failed” dataplane error.
+Do not treat this page as a complete guide for running the firewall itself inside Kubernetes. That
+deployment story is still a documentation gap.
 
-## What This Page Deliberately Avoids
-
-This page does not pretend the repo already defines:
-
-- a production DaemonSet layout
-- node placement rules
-- service exposure manifests
-- required RBAC YAML
-- specific load-balancer assumptions
-
-Those may be added later, but they are not part of the current source-derived deployment surface.
-
-## Practical Reading Guide
-
-If you are tracing Kubernetes behavior through the code:
-
-1. Start with `src/controlplane/integrations.rs`
-2. Read `src/controlplane/http_api/integrations.rs`
-3. Read `src/controlplane/policy_config.rs`
-4. Read `src/controlplane/kubernetes.rs`
-5. Read `src/runtime/startup/controlplane_runtime.rs`
-
-## Related Pages
-
-- Policy Model
-- Configuration Schema
-- Control Plane
-- Troubleshooting
+If you want a task-oriented example, use [Use Kubernetes-Backed Sources](/docs/how-to/use-kubernetes-backed-sources).
