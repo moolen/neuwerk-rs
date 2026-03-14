@@ -1,0 +1,442 @@
+---
+title: HTTP API
+description: Source-derived reference for the control-plane management API.
+order: 1
+---
+
+This page documents the current control-plane HTTP API as implemented in the Axum route table and
+handler modules.
+
+A generated OpenAPI document is now produced from the Rust HTTP API layer:
+
+- static docs artifact: `/openapi/firewall-v1.json`
+- runtime endpoint: `GET /api/v1/openapi.json`
+- exporter entrypoint: `src/bin/export_openapi.rs`
+
+The generated spec currently covers the core management surface: auth, policies, integrations,
+service accounts, performance mode, TLS-intercept CA management, DNS cache, and stats. This page
+still carries the narrative reference details that are not yet encoded into the spec.
+
+## Scope
+
+The control-plane listener exposes three kinds of surfaces:
+
+- `GET /health` for liveness checks on the primary HTTPS listener
+- `GET /ready` for readiness checks on the primary HTTPS listener
+- `GET /metrics` on the separate metrics listener
+- `/api/v1/...` for the authenticated management API
+
+Everything documented below is based on the current code path in `src/controlplane/http_api.rs`
+and its handler modules.
+
+## Transport And Base Paths
+
+- The management API is served over HTTPS.
+- The API base path is `/api/v1`.
+- `GET /metrics` is served on the separate metrics bind address, not under `/api/v1`.
+- The control-plane also serves the embedded web UI from the same HTTPS listener, using a fallback
+  route for non-API paths.
+
+## Authentication And Authorization
+
+Protected API routes accept either of these credentials:
+
+- `Authorization: Bearer <jwt>`
+- `Cookie: neuwerk_auth=<jwt>`
+
+The session-oriented login endpoint accepts a JSON body:
+
+```json
+{
+  "token": "Bearer eyJ..."
+}
+```
+
+On success, `POST /api/v1/auth/token-login` returns the decoded identity and sets the
+`neuwerk_auth` cookie. `POST /api/v1/auth/logout` clears that cookie.
+
+Protected routes apply two access levels:
+
+- `GET` requests require any valid token.
+- `POST`, `PUT`, and `DELETE` requests require the `admin` role.
+
+Service-account tokens may carry either `readonly` or `admin`, and SSO-derived sessions are mapped
+to roles by the configured provider rules.
+
+## Cluster Behavior
+
+When cluster mode is enabled, most state-changing and state-reading API calls are transparently
+proxied to the current leader. Clients do not need to discover the leader themselves.
+
+There are three notable exceptions:
+
+- `GET /api/v1/audit/findings/local` always executes locally so the leader can fan out and
+  aggregate results.
+- `POST /api/v1/support/sysdump/node` is an internal fan-out endpoint and is not leader-proxied.
+- `GET /api/v1/wiretap/stream` is leader-aware. Followers proxy the request to the leader, and the
+  leader multiplexes streams from all cluster nodes.
+
+If the cluster has no known leader, leader-routed requests fail with `503` and an error body.
+
+## Shared Request And Response Conventions
+
+- Request bodies are JSON unless noted otherwise.
+- Request bodies are limited to 2 MiB.
+- Errors are returned as JSON in the form:
+
+```json
+{
+  "error": "human-readable message"
+}
+```
+
+- Policy records can also be fetched as YAML with `?format=yaml`.
+- Streaming endpoints use Server-Sent Events.
+- Sysdump endpoints return `application/gzip`.
+
+## Public Endpoints
+
+### Session And SSO
+
+| Method | Path | Purpose | Notes |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/auth/token-login` | Exchange a bearer token for a browser session | Public. Sets `neuwerk_auth` cookie on success. Rate-limited. |
+| `POST` | `/api/v1/auth/logout` | Clear the browser session cookie | Public. Returns `204`. |
+| `GET` | `/api/v1/auth/sso/providers` | List enabled SSO providers for the login screen | Public. Returns provider id, name, and kind. |
+| `GET` | `/api/v1/auth/sso/:id/start` | Start an SSO login flow | Public. Returns `302` to the IdP and sets temporary `neuwerk_sso` cookie. |
+| `GET` | `/api/v1/auth/sso/:id/callback` | Complete an SSO login flow | Public. Returns `302`, sets `neuwerk_auth`, clears `neuwerk_sso`. |
+
+`POST /api/v1/auth/token-login` response shape:
+
+```json
+{
+  "sub": "operator@example.com",
+  "sa_id": null,
+  "exp": 1760000000,
+  "roles": ["admin"]
+}
+```
+
+### Health And Metrics
+
+| Method | Path | Purpose | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/health` | Liveness check | Unauthenticated. Returns `{"status":"ok"}`. |
+| `GET` | `/ready` | Readiness check | Unauthenticated. Returns `200` or `503` with readiness state. |
+| `GET` | `/metrics` | Prometheus metrics | Exposed on the metrics listener, not the main API router. |
+
+## Protected Endpoints
+
+### Identity
+
+| Method | Path | Purpose | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/auth/whoami` | Return the authenticated principal and roles | Works for both direct bearer auth and cookie auth. |
+
+### Policies
+
+Policies are stored as records containing metadata plus a full `PolicyConfig` payload. The write
+paths validate referenced Kubernetes integrations, compile the policy before persisting it, and
+wait for policy activation before returning success.
+
+| Method | Path | Purpose | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/policies` | List policy records | Returns full policy records, not just metadata. |
+| `POST` | `/api/v1/policies` | Create a policy | Requires `admin`. JSON only. |
+| `GET` | `/api/v1/policies/:id` | Fetch a policy by id | Supports `?format=yaml`. |
+| `PUT` | `/api/v1/policies/:id` | Replace a policy by id | Requires `admin`. |
+| `DELETE` | `/api/v1/policies/:id` | Delete a policy by id | Requires `admin`. |
+| `GET` | `/api/v1/policies/by-name/:name` | Fetch a policy by stable name | Supports `?format=yaml`. |
+| `PUT` | `/api/v1/policies/by-name/:name` | Create or replace a policy by stable name | Requires `admin`. |
+
+Create and update requests use this envelope:
+
+```json
+{
+  "mode": "enforce",
+  "name": "office-egress",
+  "policy": {
+    "default_policy": "deny",
+    "source_groups": []
+  }
+}
+```
+
+The `policy` object is the full firewall policy model. That schema is large enough to deserve its
+own dedicated reference page.
+
+### Integrations
+
+The current API only supports Kubernetes integrations.
+
+| Method | Path | Purpose | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/integrations` | List integrations | Returns sanitized views, not sealed secrets. |
+| `POST` | `/api/v1/integrations` | Create a Kubernetes integration | Requires `admin`. `kind` must be `kubernetes`. |
+| `GET` | `/api/v1/integrations/:name` | Fetch an integration by name | Returns `404` if missing. |
+| `PUT` | `/api/v1/integrations/:name` | Update an integration by name | Requires `admin`. |
+| `DELETE` | `/api/v1/integrations/:name` | Delete an integration by name | Requires `admin`. |
+
+Create request:
+
+```json
+{
+  "name": "cluster-a",
+  "kind": "kubernetes",
+  "api_server_url": "https://10.0.0.1:6443",
+  "ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
+  "service_account_token": "..."
+}
+```
+
+Response shape:
+
+```json
+{
+  "id": "uuid",
+  "created_at": "2026-03-14T12:00:00Z",
+  "name": "cluster-a",
+  "kind": "kubernetes",
+  "api_server_url": "https://10.0.0.1:6443",
+  "ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n",
+  "auth_type": "service_account_token",
+  "token_configured": true
+}
+```
+
+### Service Accounts
+
+| Method | Path | Purpose | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/service-accounts` | List service accounts | Returns account records with role and status. |
+| `POST` | `/api/v1/service-accounts` | Create a service account | Requires `admin`. |
+| `PUT` | `/api/v1/service-accounts/:id` | Update a service account | Requires `admin`. |
+| `DELETE` | `/api/v1/service-accounts/:id` | Disable a service account and revoke its tokens | Requires `admin`. Returns `204`. |
+| `GET` | `/api/v1/service-accounts/:id/tokens` | List token metadata for an account | Does not return the raw token value. |
+| `POST` | `/api/v1/service-accounts/:id/tokens` | Mint a new token for an account | Requires `admin`. Returns the raw token once. |
+| `DELETE` | `/api/v1/service-accounts/:id/tokens/:token_id` | Revoke a token | Requires `admin`. Returns `204`. |
+
+Service-account create request:
+
+```json
+{
+  "name": "terraform",
+  "description": "automation account",
+  "role": "admin"
+}
+```
+
+Token mint request:
+
+```json
+{
+  "name": "ci",
+  "ttl": "24h",
+  "role": "readonly"
+}
+```
+
+Token mint response:
+
+```json
+{
+  "token": "eyJ...",
+  "token_meta": {
+    "id": "uuid",
+    "service_account_id": "uuid",
+    "name": "ci",
+    "created_at": "2026-03-14T12:00:00Z",
+    "created_by": "operator@example.com",
+    "expires_at": "2026-03-15T12:00:00Z",
+    "revoked_at": null,
+    "last_used_at": null,
+    "kid": "current-signing-key",
+    "role": "readonly",
+    "status": "active"
+  }
+}
+```
+
+Notes:
+
+- `ttl` and `eternal` are mutually exclusive.
+- A minted token cannot exceed the role of the parent service account.
+- Disabling a service account automatically revokes all of its tokens.
+
+### Audit
+
+Audit queries are only available when performance mode is enabled.
+
+| Method | Path | Purpose | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/audit/findings` | Query audit findings, cluster-aware | Aggregates across nodes in cluster mode. |
+| `GET` | `/api/v1/audit/findings/local` | Query only the local node audit store | Used internally by the leader fan-out path. |
+
+Query parameters:
+
+- `policy_id`
+- `finding_type`
+- `source_group`
+- `since`
+- `until`
+- `limit`
+
+`finding_type` and `source_group` can be repeated. `limit` defaults to `500` and is clamped to
+`1..=10000`.
+
+Response shape:
+
+```json
+{
+  "items": [
+    {
+      "finding_type": "dns_deny",
+      "policy_id": "uuid",
+      "source_group": "branch-office",
+      "hostname": "blocked.example.com",
+      "dst_ip": "203.0.113.20",
+      "dst_port": 443,
+      "proto": 6,
+      "fqdn": null,
+      "sni": null,
+      "icmp_type": null,
+      "icmp_code": null,
+      "query_type": null,
+      "first_seen": 1760000000,
+      "last_seen": 1760003600,
+      "count": 17,
+      "node_ids": ["node-a"]
+    }
+  ],
+  "partial": false,
+  "node_errors": [],
+  "nodes_queried": 3,
+  "nodes_responded": 3
+}
+```
+
+### Wiretap
+
+Wiretap is a live SSE stream and is only available when performance mode is enabled.
+
+| Method | Path | Purpose | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/wiretap/stream` | Stream matching flow events | Cluster-aware. Followers proxy to the leader. |
+
+Supported query parameters:
+
+- `src_cidr`
+- `dst_cidr`
+- `hostname`
+- `proto`
+- `src_port`
+- `dst_port`
+
+Each parameter may be repeated. Port fields accept either a single port or a range such as
+`1000-2000`.
+
+SSE event example:
+
+```text
+event: flow
+data: {"flow_id":"...","src_ip":"10.0.0.10","dst_ip":"203.0.113.20","src_port":53124,"dst_port":443,"proto":"tcp","packets_in":4,"packets_out":6,"last_seen":1760000000,"hostname":"api.example.com","node_id":"node-a"}
+```
+
+The stream emits both `flow` and `flow_end` events.
+
+### Runtime Settings
+
+| Method | Path | Purpose | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/settings/performance-mode` | Read the performance-mode flag | Returns the value and whether it came from local or cluster state. |
+| `PUT` | `/api/v1/settings/performance-mode` | Enable or disable performance mode | Requires `admin`. |
+| `GET` | `/api/v1/settings/tls-intercept-ca` | Read TLS-intercept CA status | Returns configured flag, source, and SHA-256 fingerprint. |
+| `PUT` | `/api/v1/settings/tls-intercept-ca` | Upload TLS-intercept CA material | Requires `admin`. |
+| `DELETE` | `/api/v1/settings/tls-intercept-ca` | Remove TLS-intercept CA material | Requires `admin`. |
+| `GET` | `/api/v1/settings/tls-intercept-ca/cert` | Download the CA certificate PEM | Returns `404` if not configured. |
+| `POST` | `/api/v1/settings/tls-intercept-ca/generate` | Generate and persist a new CA | Requires `admin`. |
+| `GET` | `/api/v1/settings/sso/providers` | List configured SSO providers | Returns sanitized views. |
+| `POST` | `/api/v1/settings/sso/providers` | Create an SSO provider | Requires `admin`. |
+| `GET` | `/api/v1/settings/sso/providers/:id` | Fetch an SSO provider | Returns sanitized view. |
+| `PUT` | `/api/v1/settings/sso/providers/:id` | Update an SSO provider | Requires `admin`. |
+| `DELETE` | `/api/v1/settings/sso/providers/:id` | Delete an SSO provider | Requires `admin`. |
+| `POST` | `/api/v1/settings/sso/providers/:id/test` | Test provider reachability | Requires `admin`. |
+
+Performance mode request:
+
+```json
+{
+  "enabled": true
+}
+```
+
+TLS intercept CA upload request:
+
+```json
+{
+  "ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
+  "ca_key_pem": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+}
+```
+
+For TLS intercept uploads, provide exactly one of:
+
+- `ca_key_pem`
+- `ca_key_der_b64`
+
+SSO provider creation currently supports a broad configuration surface, including:
+
+- provider kind
+- issuer and endpoint overrides
+- client id and secret
+- scopes
+- PKCE requirement
+- subject, email, and groups claim mapping
+- default role
+- admin and readonly matching rules
+- allowed email domains
+- session TTL
+
+### Diagnostics And Runtime State
+
+| Method | Path | Purpose | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/dns-cache` | Return grouped DNS cache contents | Response shape is `{ "entries": [...] }`. |
+| `GET` | `/api/v1/stats` | Return an aggregated runtime stats snapshot | Includes dataplane, DNS, TLS, DHCP, and cluster stats. |
+| `POST` | `/api/v1/support/sysdump/cluster` | Build a cluster-wide sysdump archive | Requires cluster mode. Returns `application/gzip`. |
+| `POST` | `/api/v1/support/sysdump/node` | Build a node-local sysdump archive | Internal fan-out endpoint. Requires special header. |
+
+DNS cache response:
+
+```json
+{
+  "entries": [
+    {
+      "hostname": "api.example.com",
+      "ips": ["203.0.113.20"],
+      "last_seen": 1760000000
+    }
+  ]
+}
+```
+
+Stats response top-level shape:
+
+```json
+{
+  "dataplane": {},
+  "dns": {},
+  "tls": {},
+  "dhcp": {},
+  "cluster": {}
+}
+```
+
+The `cluster` section includes node catch-up information when the firewall is running in cluster
+mode.
+
+## Current Gaps
+
+This page is still a hand-maintained reference, even though it is derived from source. The next
+improvement should be code-generated OpenAPI output from the Axum handlers so that request and
+response schemas stop drifting from implementation.

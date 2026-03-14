@@ -1,0 +1,38 @@
+---
+interface Heading {
+  depth: number;
+  slug: string;
+  text: string;
+}
+
+interface Props {
+  headings: Heading[];
+}
+
+const { headings } = Astro.props;
+
+// Filter to only h2 and h3
+const toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
+---
+
+{toc.length > 0 && (
+  <aside class="hidden xl:block w-56 flex-shrink-0">
+    <div class="sticky top-20">
+      <h4 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">
+        On this page
+      </h4>
+      <ul class="space-y-2 text-sm">
+        {toc.map((heading) => (
+          <li style={`margin-left: ${(heading.depth - 2) * 0.75}rem`}>
+            <a
+              href={`#${heading.slug}`}
+              class="text-slate-400 hover:text-white transition-colors"
+            >
+              {heading.text}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  </aside>
+)}

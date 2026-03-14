@@ -1,0 +1,215 @@
+---
+title: Terraform Provider
+description: Current provider coverage, configuration model, and HTTP API mapping.
+order: 3
+---
+
+This repository includes a real Terraform provider implementation under:
+
+- `terraform-provider-neuwerk/`
+
+It is not a placeholder or roadmap stub. The provider is implemented with the Terraform Plugin
+Framework and already has end-to-end contract coverage in the repository test suite.
+
+## Current Scope
+
+The provider is intentionally small and currently exposes:
+
+- provider configuration for HTTPS API access
+- three managed resources
+- no data sources
+
+Implemented resources today are:
+
+- `neuwerk_policy`
+- `neuwerk_kubernetes_integration`
+- `neuwerk_tls_intercept_ca`
+
+## Provider Configuration
+
+The current provider schema supports these fields:
+
+- `endpoints`
+  Required list of HTTPS base URLs; endpoints are tried in order
+- `token`
+  Required bearer token for API authentication
+- `ca_cert_pem`
+  Optional PEM-encoded CA certificate
+- `ca_cert_file`
+  Optional path to a PEM-encoded CA certificate
+- `request_timeout`
+  Optional per-request timeout in Go duration syntax
+- `retry_timeout`
+  Optional total retry budget for transient transport failures
+- `headers`
+  Optional extra headers attached to every request
+
+The intended machine-auth path is an admin-capable service-account token issued by the firewall
+itself.
+
+## Transport Model
+
+The provider uses a hand-written API client rather than generated code.
+
+Current transport behavior includes:
+
+- HTTPS endpoint normalization
+- bearer-token authentication
+- optional custom CA trust
+- endpoint failover by trying configured endpoints in order
+- retry loops for transient transport failures up to `retry_timeout`
+
+This makes the provider suitable for talking to a cluster where any one endpoint may be unavailable
+or may proxy to the current leader.
+
+## Resource Coverage
+
+### `neuwerk_policy`
+
+This resource manages an aggregate policy document through the by-name policy API.
+
+Current API mapping:
+
+- `GET /api/v1/policies/by-name/{name}`
+- `PUT /api/v1/policies/by-name/{name}`
+- `DELETE /api/v1/policies/{id}`
+
+The resource supports two authoring styles:
+
+- `document_json`
+  A low-level JSON escape hatch
+- nested HCL fields under `source_group`
+  A higher-level authoring surface that the provider compiles into the canonical policy JSON
+
+Important current attributes include:
+
+- `name`
+- `mode`
+- `default_action`
+- `document_json`
+- `source_group`
+- computed `compiled_json`
+
+The provider imports this resource by policy name.
+
+### `neuwerk_kubernetes_integration`
+
+This resource manages Kubernetes integration records through the integrations API.
+
+Current API mapping:
+
+- `GET /api/v1/integrations/{name}`
+- `POST /api/v1/integrations`
+- `PUT /api/v1/integrations/{name}`
+- `DELETE /api/v1/integrations/{name}`
+
+Current resource fields are:
+
+- `name`
+- `api_server_url`
+- `ca_cert_pem`
+- `service_account_token`
+- computed `kind`
+- computed `auth_type`
+- computed `token_configured`
+
+The provider imports this resource by integration name.
+
+At the moment, this is specifically a Kubernetes integration resource. It is not a generic
+integration resource that covers every possible future integration kind.
+
+### `neuwerk_tls_intercept_ca`
+
+This resource manages the singleton TLS intercept CA setting.
+
+Current API mapping:
+
+- `GET /api/v1/settings/tls-intercept-ca`
+- `PUT /api/v1/settings/tls-intercept-ca`
+- `POST /api/v1/settings/tls-intercept-ca/generate`
+- `DELETE /api/v1/settings/tls-intercept-ca`
+
+Current resource fields are:
+
+- `generate`
+- `ca_cert_pem`
+- `ca_key_pem`
+- `ca_key_der_b64`
+- computed `configured`
+- computed `source`
+- computed `fingerprint_sha256`
+
+The provider imports this resource as a singleton binding rather than by a user-chosen name.
+
+## What Is Not Implemented Yet
+
+A few limitations are explicit in the current provider code:
+
+- no Terraform data sources
+- no resources for service accounts, SSO providers, performance mode, audit, or DNS cache
+- no provider code generation from OpenAPI
+- no generic “all settings” resource
+- no partial policy-subobject resources; policy is managed as one aggregate document
+
+The provider therefore covers a useful automation subset, not the full HTTP API.
+
+## State And Secret Handling
+
+Two state-model details are important when using the provider.
+
+### Policy Is Aggregate State
+
+`neuwerk_policy` manages one named aggregate policy document. Terraform is not updating one rule at
+a time on the server. Every apply sends the compiled full document for that named policy.
+
+That is the correct mental model for drift and change review.
+
+### Integration Tokens Are Effectively Write-Only
+
+The integrations API returns `token_configured` rather than the original service-account token.
+
+Because of that:
+
+- imported integration resources do not recover the original token value from the server
+- the Terraform configuration must continue to supply `service_account_token`
+- state continuity depends on Terraform state and input variables, not on round-tripping the secret
+  from the API
+
+## Import Behavior
+
+Current import identifiers are:
+
+- `neuwerk_policy`
+  import by policy name
+- `neuwerk_kubernetes_integration`
+  import by integration name
+- `neuwerk_tls_intercept_ca`
+  import with any placeholder ID; the resource binds to the singleton setting
+
+For the integration resource, import is best paired with configuration that re-supplies the service
+account token, because the API does not return it.
+
+## Example
+
+The repository includes a concrete example under:
+
+- `terraform-provider-neuwerk/examples/basic/main.tf`
+
+That example shows the provider wired to:
+
+- one Kubernetes integration
+- one generated TLS intercept CA resource
+- one named policy resource
+
+## Relationship To The HTTP API Docs
+
+The provider is currently a manually maintained interface layer on top of the HTTP API.
+
+That means:
+
+- HTTP API changes must be reflected in provider client and resource code
+- provider coverage may lag behind newly added API endpoints
+- OpenAPI is useful as the contract reference, but the provider is not generated from it today
+
+For now, the provider should be treated as a curated automation surface for the implemented API
+subset above.

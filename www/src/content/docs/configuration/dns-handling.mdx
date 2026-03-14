@@ -1,0 +1,152 @@
+---
+title: DNS Handling
+description: How hostname-based policy, DNS proxying, and the dynamic allowlist work today.
+order: 2
+---
+
+This page describes the DNS path that exists in the current implementation. It is not a general
+recursive DNS service. It is a policy-aware DNS proxy that sits on the firewall, evaluates
+hostname rules against the source IP, and feeds successful answers into the dynamic IPv4
+allowlist.
+
+## What The Firewall Actually Does
+
+At runtime, the firewall:
+
+1. Listens for DNS on the management IP at port `53`
+2. Accepts both UDP and TCP client queries
+3. Evaluates the source IP and queried hostname against the compiled `DnsPolicy`
+4. Returns `NXDOMAIN` immediately for denied queries
+5. Proxies allowed queries to one of the configured upstream resolvers
+6. Extracts IPv4 answers from successful upstream responses and inserts them into the dynamic
+   allowlist
+
+That allowlist is what lets later dataplane flows to resolved destination IPs pass the packet
+policy.
+
+## Interception Path
+
+Outbound traffic is treated as DNS-intercept traffic only when all of these are true:
+
+- destination port is `53`
+- protocol is TCP or UDP
+- the source IP is internal
+- the destination IP matches one of the configured `--dns-target-ip` values
+
+The DNS listener itself is no longer separately configurable. `--dns-listen` was removed, and the
+runtime now binds DNS on `management-ip:53`.
+
+Practical consequence:
+
+- clients should point at the firewall for DNS resolution, or route their DNS traffic to the
+  configured target IPs that the dataplane intercepts
+- arbitrary DNS traffic to other destinations is not part of this hostname-policy path
+
+## Policy Evaluation
+
+DNS uses a compiled `DnsPolicy` derived from the same source groups and rule ordering as the main
+packet policy.
+
+Key behavior:
+
+- source groups are checked in priority order
+- rules inside a source group are checked in priority order
+- the first matching hostname rule wins
+- hostnames are normalized to lowercase without a trailing dot before matching
+- `dns_hostname` is treated as a case-insensitive regex
+
+DNS is stricter than packet policy once a source group claims the source IP:
+
+- if a DNS rule matches, its action is used
+- if no DNS rule matches inside that source group, the result is deny
+- if no source group contains the source IP, the result is also deny
+
+This is why hostname-based access requires explicit DNS allow rules. There is no permissive
+DNS-side fallback equivalent to packet-policy `default_action`.
+
+### Audit Behavior
+
+Top-level audit mode still evaluates DNS policy. A query that would have been denied is allowed to
+continue upstream, but it is still marked as a would-deny event for audit reporting.
+
+Per-rule `mode: audit` also participates in DNS auditing without turning into enforcement.
+
+## Upstream Resolution
+
+Allowed queries are sent to the configured upstream resolver list in order. For each upstream, the
+proxy:
+
+- sends the original query
+- waits up to 2 seconds for a reply
+- validates the response source, transaction id, and question section
+- accepts the first valid response
+
+If all upstreams fail, or if the reply does not match the original question, the client receives
+`NXDOMAIN`.
+
+### TCP Clients And Upstream Transport
+
+The firewall accepts DNS over TCP from clients, but the current upstream forwarding path still uses
+UDP. That means TCP is only supported on the client-facing side of the proxy, not as an upstream
+transport mode.
+
+## Dynamic Allowlist And DNS Cache
+
+When an allowed upstream response contains IPv4 answers, the firewall records them in two places:
+
+- the dynamic dataplane allowlist
+- the DNS cache used for diagnostics and hostname attribution
+
+The cache is a grouped hostname-to-IPv4 view with `last_seen` timestamps. It is not a full
+recursive DNS cache with TTL-aware replay behavior.
+
+Idle entries are garbage-collected in both the allowlist and the DNS cache:
+
+- `--dns-allowlist-idle-secs`
+  Idle lifetime for resolved IP entries
+- `--dns-allowlist-gc-interval-secs`
+  GC sweep interval
+
+If `--dns-allowlist-idle-secs` is omitted, it defaults to the normal flow idle timeout plus 120
+seconds. If `--dns-allowlist-gc-interval-secs` is omitted, it defaults to 30 seconds.
+
+## Operational Surfaces
+
+Useful runtime views:
+
+- `GET /api/v1/dns-cache`
+  Returns the grouped hostname-to-IP view currently held in memory
+- `GET /api/v1/stats`
+  Includes DNS counters for allow, deny, policy NXDOMAIN, and upstream NXDOMAIN
+- `GET /ready`
+  Includes the `dns_allowlist` readiness check
+
+The DNS cache surface is primarily diagnostic. It helps explain why later traffic or wiretap events
+were associated with a hostname, but it is not the source of truth for policy authoring.
+
+## Required Runtime Inputs
+
+The DNS path depends on two required runtime inputs:
+
+- `--dns-target-ip`
+  One or more destination IPs that should be treated as interceptable DNS resolvers
+- `--dns-upstream`
+  One or more upstream resolver socket addresses the firewall will actually query
+
+Without at least one upstream, the DNS runtime fails to start.
+
+## Current Limitations
+
+- DNS policy decisions are source-IP aware only for IPv4 clients. Non-IPv4 client queries are
+  denied.
+- Only IPv4 answers are inserted into the dynamic allowlist and the diagnostic DNS cache.
+  Successful `AAAA` answers do not currently create allowlist entries.
+- Denied queries, malformed queries, upstream mismatches, and upstream transport failures all turn
+  into `NXDOMAIN` from the client’s point of view.
+- The current DNS cache is an observation map, not a general-purpose resolver cache.
+
+## Related Pages
+
+- Policy Model
+- Configuration Schema
+- HTTP API

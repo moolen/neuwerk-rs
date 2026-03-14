@@ -1,0 +1,200 @@
+---
+title: "Why cloud-native Egress Controls are Still a Mess in 2026"
+subline: "Every platform says zero-trust, yet egress policy is still held together with brittle allow lists and last-minute exceptions."
+date: 2026-01-22
+teaser: "Cloud-native stacks scale faster than the security models that try to contain them. Teams bolt on sidecars, NAT gateways, and DNS filters, but still end up with sprawling allow lists and emergency overrides that quietly undo policy intent. The result is a maze of controls that look strict on paper yet leak in practice. This piece looks at why egress governance remains messy."
+---
+
+The most interesting unsolved problem in cloud security right now isn’t AI, SBOMs, or supply chain drama. It’s outbound traffic.
+
+Egress.
+
+The boring direction. The one nobody wants to talk about at conferences because it doesn’t demo well and it doesn’t come with a shiny dashboard. And yet, if you quietly ask a room of experienced platform engineers whether they enforce default-deny egress in production, you’ll get an awkward pause and maybe a couple of hesitant hands.
+
+That’s not because people are careless. It’s because the ecosystem still makes doing the right thing weirdly hard.
+
+---
+
+## The Requirement That Sounds Simple (And Isn’t)
+
+Here’s the policy most serious SaaS companies eventually want:
+
+Workloads may only connect to explicitly allowed domains. Everything else is denied. Enforcement happens at L3/L4. No exceptions.
+
+In practice that means allowing things like `*.acme.com`, blocking unknown destinations, and ensuring that if a node is compromised it cannot exfiltrate secrets to some random IP in a bulletproof ASN.
+
+This sounds straightforward. It isn’t.
+
+The moment you try to implement this across AWS, GCP, and Azure — with Kubernetes, TLS 1.3 everywhere, and SaaS dependencies hiding behind CDNs — you realize you’re not configuring firewall rules. You’re designing a distributed control plane.
+
+---
+
+## DNS Filtering Is Not Enforcement
+
+A lot of discussions start with “just filter DNS.”
+
+Sure. You can control resolvers. You can block domains. You can even use RPZ or a managed DNS security product.
+
+But DNS filtering alone is not enforcement. It’s advisory.
+
+If malware embeds a static IP, DNS never enters the picture. If a workload uses DoH, your resolver doesn’t matter. If an attacker knows the target IP in advance, your neat domain allowlist is bypassed entirely.
+
+Security teams know this. Which is why serious environments insist on default-deny at L3/L4.
+
+But now we’ve created a new problem: the internet doesn’t run on stable IPs anymore.
+
+---
+
+## The Wildcard Problem Is the Real Problem
+
+The most underestimated complexity in cloud egress filtering is the wildcard.
+
+Allowing `*.example.com` is operationally necessary. SaaS vendors don’t publish stable IP ranges. CDNs multiplex domains onto shared address space. TTLs are short. Infrastructure shifts constantly.
+
+So how does a firewall know that a given IP belongs to `api.example.com` at this exact moment?
+
+It has to observe DNS queries, maintain a mapping of FQDN to IP, respect TTLs, and enforce connection attempts based on that state. That’s not a static ACL. That’s a stateful, DNS-aware enforcement engine with a real control plane.
+
+Now multiply that by three cloud providers, each with slightly different semantics and feature gaps.
+
+Welcome to the mess.
+
+---
+
+## Multi-Cloud Parity Is a Myth
+
+AWS Security Groups don’t understand FQDNs. NACLs don’t either. Azure Firewall can proxy DNS and enforce FQDN rules. GCP supports certain FQDN policies but has its own limitations. Wildcard behavior differs. Pricing models differ. Throughput billing differs.
+
+You end up designing three architectures for one security requirement.
+
+And this is where teams quietly start compromising. They allow `0.0.0.0/0` on port 443 and rely on host-level controls instead. It’s understandable. The alternative is operational entropy.
+
+But that decision has consequences.
+
+---
+
+## The Zero-Trust Confusion
+
+There’s a persistent argument that in a true zero-trust architecture, you don’t need centralized egress controls. Everything is authenticated. Everything is encrypted. If a node is compromised, it’s game over anyway.
+
+That’s a comforting story. It’s also incomplete.
+
+If a node is rooted, host-level controls can be disabled. eBPF programs can be unloaded. Agents can be tampered with. mTLS doesn’t prevent exfiltration to an attacker-controlled endpoint.
+
+Zero trust reduces lateral movement. It does not eliminate the need for a second trust boundary.
+
+Layering still matters.
+
+In fact, layering matters more in a world where everything is encrypted and opaque.
+
+---
+
+## Forward Proxies: The Necessary Evil
+
+Many teams land on HTTP forward proxies. Squid. Managed secure web gateways. Some commercial box with DNS proxy features.
+
+It works — until it doesn’t.
+
+You inject `HTTP_PROXY` into environments. You patch applications that don’t support it. You fight with gRPC. You debate whether to terminate TLS (expensive and philosophically questionable) or rely on SNI (which is on borrowed time thanks to encrypted client hello).
+
+Operationally, it feels fragile. Security-wise, it’s better than nothing. Culturally, it’s awkward because it violates the “transparent infrastructure” promise cloud-native systems made to developers.
+
+Nobody loves this solution. They tolerate it.
+
+---
+
+## The Economics Are Strange
+
+Traditional NGFW vendors absolutely can solve parts of this problem. DNS proxy. Wildcard rules. Threat feeds. DPI. SNI-based enforcement.
+
+But the pricing model is anchored in throughput and feature flags. In high-traffic SaaS environments, outbound bandwidth is not trivial. Costs scale fast. Multi-cloud deployments multiply that cost.
+
+Then there’s the ownership argument. Build your own and you risk knowledge silos and bus factor. Buy a vendor appliance and you inherit licensing complexity and roadmap dependence.
+
+This is where incentives get interesting.
+
+Cloud providers don’t aggressively solve this because permissive egress drives consumption. Security vendors solve it, but in a way optimized for enterprise procurement cycles, not cloud-native ergonomics.
+
+So the gap remains.
+
+---
+
+## TLS 1.3 Quietly Changed the Game
+
+TLS interception used to be the blunt instrument of choice. Terminate, inspect, re-encrypt. Problem solved.
+
+Except it breaks things. It burns CPU. It conflicts with certificate pinning. It undermines zero-trust principles. And with TLS 1.3 and ECH adoption, visibility continues to shrink.
+
+The future is less inspectable. That’s not a moral position. It’s just how the protocol stack is evolving.
+
+Which means enforcement has to happen without peeking into payloads. It has to rely on metadata, state, and strong boundary design.
+
+That’s a harder engineering problem — and a more interesting one.
+
+---
+
+## Kubernetes Didn’t Solve This (It Moved It)
+
+Cilium and other eBPF-based systems can enforce FQDN policies at the host level. That’s powerful. It’s elegant. It’s very “cloud-native.”
+
+But it’s still on the node.
+
+If the node is compromised, enforcement can be tampered with. You’ve reduced risk, but you haven’t created a separate trust domain.
+
+Egress gateways give you predictable source IPs, which helps integrate with legacy firewalls. But they don’t fundamentally solve the compromise boundary issue.
+
+We’ve made the tooling better. We haven’t made the architecture simpler.
+
+---
+
+## The Cultural Reality
+
+Here’s the part people don’t say out loud: most teams don’t enforce strict egress because the complexity-to-benefit ratio feels off.
+
+The likelihood of compromise is abstract. The operational pain is immediate.
+
+So outbound remains permissive. We harden ingress aggressively. We invest in identity, SBOMs, SAST, runtime detection. But egress is often “good enough.”
+
+Until it isn’t.
+
+When something does get popped, outbound controls determine whether it’s a contained incident or a full-blown data exfiltration event.
+
+That’s not theoretical. It’s pattern recognition.
+
+---
+
+## What Should Exist (But Barely Does)
+
+We need a centralized, DNS-aware L3/L4 enforcement system that:
+
+* Maintains FQDN-to-IP state correctly.
+* Supports wildcards natively.
+* Enforces transparently (no app changes).
+* Lives in a separate trust domain.
+* Works consistently across clouds.
+* Doesn’t require TLS interception.
+* Has predictable economics.
+
+This is not an impossible problem. It’s just an ecosystem problem.
+
+It sits between cloud networking, DNS infrastructure, kernel datapaths, and security policy. No single vendor fully owns that intersection yet.
+
+Which is why it’s still messy.
+
+---
+
+## The Optimistic Take
+
+The encouraging part is that the primitives are finally there. dpdk and eBPF is mature. Cloud routing is programmable. Control planes are API-driven. Observability is rich. We can build DNS-aware datapaths that scale horizontally and integrate with Terraform.
+
+The skeptical part is that security tooling tends to calcify once it’s good enough. And “good enough” in egress has been surprisingly low for years.
+
+But I don’t think that will hold.
+
+As outbound SaaS dependencies grow, as supply chain attacks evolve, and as encrypted protocols reduce inspection surface, the industry will be forced to take egress seriously.
+
+When that shift happens, the teams who treated outbound as a first-class design concern — not an afterthought — will have a massive advantage.
+
+And honestly, that’s what makes this space exciting right now.
+
+It’s still messy. But it’s wide open.

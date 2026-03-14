@@ -1,0 +1,182 @@
+---
+const comparisons = [
+  {
+    approach: 'Cilium Network Policies',
+    location: 'Workload node',
+    survivesCompromise: false,
+    tlsInspection: 'No',
+    complexity: 'Low',
+    cost: 'Free',
+  },
+  {
+    approach: 'Service Mesh (Istio)',
+    location: 'Sidecar on node',
+    survivesCompromise: false,
+    tlsInspection: 'Optional',
+    complexity: 'High',
+    cost: 'Free/$',
+  },
+  {
+    approach: 'DNS Filtering (Route53)',
+    location: 'Cloud DNS',
+    survivesCompromise: 'partial',
+    tlsInspection: 'No',
+    complexity: 'Low',
+    cost: '$',
+  },
+  {
+    approach: 'AWS Network Firewall',
+    location: 'VPC boundary',
+    survivesCompromise: true,
+    tlsInspection: 'Optional',
+    complexity: 'Medium',
+    cost: '$$',
+  },
+  {
+    approach: 'Traditional NGFW',
+    location: 'VPC boundary',
+    survivesCompromise: true,
+    tlsInspection: 'Yes',
+    complexity: 'High',
+    cost: '$$$',
+  },
+  {
+    approach: 'Neuwerk',
+    location: 'Gateway nodes',
+    survivesCompromise: true,
+    tlsInspection: 'No',
+    complexity: 'Low–Med',
+    cost: 'Free/$',
+    highlight: true,
+  },
+];
+
+const differentiators = [
+  {
+    title: 'Lighter than NGFWs',
+    description: 'No IDS/IPS, threat intelligence, user tracking — just egress enforcement.',
+  },
+  {
+    title: 'Harder than DNS filtering',
+    description: 'Enforces at packet level, not just DNS resolution.',
+  },
+  {
+    title: 'External to workloads',
+    description: 'Unlike CNI/service mesh, survives node compromise.',
+  },
+  {
+    title: 'optional TLS inspection',
+    description: 'Works without breaking certificates or trusting proxies.',
+  },
+];
+---
+
+<section class="relative py-24 border-t border-slate-800 bg-slate-900/70">
+  <div class="relative mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+    <div class="text-center max-w-3xl mx-auto">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">
+        How This Compares
+      </h2>
+      <p class="mt-4 text-lg text-slate-400">
+        Where Neuwerk fits in the egress control landscape.
+      </p>
+    </div>
+
+    <!-- Comparison Table (Desktop) -->
+    <div class="mt-12 hidden lg:block overflow-x-auto">
+      <table class="w-full text-left">
+        <thead>
+          <tr class="border-b border-slate-700">
+            <th class="pb-4 pr-4 text-sm font-medium text-slate-400">Approach</th>
+            <th class="pb-4 px-4 text-sm font-medium text-slate-400">Enforcement Location</th>
+            <th class="pb-4 px-4 text-sm font-medium text-slate-400">Survives Node Compromise?</th>
+            <th class="pb-4 px-4 text-sm font-medium text-slate-400">TLS Inspection</th>
+            <th class="pb-4 px-4 text-sm font-medium text-slate-400">Complexity</th>
+            <th class="pb-4 pl-4 text-sm font-medium text-slate-400">Cost</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800">
+          {comparisons.map((row) => (
+            <tr class={row.highlight ? 'bg-brand-500/5' : ''}>
+              <td class={`py-4 pr-4 font-medium ${row.highlight ? 'text-brand-400' : 'text-white'}`}>
+                {row.approach}
+              </td>
+              <td class="py-4 px-4 text-slate-400">{row.location}</td>
+              <td class="py-4 px-4">
+                {row.survivesCompromise === true && (
+                  <span class="inline-flex items-center gap-1 text-emerald-400">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                    Yes
+                  </span>
+                )}
+                {row.survivesCompromise === false && (
+                  <span class="inline-flex items-center gap-1 text-red-400">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    No
+                  </span>
+                )}
+                {row.survivesCompromise === 'partial' && (
+                  <span class="inline-flex items-center gap-1 text-yellow-400">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    Bypassable
+                  </span>
+                )}
+              </td>
+              <td class="py-4 px-4 text-slate-400">{row.tlsInspection}</td>
+              <td class="py-4 px-4 text-slate-400">{row.complexity}</td>
+              <td class="py-4 pl-4 text-slate-400">{row.cost}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Comparison Cards (Mobile) -->
+    <div class="mt-12 lg:hidden space-y-4">
+      {comparisons.map((row) => (
+        <div class={`p-4 rounded-xl border ${row.highlight ? 'bg-brand-500/5 border-brand-500/30' : 'bg-slate-900/50 border-slate-700'}`}>
+          <div class="flex items-center justify-between mb-3">
+            <h3 class={`font-semibold ${row.highlight ? 'text-brand-400' : 'text-white'}`}>{row.approach}</h3>
+            {row.survivesCompromise === true && (
+              <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400">Survives compromise</span>
+            )}
+          </div>
+          <div class="grid grid-cols-2 gap-2 text-sm">
+            <div>
+              <span class="text-slate-500">Location:</span>
+              <span class="ml-1 text-slate-300">{row.location}</span>
+            </div>
+            <div>
+              <span class="text-slate-500">TLS:</span>
+              <span class="ml-1 text-slate-300">{row.tlsInspection}</span>
+            </div>
+            <div>
+              <span class="text-slate-500">Complexity:</span>
+              <span class="ml-1 text-slate-300">{row.complexity}</span>
+            </div>
+            <div>
+              <span class="text-slate-500">Cost:</span>
+              <span class="ml-1 text-slate-300">{row.cost}</span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <!-- Key Differentiators -->
+    <div class="mt-12 grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {differentiators.map((diff) => (
+        <div class="p-4 rounded-lg bg-slate-900/50 border border-slate-700">
+          <h4 class="font-medium text-white">{diff.title}</h4>
+          <p class="mt-1 text-sm text-slate-400">{diff.description}</p>
+        </div>
+      ))}
+    </div>
+  </div>
+</section>

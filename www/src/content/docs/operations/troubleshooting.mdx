@@ -1,0 +1,346 @@
+---
+title: Troubleshooting
+description: Concrete triage workflows for readiness, policy, cluster, and service-plane issues.
+order: 6
+---
+
+This page is a practical runbook for the troubleshooting surfaces that already exist in the
+repository.
+
+The fastest way to make progress is to follow the same order the runtime itself is built in:
+
+1. confirm the process is alive
+2. confirm the node is ready
+3. inspect the compact runtime snapshot
+4. inspect the DNS, audit, and wiretap diagnostics
+5. collect a sysdump if the problem is broader or cluster-related
+
+## First Checks
+
+Start with these endpoints:
+
+- `GET /health`
+- `GET /ready`
+- `GET /metrics`
+- `GET /api/v1/stats`
+
+Operationally:
+
+- `/health` tells you whether the HTTP process is alive
+- `/ready` tells you whether the node is actually ready to enforce traffic
+- `/metrics` gives raw Prometheus counters
+- `/api/v1/stats` gives a compact JSON summary of dataplane, DNS, TLS, DHCP, and cluster state
+
+Only `/health` and `/metrics` are intentionally unauthenticated. The rest of the API requires normal
+API auth.
+
+## Suggested Triage Order
+
+For most incidents, use this sequence:
+
+1. Check `/health`
+2. Check `/ready`
+3. If `/ready` is failing, look at the exact failing check names and details
+4. Query `/api/v1/stats`
+5. If traffic is being blocked, inspect `/api/v1/audit/findings`
+6. If hostname policy may be involved, inspect `/api/v1/dns-cache`
+7. If you need live confirmation, use `/api/v1/wiretap/stream`
+8. If the issue is cluster-wide or hard to localize, collect `/api/v1/support/sysdump/cluster`
+
+That ordering matches the current runtime better than jumping straight into logs.
+
+## Readiness Failures
+
+`/ready` is the highest-signal endpoint because it already breaks the node state into separate
+checks.
+
+The current checks are:
+
+- `dataplane_running`
+- `dataplane_config`
+- `policy_ready`
+- `dns_allowlist`
+- `service_plane`
+- `draining`
+- `cluster`
+- `policy_replication`
+
+### `dataplane_running = false`
+
+Meaning:
+
+- the dataplane runtime thread did not come up
+- or the node is in shutdown handling and readiness has been forced false
+
+What to check next:
+
+- process logs for `dataplane failed: ...`
+- whether the node is intentionally shutting down or draining
+- `/api/v1/stats` for missing dataplane counters or zeroed state
+
+### `dataplane_config = false`
+
+Meaning:
+
+- the dataplane config store does not yet have IP, prefix, gateway, and MAC information
+
+Most likely causes:
+
+- DPDK bootstrap has not completed yet
+- DHCP did not complete successfully
+- IMDS fallback did not provide config in time
+
+What to check next:
+
+- logs around DHCP bootstrap
+- whether the node is using DPDK mode
+- DHCP-related fields in `/api/v1/stats`
+
+### `policy_ready = false`
+
+Meaning:
+
+- the local `PolicyStore` is not yet initialized with the active policy
+
+What to check next:
+
+- whether an active policy has been created and activated
+- in cluster mode, whether replication is caught up
+- logs for policy compilation or replication failures
+
+### `dns_allowlist = false`
+
+Meaning:
+
+- the control-plane DNS proxy did not become ready
+
+What to check next:
+
+- logs for `dns proxy: startup failed: ...`
+- logs for `dns proxy: startup timed out after 2s`
+- whether at least one upstream DNS resolver is configured
+
+### `service_plane = false`
+
+Meaning:
+
+- the DNS runtime or TLS-intercept service path is not fully ready
+
+Common causes:
+
+- TLS-intercept CA material is missing or invalid
+- the TLS intercept runtime failed to start
+- no intercept rules are currently installed for service-plane handling
+
+What to check next:
+
+- `GET /api/v1/settings/tls-intercept-ca`
+- logs for `trafficd intercept ca load failed`
+- logs for `trafficd tls intercept runtime startup failed`
+- logs for `trafficd tls intercept runtime startup timed out`
+
+### `draining = false`
+
+Meaning:
+
+- the node is currently draining and is intentionally advertising itself as not ready
+
+This is expected during graceful shutdown and during cloud-integration-driven drain handling.
+
+### `cluster = false`
+
+Meaning:
+
+- cluster mode is enabled, but the local node does not currently know a leader
+
+What to check next:
+
+- cluster section of `/api/v1/stats`
+- logs containing `leader unknown`
+- cluster sysdump output for membership and replication state
+
+### `policy_replication = false`
+
+Meaning:
+
+- cluster mode has an active policy in the replicated store, but the local node has not yet replayed
+  that policy into its own `PolicyStore`
+
+What to check next:
+
+- `/api/v1/stats` cluster follower lag information
+- logs for policy replication or cluster store read errors
+
+## Traffic Is Blocked Unexpectedly
+
+Use this path when packets are reaching the firewall but policy behavior looks wrong.
+
+Start with:
+
+- `GET /api/v1/audit/findings`
+
+Then:
+
+1. filter by `finding_type`
+2. filter by `source_group`
+3. inspect `dst_ip`, `fqdn`, and `sni`
+4. correlate with `/api/v1/dns-cache` when hostname policy is involved
+
+Useful patterns:
+
+- `dns_deny`
+  Usually means hostname-policy denial happened in the DNS proxy before dataplane allowlisting
+- `l4_deny`
+  Means the dataplane denied a normal L3/L4 flow
+- `tls_deny`
+  Means a TLS-matching policy denied the connection based on observed TLS metadata
+- `icmp_deny`
+  Means ICMP policy blocked the traffic class
+
+If the deny path is still ambiguous, use:
+
+- `GET /api/v1/wiretap/stream`
+
+Wiretap is better for watching live traffic flow shape. Audit is better for aggregated deny history.
+
+## Hostname Policy Problems
+
+If a policy depends on hostnames or FQDNs, the next check after audit is:
+
+- `GET /api/v1/dns-cache`
+
+What to look for:
+
+- expected hostname missing entirely
+- hostname present but mapped to unexpected IPs
+- DNS allow happened earlier, but the current flow does not match the cached result
+
+If the cache is empty or stale:
+
+- verify DNS requests are actually hitting the firewall DNS listener
+- verify the DNS proxy is ready
+- verify the client is querying one of the configured DNS target IPs
+
+## TLS Intercept Problems
+
+If `tls.mode: intercept` policy is expected to work but intercepted traffic is failing, check:
+
+- `GET /api/v1/settings/tls-intercept-ca`
+- `GET /api/v1/settings/tls-intercept-ca/cert`
+- `POST /api/v1/settings/tls-intercept-ca/generate`
+
+High-signal symptoms:
+
+- `service_plane` readiness is false
+- the intercept CA is not configured
+- logs show intercept CA load failures
+- logs show TLS intercept runtime startup failure or timeout
+
+If the CA is missing, the service plane cannot successfully handle intercept-required flows.
+
+## Cluster Problems
+
+When the issue is cluster-related, start with:
+
+- `GET /ready`
+- `GET /api/v1/stats`
+- `POST /api/v1/support/sysdump/cluster`
+
+What `/api/v1/stats` already tells you:
+
+- whether this node is leader
+- current Raft term
+- last log index and last applied index
+- node count
+- per-follower lag and caught-up state
+
+What the cluster sysdump gives you:
+
+- per-node state summaries
+- per-node cluster summaries
+- a merged archive across responding nodes
+- explicit partial-failure reporting if some nodes cannot be reached
+
+Important boundary:
+
+- `POST /api/v1/support/sysdump/node` is intended for cluster fan-out by the leader and requires an
+  internal fan-out header
+- operators should normally use `POST /api/v1/support/sysdump/cluster`
+
+## Metrics And Listener Problems
+
+If the metrics endpoint is missing even though the process is up:
+
+- verify the configured metrics bind address
+- check logs for `metrics bind ... appears public; set NEUWERK_ALLOW_PUBLIC_METRICS_BIND=1 to override`
+
+The runtime refuses to start the HTTP API if the metrics bind looks public and the override is not
+set.
+
+If `/metrics` is present but higher-level diagnostics are failing, the node may still be alive
+while not being ready.
+
+## Audit Or Wiretap Returns `503`
+
+Two common reasons are already implemented:
+
+1. performance mode is disabled
+2. the underlying audit store or wiretap hub is unavailable
+
+Check:
+
+- `GET /api/v1/settings/performance-mode`
+- whether the response source is `local` or `cluster`
+
+Also remember that aggressive DPDK performance mode disables dataplane state metrics, audit
+emission, and wiretap emission in the dataplane itself. Reduced visibility can be intentional in
+that mode.
+
+## Shutdown And Drain Confusion
+
+If the node suddenly flips from ready to unready during an otherwise normal stop or rollout, that
+may be expected behavior.
+
+On shutdown, the runtime:
+
+- sets drain state to true
+- forces readiness checks false
+- leaves the HTTP listener up briefly so probes can observe readiness change
+- then performs graceful HTTP shutdown
+
+A failing `draining` readiness check during controlled shutdown is not by itself a bug.
+
+## Minimal API Checklist
+
+If you want a compact troubleshooting sequence for an authenticated operator session, use:
+
+```text
+GET /ready
+GET /api/v1/stats
+GET /api/v1/audit/findings?limit=50
+GET /api/v1/dns-cache
+GET /api/v1/settings/performance-mode
+GET /api/v1/settings/tls-intercept-ca
+POST /api/v1/support/sysdump/cluster
+```
+
+Use `/api/v1/wiretap/stream` only when you need live observation, not as the first step.
+
+## Practical Reading Guide
+
+If you are tracing one of these failures through the code:
+
+1. Start with `src/controlplane/ready.rs`
+2. Read `src/controlplane/http_api/app_routes.rs`
+3. Check `src/controlplane/http_api/performance_mode.rs`
+4. Check `src/controlplane/http_api/tls_intercept.rs`
+5. Check `src/controlplane/http_api/support.rs`
+6. Follow the startup paths in `src/runtime/startup/controlplane_runtime.rs`
+
+## Related Pages
+
+- Observability
+- Logging & Audit
+- DNS Handling
+- TLS Interception
+- Cluster Replication

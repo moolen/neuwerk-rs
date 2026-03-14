@@ -1,0 +1,106 @@
+---
+const attacks = [
+  { action: 'Escape a container', result: 'Pod-level isolation bypassed' },
+  { action: 'Escalate to root', result: 'Node-level controls owned' },
+  { action: 'Manipulate network namespaces', result: 'CNI policies ineffective' },
+  { action: 'Unload eBPF programs', result: 'Local eBPF enforcement gone' },
+];
+
+const outcomes = [
+  'Stops automated malware callbacks',
+  'Blocks C2 (command & control) channels',
+  'Prevents bulk data exfiltration',
+  'Forces attackers into noisy, high-cost techniques',
+];
+---
+
+<section class="py-24 border-t border-slate-800">
+  <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+    <div class="grid lg:grid-cols-2 gap-12 items-start">
+      <div>
+        <p class="text-sm font-medium text-brand-400 uppercase tracking-wider">
+          Threat Model
+        </p>
+        <h2 class="mt-2 text-3xl sm:text-4xl font-bold text-white">
+          Designed for "Root on the Node"
+        </h2>
+
+        <p class="mt-6 text-lg text-slate-300">
+          If an attacker achieves any of these, anything <em>on</em> the node is no longer a control:
+        </p>
+
+        <div class="mt-6 space-y-3">
+          {attacks.map((attack) => (
+            <div class="flex items-start gap-3 p-3 rounded-lg bg-red-500/5 border border-red-500/20">
+              <svg class="w-5 h-5 text-red-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <div>
+                <span class="text-white font-medium">{attack.action}</span>
+                <span class="text-slate-500 mx-2">→</span>
+                <span class="text-red-400">{attack.result}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div class="lg:sticky lg:top-24">
+        <!-- Visual diagram -->
+        <div class="bg-slate-900 rounded-xl border border-slate-700 p-6">
+          <div class="space-y-4">
+            <div class="p-4 rounded-lg border-2 border-red-500/50 bg-red-500/5">
+              <p class="text-sm text-red-400 font-medium mb-3">Compromised Node</p>
+              <div class="space-y-2 text-sm">
+                <div class="p-2 rounded bg-red-500/10 text-slate-400 flex justify-between">
+                  <span class="line-through">iptables</span>
+                  <span class="text-red-400 text-xs">disabled</span>
+                </div>
+                <div class="p-2 rounded bg-red-500/10 text-slate-400 flex justify-between">
+                  <span class="line-through">CNI network policies</span>
+                  <span class="text-red-400 text-xs">bypassed</span>
+                </div>
+                <div class="p-2 rounded bg-red-500/10 text-slate-400 flex justify-between">
+                  <span class="line-through">Local eBPF programs</span>
+                  <span class="text-red-400 text-xs">unloaded</span>
+                </div>
+                <div class="p-2 rounded bg-red-500/10 text-slate-400 flex justify-between">
+                  <span class="line-through">Service mesh sidecar</span>
+                  <span class="text-red-400 text-xs">killed</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex justify-center">
+              <svg class="w-6 h-6 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+              </svg>
+            </div>
+
+            <div class="p-4 rounded-lg border-2 border-emerald-500/50 bg-emerald-500/5">
+              <p class="text-sm text-emerald-400 font-medium mb-3">External Gateway (Neuwerk)</p>
+              <div class="p-2 rounded bg-emerald-500/10 text-white text-sm">
+                Still enforcing — outside the trust boundary
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- What external enforcement achieves -->
+        <div class="mt-6 p-4 rounded-lg bg-slate-800/50 border border-slate-700">
+          <p class="text-sm text-slate-400 mb-3">A hard external deny-by-default boundary:</p>
+          <ul class="space-y-2">
+            {outcomes.map((outcome) => (
+              <li class="flex items-center gap-2 text-sm">
+                <svg class="w-4 h-4 text-emerald-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                </svg>
+                <span class="text-slate-300">{outcome}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

@@ -1,0 +1,227 @@
+---
+title: Backup & Restore
+description: Persistent state boundaries, backup scope, and restore caveats.
+order: 3
+---
+
+This page describes the persistent state that exists in the current repository and what that means
+for backup and restore planning.
+
+The important constraint is that the codebase defines state locations and migration helpers, but it
+does not currently implement:
+
+- a dedicated `backup` command
+- a dedicated `restore` command
+- a documented point-in-time cluster snapshot workflow
+
+Backup and restore are therefore filesystem- and deployment-level procedures built around the state
+the runtime actually persists.
+
+## Local Data Root
+
+Single-node control-plane state defaults to:
+
+- `/var/lib/neuwerk`
+
+That root can be overridden with:
+
+- `NEUWERK_LOCAL_DATA_DIR`
+
+Under that root, the current code persists these local state areas:
+
+```text
+/var/lib/neuwerk/
+  local-policy-store/
+  service-accounts/
+  integrations/
+  sso/
+  audit-store/
+  http-tls/
+  node_id
+  cluster/
+  bootstrap-token
+```
+
+Not every deployment uses every path. The active subset depends on whether the node is running in
+single-node mode or cluster mode.
+
+## What Is Persistent
+
+The current repository persists these categories of control-plane state:
+
+- policy records and the active policy pointer
+- service accounts and service-account tokens
+- integration records
+- SSO provider configuration and the local SSO sealing key
+- audit findings snapshot
+- management HTTP TLS material
+- API auth signing keys
+- TLS intercept CA material
+- cluster TLS material
+- replicated cluster state and Raft metadata
+- node identity and bootstrap tokens
+
+## Single-Node Authoritative State
+
+When cluster mode is disabled, the authoritative control-plane state is local disk state.
+
+Important paths are:
+
+- `local-policy-store/`
+  Contains `index.json`, `active.json`, and per-policy JSON files under `policies/`
+- `service-accounts/`
+  Contains `index.json`, `accounts/*.json`, token index files, and token records
+- `integrations/`
+  Contains `index.json`, integration records under `integrations/`, and a local `secret.key`
+- `sso/`
+  Contains provider records plus a local `secret.key` used to seal sensitive fields
+- `audit-store/snapshot.json`
+  Persists the local audit findings snapshot
+- `http-tls/`
+  Contains management TLS material, local API auth keys in `api-auth.json`, and local TLS
+  intercept CA files
+- `node_id`
+  Persists the node identity used by cluster-capable code paths
+
+For a single-node backup that preserves control-plane continuity, back up the entire local data
+root, not just the policy files.
+
+That matters because policy alone is not enough to preserve:
+
+- API credentials
+- service-account token metadata
+- integration secrets
+- SSO client secrets
+- local CA material
+
+## Cluster Authoritative State
+
+When cluster mode is enabled, the authoritative control-plane state moves into the replicated
+cluster store under:
+
+- `cluster/raft`
+
+That store is a RocksDB-backed Raft state machine with state, log, meta, and snapshot column
+families.
+
+In cluster mode, the current implementation stores or migrates these logical records into replicated
+cluster state:
+
+- policies and the active policy pointer
+- service accounts and service-account tokens
+- integrations
+- SSO providers and SSO state key material
+- API auth keyset
+- management HTTP CA material
+- TLS intercept CA material
+
+This means a cluster backup is not just “copy the policy YAML.” The replicated store is the
+authoritative source for most control-plane configuration.
+
+## Per-Node Local State In Cluster Mode
+
+Even in cluster mode, each node still has local files that matter for recovery.
+
+Important per-node files and directories are:
+
+- `cluster/tls/node.crt`
+- `cluster/tls/node.key`
+- `cluster/tls/ca.crt`
+- `node_id`
+- `bootstrap-token`
+- `audit-store/`
+- `http-tls/`
+
+Not all of those have the same restore priority.
+
+The most important per-node items are:
+
+- `cluster/raft`
+  Authoritative replicated state for the node's local Raft copy
+- `cluster/tls/`
+  Required for steady-state cluster RPC identity on that node
+- `node_id`
+  Must stay aligned with the node's cluster identity
+- `bootstrap-token`
+  Used to open cluster-sealed material such as HTTP CA, TLS intercept CA, integration secrets, and
+  other envelope-protected values
+
+`http-tls/node.crt`, `http-tls/node.key`, and `http-tls/ca.crt` are less authoritative in cluster
+mode than `cluster/raft` and `bootstrap-token`. The current code can regenerate node HTTP
+certificates from replicated HTTP CA state if the cluster state and bootstrap token are intact.
+
+`audit-store/` is local-only operational history. It is useful if you want to preserve findings
+across recovery, but it is not the authoritative source for policy or auth continuity.
+
+## Recommended Backup Scope
+
+For a single-node deployment, back up the full local control-plane root:
+
+```text
+/var/lib/neuwerk/
+```
+
+If you override the root with `NEUWERK_LOCAL_DATA_DIR`, back up that override path instead.
+
+For a cluster deployment, treat backup scope as two layers:
+
+1. Cluster-authoritative state
+   Back up `cluster/raft` on enough nodes to preserve the replicated store.
+2. Per-node recovery material
+   Back up each node's `cluster/tls/`, `node_id`, and `bootstrap-token`, plus any local operational
+   state you care about such as `audit-store/`.
+
+If you want the simplest operational rule, back up the full `/var/lib/neuwerk` tree on every node
+and keep those backups grouped by node identity and timestamp.
+
+## Restore Guidance
+
+The repository does not provide an orchestrated restore flow, so restores should preserve state
+boundaries that the code assumes.
+
+For single-node recovery:
+
+1. Restore the full local data root.
+2. Preserve file ownership and permissions for secret material.
+3. Restart the node and validate `/ready`, `/api/v1/stats`, and the expected HTTP API resources.
+
+For cluster recovery:
+
+1. Restore `cluster/raft` consistently with the node's `cluster/tls/`, `node_id`, and
+   `bootstrap-token`.
+2. Do not mix cluster state from one backup point with TLS or token material from a different
+   backup point unless you are prepared to repair auth and CA state manually.
+3. Restore nodes with their original identity material rather than reusing another node's files.
+4. Validate cluster health, leadership, and replicated API behavior after startup.
+
+The main restore risk is mismatched secret material. If the replicated state contains envelopes that
+were sealed with a token or key you did not restore, the node may be able to start but fail to read
+protected records correctly.
+
+## Sysdump Is Not A Backup
+
+The repository does include a `sysdump` support workflow, but it is intentionally diagnostic rather
+than restorative.
+
+The current sysdump implementation redacts or omits sensitive files such as:
+
+- `bootstrap-token`
+- `node.key`
+- `ca.key`
+- `intercept-ca.key`
+- `secret.key`
+
+That makes sysdump suitable for support collection, not for disaster recovery.
+
+## What The Repo Automates Today
+
+The one recovery-adjacent workflow already implemented is local-to-cluster migration:
+
+- `--cluster-migrate-from-local`
+- `--cluster-migrate-verify`
+
+That path can seed cluster state from existing local policy, service-account, API auth, and CA
+material on a seed node. It is useful when moving from single-node local persistence to replicated
+cluster persistence.
+
+It should not be treated as a general-purpose restore mechanism.

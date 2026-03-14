@@ -1,0 +1,25 @@
+---
+import MarketingLayout from '../layouts/MarketingLayout.astro';
+import Hero from '../components/marketing/Hero.astro';
+import HowItWorks from '../components/marketing/HowItWorks.astro';
+import ProblemSection from '../components/marketing/ProblemSection.astro';
+import OpenSourceSection from '../components/marketing/OpenSourceSection.astro';
+import ComparisonTable from '../components/marketing/ComparisonTable.astro';
+import DNSEnforcement from '../components/marketing/DNSEnforcement.astro';
+import WhoThisIsFor from '../components/marketing/WhoThisIsFor.astro';
+import CTASection from '../components/marketing/CTASection.astro';
+---
+
+<MarketingLayout
+  title="DPDK Egress Gateway for Kubernetes"
+  description="DPDK-enforced, deny-by-default egress control external to your workload nodes. Survives node compromise without TLS inspection. Open source core."
+>
+  <Hero />
+  <HowItWorks />
+  <ProblemSection />
+  <OpenSourceSection />
+  <ComparisonTable />
+  <DNSEnforcement />
+  <WhoThisIsFor />
+  <CTASection />
+</MarketingLayout>

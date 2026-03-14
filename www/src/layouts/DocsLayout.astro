@@ -1,0 +1,61 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import Header from '../components/common/Header.astro';
+import Footer from '../components/common/Footer.astro';
+import DocsSidebar from '../components/docs/DocsSidebar.astro';
+import TableOfContents from '../components/docs/TableOfContents.astro';
+
+interface Props {
+  title: string;
+  description?: string;
+  headings?: { depth: number; slug: string; text: string }[];
+}
+
+const { title, description, headings = [] } = Astro.props;
+const currentPath = Astro.url.pathname.replace(/\/$/, '');
+---
+
+<BaseLayout title={title} description={description}>
+  <Header currentPath={currentPath} />
+  <div class="pt-16 min-h-screen">
+    <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-12">
+      <div class="flex flex-col gap-8 lg:flex-row">
+        <DocsSidebar currentPath={currentPath} />
+
+        <main class="flex-1 min-w-0">
+          <article class="prose prose-invert prose-slate max-w-none">
+            <h1>{title}</h1>
+            {description && <p class="lead text-xl text-slate-400">{description}</p>}
+            <slot />
+          </article>
+        </main>
+
+        <TableOfContents headings={headings} />
+      </div>
+    </div>
+  </div>
+  <Footer />
+</BaseLayout>
+
+<style is:global>
+  /* Ensure code blocks don't overflow */
+  .prose pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  /* Improve heading anchors */
+  .prose h2,
+  .prose h3,
+  .prose h4 {
+    scroll-margin-top: 5rem;
+  }
+
+  /* Lead paragraph styling */
+  .prose .lead {
+    font-size: 1.25rem;
+    line-height: 1.75;
+    color: #94a3b8;
+    margin-top: 0;
+  }
+</style>

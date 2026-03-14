@@ -1,0 +1,155 @@
+---
+import CTAButton from '../common/CTAButton.astro';
+
+const phases = [
+  {
+    num: 1,
+    title: 'Audit Mode',
+    subtitle: 'No enforcement',
+    description: 'Deploy gateway, route traffic through it, observe egress patterns. Build allowlists from real traffic.',
+    duration: 'Start here',
+    color: 'slate',
+  },
+  {
+    num: 2,
+    title: 'Targeted Enforcement',
+    subtitle: 'Low-risk workloads',
+    description: 'Enable enforcement for non-critical workloads. Validate policies work correctly before expanding.',
+    duration: 'Gain confidence',
+    color: 'yellow',
+  },
+  {
+    num: 3,
+    title: 'Deny-by-Default',
+    subtitle: 'Production hardening',
+    description: 'Flip to default-deny for production. Use fail-closed mode for critical environments.',
+    duration: 'Full protection',
+    color: 'emerald',
+  },
+];
+
+const environments = [
+  { name: 'AWS EKS', status: 'Production', integration: 'VPC routing + Security Groups' },
+  { name: 'GCP GKE', status: 'Production', integration: 'VPC routes + Cloud NAT bypass' },
+  { name: 'Azure AKS', status: 'Beta', integration: 'User-defined routes + NSGs' },
+  { name: 'On-prem K8s', status: 'Production', integration: 'BGP route injection' },
+  { name: 'Bare metal', status: 'Production', integration: 'Static routes / CNI integration' },
+];
+---
+
+<section class="py-24 border-t border-slate-800">
+  <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+    <div class="text-center max-w-3xl mx-auto">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">
+        Getting Started
+      </h2>
+      <p class="mt-4 text-lg text-slate-400">
+        Roll out incrementally. Start observing, then enforce.
+      </p>
+    </div>
+
+    <!-- Migration phases -->
+    <div class="mt-12 grid md:grid-cols-3 gap-6">
+      {phases.map((phase) => (
+        <div class={`p-6 rounded-xl border ${
+          phase.color === 'emerald'
+            ? 'bg-emerald-500/5 border-emerald-500/30'
+            : phase.color === 'yellow'
+            ? 'bg-yellow-500/5 border-yellow-500/30'
+            : 'bg-slate-800/50 border-slate-700'
+        }`}>
+          <div class="flex items-center gap-3 mb-4">
+            <div class={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+              phase.color === 'emerald'
+                ? 'bg-emerald-500/20 text-emerald-400'
+                : phase.color === 'yellow'
+                ? 'bg-yellow-500/20 text-yellow-400'
+                : 'bg-slate-700 text-slate-400'
+            }`}>
+              {phase.num}
+            </div>
+            <div>
+              <h3 class="font-semibold text-white">{phase.title}</h3>
+              <p class="text-xs text-slate-500">{phase.subtitle}</p>
+            </div>
+          </div>
+          <p class="text-sm text-slate-400">{phase.description}</p>
+          <div class={`mt-4 text-xs font-medium ${
+            phase.color === 'emerald'
+              ? 'text-emerald-400'
+              : phase.color === 'yellow'
+              ? 'text-yellow-400'
+              : 'text-slate-500'
+          }`}>
+            {phase.duration}
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <!-- Install command -->
+    <div class="mt-12">
+      <h3 class="text-lg font-semibold text-white mb-4">Quick Start</h3>
+      <div class="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+        <div class="px-4 py-2 bg-slate-800/50 border-b border-slate-700 flex items-center justify-between">
+          <span class="text-sm text-slate-400">Install with Helm</span>
+          <button class="text-xs text-slate-500 hover:text-slate-300 transition-colors">Copy</button>
+        </div>
+        <pre class="p-4 text-sm overflow-x-auto"><code class="text-slate-300"><span class="text-slate-500"># Add the Neuwerk Helm repo</span>
+helm repo add neuwerk https://charts.neuwerk.io
+helm repo update
+
+<span class="text-slate-500"># Install in audit mode (no enforcement)</span>
+helm install neuwerk neuwerk/neuwerk \
+  --namespace neuwerk-system \
+  --create-namespace \
+  --set mode=audit
+
+<span class="text-slate-500"># View egress traffic patterns</span>
+kubectl logs -n neuwerk-system -l app=neuwerk-gateway -f</code></pre>
+      </div>
+    </div>
+
+    <!-- Cloud environments -->
+    <div class="mt-12">
+      <h3 class="text-lg font-semibold text-white mb-4">Supported Environments</h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm">
+          <thead>
+            <tr class="border-b border-slate-700">
+              <th class="pb-3 pr-4 font-medium text-slate-400">Environment</th>
+              <th class="pb-3 px-4 font-medium text-slate-400">Status</th>
+              <th class="pb-3 pl-4 font-medium text-slate-400">Integration</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            {environments.map((env) => (
+              <tr>
+                <td class="py-3 pr-4 font-medium text-white">{env.name}</td>
+                <td class="py-3 px-4">
+                  <span class={`text-xs font-medium px-2 py-0.5 rounded ${
+                    env.status === 'Production'
+                      ? 'bg-emerald-500/20 text-emerald-400'
+                      : 'bg-yellow-500/20 text-yellow-400'
+                  }`}>
+                    {env.status}
+                  </span>
+                </td>
+                <td class="py-3 pl-4 text-slate-400">{env.integration}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="mt-12 flex flex-col sm:flex-row gap-4 justify-center">
+      <CTAButton href="/docs/getting-started" variant="primary" size="lg">
+        Read the Docs
+      </CTAButton>
+      <CTAButton href="https://github.com/moolen/neuwerk" variant="secondary" size="lg">
+        View on GitHub
+      </CTAButton>
+    </div>
+  </div>
+</section>

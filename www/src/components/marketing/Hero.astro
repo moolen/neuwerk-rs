@@ -1,0 +1,77 @@
+---
+import CTAButton from '../common/CTAButton.astro';
+---
+
+<section class="relative overflow-hidden py-24 sm:py-24">
+  <!-- Animated gradient blobs that follow mouse -->
+  <div class="absolute inset-0 -z-10 overflow-hidden" id="hero-gradient-container">
+    <div class="absolute inset-0 bg-gradient-to-b from-brand-500/10 via-transparent to-transparent"></div>
+    <div id="gradient-blob-1" class="gradient-blob absolute h-[500px] w-[600px] rounded-full bg-brand-500/20 blur-[120px]"></div>
+    <div id="gradient-blob-2" class="gradient-blob absolute h-[400px] w-[500px] rounded-full bg-violet-500/20 blur-[120px]"></div>
+    <div id="gradient-blob-3" class="gradient-blob absolute h-[300px] w-[700px] rounded-full bg-brand-400/10 blur-[100px]"></div>
+  </div>
+
+  <div class="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
+    <div class="text-center">
+      <h1 class="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-white">
+        The only <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-400 to-violet-400">egress control</span> that survives <span class="text-transparent bg-clip-text bg-gradient-to-r from-violet-400 to-brand-500">container escape</span>
+      </h1>
+      <p class="mt-6 text-xl sm:text-2xl text-slate-400">
+        Enforce outbound traffic outside the compromised node <br class="hidden sm:inline"/> — where attackers can't disable it.
+      </p>
+    </div>
+
+    <p class="mt-8 text-lg sm:text-xl text-slate-300 max-w-3xl mx-auto text-center leading-relaxed">
+      Neuwerk is a lightweight egress gateway that enforces <strong class="text-white">deny-by-default</strong> network policies
+      <strong class="text-white">outside</strong> the trust boundary of your workload, where
+      a dedicated <strong class="text-white">DPDK dataplane</strong> keeps enforcement fast and isolated from compromised nodes.
+    </p>
+
+    <div class="mt-10 flex flex-col sm:flex-row gap-4 justify-center">
+      <CTAButton href="https://github.com/moolen/neuwerk" variant="secondary" size="lg">
+        View on GitHub
+      </CTAButton>
+    </div>
+  </div>
+</section>
+
+<script>
+  // Animated gradient blobs that slowly follow mouse and morph
+  const container = document.getElementById('hero-gradient-container');
+  const blob1 = document.getElementById('gradient-blob-1');
+  const blob2 = document.getElementById('gradient-blob-2');
+  const blob3 = document.getElementById('gradient-blob-3');
+
+  if (container && blob1 && blob2 && blob3) {
+    let mouseX = 0.5;
+    let mouseY = 0.3;
+    let targetX = 0.5;
+    let targetY = 0.3;
+
+    const updateBlobPositions = () => {
+      const rect = container.getBoundingClientRect();
+      const centerX = rect.width * mouseX;
+      const centerY = rect.height * mouseY;
+
+      // Each blob moves slightly differently for organic feel
+      const time = Date.now();
+      blob1.style.transform = `translate(${centerX - 300 + Math.sin(time / 3000) * 30}px, ${centerY - 250 + Math.cos(time / 4000) * 20}px)`;
+      blob2.style.transform = `translate(${centerX + 100 + Math.cos(time / 3500) * 40}px, ${centerY - 100 + Math.sin(time / 4500) * 25}px)`;
+      blob3.style.transform = `translate(${centerX - 350 + Math.sin(time / 4000) * 35}px, ${centerY + 150 + Math.cos(time / 3000) * 30}px)`;
+    };
+
+    const animate = () => {
+      mouseX += (targetX - mouseX) * 0.02;
+      mouseY += (targetY - mouseY) * 0.02;
+      updateBlobPositions();
+      requestAnimationFrame(animate);
+    };
+
+    document.addEventListener('mousemove', (e) => {
+      targetX = e.clientX / window.innerWidth;
+      targetY = e.clientY / window.innerHeight;
+    });
+
+    animate();
+  }
+</script>

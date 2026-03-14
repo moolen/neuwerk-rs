@@ -1,0 +1,42 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import Header from '../components/common/Header.astro';
+import Footer from '../components/common/Footer.astro';
+
+interface Props {
+  title: string;
+  description?: string;
+}
+
+const { title, description } = Astro.props;
+---
+
+<BaseLayout title={title} description={description}>
+  <!-- Diamond pattern background with parallax scroll and fade -->
+  <div class="fixed inset-0 -z-20 overflow-hidden" aria-hidden="true">
+    <div class="absolute inset-0 h-[300vh] bg-diamonds parallax-bg" style="mask-image: linear-gradient(to bottom, white 0%, white 60%, transparent 100%); -webkit-mask-image: linear-gradient(to bottom, white 0%, white 60%, transparent 100%);"></div>
+  </div>
+  <Header currentPath="/" />
+  <main class="pt-16">
+    <slot />
+  </main>
+  <Footer />
+</BaseLayout>
+
+<script>
+  // Subtle parallax effect on scroll
+  const parallaxBg = document.querySelector('.parallax-bg') as HTMLElement;
+  if (parallaxBg) {
+    let ticking = false;
+    window.addEventListener('scroll', () => {
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          const scrollY = window.scrollY;
+          parallaxBg.style.transform = `translateY(${scrollY * -0.15}px)`;
+          ticking = false;
+        });
+        ticking = true;
+      }
+    });
+  }
+</script>

@@ -1,0 +1,65 @@
+---
+import { getCollection } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import Header from '../../components/common/Header.astro';
+import Footer from '../../components/common/Footer.astro';
+
+const posts = (await getCollection('blog')).sort(
+  (a, b) => b.data.date.valueOf() - a.data.date.valueOf()
+);
+const currentPath = '/blog';
+---
+
+<BaseLayout
+  title="Blog"
+  description="Field notes on egress control, DNS-aware policy, and cloud-native security architecture."
+>
+  <Header currentPath={currentPath} />
+  <div class="pt-16 min-h-screen">
+    <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-16">
+      <div class="space-y-4">
+        <p class="text-sm uppercase tracking-[0.2em] text-brand-400">Insights</p>
+        <h1 class="text-4xl sm:text-5xl font-semibold text-white">Neuwerk Blog</h1>
+        <p class="text-lg text-slate-400 max-w-2xl">
+          Deep dives on policy-driven egress, operational pitfalls, and the tech
+          stack that makes a firewall practical at cloud scale.
+        </p>
+      </div>
+
+      <div class="mt-12 space-y-6">
+        {posts.map((post) => (
+          <article class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8 hover:border-slate-700 transition-colors">
+            <div class="flex flex-wrap items-center gap-3 text-sm text-slate-400">
+              <time datetime={post.data.date.toISOString()}>
+                {post.data.date.toLocaleDateString('en-US', {
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                })}
+              </time>
+              <span class="text-slate-600">•</span>
+              <span class="uppercase tracking-[0.18em] text-xs text-slate-500">Egress Journal</span>
+            </div>
+            <h2 class="mt-4 text-2xl sm:text-3xl font-semibold text-white">
+              <a href={`/blog/${post.slug}`} class="hover:text-brand-400 transition-colors">
+                {post.data.title}
+              </a>
+            </h2>
+            <p class="mt-2 text-base text-slate-400">{post.data.subline}</p>
+            <p class="mt-4 text-sm sm:text-base text-slate-300 leading-relaxed">
+              {post.data.teaser}
+            </p>
+            <a
+              href={`/blog/${post.slug}`}
+              class="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-brand-400 hover:text-brand-300 transition-colors"
+            >
+              Read more
+              <span aria-hidden="true">→</span>
+            </a>
+          </article>
+        ))}
+      </div>
+    </div>
+  </div>
+  <Footer />
+</BaseLayout>

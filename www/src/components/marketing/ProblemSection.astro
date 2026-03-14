@@ -1,0 +1,90 @@
+---
+const problems = [
+  {
+    title: 'CNI Policies & Service Mesh',
+    subtitle: '(Cilium, Calico, Istio)',
+    description: 'Great for microsegmentation — but they run on the workload node. Once compromised, an attacker can disable or bypass them.',
+    verdict: 'Inside trust boundary',
+  },
+  {
+    title: 'DNS-Only Filtering',
+    subtitle: '(Route53 Resolver, CoreDNS policies)',
+    description: 'Blocks DNS lookups but not direct IP connections. Trivial to bypass with hardcoded IPs or alternative DNS.',
+    verdict: 'Not real enforcement',
+  },
+  {
+    title: 'Cloud Network Firewalls',
+    subtitle: '(AWS Network Firewall, Azure Firewall)',
+    description: 'External enforcement that works — but expensive, complex to configure, and not portable across cloud vendors or on-prem.',
+    verdict: 'Heavy for the job',
+  },
+  {
+    title: 'Traditional NGFWs',
+    subtitle: '(Palo Alto, Fortinet, Zscaler)',
+    description: 'Built for broad perimeter security, not focused cloud egress. They can do DNS, SNI, and optional TLS inspection — but licensing and throughput-based pricing get expensive fast.',
+    verdict: 'Too expensive at scale',
+  },
+];
+---
+
+<section class="py-24 border-t border-slate-800 bg-slate-800/30">
+  <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+    <div class="text-center max-w-3xl mx-auto">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">
+        Why Existing Solutions Fall Short
+      </h2>
+      <p class="mt-4 text-lg text-slate-400">
+        If you've tried to lock down egress, you've probably hit these walls.
+      </p>
+    </div>
+
+    <div class="mt-12 grid grid-cols-1 md:grid-cols-2 gap-6">
+      {problems.map((problem) => (
+        <div class="p-6 rounded-xl bg-slate-900/50 border border-slate-700">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <h3 class="text-lg font-semibold text-white">{problem.title}</h3>
+              <p class="text-sm text-slate-500">{problem.subtitle}</p>
+            </div>
+            <span class="flex-shrink-0 text-xs font-medium px-2 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/20">
+              {problem.verdict}
+            </span>
+          </div>
+          <p class="mt-4 text-slate-400">{problem.description}</p>
+        </div>
+      ))}
+    </div>
+
+    <!-- External enforcement clarification -->
+    <div class="mt-12 p-6 rounded-xl bg-brand-500/5 border border-brand-500/20">
+      <h3 class="text-lg font-semibold text-brand-400 mb-4">
+        Why isn't node-local enforcement enough?
+      </h3>
+      <div class="grid md:grid-cols-2 gap-6">
+        <div>
+          <p class="text-slate-300">
+            Tools like Cilium, Calico, and sidecar-based controls run <strong class="text-white">on the workload node</strong> — useful when the node is trusted.
+          </p>
+          <p class="mt-3 text-slate-400">
+            But if an attacker gets root, they can tamper with local policy components or route around them. The node is compromised, so controls running there are part of the blast radius.
+          </p>
+        </div>
+        <div>
+          <p class="text-slate-300">
+            Neuwerk uses a DPDK-based gateway on a <strong class="text-white">separate security boundary</strong> — outside the workload's trust boundary.
+          </p>
+          <p class="mt-3 text-slate-400">
+            Compromising a workload node does not give access to the gateway. That separation is what makes default-deny egress realistic even under node compromise.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-8 text-center">
+      <p class="text-lg text-slate-300">
+        Result: most "secure" environments quietly run with
+        <span class="text-red-400 font-semibold"> wide-open egress</span>.
+      </p>
+    </div>
+  </div>
+</section>

@@ -1,0 +1,44 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import { docsNavigation } from '../../data/docsNavigation';
+---
+
+<DocsLayout
+  title="Neuwerk Firewall Documentation"
+  description="A stripped-down documentation scaffold organized around how the firewall is designed, deployed, and operated."
+>
+  <p>
+    This docs scaffold is ready for product documentation, not contributor onboarding. The current
+    hierarchy starts with the system model, then moves into configuration, deployment, operations,
+    interfaces, and reference material.
+  </p>
+
+  <h2 id="recommended-structure">Recommended Structure</h2>
+  <p>
+    Start by filling in the architecture pages first. They establish the dataplane and control-plane
+    split, the supported traffic flows, and the cluster model that the rest of the docs depend on.
+  </p>
+
+  <p>
+    After that, document configuration and deployment together so operators can move from policy
+    concepts into concrete rollout shapes. Operations should come next, followed by interface and
+    reference pages once the main workflows are stable.
+  </p>
+
+  <div class="not-prose mt-10 grid gap-4 md:grid-cols-2">
+    {docsNavigation.map((section) => (
+      <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+        <h3 class="text-lg font-semibold text-white">{section.title}</h3>
+        <ul class="mt-4 space-y-2 text-sm text-slate-300">
+          {section.items.map((item) => (
+            <li>
+              <a href={item.href} class="transition-colors hover:text-white">
+                {item.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </section>
+    ))}
+  </div>
+</DocsLayout>

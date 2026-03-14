@@ -1,0 +1,289 @@
+---
+title: High Availability
+description: Cluster-enabled deployment shape with replicated control-plane state.
+order: 2
+---
+
+This page describes the current cluster-enabled deployment shape implemented in the repository.
+
+In this codebase, “high availability” means:
+
+- multiple firewall nodes
+- cluster mode enabled
+- replicated control-plane state
+- leader-aware management behavior
+- each node still running its own local dataplane
+
+It does not mean the dataplane becomes distributed. Every node continues to enforce traffic
+locally, while the control plane becomes replicated.
+
+## What Changes When HA Is Enabled
+
+Compared with single-node mode, the HA shape adds:
+
+- an OpenRaft-based cluster runtime
+- a replicated cluster state store
+- secure node join
+- cluster CA and node TLS material handling
+- replicated policy, auth, and integration admin surfaces
+- leader-aware HTTP API proxying and cluster fan-out behavior
+
+The rest of the runtime stays familiar:
+
+- each node still runs the management API
+- each node still runs the DNS and service-plane runtime
+- each node still runs its own dataplane runtime
+
+## How Cluster Mode Is Enabled
+
+Cluster mode is enabled implicitly when any cluster-related flag is provided.
+
+Relevant flags are:
+
+- `--cluster-bind`
+- `--cluster-join-bind`
+- `--cluster-advertise`
+- `--join`
+- `--cluster-data-dir`
+- `--node-id-path`
+- `--bootstrap-token-path`
+
+If none of those are set, the runtime stays in single-node mode.
+
+## Default Cluster Addresses And Paths
+
+When cluster mode is enabled and you do not override every setting, the current defaults are:
+
+- main cluster bind: `127.0.0.1:9600`
+- join bind: `cluster-bind + 1`
+- advertise address: same as cluster bind
+- cluster data dir: `/var/lib/neuwerk/cluster`
+- node ID path: `/var/lib/neuwerk/node_id`
+- bootstrap token path: `/var/lib/neuwerk/bootstrap-token`
+
+The main cluster listener and the join listener are separate on purpose. The repository uses one
+for steady-state TLS-protected cluster RPCs and one for one-time bootstrap enrollment.
+
+## Two Startup Patterns
+
+The HA code supports two distinct node roles at startup:
+
+1. a seed node
+2. a joining node
+
+### Seed Node
+
+A node becomes the initial seed when:
+
+- cluster mode is enabled
+- no `--join` seed address is configured
+
+In that case, startup currently does these cluster-specific steps:
+
+- create or load the local node ID
+- initialize the cluster data directory
+- create cluster TLS material if none exists yet
+- start the main cluster server and join server
+- initialize the first Raft membership if the cluster is not already initialized
+- ensure cluster CA material exists
+- ensure cluster API auth key material exists
+
+This means the first node can bootstrap a cluster on its own.
+
+### Joining Node
+
+A node becomes a joiner when:
+
+- cluster mode is enabled
+- `--join <ip:port>` is set
+
+In that case, startup currently does these extra steps before steady-state cluster participation:
+
+1. load the bootstrap token file
+2. generate a CSR for the node's advertised address
+3. send a join request to the seed node's join listener
+4. verify the authenticated join response
+5. persist the returned node certificate, key, and CA material under the cluster data directory
+
+Only after that does the node move onto the normal cluster TLS and Raft path.
+
+## A Single-Node Cluster Is Valid, But Not HA
+
+The implementation allows a cluster-enabled deployment with only one initialized node.
+
+That is useful for:
+
+- bootstrapping the first node
+- validating cluster behavior before additional nodes join
+- migrating from purely local state to replicated state
+
+Operationally, though, a one-node cluster is still a single point of failure. Actual failover only
+appears once additional nodes join and replicated state exists on more than one node.
+
+## Main Cluster Traffic
+
+The main cluster listener hosts the current steady-state cluster RPC surfaces:
+
+- the Raft service
+- policy management RPCs
+- auth management RPCs
+- integration management RPCs
+- optional wiretap streaming RPCs
+
+These run under the cluster TLS configuration and are distinct from the public management HTTPS
+listener.
+
+## Join Traffic
+
+The join listener exists only for bootstrap enrollment.
+
+That path is intentionally separate from the steady-state cluster RPC transport because a joining
+node does not yet have its normal cluster TLS material.
+
+For deployment planning, that means an HA shape needs both:
+
+- the main cluster listener reachable between nodes
+- the join listener reachable from nodes that are still enrolling
+
+## Replicated State Versus Local Enforcement
+
+Cluster mode replicates control-plane state, not packet state.
+
+Each node still:
+
+- keeps its own dataplane flow and NAT state
+- runs its own packet engine
+- evaluates local traffic
+
+Replicated policy still has to be replayed locally on every node. The runtime does that with the
+background policy replication task, which compiles the active policy locally and rebuilds the local
+`PolicyStore`.
+
+This is the key reason HA in this repository is a control-plane replication model, not a shared
+dataplane model.
+
+## Leader-Aware Management API
+
+In HA mode, every node still exposes the management HTTPS API, but the API becomes leader-aware.
+
+For many protected or cluster-backed operations:
+
+- a leader handles the request directly
+- a follower can proxy the request to the leader
+- if no leader is currently known, the API can return `503` with `leader unknown`
+
+This matters operationally because “reachable API” and “cluster currently writable” are not always
+the same thing during elections or cluster disruption.
+
+## Local Persistence In HA Mode
+
+Even in HA mode, each node persists local material on disk.
+
+Important local paths include:
+
+- cluster state store under `/var/lib/neuwerk/cluster`
+- node-local cluster TLS material under `/var/lib/neuwerk/cluster/tls`
+- local control-plane policy store under `/var/lib/neuwerk/local-policy-store`
+- local audit store under `/var/lib/neuwerk/audit-store`
+
+The local policy store still matters because replicated policy is replayed into local disk state as
+well as local in-memory state.
+
+## Readiness In HA Mode
+
+HA mode adds two readiness concerns on top of the ordinary node checks:
+
+- `cluster`
+- `policy_replication`
+
+`cluster` fails when the node does not currently know a leader.
+
+`policy_replication` fails when the cluster has an active policy but the local node has not yet
+replayed that active policy into its own `PolicyStore`.
+
+That means a node can be up enough to answer `/health` while still not being ready for production
+traffic handling.
+
+## Join Retry Behavior
+
+The current join flow uses bounded retry with backoff.
+
+Default retry settings are:
+
+- max attempts: `8`
+- base delay: `250ms`
+- max delay: `8s`
+- jitter: `250ms`
+
+This is the implemented join behavior today. More advanced deployment-specific retry policy is not
+documented separately in the repository yet.
+
+## Minimal HA Shape
+
+The smallest cluster-enabled shape is:
+
+1. one seed node started with cluster flags but without `--join`
+2. at least one additional node started with `--join <seed-join-address>`
+
+A source-derived example shape looks like this conceptually:
+
+```text
+seed:
+  --cluster-bind <seed-ip>:9600
+  --cluster-advertise <seed-ip>:9600
+
+joiner:
+  --cluster-bind <joiner-ip>:9600
+  --cluster-advertise <joiner-ip>:9600
+  --join <seed-ip>:9601
+```
+
+That is intentionally not a full product recipe. It is the current network shape implied by the
+implemented cluster bootstrap and join code.
+
+## What To Check After Bringing Up An HA Cluster
+
+The fastest validation sequence is:
+
+```text
+GET /ready
+GET /api/v1/stats
+POST /api/v1/support/sysdump/cluster
+```
+
+What you want to confirm:
+
+- every node reports a leader
+- followers show low or zero log lag
+- `policy_replication` is ready on all nodes
+- cluster sysdump does not report widespread partial failure
+
+## What This Page Does Not Promise
+
+This page deliberately stays close to implemented behavior.
+
+It does not define:
+
+- a formal SLA
+- a required production node count
+- a full quorum-sizing recommendation
+- cross-region topology guidance
+
+Those are deployment policy decisions that go beyond what the current code explicitly models.
+
+## Practical Reading Guide
+
+If you are tracing HA deployment behavior through the code:
+
+1. Start with `src/controlplane/cluster/config.rs`
+2. Read `src/controlplane/cluster/bootstrap/mod.rs`
+3. Read `src/controlplane/cluster/mod.rs`
+4. Read `src/controlplane/http_api/proxy.rs`
+5. Read `src/controlplane/policy_replication.rs`
+
+## Related Pages
+
+- Single Node
+- Cluster Replication
+- Control Plane
+- Troubleshooting

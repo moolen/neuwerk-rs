@@ -1,0 +1,291 @@
+---
+import CTAButton from '../common/CTAButton.astro';
+
+const tiers = [
+  {
+    name: 'Open Source',
+    tagline: 'Run it yourself. At your own risk.',
+    price: '€0',
+    period: '',
+    description: 'Full enforcement logic. No artificial limits. No vendor lock-in.',
+    valueProps: [
+      'Unlimited deployments',
+      'Full eBPF dataplane',
+      'L3/L4 + DNS filtering',
+      'CLI + declarative config',
+      'Community support (GitHub)',
+    ],
+    notIncluded: [
+      'No HA or state replication',
+      'No audit logs',
+      'No upgrade tooling',
+      'No commercial license',
+    ],
+    cta: 'View on GitHub',
+    ctaHref: 'https://github.com/moolen/neuwerk',
+    highlighted: false,
+    external: true,
+  },
+  {
+    name: 'Production',
+    tagline: 'Same firewall. Safer operations.',
+    price: '€299',
+    period: '/month',
+    description: 'For teams who need it to work at 3am without waking anyone up.',
+    valueProps: [
+      'High availability (multi-node)',
+      'State replication & failover',
+      'Audit logs',
+      'Identity control plane',
+      'Commercial license',
+      'Email support',
+    ],
+    notIncluded: null,
+    cta: 'Contact Engineering',
+    ctaHref: 'mailto:hello@neuwerk.io?subject=Production License Inquiry',
+    highlighted: true,
+    external: false,
+  },
+  {
+    name: 'Enterprise',
+    tagline: 'We\'re on the hook. A little.',
+    price: '€899',
+    period: '/month',
+    description: 'For organizations that need a vendor, not just a GitHub repo.',
+    valueProps: [
+      'Everything in Production',
+      'Priority support & escalation',
+      'LTS releases & backports',
+      'Compliance documentation',
+      'Security architecture docs',
+      'Explicit deprecation policy',
+      'AWS/Azure Gateway LoadBalancer',
+    ],
+    notIncluded: null,
+    cta: 'Contact Sales',
+    ctaHref: 'mailto:hello@neuwerk.io?subject=Enterprise License Inquiry',
+    highlighted: false,
+    external: false,
+  },
+];
+
+const comparisonFeatures = [
+  { name: 'Unlimited deployments', oss: true, prod: true, enterprise: true },
+  { name: 'Core firewall logic', oss: true, prod: true, enterprise: true },
+  { name: 'HA / state replication', oss: false, prod: true, enterprise: true },
+  { name: 'Safe upgrades / rollback', oss: false, prod: true, enterprise: true },
+  { name: 'Audit logs', oss: false, prod: true, enterprise: true },
+  { name: 'Commercial license', oss: false, prod: true, enterprise: true },
+  { name: 'Email support', oss: false, prod: true, enterprise: true },
+  { name: 'Priority support', oss: false, prod: false, enterprise: true },
+  { name: 'LTS releases', oss: false, prod: false, enterprise: true },
+  { name: 'Compliance docs', oss: false, prod: false, enterprise: true },
+];
+---
+
+<section id="pricing" class="py-24 border-t border-slate-800">
+  <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+    <div class="text-center max-w-3xl mx-auto">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">
+        Pay for operations, not enforcement.
+      </h2>
+      <p class="mt-4 text-xl text-slate-400">
+        The firewall logic is free. Commercial tiers add operational safety — not artificial feature locks.
+      </p>
+    </div>
+
+    <!-- Pricing Cards -->
+    <div class="mt-16 grid md:grid-cols-3 gap-8">
+      {tiers.map((tier) => (
+        <div class={`relative flex flex-col p-6 rounded-xl border ${
+          tier.highlighted
+            ? 'bg-slate-900 border-brand-500/50'
+            : 'bg-slate-800 border-slate-700'
+        }`}>
+          {tier.highlighted && (
+            <div class="absolute -top-3 left-1/2 -translate-x-1/2">
+              <span class="px-3 py-1 text-xs font-semibold rounded-full bg-brand-500 text-white">
+                Most Teams
+              </span>
+            </div>
+          )}
+
+          <div class="text-center">
+            <h3 class={`text-lg font-semibold ${tier.highlighted ? 'text-brand-400' : 'text-white'}`}>
+              {tier.name}
+            </h3>
+            <p class="mt-1 text-sm text-slate-500">{tier.tagline}</p>
+          </div>
+
+          <div class="mt-6 text-center">
+            <span class="text-4xl font-bold text-white">{tier.price}</span>
+            <span class="text-slate-400">{tier.period}</span>
+          </div>
+
+          <p class="mt-4 text-sm text-slate-400 text-center min-h-[40px]">
+            {tier.description}
+          </p>
+
+          <div class="mt-6 flex-grow">
+            <ul class="space-y-2.5">
+              {tier.valueProps.map((feature) => (
+                <li class="flex items-start gap-2.5">
+                  <svg class={`w-4 h-4 mt-0.5 flex-shrink-0 ${tier.highlighted ? 'text-brand-400' : 'text-emerald-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span class="text-sm text-slate-300">{feature}</span>
+                </li>
+              ))}
+            </ul>
+
+            {tier.notIncluded && (
+              <div class="mt-4 pt-4 border-t border-slate-700/50">
+                <ul class="space-y-2">
+                  {tier.notIncluded.map((item) => (
+                    <li class="flex items-start gap-2.5">
+                      <svg class="w-4 h-4 mt-0.5 flex-shrink-0 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                      <span class="text-sm text-slate-500">{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+
+          <div class="mt-8">
+            <CTAButton
+              href={tier.ctaHref}
+              variant={tier.highlighted ? 'primary' : 'secondary'}
+              size="md"
+              class="w-full"
+              target={tier.external ? '_blank' : undefined}
+              rel={tier.external ? 'noopener noreferrer' : undefined}
+            >
+              {tier.cta}
+            </CTAButton>
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <!-- Philosophy callout -->
+    <div class="mt-16 p-6 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
+      <div class="max-w-3xl mx-auto">
+        <h3 class="text-lg font-semibold text-emerald-400 text-center">Free doesn't mean crippled. It means unsupported.</h3>
+        <p class="mt-3 text-slate-400 text-center">
+          OSS users can and do run production workloads — at their own risk.
+          Commercial tiers don't unlock features. They unlock operational guarantees,
+          audit trails, and someone to call when things break.
+        </p>
+      </div>
+    </div>
+
+    <!-- Comparison Table -->
+    <div class="mt-16">
+      <h3 class="text-xl font-semibold text-white text-center mb-8">Feature Comparison</h3>
+      <div class="overflow-x-auto">
+        <table class="w-full">
+          <thead>
+            <tr class="border-b border-slate-700">
+              <th class="py-4 px-4 text-left text-sm font-medium text-slate-400">Feature</th>
+              <th class="py-4 px-4 text-center text-sm font-medium text-slate-400">OSS</th>
+              <th class="py-4 px-4 text-center text-sm font-medium text-brand-400">Production</th>
+              <th class="py-4 px-4 text-center text-sm font-medium text-slate-400">Enterprise</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            {comparisonFeatures.map((feature) => (
+              <tr class="hover:bg-slate-800/30">
+                <td class="py-3 px-4 text-sm text-slate-300">{feature.name}</td>
+                <td class="py-3 px-4 text-center">
+                  {feature.oss ? (
+                    <svg class="w-5 h-5 mx-auto text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg class="w-5 h-5 mx-auto text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  )}
+                </td>
+                <td class="py-3 px-4 text-center bg-brand-500/5">
+                  {feature.prod ? (
+                    <svg class="w-5 h-5 mx-auto text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg class="w-5 h-5 mx-auto text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  )}
+                </td>
+                <td class="py-3 px-4 text-center">
+                  {feature.enterprise ? (
+                    <svg class="w-5 h-5 mx-auto text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg class="w-5 h-5 mx-auto text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- What we don't do -->
+    <div class="mt-16 p-6 rounded-xl bg-slate-800/30 border border-slate-700">
+      <div class="max-w-3xl mx-auto text-center">
+        <h3 class="text-lg font-semibold text-white">What we don't charge for</h3>
+        <p class="mt-3 text-slate-400">
+          No per-node fees. No traffic metering. No rule limits. No "contact sales for pricing."
+          Your security bill shouldn't scale with your infrastructure.
+        </p>
+        <div class="mt-6 flex flex-wrap justify-center gap-3">
+          <span class="px-3 py-1 text-sm rounded-full bg-slate-700/50 text-slate-400 border border-slate-600">No traffic charges</span>
+          <span class="px-3 py-1 text-sm rounded-full bg-slate-700/50 text-slate-400 border border-slate-600">No node limits</span>
+          <span class="px-3 py-1 text-sm rounded-full bg-slate-700/50 text-slate-400 border border-slate-600">No rule caps</span>
+          <span class="px-3 py-1 text-sm rounded-full bg-slate-700/50 text-slate-400 border border-slate-600">No cluster fees</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- FAQ-style clarifications -->
+    <div class="mt-16 grid md:grid-cols-2 gap-8">
+      <div class="p-6 rounded-xl bg-slate-800/30 border border-slate-700">
+        <h4 class="font-semibold text-white">Why pay for Production?</h4>
+        <p class="mt-2 text-sm text-slate-400">
+          OSS works. Production doesn't wake you up at 3am. You're paying for HA failover,
+          safe rollbacks, and audit logs that satisfy your compliance team — not for the firewall itself.
+        </p>
+      </div>
+      <div class="p-6 rounded-xl bg-slate-800/30 border border-slate-700">
+        <h4 class="font-semibold text-white">Why pay for Enterprise?</h4>
+        <p class="mt-2 text-sm text-slate-400">
+          Enterprise buys you a vendor relationship. Priority support, LTS releases, compliance docs,
+          and someone on the hook for security advisories. Procurement wants a contract, not a GitHub star.
+        </p>
+      </div>
+      <div class="p-6 rounded-xl bg-slate-800/30 border border-slate-700">
+        <h4 class="font-semibold text-white">Can I run OSS in production?</h4>
+        <p class="mt-2 text-sm text-slate-400">
+          Yes. Many do. The enforcement logic is identical. You just don't get HA, audit trails,
+          or anyone to call. If your team can operate it, the OSS version is production-ready.
+        </p>
+      </div>
+      <div class="p-6 rounded-xl bg-slate-800/30 border border-slate-700">
+        <h4 class="font-semibold text-white">What about the commercial license?</h4>
+        <p class="mt-2 text-sm text-slate-400">
+          Production and Enterprise include a commercial license for internal use and
+          revenue-generating services. Many companies pay just for this — it removes legal ambiguity.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>

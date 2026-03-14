@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <defs>
+    <linearGradient id="shield" x1="6" y1="5" x2="26" y2="27" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6C8CFF" />
+      <stop offset="1" stop-color="#A78BFA" />
+    </linearGradient>
+  </defs>
+  <path
+    d="M16 29C16 29 25 24 25 17.25V8.5L16 5L7 8.5V17.25C7 24 16 29 16 29Z"
+    fill="url(#shield)"
+  />
+  <path
+    d="M16 24C16 24 21.25 20.9 21.25 16.55V11.95L16 9.9L10.75 11.95V16.55C10.75 20.9 16 24 16 24Z"
+    fill="white"
+  />
+</svg>

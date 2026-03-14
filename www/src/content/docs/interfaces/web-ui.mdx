@@ -1,0 +1,239 @@
+---
+title: Web UI
+description: Shipped management UI, its page model, and how it talks to the control plane.
+order: 2
+---
+
+This repository includes a real management web UI under `ui/`.
+
+The current UI is:
+
+- a React application
+- built with Vite
+- compiled into `ui/dist`
+- embedded into the Rust HTTP server and served from the same HTTPS listener as the control-plane
+  API
+
+It is not a separate SPA deployment tier or a separate backend-for-frontend service.
+
+## How The UI Is Served
+
+The control-plane HTTP server embeds `ui/dist` directly and serves it from the main HTTPS router.
+
+Current behavior:
+
+- API routes are mounted under `/api/v1`
+- `/health` and `/ready` stay as explicit runtime endpoints
+- all other unmatched GET and HEAD requests fall back to the UI handler
+- unknown client-side routes fall back to `index.html`
+
+That means the UI uses browser history navigation while still being served by the same Rust
+process.
+
+## Build And Packaging Shape
+
+The frontend source lives under:
+
+- `ui/`
+
+The built artifact lives under:
+
+- `ui/dist/`
+
+The runtime packaging scripts also expect `ui/dist` to exist when producing staged runtime
+artifacts.
+
+Operationally, that means the management UI currently ships as part of the firewall runtime image,
+not as a separately versioned deployable.
+
+## Authentication Model
+
+The UI talks directly to the control-plane HTTP API and uses the same auth model as the API.
+
+Current login paths are:
+
+- token login through `POST /api/v1/auth/token-login`
+- SSO discovery through `GET /api/v1/auth/sso/providers`
+- SSO start and callback through `/api/v1/auth/sso/...`
+
+After login, the UI uses:
+
+- `GET /api/v1/auth/whoami`
+- cookie-backed authenticated requests with `credentials: same-origin`
+
+The frontend does not maintain a long-lived bearer-token cache in browser storage. Token login is a
+bootstrap step into the server-managed auth session model.
+
+## Navigation Model
+
+The current top-level pages are:
+
+- Dashboard
+- Policies
+- Integrations
+- Wiretap
+- Audit
+- DNS Cache
+- Service Accounts
+- Settings
+
+Navigation is client-side and path-based:
+
+- `/`
+  Dashboard
+- `/policies`
+- `/integrations`
+- `/wiretap`
+- `/audit`
+- `/dns`
+- `/service-accounts`
+- `/settings`
+
+If the browser lands on an unknown path, the UI currently falls back to the dashboard route.
+
+## Current Workflows
+
+The UI already implements concrete workflows for the current control-plane surface.
+
+### Dashboard
+
+The dashboard reads the runtime stats snapshot and renders a status-oriented summary from:
+
+- `GET /api/v1/stats`
+
+This is the compact operational landing page for dataplane, DNS, and cluster health signals.
+
+### Policies
+
+The policies page is the largest authoring surface in the UI today.
+
+It currently supports:
+
+- listing saved policy records
+- loading a selected policy into the editor
+- creating and deleting policy records
+- editing source groups, rules, DNS matchers, destination matchers, TLS metadata, and TLS
+  interception HTTP matchers
+- validating and submitting policy changes through the HTTP API
+
+The editor is backed by the same aggregate policy model described in the policy documentation and
+uses the control-plane API directly.
+
+### Integrations
+
+The integrations page currently manages Kubernetes integrations.
+
+It supports:
+
+- listing integrations
+- selecting an integration by name
+- creating a new integration
+- editing the API server URL, CA certificate, and service-account token
+- deleting the selected integration
+
+At the moment this is a concrete Kubernetes integration UI, not a generic multi-provider
+integration registry UI.
+
+### Wiretap
+
+The wiretap page consumes the live stream API and exposes:
+
+- filter controls
+- pause and clear controls
+- live-event view
+- aggregated-flow view
+
+The page also checks performance-mode state and disables the workflow when performance mode is not
+available.
+
+### Audit
+
+The audit page reads persisted findings and exposes:
+
+- filters for finding type, source group, and policy ID
+- partial-result messaging for cluster fan-out failures
+- node error visibility when not every node answers
+
+Like wiretap, this page is aware of performance-mode availability.
+
+### DNS Cache
+
+The DNS cache page is a smaller diagnostic workflow around:
+
+- `GET /api/v1/dns-cache`
+
+It exposes a refresh path and client-side filtering over the returned grouped cache entries.
+
+### Service Accounts
+
+The service-accounts page supports:
+
+- listing service accounts
+- creating accounts
+- editing accounts
+- disabling accounts
+- listing tokens for a selected account
+- minting new tokens
+- revoking tokens
+
+This is currently the main UI workflow for minting API credentials for automation.
+
+### Settings
+
+The settings page currently bundles several admin workflows:
+
+- performance-mode status and toggle
+- TLS intercept CA upload, generation, and certificate download
+- support bundle download
+- SSO provider create, update, delete, and test flows
+
+## Role Handling
+
+The UI derives a simple role view from the authenticated user record:
+
+- `admin`
+- `readonly`
+
+Today, the visible role-based navigation difference is that `Service Accounts` is hidden for
+readonly users.
+
+The API remains the real authorization boundary. The UI only adjusts navigation and page access
+affordances based on the returned role data.
+
+## API Coupling
+
+The UI uses relative API requests rooted at:
+
+- `/api/v1`
+
+That keeps the browser on the same origin as the management HTTPS server and avoids a separate API
+base configuration layer for normal deployments.
+
+In practice, the UI is tightly coupled to the current HTTP API surface:
+
+- auth
+- stats
+- policies
+- integrations
+- service accounts
+- audit findings
+- wiretap stream
+- DNS cache
+- TLS intercept settings
+- performance mode
+- SSO settings
+- support sysdump
+
+## Current Limitations
+
+A few implementation boundaries are worth calling out explicitly:
+
+- the UI is compiled from `ui/dist` and embedded into the Rust server rather than loaded from a
+  separately deployed static origin
+- routing is intentionally small and page-oriented; there is no server-side rendering layer
+- admin behavior still depends on API-side authorization; the frontend role model is only a
+  convenience layer
+- the UI is hand-wired to the current API surface rather than generated from OpenAPI
+
+That makes the current UI a practical management console for the existing API, not a separately
+abstracted product surface.

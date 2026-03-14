@@ -1,0 +1,432 @@
+---
+title: Configuration Schema
+description: Source-derived reference for the firewall policy and configuration payloads.
+order: 1
+---
+
+This page documents the current policy configuration schema as implemented in the Rust control
+plane. The authoritative machine-readable source is the generated OpenAPI document at
+`/openapi/firewall-v1.json`, especially these components:
+
+- `OpenApiPolicyUpsertRequest`
+- `PolicyConfig`
+- `SourceGroupConfig`
+- `SourcesConfig`
+- `RuleConfig`
+- `RuleMatchConfig`
+- `TlsMatchConfig`
+
+## Scope
+
+The current configuration schema is the payload accepted by the policy management API:
+
+- `POST /api/v1/policies`
+- `PUT /api/v1/policies/:id`
+- `PUT /api/v1/policies/by-name/:name`
+
+Those endpoints accept a request envelope with three fields:
+
+```json
+{
+  "mode": "enforce",
+  "name": "office-egress",
+  "policy": {
+    "default_policy": "deny",
+    "source_groups": []
+  }
+}
+```
+
+- `mode` controls whether the policy is `disabled`, `audit`, or `enforce`
+- `name` is optional metadata for lookup by stable name
+- `policy` is the actual firewall policy object documented below
+
+## Top-Level PolicyConfig
+
+`PolicyConfig` has two top-level fields:
+
+```json
+{
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "branch-office",
+      "sources": {
+        "cidrs": ["10.10.0.0/16"]
+      },
+      "rules": []
+    }
+  ]
+}
+```
+
+- `default_policy`
+  Accepted as a policy string such as `allow` or `deny`
+  Omit it to leave the default policy unset in the config object
+- `source_groups`
+  Ordered list of source-group definitions
+  Omit or leave empty to create a policy with no source groups
+
+## SourceGroupConfig
+
+Each source group defines a source population and the rules applied to that population.
+
+```json
+{
+  "id": "branch-office",
+  "priority": 100,
+  "sources": {
+    "cidrs": ["10.10.0.0/16"],
+    "ips": ["10.10.1.20"]
+  },
+  "rules": [],
+  "default_action": "deny"
+}
+```
+
+Fields:
+
+- `id`
+  Required stable identifier for the source group
+- `priority`
+  Optional explicit evaluation priority
+  If omitted, the control plane falls back to list order
+- `sources`
+  Required source selector block
+- `rules`
+  Optional list of rule definitions
+- `default_action`
+  Optional fallback action within the source group
+
+## SourcesConfig
+
+`sources` can be populated from static IP material, Kubernetes selectors, or both.
+
+```json
+{
+  "cidrs": ["10.10.0.0/16"],
+  "ips": ["10.10.1.20"],
+  "kubernetes": [
+    {
+      "integration": "cluster-a",
+      "pod_selector": {
+        "namespace": "payments",
+        "match_labels": {
+          "app": "api"
+        }
+      }
+    }
+  ]
+}
+```
+
+Fields:
+
+- `cidrs`
+  List of IPv4 CIDR strings
+- `ips`
+  List of individual IPv4 strings
+- `kubernetes`
+  List of Kubernetes-backed dynamic source selectors
+
+Validation semantics:
+
+- The effective source set must not be empty.
+- Each Kubernetes source must set exactly one of `pod_selector` or `node_selector`.
+- `integration` is required and must refer to an existing Kubernetes integration when the policy is
+  written through the HTTP API.
+
+### Kubernetes Source Selectors
+
+Pod selector form:
+
+```json
+{
+  "integration": "cluster-a",
+  "pod_selector": {
+    "namespace": "payments",
+    "match_labels": {
+      "app": "api"
+    }
+  }
+}
+```
+
+Node selector form:
+
+```json
+{
+  "integration": "cluster-a",
+  "node_selector": {
+    "match_labels": {
+      "topology.kubernetes.io/zone": "eu-central-1a"
+    }
+  }
+}
+```
+
+## RuleConfig
+
+Each rule combines metadata, an action, an optional mode override, and a `match` block.
+
+```json
+{
+  "id": "allow-dns",
+  "priority": 10,
+  "action": "allow",
+  "mode": "enforce",
+  "match": {
+    "proto": "udp",
+    "dst_ports": [53]
+  }
+}
+```
+
+Fields:
+
+- `id`
+  Required rule identifier
+- `priority`
+  Optional explicit evaluation priority
+- `action`
+  Policy string such as `allow` or `deny`
+- `mode`
+  Optional rule-local mode, either `audit` or `enforce`
+- `match`
+  Required `RuleMatchConfig`
+
+## RuleMatchConfig
+
+The `match` object combines L3, L4, ICMP, DNS, and TLS selectors.
+
+```json
+{
+  "dst_cidrs": ["203.0.113.0/24"],
+  "dst_ips": ["203.0.113.20"],
+  "dns_hostname": "*.example.com",
+  "proto": "tcp",
+  "src_ports": ["1024-65535"],
+  "dst_ports": [443],
+  "icmp_types": [],
+  "icmp_codes": [],
+  "tls": {
+    "mode": "metadata",
+    "sni": {
+      "exact": ["api.example.com"]
+    }
+  }
+}
+```
+
+Fields:
+
+- `dst_cidrs`
+  Destination CIDR strings
+- `dst_ips`
+  Destination IPv4 strings
+- `dns_hostname`
+  Optional hostname matcher for DNS policy compilation
+- `proto`
+  Protocol selector
+- `src_ports`
+  Source port selectors
+- `dst_ports`
+  Destination port selectors
+- `icmp_types`
+  ICMP type selectors
+- `icmp_codes`
+  ICMP code selectors
+- `tls`
+  Optional TLS and HTTP matcher block
+
+### ProtoValue
+
+`proto` accepts either a string or a numeric protocol value.
+
+Examples:
+
+```json
+"proto": "tcp"
+```
+
+```json
+"proto": 6
+```
+
+### PortSpec
+
+Port arrays accept either integers or strings.
+
+Examples:
+
+```json
+"dst_ports": [443, 8443]
+```
+
+```json
+"dst_ports": ["80-81", "10000-10100"]
+```
+
+Validation semantics:
+
+- TLS matchers require `proto` to resolve to `tcp` or `any`.
+- ICMP type and code filters require `proto` to resolve to `icmp` or `any`.
+- ICMP rules cannot use source or destination port filters.
+- If `proto` resolves to `icmp` and no ICMP types or codes are set, the compiler injects a
+  default set of common ICMP controls.
+
+## TLS Matchers
+
+TLS matching lives under `match.tls`.
+
+```json
+{
+  "mode": "intercept",
+  "sni": {
+    "exact": ["api.example.com"],
+    "regex": ".*\\.example\\.com"
+  },
+  "server_dn": "CN=api.example.com,O=Example Corp",
+  "server_san": ["api.example.com", "www.example.com"],
+  "server_cn": "api.example.com",
+  "fingerprint_sha256": [
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  ],
+  "trust_anchors_pem": [
+    "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+  ],
+  "tls13_uninspectable": "deny",
+  "http": {
+    "request": {
+      "methods": ["GET"],
+      "path": {
+        "prefix": ["/admin"]
+      }
+    }
+  }
+}
+```
+
+Fields:
+
+- `mode`
+  `metadata` or `intercept`
+- `sni`
+  TLS name matcher
+- `server_dn`
+  Raw distinguished-name string match
+- `server_san`
+  TLS name matcher for SAN values
+- `server_cn`
+  TLS name matcher for CN values
+- `fingerprint_sha256`
+  List of certificate fingerprints
+- `trust_anchors_pem`
+  PEM-encoded trust anchors
+- `tls13_uninspectable`
+  `allow` or `deny`
+- `http`
+  Optional HTTP request and response matcher block for intercepted traffic
+
+### TlsNameMatchConfig
+
+TLS name matchers accept three encodings:
+
+String form:
+
+```json
+"sni": ".*\\.example\\.com"
+```
+
+List form:
+
+```json
+"server_san": ["api.example.com", "www.example.com"]
+```
+
+Object form:
+
+```json
+"server_cn": {
+  "exact": ["api.example.com"],
+  "regex": ".*\\.example\\.com"
+}
+```
+
+## HTTP Matchers Inside TLS
+
+When `tls.http` is present, at least one of `request` or `response` must be set.
+
+### HttpRequestPolicyConfig
+
+```json
+{
+  "host": {
+    "exact": ["api.example.com"]
+  },
+  "methods": ["GET", "POST"],
+  "path": {
+    "prefix": ["/v1/"]
+  },
+  "query": {
+    "keys_present": ["tenant"],
+    "key_values_exact": {
+      "env": ["prod"]
+    }
+  },
+  "headers": {
+    "require_present": ["x-request-id"],
+    "exact": {
+      "x-env": ["prod"]
+    }
+  }
+}
+```
+
+Fields:
+
+- `host`
+  Exact and/or regex hostname matcher
+- `methods`
+  HTTP methods, normalized to uppercase by the compiler
+- `path`
+  Exact, prefix, and/or regex path matcher
+- `query`
+  Presence, exact value, and regex value matching for query params
+- `headers`
+  Presence, deny-presence, exact, and regex matching for headers
+
+### HttpResponsePolicyConfig
+
+```json
+{
+  "headers": {
+    "deny_present": ["set-cookie"]
+  }
+}
+```
+
+This currently supports response-header matching only.
+
+## Field Encoding Notes
+
+- Most optional fields can be omitted entirely.
+- Arrays default to empty arrays when omitted.
+- Several matcher enums are intentionally untagged, so the same field may accept either a scalar,
+  an array, or an object depending on context.
+- The OpenAPI artifact captures those unions explicitly and should be treated as the authoritative
+  machine-readable form.
+
+## Compatibility Notes
+
+This schema reflects the current Rust implementation, not a versioned long-term compatibility
+contract yet.
+
+Today, the safest assumptions are:
+
+- new optional fields may be added
+- matcher validation may tighten as unsupported combinations are rejected earlier
+- write-time validation is authoritative over docs prose
+
+If you need exact field shapes for tooling, consume `/openapi/firewall-v1.json` and pin to a tested
+firewall version rather than relying only on this page.

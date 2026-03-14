@@ -1,0 +1,118 @@
+---
+title: Glossary
+description: Stable definitions for repository-specific terminology.
+order: 3
+---
+
+This page collects the main project-specific terms used throughout the documentation.
+
+The definitions here are tied to the current implementation, not to aspirational product language.
+
+## Active Policy
+
+The currently selected stored policy record that is being replayed into the local `PolicyStore` and
+used for enforcement. In storage terms, this is the policy referenced by the active policy pointer.
+
+## Audit Finding
+
+A persisted summary of repeated deny- or auth-related events, stored by the control plane and
+queryable through the audit API. Audit findings are aggregated records, not raw packet captures.
+
+## Bootstrap Token
+
+A local token file used during cluster bootstrap and for opening some cluster-sealed secret
+material. In cluster mode, losing the bootstrap token can break access to envelope-protected state.
+
+## Cluster Mode
+
+The runtime shape where the control plane uses the replicated Raft-backed cluster store instead of
+relying only on local disk state for authoritative control-plane records.
+
+## Control Plane
+
+The part of the system that owns management APIs, auth, DNS proxying, cluster replication,
+integration state, audit storage, wiretap aggregation, and service-plane features such as active
+TLS interception.
+
+## Dataplane
+
+The packet-processing side of the firewall. It owns flow handling, policy evaluation, NAT,
+encapsulation, and packet forwarding. It does not own DNS parsing, SSO, or management HTTP logic.
+
+## HTTP CA
+
+The certificate authority used to mint or validate the management HTTPS server certificate
+material. This is separate from the TLS intercept CA.
+
+## Integration
+
+A control-plane record that connects the firewall to an external system used for dynamic source
+resolution or lifecycle coordination. The currently implemented integration kind is Kubernetes.
+
+## Local Policy Store
+
+The on-disk repository under `local-policy-store/` that persists policy records, policy metadata,
+and the active policy pointer on a node.
+
+## Performance Mode
+
+A control-plane setting that gates certain heavier observability and inspection workflows. In the
+current UI and operational docs, wiretap and audit workflows explicitly depend on it.
+
+## Policy Record
+
+A stored policy object with an ID, creation timestamp, optional name, top-level policy mode, and
+the full policy document payload.
+
+## Policy Replication
+
+The background process that watches replicated cluster policy state, compiles the active policy
+locally, rebuilds the node's `PolicyStore`, and updates readiness once enforcement state is caught
+up.
+
+## PolicyStore
+
+The local compiled policy state used by the runtime for actual packet and service-plane evaluation.
+This is the enforcement-ready product, not just the raw stored policy document.
+
+## Rule Mode
+
+The per-rule mode inside a policy rule, currently `enforce` or `audit`. This is different from the
+top-level policy mode and controls whether a rule participates in the enforce path or the audit
+path.
+
+## Seed Node
+
+The first cluster-enabled node that bootstraps cluster state without joining another existing node.
+It initializes cluster membership and can seed replicated state.
+
+## Service Account
+
+A control-plane identity used for API automation. Service accounts can mint JWTs for machine access
+to the HTTP API and can carry roles such as `admin` or `readonly`.
+
+## Service Plane
+
+The control-plane runtime path that handles service-facing flows which need higher-layer
+processing, such as DNS proxying and active TLS interception, without pushing that logic into the
+dataplane packet engine.
+
+## Source Group
+
+A policy structure that binds a set of traffic sources to ordered rules and an optional
+group-specific default action. Source groups are the main unit of policy intent.
+
+## SSO Provider
+
+A configured single sign-on identity provider record used by the HTTP auth flow. The current code
+supports Google, GitHub, and generic OIDC providers.
+
+## TLS Intercept CA
+
+The certificate authority used for active TLS interception. It signs forged leaf certificates for
+intercepted flows and is distinct from both the cluster TLS CA and the management HTTP CA.
+
+## Wiretap
+
+The live traffic observation surface exposed by the control plane. Wiretap streams event data
+derived from dataplane observations and can fan out across the cluster when enabled.

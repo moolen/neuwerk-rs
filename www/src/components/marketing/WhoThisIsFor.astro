@@ -1,0 +1,70 @@
+---
+const personas = [
+  {
+    title: 'Platform Engineers',
+    description: 'Building internal developer platforms who need egress controls that don\'t break every deploy',
+  },
+  {
+    title: 'Security Teams',
+    description: 'Who need demonstrable egress controls without slowing platform teams down',
+  },
+  {
+    title: 'Regulated Industries',
+    description: 'Fintech, healthcare, and others who need audit-ready egress enforcement',
+  },
+  {
+    title: 'Cloud-Native Teams',
+    description: 'Replacing Squid proxies, egress gateways, or home-grown solutions',
+  },
+];
+
+const notFor = [
+  'Teams who need deep packet inspection or IDS/IPS',
+  'Environments where TLS inspection is already working well',
+  'Organizations that need user-identity-aware egress policies',
+  'Non-Kubernetes workloads (VM-only support is planned)',
+];
+---
+
+<section class="py-24 border-t border-slate-800 bg-slate-800/30">
+  <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+    <div class="text-center max-w-3xl mx-auto">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">
+        Who This Is For
+      </h2>
+    </div>
+
+    <div class="mt-12 grid grid-cols-1 sm:grid-cols-2 gap-6">
+      {personas.map((persona) => (
+        <div class="p-6 rounded-xl bg-slate-900/50 border border-slate-700">
+          <div class="flex items-start gap-4">
+            <div class="flex-shrink-0 w-8 h-8 rounded-full bg-brand-500/20 flex items-center justify-center">
+              <svg class="w-4 h-4 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold text-white">{persona.title}</h3>
+              <p class="mt-2 text-slate-400">{persona.description}</p>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <!-- What this is NOT for -->
+    <div class="mt-12 p-6 rounded-xl bg-slate-900/30 border border-slate-700">
+      <h3 class="text-lg font-semibold text-white mb-4">Not the right fit if:</h3>
+      <ul class="grid sm:grid-cols-2 gap-3">
+        {notFor.map((item) => (
+          <li class="flex items-start gap-2 text-sm">
+            <svg class="w-4 h-4 text-slate-500 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            <span class="text-slate-400">{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  </div>
+</section>

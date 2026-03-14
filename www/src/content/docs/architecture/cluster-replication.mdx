@@ -1,0 +1,167 @@
+---
+title: Cluster Replication
+description: Raft-backed control-plane replication and node join behavior.
+order: 5
+---
+
+This page describes the cluster layer that can be enabled on top of the local control plane.
+
+Cluster replication in this repository is not a separate product tier. It is an extension of the
+control plane that adds replicated state, leader-aware management behavior, and secure node join.
+
+## What The Cluster Layer Replicates
+
+The cluster runtime exists to keep control-plane state consistent across nodes.
+
+Current replicated or cluster-managed responsibilities include:
+
+- active policy records and policy activation state
+- API auth key material
+- integration state
+- cluster CA and node TLS material distribution
+- cluster-aware wiretap fan-out when enabled
+
+The dataplane is not directly replicated. Each node keeps its own local dataplane runtime and
+rebuilds local in-memory enforcement state from replicated control-plane data.
+
+## Runtime Shape
+
+When cluster mode is enabled, startup creates a `ClusterRuntime` before the main control-plane and
+dataplane runtimes are fully assembled.
+
+That runtime contains:
+
+- the local OpenRaft node
+- the cluster state store
+- the main cluster RPC listener
+- the separate join listener
+
+The cluster runtime is then handed into the control plane so policy replay, auth loading, and
+leader-aware HTTP behavior can attach to it.
+
+## Two Network Surfaces
+
+The implementation uses two distinct cluster listeners:
+
+1. the main cluster bind address
+2. the join bind address
+
+The main cluster listener serves the long-lived TLS-protected RPC surfaces used after a node is a
+member of the cluster.
+
+The join listener serves the bootstrap path used by a new node before it has normal cluster TLS
+credentials.
+
+This split keeps one-time enrollment separate from steady-state replication traffic.
+
+## Main Cluster RPCs
+
+The main cluster server currently hosts:
+
+- the Raft service
+- policy management RPCs
+- auth management RPCs
+- integration management RPCs
+- optional wiretap streaming RPCs
+
+Those services are exposed from the cluster bootstrap path and run under the cluster TLS
+configuration.
+
+Operationally, that means cluster replication is not only about consensus log exchange. It also
+acts as the node-to-node transport for several control-plane admin functions.
+
+## Node Join And Bootstrap
+
+Joining a cluster is a separate bootstrap flow.
+
+The join path currently does these things:
+
+1. load a bootstrap token from the configured token file
+2. build a CSR for the joining node's advertised address
+3. send a join request to the seed node on the join listener
+4. verify the authenticated join response
+5. persist the signed node certificate, private key, and CA certificate locally
+
+The join client uses retry and backoff settings from the cluster config, and the result is written
+under the cluster data directory so the node can move onto the normal TLS-protected RPC path.
+
+## Single-Node Bootstrap Versus Joining An Existing Cluster
+
+The repository supports two startup patterns.
+
+If no join seed is configured:
+
+- the local Raft node initializes itself
+- it creates the initial cluster membership
+- it ensures cluster CA material exists
+- it ensures the cluster API auth keyset exists
+
+If a join seed is configured:
+
+- the node does not self-initialize
+- it performs the join flow against the seed
+- it waits to participate using the credentials returned by the cluster
+
+That distinction is important because “cluster enabled” does not always mean “joining another
+node”. A single-node cluster is still a valid runtime shape.
+
+## Policy Replay Into Local Enforcement State
+
+Replication alone is not enough. Each node still needs its local in-memory policy state rebuilt.
+
+The control plane starts a background policy-replication task that:
+
+- watches the replicated active policy pointer
+- loads the referenced policy record from the cluster store
+- compiles the policy locally
+- rebuilds the node's local `PolicyStore`
+- persists the active policy into the local disk store
+- updates readiness once policy state is available
+
+This is why the cluster layer remains part of the control plane rather than becoming a dataplane
+concern.
+
+## Failure And Availability Expectations
+
+The current implementation makes a few expectations explicit:
+
+- if cluster mode is disabled, all control-plane state remains local
+- if cluster mode is enabled, cluster listeners must come up before the full runtime is considered
+  ready
+- if no leader is currently known, the policy replay loop waits rather than inventing new state
+- join attempts use bounded retry with backoff instead of a tight reconnect loop
+
+This page is intentionally limited to the implemented behavior. Operational quorum policy and
+advanced failure procedures should be documented separately once those procedures are finalized.
+
+## What The Cluster Layer Does Not Change
+
+Enabling replication does not collapse the dataplane/control-plane boundary.
+
+It does not move these responsibilities into the cluster runtime:
+
+- packet forwarding
+- flow tracking
+- NAT
+- DNS parsing in the dataplane
+- HTTP request processing inside the dataplane
+
+Cluster mode only changes how control-plane state is stored, distributed, and recovered across
+nodes.
+
+## Practical Reading Guide
+
+If you are tracing cluster behavior through the codebase:
+
+1. Start with `src/controlplane/cluster/bootstrap/mod.rs`
+2. Read `src/controlplane/cluster/config.rs` for addresses and retry knobs
+3. Inspect `src/controlplane/cluster/rpc/management.rs` for join and management RPC surfaces
+4. Follow `src/controlplane/policy_replication.rs` to see how replicated state becomes local
+   enforcement state
+
+## Related Pages
+
+- System Overview
+- Control Plane
+- Traffic Flows
+- Policy Model

@@ -1,0 +1,137 @@
+---
+const metrics = [
+  'neuwerk_connections_total',
+  'neuwerk_connections_denied_total',
+  'neuwerk_dns_queries_total',
+  'neuwerk_policy_evaluations_total',
+  'neuwerk_gateway_latency_seconds',
+];
+
+const failureBehaviors = [
+  {
+    mode: 'Fail-closed (default)',
+    description: 'Traffic dropped if gateway unreachable — safe for production',
+    icon: '🔒',
+  },
+  {
+    mode: 'Fail-open',
+    description: 'Traffic allowed if gateway fails — useful for initial rollout',
+    icon: '🔓',
+  },
+  {
+    mode: 'High Availability',
+    description: 'Multiple gateway nodes with automatic failover',
+    icon: '🔄',
+  },
+];
+
+const perfStats = [
+  { label: 'Latency overhead', value: '<1ms', detail: 'eBPF TC processing' },
+  { label: 'Throughput', value: '10Gbps+', detail: 'per gateway node' },
+  { label: 'Failover', value: '<1s', detail: 'with BGP/ECMP routing' },
+];
+---
+
+<section class="relative py-24 border-t border-slate-800 bg-slate-800/30">
+  <div class="relative mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+    <div class="text-center max-w-3xl mx-auto">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white">
+        Observability & Operations
+      </h2>
+      <p class="mt-4 text-lg text-slate-400">
+        Debug dropped connections, understand your egress patterns, and run with confidence.
+      </p>
+    </div>
+
+    <div class="mt-12 grid lg:grid-cols-2 gap-8">
+      <!-- Debugging -->
+      <div>
+        <h3 class="text-lg font-semibold text-white mb-6">Debugging</h3>
+
+        <div class="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+          <div class="px-4 py-2 bg-slate-800/50 border-b border-slate-700 flex items-center gap-2">
+            <div class="w-3 h-3 rounded-full bg-red-500/50"></div>
+            <div class="w-3 h-3 rounded-full bg-yellow-500/50"></div>
+            <div class="w-3 h-3 rounded-full bg-green-500/50"></div>
+            <span class="ml-2 text-sm text-slate-400">Terminal</span>
+          </div>
+          <pre class="p-4 text-sm overflow-x-auto"><code class="text-slate-300"><span class="text-slate-500">$</span> <span class="text-white">nwctl trace</span> --pod prod-api-7d4f --domain api.github.com
+
+<span class="text-emerald-400">✓</span> DNS query allowed (matches *.github.com)
+<span class="text-emerald-400">✓</span> IP 140.82.121.4 allowed (mapped from github.com, TTL 60s)
+<span class="text-emerald-400">✓</span> Connection permitted
+
+<span class="text-slate-500">$</span> <span class="text-white">nwctl trace</span> --pod prod-api-7d4f --ip 203.0.113.50
+
+<span class="text-red-400">✗</span> IP 203.0.113.50 not in any DNS mapping
+<span class="text-red-400">✗</span> IP 203.0.113.50 not in allowIPs list
+<span class="text-red-400">✗</span> Connection denied (denyByDefault: true)</code></pre>
+        </div>
+
+        <div class="mt-6 space-y-3">
+          <div class="p-3 rounded-lg bg-slate-800/50 border border-slate-700 flex items-center gap-3">
+            <code class="text-brand-400 text-sm">nwctl trace</code>
+            <span class="text-slate-400 text-sm">— simulate a connection</span>
+          </div>
+          <div class="p-3 rounded-lg bg-slate-800/50 border border-slate-700 flex items-center gap-3">
+            <code class="text-brand-400 text-sm">nwctl policy test</code>
+            <span class="text-slate-400 text-sm">— check if FQDN/IP is allowed</span>
+          </div>
+          <div class="p-3 rounded-lg bg-slate-800/50 border border-slate-700 flex items-center gap-3">
+            <code class="text-brand-400 text-sm">nwctl logs</code>
+            <span class="text-slate-400 text-sm">— stream denied connections</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Metrics & Reliability -->
+      <div class="space-y-8">
+        <div>
+          <h3 class="text-lg font-semibold text-white mb-4">Prometheus Metrics</h3>
+          <div class="bg-slate-900 rounded-xl border border-slate-700 p-4">
+            <ul class="space-y-2 font-mono text-sm">
+              {metrics.map((metric) => (
+                <li class="text-slate-400 flex items-center gap-2">
+                  <span class="w-2 h-2 rounded-full bg-brand-400"></span>
+                  {metric}
+                </li>
+              ))}
+            </ul>
+            <p class="mt-4 text-xs text-slate-500">
+              + OpenTelemetry traces for egress request flow
+            </p>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="text-lg font-semibold text-white mb-4">Performance</h3>
+          <div class="grid grid-cols-3 gap-4">
+            {perfStats.map((stat) => (
+              <div class="text-center p-3 rounded-lg bg-slate-800/50 border border-slate-700">
+                <div class="text-xl font-bold text-brand-400">{stat.value}</div>
+                <div class="text-xs text-slate-400 mt-1">{stat.label}</div>
+                <div class="text-xs text-slate-500">{stat.detail}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Failure Modes -->
+    <div class="mt-12">
+      <h3 class="text-lg font-semibold text-white mb-6">Failure Behavior</h3>
+      <div class="grid sm:grid-cols-3 gap-4">
+        {failureBehaviors.map((mode) => (
+          <div class="p-4 rounded-xl bg-slate-900/50 border border-slate-700">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-xl">{mode.icon}</span>
+              <h4 class="font-medium text-white">{mode.mode}</h4>
+            </div>
+            <p class="text-sm text-slate-400">{mode.description}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+</section>

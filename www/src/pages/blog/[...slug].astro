@@ -1,0 +1,67 @@
+---
+import { getCollection, type CollectionEntry } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import Header from '../../components/common/Header.astro';
+import Footer from '../../components/common/Footer.astro';
+
+export async function getStaticPaths() {
+  const posts = (await getCollection('blog')).sort(
+    (a, b) => b.data.date.valueOf() - a.data.date.valueOf()
+  );
+  return posts.map((post, index) => ({
+    params: { slug: post.slug },
+    props: {
+      post,
+      nextPost: posts[index + 1] ?? null,
+    },
+  }));
+}
+
+interface Props {
+  post: CollectionEntry<'blog'>;
+  nextPost: CollectionEntry<'blog'> | null;
+}
+
+const { post, nextPost } = Astro.props;
+const { Content } = await post.render();
+const currentPath = `/blog/${post.slug}`;
+---
+
+<BaseLayout title={post.data.title} description={post.data.subline}>
+  <Header currentPath={currentPath} />
+  <div class="pt-16 min-h-screen">
+    <div class="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8 py-16">
+      <div class="space-y-4">
+        <p class="text-sm uppercase tracking-[0.2em] text-brand-400">Neuwerk Blog</p>
+        <h1 class="text-3xl sm:text-4xl font-semibold text-white">{post.data.title}</h1>
+        <p class="text-lg text-slate-400">{post.data.subline}</p>
+        <time class="text-sm text-slate-500" datetime={post.data.date.toISOString()}>
+          {post.data.date.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+          })}
+        </time>
+      </div>
+
+      <article class="prose prose-invert prose-slate max-w-none mt-10">
+        <Content />
+      </article>
+
+      <div class="mt-12 flex items-center justify-between gap-6">
+        <a href="/blog" class="text-sm font-semibold text-brand-400 hover:text-brand-300 transition-colors">
+          ← Back to blog
+        </a>
+        {nextPost && (
+          <a
+            href={`/blog/${nextPost.slug}`}
+            class="text-sm font-semibold text-brand-400 hover:text-brand-300 transition-colors"
+          >
+            Next: {nextPost.data.title} →
+          </a>
+        )}
+      </div>
+    </div>
+  </div>
+  <Footer />
+</BaseLayout>

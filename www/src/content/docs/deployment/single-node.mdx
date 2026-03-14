@@ -1,0 +1,246 @@
+---
+title: Single Node
+description: The smallest current runtime shape without cluster replication.
+order: 1
+---
+
+This page describes the smallest supported runtime shape implemented in the repository today.
+
+“Single node” in this codebase means:
+
+- one firewall process
+- cluster replication disabled
+- local policy and auth state on disk
+- the same control-plane and dataplane split used everywhere else
+
+It does not mean “control plane only”. Even the smallest shape still runs both the control plane
+and the dataplane.
+
+## What Single-Node Mode Includes
+
+A single-node deployment still starts these long-lived pieces:
+
+1. management HTTP API runtime
+2. control-plane DNS and service-plane runtime
+3. dataplane bootstrap path
+4. dataplane runtime
+
+Single-node mode still gives you:
+
+- HTTPS management API and embedded UI
+- metrics endpoint
+- DNS proxying for hostname policy
+- policy persistence and activation
+- audit and wiretap surfaces
+- optional TLS interception
+
+What it does not start is the cluster replication layer.
+
+## What Single-Node Mode Excludes
+
+With cluster mode disabled:
+
+- no Raft runtime is started
+- no cluster join flow is used
+- no cluster listeners are needed
+- no policy replay from replicated cluster state is needed
+
+The default disabled cluster config still has placeholder addresses for `127.0.0.1:9600` and
+`127.0.0.1:9601`, but those listeners are not started unless cluster mode is actually enabled.
+
+## Minimum Required Inputs
+
+The current CLI parser requires these flags even in the smallest supported shape:
+
+- `--management-interface`
+- `--data-plane-interface`
+- `--dns-target-ip`
+- `--dns-upstream`
+
+There are also two important interface constraints:
+
+- `--management-interface` and `--data-plane-interface` must be different
+- in software `tun` or `tap` mode, `--data-plane-interface` must be a normal netdev name rather
+  than a PCI or MAC selector
+
+The default dataplane mode is `tun`, so the smallest source-derived deployment shape is a
+single-node software dataplane.
+
+## Network Assumptions
+
+The current single-node bootstrap path assumes:
+
+- the management interface has an IPv4 address
+- DNS interception is addressed through one or more configured DNS target IPs
+- at least one upstream DNS resolver is configured
+
+At startup, the process resolves the management IPv4 address directly from
+`--management-interface`. If no IPv4 address exists on that interface, startup fails.
+
+In software mode, the runtime also tries to infer dataplane and internal-network information from
+local interfaces unless you override it.
+
+## Default Listener Addresses
+
+When you do not override listener flags, single-node mode resolves listeners like this:
+
+- management HTTPS API: `<management-ip>:8443`
+- advertised HTTPS API: same as HTTP bind
+- metrics listener: `<management-ip>:8080`
+- DNS proxy: `<management-ip>:53`
+
+Those addresses are derived from the management interface address, not from a separate deployment
+manifest in the repository.
+
+## Smallest Current Command Shape
+
+The exact interface names and IPs depend on the host, but the smallest accepted CLI shape looks
+like this:
+
+```text
+firewall \
+  --management-interface mgmt0 \
+  --data-plane-interface data0 \
+  --dns-target-ip 10.0.0.53 \
+  --dns-upstream 1.1.1.1:53
+```
+
+That example is intentionally minimal:
+
+- software dataplane mode is left at its default
+- policy defaults to `deny`
+- metrics and HTTPS listeners use their default addresses
+- cluster mode remains disabled
+
+## Optional But Common Overrides
+
+The current implementation supports these common single-node overrides:
+
+- `--data-plane-mode tun|tap|dpdk`
+- `--internal-cidr <cidr>`
+- `--snat none|auto|<ipv4>`
+- `--http-bind <ip:port>`
+- `--http-advertise <ip:port>`
+- `--http-external-url <https://host[:port]>`
+- `--metrics-bind <ip:port>`
+- `--http-tls-dir <path>`
+
+You only need cluster flags if you are explicitly moving out of the single-node deployment shape.
+
+## Local State Layout
+
+Single-node mode persists control-plane state under the local data root.
+
+Defaults:
+
+- local data root: `/var/lib/neuwerk`
+- HTTP TLS directory: `/var/lib/neuwerk/http-tls`
+- local policy store: `/var/lib/neuwerk/local-policy-store`
+- service accounts: `/var/lib/neuwerk/service-accounts`
+- integrations: `/var/lib/neuwerk/integrations`
+- audit snapshot store: `/var/lib/neuwerk/audit-store`
+- node ID path: `/var/lib/neuwerk/node_id`
+
+You can override the local control-plane root with:
+
+- `NEUWERK_LOCAL_DATA_DIR`
+
+Even in single-node mode, the runtime still creates or loads a node ID. That ID is reused by audit,
+wiretap, and any future cluster transition.
+
+## Startup Behavior
+
+In single-node mode, startup currently does these high-level steps:
+
+1. parse CLI flags
+2. resolve the management interface IPv4 address
+3. derive default HTTP and metrics listener bindings
+4. initialize the in-memory `PolicyStore`
+5. preload local active policy from disk if one exists and is active
+6. start the control-plane runtime
+7. start dataplane bootstrap
+8. start the dataplane runtime
+
+That is important because a single-node deployment still has multiple cooperating runtimes inside
+one process.
+
+## Local Policy Bootstrap
+
+When cluster mode is disabled, local disk state is the source of truth for any previously activated
+policy.
+
+On startup, if the local policy store already has an active policy record and that record is active,
+the runtime rebuilds the in-memory `PolicyStore` from that local record.
+
+That is the key difference from cluster mode, where policy replay comes from replicated cluster
+state instead.
+
+## Readiness Expectations
+
+A healthy single-node deployment should become ready only after all of these are true:
+
+- the dataplane runtime is running
+- dataplane config is available
+- policy state is ready
+- the DNS proxy is ready
+- the service plane is ready
+- the node is not draining
+
+In single-node mode, the cluster and policy-replication readiness checks trivially pass because no
+cluster runtime is involved.
+
+## TLS In Single-Node Mode
+
+Management HTTPS is still enabled in single-node deployments.
+
+If you do not supply explicit certificate material, the HTTP runtime ensures local TLS material
+under the configured HTTP TLS directory.
+
+TLS interception is also still available in single-node mode, but its CA material remains local
+instead of coming from cluster-backed storage.
+
+## DPDK On A Single Node
+
+Single-node mode does not imply software dataplane only.
+
+You can still run a single-node deployment in DPDK mode, but the runtime behavior changes:
+
+- dataplane addressing may come from DHCP
+- IMDS fallback may be used if DHCP does not complete
+- the data-plane interface may be specified as PCI or MAC selector
+- aggressive DPDK performance mode may reduce observability
+
+That is still a single-node deployment as long as cluster replication remains disabled.
+
+## What To Check First After Boot
+
+The fastest verification sequence after starting a single-node instance is:
+
+```text
+GET /health
+GET /ready
+GET /metrics
+GET /api/v1/stats
+```
+
+If hostname policy is involved, the next useful checks are:
+
+- `GET /api/v1/dns-cache`
+- `GET /api/v1/audit/findings`
+
+## Practical Reading Guide
+
+If you are tracing single-node bootstrap behavior through the code:
+
+1. Start with `src/main.rs`
+2. Read `src/runtime/cli/args.rs`
+3. Read `src/runtime/bootstrap/startup.rs`
+4. Read `src/runtime/bootstrap/policy_state.rs`
+5. Then follow `src/runtime/startup/controlplane_runtime.rs` and `src/runtime/startup/dataplane_thread.rs`
+
+## Related Pages
+
+- System Overview
+- Control Plane
+- Dataplane
+- Troubleshooting
