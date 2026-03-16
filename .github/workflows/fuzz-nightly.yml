@@ -16,7 +16,7 @@ jobs:
     env:
       NEUWERK_FUZZ_NIGHTLY_MAX_TIME: "900"
       NEUWERK_FUZZ_SEED: "1337"
-      NEUWERK_FUZZ_NIGHTLY_SANITIZERS: "address undefined"
+      NEUWERK_FUZZ_NIGHTLY_SANITIZERS: "address"
     steps:
       - uses: actions/checkout@v5
 

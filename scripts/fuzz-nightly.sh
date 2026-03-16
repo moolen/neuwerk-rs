@@ -17,7 +17,29 @@ fi
 
 MAX_TOTAL_TIME="${NEUWERK_FUZZ_NIGHTLY_MAX_TIME:-900}"
 SEED="${NEUWERK_FUZZ_SEED:-1337}"
-SANITIZERS="${NEUWERK_FUZZ_NIGHTLY_SANITIZERS:-address undefined}"
+SANITIZERS="${NEUWERK_FUZZ_NIGHTLY_SANITIZERS:-address}"
+SUPPORTED_SANITIZERS=(address leak memory thread none)
+
+validate_sanitizers() {
+  local sanitizer
+  local supported
+  if [[ -z "${SANITIZERS//[[:space:]]/}" ]]; then
+    echo "error: at least one fuzz sanitizer must be configured" >&2
+    exit 1
+  fi
+  for sanitizer in $SANITIZERS; do
+    for supported in "${SUPPORTED_SANITIZERS[@]}"; do
+      if [[ "$sanitizer" == "$supported" ]]; then
+        continue 2
+      fi
+    done
+    echo "error: unsupported fuzz sanitizer '$sanitizer'" >&2
+    echo "supported values: ${SUPPORTED_SANITIZERS[*]}" >&2
+    exit 1
+  done
+}
+
+validate_sanitizers
 
 run_target() {
   local sanitizer="$1"

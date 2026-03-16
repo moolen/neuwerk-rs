@@ -26,7 +26,7 @@ Prerequisites:
 Notes:
 
 - `make fuzz.smoke` runs deterministic bounded campaigns (`-runs`) across all targets.
-- `make fuzz.nightly` runs time-bounded sanitizer campaigns (`address` + `undefined` by default).
+- `make fuzz.nightly` runs time-bounded sanitizer campaigns (`address` by default).
 - Set `NEUWERK_FUZZ_REQUIRED=1` to make missing `cargo-fuzz` a hard failure.
 - Seed corpora under `fuzz/corpus/*` include both minimal bytes and protocol-shaped samples
   (IPv4/TCP/UDP/ARP frames, overlay mode/port combinations, and fragmented TLS record streams)
