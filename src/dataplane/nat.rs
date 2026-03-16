@@ -10,6 +10,7 @@ const NAT_TABLE_DEFAULT_CAPACITY: usize = 1 << 15;
 const NAT_TABLE_MIN_CAPACITY: usize = 1 << 10;
 const NAT_TABLE_MAX_CAPACITY: usize = 1 << 26;
 const NAT_TABLE_MAX_LOAD_PERCENT: usize = 70;
+const PORT_RANGE_LEN: usize = (PORT_MAX as usize) - (PORT_MIN as usize) + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NatError {
@@ -38,6 +39,26 @@ enum OpenSlot<K, V> {
     Occupied { key: K, value: V },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenProbeKind {
+    Hit,
+    Miss,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OpenProbe {
+    idx: usize,
+    slots_len: usize,
+    kind: OpenProbeKind,
+}
+
+impl OpenProbe {
+    #[inline]
+    fn is_hit(self) -> bool {
+        self.kind == OpenProbeKind::Hit
+    }
+}
+
 #[derive(Debug)]
 struct OpenMap<K, V> {
     slots: Vec<OpenSlot<K, V>>,
@@ -60,6 +81,14 @@ impl<K: Copy + Eq, V> OpenMap<K, V> {
         self.len
     }
 
+    fn clear(&mut self) {
+        for slot in &mut self.slots {
+            *slot = OpenSlot::Empty;
+        }
+        self.len = 0;
+        self.tombstones = 0;
+    }
+
     fn get(&self, key: &K) -> Option<&V> {
         let idx = self.find_index(key)?;
         match &self.slots[idx] {
@@ -76,6 +105,16 @@ impl<K: Copy + Eq, V> OpenMap<K, V> {
         }
     }
 
+    fn get_mut_with_probe(&mut self, key: &K, probe: OpenProbe) -> Option<&mut V> {
+        let idx = self
+            .reusable_lookup_index(key, probe)
+            .or_else(|| self.find_index(key))?;
+        match &mut self.slots[idx] {
+            OpenSlot::Occupied { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+
     #[inline]
     fn prefetch_key(&self, key: &K) {
         if self.slots.is_empty() {
@@ -85,10 +124,7 @@ impl<K: Copy + Eq, V> OpenMap<K, V> {
         prefetch_read((&self.slots[idx]) as *const OpenSlot<K, V>);
     }
 
-    fn contains_key(&self, key: &K) -> bool {
-        self.find_index(key).is_some()
-    }
-
+    #[allow(dead_code)]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         self.ensure_insert_capacity();
         let idx = self.find_insert_index(&key);
@@ -105,6 +141,30 @@ impl<K: Copy + Eq, V> OpenMap<K, V> {
             }
             OpenSlot::Occupied { value, .. } => Some(value),
         }
+    }
+
+    fn insert_with_probe(&mut self, key: K, value: V, probe: OpenProbe) -> Option<V> {
+        self.ensure_insert_capacity();
+        let idx = self
+            .reusable_insert_index(&key, probe)
+            .unwrap_or_else(|| self.find_insert_index(&key));
+        let replaced = std::mem::replace(&mut self.slots[idx], OpenSlot::Occupied { key, value });
+        match replaced {
+            OpenSlot::Empty => {
+                self.len += 1;
+                None
+            }
+            OpenSlot::Tombstone => {
+                self.len += 1;
+                self.tombstones = self.tombstones.saturating_sub(1);
+                None
+            }
+            OpenSlot::Occupied { value, .. } => Some(value),
+        }
+    }
+
+    fn probe(&self, key: &K) -> OpenProbe {
+        self.find_probe(key)
     }
 
     fn remove(&mut self, key: &K) -> Option<V> {
@@ -198,6 +258,52 @@ impl<K: Copy + Eq, V> OpenMap<K, V> {
         None
     }
 
+    fn find_probe(&self, key: &K) -> OpenProbe {
+        if self.slots.is_empty() {
+            return OpenProbe {
+                idx: 0,
+                slots_len: 0,
+                kind: OpenProbeKind::Miss,
+            };
+        }
+        let mask = self.slots.len() - 1;
+        let mut first_tombstone = None;
+        let mut idx = self.initial_probe_index(key);
+        for _ in 0..self.slots.len() {
+            match &self.slots[idx] {
+                OpenSlot::Empty => {
+                    return OpenProbe {
+                        idx: first_tombstone.unwrap_or(idx),
+                        slots_len: self.slots.len(),
+                        kind: OpenProbeKind::Miss,
+                    };
+                }
+                OpenSlot::Tombstone => {
+                    if first_tombstone.is_none() {
+                        first_tombstone = Some(idx);
+                    }
+                }
+                OpenSlot::Occupied {
+                    key: existing_key, ..
+                } => {
+                    if existing_key == key {
+                        return OpenProbe {
+                            idx,
+                            slots_len: self.slots.len(),
+                            kind: OpenProbeKind::Hit,
+                        };
+                    }
+                }
+            }
+            idx = (idx + 1) & mask;
+        }
+        OpenProbe {
+            idx: first_tombstone.unwrap_or(0),
+            slots_len: self.slots.len(),
+            kind: OpenProbeKind::Miss,
+        }
+    }
+
     fn find_insert_index(&self, key: &K) -> usize {
         let mask = self.slots.len() - 1;
         let mut first_tombstone = None;
@@ -221,6 +327,31 @@ impl<K: Copy + Eq, V> OpenMap<K, V> {
             idx = (idx + 1) & mask;
         }
         first_tombstone.unwrap_or(0)
+    }
+
+    fn reusable_lookup_index(&self, key: &K, probe: OpenProbe) -> Option<usize> {
+        if self.slots.len() != probe.slots_len || !probe.is_hit() {
+            return None;
+        }
+        match &self.slots[probe.idx] {
+            OpenSlot::Occupied {
+                key: existing_key, ..
+            } if existing_key == key => Some(probe.idx),
+            _ => None,
+        }
+    }
+
+    fn reusable_insert_index(&self, key: &K, probe: OpenProbe) -> Option<usize> {
+        if self.slots.len() != probe.slots_len || probe.is_hit() {
+            return None;
+        }
+        match &self.slots[probe.idx] {
+            OpenSlot::Empty | OpenSlot::Tombstone => Some(probe.idx),
+            OpenSlot::Occupied {
+                key: existing_key, ..
+            } if existing_key == key => Some(probe.idx),
+            _ => None,
+        }
     }
 
     #[inline]
@@ -270,25 +401,22 @@ impl NatTable {
         key: &FlowKey,
         now: u64,
     ) -> Result<(u16, bool), NatError> {
-        if let Some(entry) = self.map.get_mut(key) {
+        let map_probe = self.map.probe(key);
+        if let Some(entry) = self.map.get_mut_with_probe(key, map_probe) {
             entry.last_seen = now;
             return Ok((entry.external_port, false));
         }
 
-        let external_port = self.allocate_port(key).ok_or(NatError::PortExhausted)?;
+        let (reverse_key, reverse_probe) =
+            self.allocate_port(key).ok_or(NatError::PortExhausted)?;
+        let external_port = reverse_key.external_port;
         let entry = NatEntry {
             internal: *key,
             external_port,
             last_seen: now,
         };
-        let reverse_key = ReverseKey {
-            external_port,
-            remote_ip: key.dst_ip,
-            remote_port: key.dst_port,
-            proto: key.proto,
-        };
 
-        if let Some(old) = self.map.insert(*key, entry) {
+        if let Some(old) = self.map.insert_with_probe(*key, entry, map_probe) {
             let old_reverse_key = ReverseKey {
                 external_port: old.external_port,
                 remote_ip: old.internal.dst_ip,
@@ -297,7 +425,10 @@ impl NatTable {
             };
             self.reverse.remove(&old_reverse_key);
         }
-        if let Some(old_flow) = self.reverse.insert(reverse_key, *key) {
+        if let Some(old_flow) = self
+            .reverse
+            .insert_with_probe(reverse_key, *key, reverse_probe)
+        {
             if old_flow != *key {
                 self.map.remove(&old_flow);
             }
@@ -357,6 +488,11 @@ impl NatTable {
         expired.len()
     }
 
+    pub fn clear(&mut self) {
+        self.map.clear();
+        self.reverse.clear();
+    }
+
     pub fn idle_timeout_secs(&self) -> u64 {
         self.idle_timeout_secs
     }
@@ -370,23 +506,24 @@ impl NatTable {
     }
 
     pub fn port_range_len() -> u32 {
-        (PORT_MAX - PORT_MIN + 1) as u32
+        PORT_RANGE_LEN as u32
     }
 
-    fn allocate_port(&self, key: &FlowKey) -> Option<u16> {
-        let range = (PORT_MAX - PORT_MIN + 1) as u32;
+    fn allocate_port(&mut self, key: &FlowKey) -> Option<(ReverseKey, OpenProbe)> {
+        let range = Self::port_range_len();
         let start = flow_hash(key) % range;
+        let mut reverse_key = ReverseKey {
+            external_port: PORT_MIN,
+            remote_ip: key.dst_ip,
+            remote_port: key.dst_port,
+            proto: key.proto,
+        };
         for i in 0..range {
-            let offset = (start + i) % range;
-            let port = PORT_MIN + offset as u16;
-            let reverse_key = ReverseKey {
-                external_port: port,
-                remote_ip: key.dst_ip,
-                remote_port: key.dst_port,
-                proto: key.proto,
-            };
-            if !self.reverse.contains_key(&reverse_key) {
-                return Some(port);
+            let offset = (start + i) % Self::port_range_len();
+            reverse_key.external_port = PORT_MIN + offset as u16;
+            let probe = self.reverse.probe(&reverse_key);
+            if !probe.is_hit() {
+                return Some((reverse_key, probe));
             }
         }
         None
@@ -394,45 +531,32 @@ impl NatTable {
 }
 
 fn flow_hash(key: &FlowKey) -> u32 {
-    let mut hash: u32 = 0x811c9dc5;
-    for byte in key.src_ip.octets() {
-        hash ^= byte as u32;
-        hash = hash.wrapping_mul(0x01000193);
-    }
-    for byte in key.dst_ip.octets() {
-        hash ^= byte as u32;
-        hash = hash.wrapping_mul(0x01000193);
-    }
-    for byte in key.src_port.to_be_bytes() {
-        hash ^= byte as u32;
-        hash = hash.wrapping_mul(0x01000193);
-    }
-    for byte in key.dst_port.to_be_bytes() {
-        hash ^= byte as u32;
-        hash = hash.wrapping_mul(0x01000193);
-    }
-    hash ^= key.proto as u32;
-    hash = hash.wrapping_mul(0x01000193);
-    hash
+    let src_ip = u32::from_be_bytes(key.src_ip.octets());
+    let dst_ip = u32::from_be_bytes(key.dst_ip.octets());
+    let ports = ((key.src_port as u32) << 16) | key.dst_port as u32;
+    let seed = src_ip.wrapping_mul(0x9e37_79b1)
+        ^ dst_ip.rotate_left(7).wrapping_mul(0x85eb_ca6b)
+        ^ ports.rotate_left(13).wrapping_mul(0xc2b2_ae35)
+        ^ (key.proto as u32).wrapping_mul(0x27d4_eb2d);
+    finalize_hash32(seed)
 }
 
 fn reverse_hash(key: &ReverseKey) -> u32 {
-    let mut hash: u32 = 0x811c9dc5;
-    for byte in key.external_port.to_be_bytes() {
-        hash ^= byte as u32;
-        hash = hash.wrapping_mul(0x01000193);
-    }
-    for byte in key.remote_ip.octets() {
-        hash ^= byte as u32;
-        hash = hash.wrapping_mul(0x01000193);
-    }
-    for byte in key.remote_port.to_be_bytes() {
-        hash ^= byte as u32;
-        hash = hash.wrapping_mul(0x01000193);
-    }
-    hash ^= key.proto as u32;
-    hash = hash.wrapping_mul(0x01000193);
-    hash
+    let remote_ip = u32::from_be_bytes(key.remote_ip.octets());
+    let ports = ((key.external_port as u32) << 16) | key.remote_port as u32;
+    let seed = remote_ip.wrapping_mul(0x9e37_79b1)
+        ^ ports.rotate_left(11).wrapping_mul(0x85eb_ca6b)
+        ^ (key.proto as u32).wrapping_mul(0xc2b2_ae35);
+    finalize_hash32(seed)
+}
+
+#[inline(always)]
+fn finalize_hash32(mut value: u32) -> u32 {
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x85eb_ca6b);
+    value ^= value >> 13;
+    value = value.wrapping_mul(0xc2b2_ae35);
+    value ^ (value >> 16)
 }
 
 #[inline]
@@ -473,6 +597,26 @@ fn empty_slots<K, V>(capacity: usize) -> Vec<OpenSlot<K, V>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn colliding_flows_for_preferred_port(preferred_port: u16, count: usize) -> Vec<FlowKey> {
+        let target_offset = (preferred_port - PORT_MIN) as u32;
+        let mut flows = Vec::with_capacity(count);
+        let mut seed = 0u32;
+        while flows.len() < count {
+            let flow = FlowKey {
+                src_ip: Ipv4Addr::new(10, 2, ((seed / 250) % 250) as u8, (seed % 250) as u8 + 1),
+                dst_ip: Ipv4Addr::new(198, 51, 100, 10),
+                src_port: 10_000 + (seed % 50_000) as u16,
+                dst_port: 443,
+                proto: 6,
+            };
+            if flow_hash(&flow) % NatTable::port_range_len() == target_offset {
+                flows.push(flow);
+            }
+            seed += 1;
+        }
+        flows
+    }
 
     #[test]
     fn flow_hash_deterministic() {
@@ -583,7 +727,21 @@ mod tests {
         };
         table.reverse.insert(occupied, flow);
 
-        let allocated = table.allocate_port(&flow).unwrap();
-        assert_eq!(allocated, PORT_MIN);
+        let (allocated, _) = table.allocate_port(&flow).unwrap();
+        assert_eq!(allocated.external_port, PORT_MIN);
+    }
+
+    #[test]
+    fn colliding_allocations_advance_after_preferred_port_is_taken() {
+        let mut table = NatTable::new_with_timeout(300);
+        let flows = colliding_flows_for_preferred_port(PORT_MIN, 3);
+
+        let first = table.get_or_create(&flows[0], 1).unwrap();
+        let second = table.get_or_create(&flows[1], 1).unwrap();
+        let third = table.get_or_create(&flows[2], 1).unwrap();
+
+        assert_eq!(first, PORT_MIN);
+        assert_eq!(second, PORT_MIN + 1);
+        assert_eq!(third, PORT_MIN + 2);
     }
 }

@@ -410,7 +410,7 @@ fn parse_certificate(body: &[u8]) -> Result<Vec<Vec<u8>>, TlsParseError> {
     Ok(certs)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TlsVerifier {
     system_anchors: Vec<Vec<u8>>,
 }

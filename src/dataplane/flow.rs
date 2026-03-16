@@ -53,6 +53,12 @@ impl FlowEntry {
         entry
     }
 
+    pub fn with_source_group_arc(last_seen: u64, source_group: Option<Arc<str>>) -> Self {
+        let mut entry = Self::new(last_seen);
+        entry.set_source_group_arc(source_group);
+        entry
+    }
+
     pub fn source_group(&self) -> &str {
         self.source_group.as_deref().unwrap_or(DEFAULT_SOURCE_GROUP)
     }
@@ -62,11 +68,13 @@ impl FlowEntry {
     }
 
     pub fn set_source_group_owned(&mut self, source_group: String) {
-        if source_group == DEFAULT_SOURCE_GROUP {
-            self.source_group = None;
-        } else {
-            self.source_group = Some(Arc::from(source_group));
-        }
+        self.set_source_group_arc(
+            (source_group != DEFAULT_SOURCE_GROUP).then(|| Arc::from(source_group)),
+        );
+    }
+
+    pub fn set_source_group_arc(&mut self, source_group: Option<Arc<str>>) {
+        self.source_group = source_group.filter(|group| group.as_ref() != DEFAULT_SOURCE_GROUP);
     }
 }
 
@@ -86,6 +94,25 @@ enum FlowSlot {
     Empty,
     Tombstone,
     Occupied { key: FlowKey, entry: FlowEntry },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowProbeKind {
+    Hit,
+    Miss,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FlowProbe {
+    idx: usize,
+    slots_len: usize,
+    kind: FlowProbeKind,
+}
+
+impl FlowProbe {
+    pub fn is_hit(self) -> bool {
+        self.kind == FlowProbeKind::Hit
+    }
 }
 
 #[derive(Debug)]
@@ -132,6 +159,36 @@ impl FlowTable {
         self.insert_without_resize(key, entry);
     }
 
+    pub fn insert_and_get_mut(&mut self, key: FlowKey, entry: FlowEntry) -> &mut FlowEntry {
+        self.ensure_insert_capacity();
+        let idx = self.insert_without_resize_get_index(key, entry);
+        match &mut self.slots[idx] {
+            FlowSlot::Occupied { entry, .. } => entry,
+            _ => unreachable!("inserted flow entry must occupy a slot"),
+        }
+    }
+
+    pub fn insert_with_probe_and_get_mut(
+        &mut self,
+        key: FlowKey,
+        entry: FlowEntry,
+        probe: FlowProbe,
+    ) -> &mut FlowEntry {
+        self.ensure_insert_capacity();
+        let idx = self
+            .reusable_insert_index(&key, probe)
+            .unwrap_or_else(|| self.find_insert_index(&key));
+        self.insert_without_resize_at_index(idx, key, entry);
+        match &mut self.slots[idx] {
+            FlowSlot::Occupied { entry, .. } => entry,
+            _ => unreachable!("inserted flow entry must occupy a slot"),
+        }
+    }
+
+    pub fn probe(&self, key: &FlowKey) -> FlowProbe {
+        self.find_probe(key)
+    }
+
     pub fn get_entry(&self, key: &FlowKey) -> Option<&FlowEntry> {
         let idx = self.find_index(key)?;
         match &self.slots[idx] {
@@ -142,6 +199,20 @@ impl FlowTable {
 
     pub fn get_entry_mut(&mut self, key: &FlowKey) -> Option<&mut FlowEntry> {
         let idx = self.find_index(key)?;
+        match &mut self.slots[idx] {
+            FlowSlot::Occupied { entry, .. } => Some(entry),
+            _ => None,
+        }
+    }
+
+    pub fn get_entry_mut_with_probe(
+        &mut self,
+        key: &FlowKey,
+        probe: FlowProbe,
+    ) -> Option<&mut FlowEntry> {
+        let idx = self
+            .reusable_lookup_index(key, probe)
+            .or_else(|| self.find_index(key))?;
         match &mut self.slots[idx] {
             FlowSlot::Occupied { entry, .. } => Some(entry),
             _ => None,
@@ -184,6 +255,14 @@ impl FlowTable {
 
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    pub fn clear(&mut self) {
+        for slot in &mut self.slots {
+            *slot = FlowSlot::Empty;
+        }
+        self.len = 0;
+        self.tombstones = 0;
     }
 
     pub fn idle_timeout_secs(&self) -> u64 {
@@ -261,7 +340,16 @@ impl FlowTable {
     }
 
     fn insert_without_resize(&mut self, key: FlowKey, entry: FlowEntry) {
+        self.insert_without_resize_get_index(key, entry);
+    }
+
+    fn insert_without_resize_get_index(&mut self, key: FlowKey, entry: FlowEntry) -> usize {
         let idx = self.find_insert_index(&key);
+        self.insert_without_resize_at_index(idx, key, entry);
+        idx
+    }
+
+    fn insert_without_resize_at_index(&mut self, idx: usize, key: FlowKey, entry: FlowEntry) {
         match std::mem::replace(&mut self.slots[idx], FlowSlot::Occupied { key, entry }) {
             FlowSlot::Empty => {
                 self.len += 1;
@@ -295,6 +383,50 @@ impl FlowTable {
         None
     }
 
+    fn find_probe(&self, key: &FlowKey) -> FlowProbe {
+        if self.slots.is_empty() {
+            return FlowProbe {
+                idx: 0,
+                slots_len: 0,
+                kind: FlowProbeKind::Miss,
+            };
+        }
+        let mask = self.slots.len() - 1;
+        let mut first_tombstone = None;
+        let mut idx = self.initial_probe_index(key);
+        for _ in 0..self.slots.len() {
+            match &self.slots[idx] {
+                FlowSlot::Empty => {
+                    return FlowProbe {
+                        idx: first_tombstone.unwrap_or(idx),
+                        slots_len: self.slots.len(),
+                        kind: FlowProbeKind::Miss,
+                    };
+                }
+                FlowSlot::Tombstone => {
+                    if first_tombstone.is_none() {
+                        first_tombstone = Some(idx);
+                    }
+                }
+                FlowSlot::Occupied { key: existing, .. } => {
+                    if existing == key {
+                        return FlowProbe {
+                            idx,
+                            slots_len: self.slots.len(),
+                            kind: FlowProbeKind::Hit,
+                        };
+                    }
+                }
+            }
+            idx = (idx + 1) & mask;
+        }
+        FlowProbe {
+            idx: first_tombstone.unwrap_or(0),
+            slots_len: self.slots.len(),
+            kind: FlowProbeKind::Miss,
+        }
+    }
+
     fn find_insert_index(&self, key: &FlowKey) -> usize {
         let mask = self.slots.len() - 1;
         let mut first_tombstone = None;
@@ -318,6 +450,39 @@ impl FlowTable {
             idx = (idx + 1) & mask;
         }
         first_tombstone.unwrap_or(0)
+    }
+
+    fn reusable_lookup_index(&self, key: &FlowKey, probe: FlowProbe) -> Option<usize> {
+        if probe.kind != FlowProbeKind::Hit
+            || probe.slots_len != self.slots.len()
+            || self.slots.is_empty()
+        {
+            return None;
+        }
+        match self.slots.get(probe.idx) {
+            Some(FlowSlot::Occupied { key: existing, .. }) if existing == key => Some(probe.idx),
+            _ => None,
+        }
+    }
+
+    fn reusable_insert_index(&self, key: &FlowKey, probe: FlowProbe) -> Option<usize> {
+        if probe.slots_len != self.slots.len() || self.slots.is_empty() {
+            return None;
+        }
+        match (probe.kind, self.slots.get(probe.idx)) {
+            (FlowProbeKind::Hit, Some(FlowSlot::Occupied { key: existing, .. }))
+                if existing == key =>
+            {
+                Some(probe.idx)
+            }
+            (FlowProbeKind::Miss, Some(FlowSlot::Empty | FlowSlot::Tombstone)) => Some(probe.idx),
+            (FlowProbeKind::Miss, Some(FlowSlot::Occupied { key: existing, .. }))
+                if existing == key =>
+            {
+                Some(probe.idx)
+            }
+            _ => None,
+        }
     }
 
     #[inline]

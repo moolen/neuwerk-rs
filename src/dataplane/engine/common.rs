@@ -167,6 +167,12 @@ pub(super) fn proto_label(proto: u8) -> &'static str {
     }
 }
 
+pub(super) fn source_group_label(source_group: Option<&Arc<str>>) -> &str {
+    source_group
+        .map(|group| group.as_ref())
+        .unwrap_or(DEFAULT_SOURCE_GROUP)
+}
+
 pub(super) fn maybe_emit_policy_deny_audit(
     emitter: Option<&AuditEmitter>,
     meta: &PacketMeta,
@@ -260,16 +266,10 @@ pub(super) fn remove_flow_state(
     reason: &str,
 ) -> Option<FlowEntry> {
     let entry = state.flows.remove(flow);
-    if entry.is_some() {
-        if let Some(allowlist) = &state.dns_allowlist {
-            allowlist.flow_close(flow.dst_ip, now);
-        }
-        if let Some(entry_ref) = entry.as_ref() {
-            state.observe_entry_flow_close(entry_ref, reason, now);
-        }
+    if let Some(entry_ref) = entry.as_ref() {
+        state.note_flow_close(flow, entry_ref, reason, now);
     }
     state.nat.remove(flow);
-    state.update_flow_metrics();
     state.update_nat_metrics();
     entry
 }

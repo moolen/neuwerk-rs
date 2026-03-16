@@ -120,3 +120,246 @@ fn evaluate_audit_rules_reports_matched_rule() {
     assert!(group.is_none());
     assert!(!matched);
 }
+
+#[test]
+fn evaluate_prefers_earlier_wildcard_rule_over_later_exact_rule() {
+    let mut sources = IpSetV4::new();
+    sources.add_cidr(CidrV4::new(Ipv4Addr::new(10, 0, 0, 0), 24));
+    let target_ip = Ipv4Addr::new(198, 51, 100, 10);
+
+    let rules = vec![
+        Rule {
+            id: "allow-any".to_string(),
+            priority: 0,
+            matcher: RuleMatch {
+                dst_ips: None,
+                proto: Proto::Tcp,
+                src_ports: Vec::new(),
+                dst_ports: Vec::new(),
+                icmp_types: Vec::new(),
+                icmp_codes: Vec::new(),
+                tls: None,
+            },
+            action: RuleAction::Allow,
+            mode: RuleMode::Enforce,
+        },
+        Rule {
+            id: "deny-target".to_string(),
+            priority: 1,
+            matcher: RuleMatch {
+                dst_ips: Some({
+                    let mut ips = IpSetV4::new();
+                    ips.add_ip(target_ip);
+                    ips
+                }),
+                proto: Proto::Tcp,
+                src_ports: Vec::new(),
+                dst_ports: Vec::new(),
+                icmp_types: Vec::new(),
+                icmp_codes: Vec::new(),
+                tls: None,
+            },
+            action: RuleAction::Deny,
+            mode: RuleMode::Enforce,
+        },
+    ];
+
+    let policy = PolicySnapshot::new(
+        DefaultPolicy::Deny,
+        vec![SourceGroup {
+            id: "group".to_string(),
+            priority: 0,
+            sources,
+            rules,
+            default_action: None,
+        }],
+    );
+
+    let meta = PacketMeta {
+        src_ip: Ipv4Addr::new(10, 0, 0, 42),
+        dst_ip: target_ip,
+        proto: 6,
+        src_port: 12345,
+        dst_port: 443,
+        icmp_type: None,
+        icmp_code: None,
+    };
+
+    let (decision, group) = policy.evaluate_with_source_group(&meta, None, None);
+    assert_eq!(decision, PolicyDecision::Allow);
+    assert_eq!(group.as_deref(), Some("group"));
+}
+
+#[test]
+fn evaluate_exact_source_group_dispatch_matches_expected_group() {
+    let target_ip = Ipv4Addr::new(198, 51, 100, 10);
+    let src_a = Ipv4Addr::new(172, 16, 0, 1);
+    let src_b = Ipv4Addr::new(172, 16, 0, 2);
+
+    let mut sources_a = IpSetV4::new();
+    sources_a.add_ip(src_a);
+    let mut sources_b = IpSetV4::new();
+    sources_b.add_ip(src_b);
+
+    let policy = PolicySnapshot::new(
+        DefaultPolicy::Deny,
+        vec![
+            SourceGroup {
+                id: "a".to_string(),
+                priority: 0,
+                sources: sources_a,
+                rules: vec![Rule {
+                    id: "allow-a".to_string(),
+                    priority: 0,
+                    matcher: RuleMatch {
+                        dst_ips: Some({
+                            let mut ips = IpSetV4::new();
+                            ips.add_ip(Ipv4Addr::new(203, 0, 113, 1));
+                            ips
+                        }),
+                        proto: Proto::Tcp,
+                        src_ports: Vec::new(),
+                        dst_ports: Vec::new(),
+                        icmp_types: Vec::new(),
+                        icmp_codes: Vec::new(),
+                        tls: None,
+                    },
+                    action: RuleAction::Allow,
+                    mode: RuleMode::Enforce,
+                }],
+                default_action: None,
+            },
+            SourceGroup {
+                id: "b".to_string(),
+                priority: 1,
+                sources: sources_b,
+                rules: vec![Rule {
+                    id: "allow-b".to_string(),
+                    priority: 0,
+                    matcher: RuleMatch {
+                        dst_ips: Some({
+                            let mut ips = IpSetV4::new();
+                            ips.add_ip(target_ip);
+                            ips
+                        }),
+                        proto: Proto::Tcp,
+                        src_ports: Vec::new(),
+                        dst_ports: Vec::new(),
+                        icmp_types: Vec::new(),
+                        icmp_codes: Vec::new(),
+                        tls: None,
+                    },
+                    action: RuleAction::Allow,
+                    mode: RuleMode::Enforce,
+                }],
+                default_action: None,
+            },
+        ],
+    );
+
+    let meta = PacketMeta {
+        src_ip: src_b,
+        dst_ip: target_ip,
+        proto: 6,
+        src_port: 12345,
+        dst_port: 443,
+        icmp_type: None,
+        icmp_code: None,
+    };
+
+    let (decision, group) = policy.evaluate_with_source_group(&meta, None, None);
+    assert_eq!(decision, PolicyDecision::Allow);
+    assert_eq!(group.as_deref(), Some("b"));
+    assert!(policy.is_internal(src_b));
+    assert!(!policy.is_internal(Ipv4Addr::new(172, 16, 0, 99)));
+}
+
+#[test]
+fn exact_source_group_index_keeps_fallback_groups_and_preserves_priority_order() {
+    let target_ip = Ipv4Addr::new(198, 51, 100, 10);
+    let src_ip = Ipv4Addr::new(172, 16, 0, 2);
+
+    let mut exact_sources = IpSetV4::new();
+    exact_sources.add_ip(src_ip);
+    let mut fallback_sources = IpSetV4::new();
+    fallback_sources.add_cidr(CidrV4::new(Ipv4Addr::new(172, 16, 0, 0), 24));
+
+    let policy = PolicySnapshot::new(
+        DefaultPolicy::Deny,
+        vec![
+            SourceGroup {
+                id: "fallback".to_string(),
+                priority: 0,
+                sources: fallback_sources,
+                rules: vec![Rule {
+                    id: "deny-target".to_string(),
+                    priority: 0,
+                    matcher: RuleMatch {
+                        dst_ips: Some({
+                            let mut ips = IpSetV4::new();
+                            ips.add_ip(target_ip);
+                            ips
+                        }),
+                        proto: Proto::Tcp,
+                        src_ports: Vec::new(),
+                        dst_ports: Vec::new(),
+                        icmp_types: Vec::new(),
+                        icmp_codes: Vec::new(),
+                        tls: None,
+                    },
+                    action: RuleAction::Deny,
+                    mode: RuleMode::Enforce,
+                }],
+                default_action: None,
+            },
+            SourceGroup {
+                id: "exact".to_string(),
+                priority: 1,
+                sources: exact_sources,
+                rules: vec![Rule {
+                    id: "allow-target".to_string(),
+                    priority: 0,
+                    matcher: RuleMatch {
+                        dst_ips: Some({
+                            let mut ips = IpSetV4::new();
+                            ips.add_ip(target_ip);
+                            ips
+                        }),
+                        proto: Proto::Tcp,
+                        src_ports: Vec::new(),
+                        dst_ports: Vec::new(),
+                        icmp_types: Vec::new(),
+                        icmp_codes: Vec::new(),
+                        tls: None,
+                    },
+                    action: RuleAction::Allow,
+                    mode: RuleMode::Enforce,
+                }],
+                default_action: None,
+            },
+        ],
+    );
+    let index = ExactSourceGroupIndex::for_snapshot(&policy);
+    let meta = PacketMeta {
+        src_ip,
+        dst_ip: target_ip,
+        proto: 6,
+        src_port: 12345,
+        dst_port: 443,
+        icmp_type: None,
+        icmp_code: None,
+    };
+
+    let (effective, raw, group_idx, _) = policy
+        .evaluate_with_source_group_effective_and_raw_index_for_group_indices_borrowed(
+            index.group_indices(src_ip),
+            index.fallback_group_indices(),
+            &meta,
+            None,
+            None,
+        );
+
+    assert_eq!(effective, PolicyDecision::Deny);
+    assert_eq!(raw, PolicyDecision::Deny);
+    assert_eq!(group_idx, Some(0));
+}

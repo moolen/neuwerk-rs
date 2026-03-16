@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CidrV4 {
     addr: Ipv4Addr,
     prefix: u8,
@@ -221,6 +221,10 @@ impl IpSetV4 {
 
     pub fn has_dynamic(&self) -> bool {
         self.dynamic.is_some()
+    }
+
+    pub(crate) fn dynamic_set(&self) -> Option<DynamicIpSetV4> {
+        self.dynamic.clone()
     }
 
     pub fn dynamic_ips(&self) -> Vec<Ipv4Addr> {

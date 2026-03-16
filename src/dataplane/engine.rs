@@ -11,7 +11,10 @@ use crate::dataplane::flow::{ExpiredFlow, FlowEntry, FlowKey, FlowTable, DEFAULT
 use crate::dataplane::nat::{NatTable, ReverseKey};
 use crate::dataplane::overlay::{OverlayConfig, SnatMode};
 use crate::dataplane::packet::Packet;
-use crate::dataplane::policy::{DynamicIpSetV4, PacketMeta, PolicyDecision, PolicySnapshot};
+use crate::dataplane::policy::{
+    new_shared_exact_source_group_index, DynamicIpSetV4, PacketMeta, PolicyDecision,
+    PolicySnapshot, SharedExactSourceGroupIndex,
+};
 use crate::dataplane::tls::{
     TlsDirection, TlsFlowDecision, TlsFlowState, TlsObservation, TlsVerifier,
 };
@@ -65,6 +68,7 @@ pub struct EngineState {
     policy_applied_generation: Option<Arc<AtomicU64>>,
     service_policy_applied_generation: Option<Arc<AtomicU64>>,
     intercept_to_host_steering: bool,
+    exact_source_policy_index: SharedExactSourceGroupIndex,
 }
 
 impl EngineState {
@@ -93,6 +97,10 @@ impl EngineState {
         data_port: u16,
         idle_timeout_secs: u64,
     ) -> Self {
+        let exact_source_policy_index = match policy.read() {
+            Ok(lock) => new_shared_exact_source_group_index(&lock),
+            Err(_) => Arc::new(arc_swap::ArcSwap::from_pointee(Default::default())),
+        };
         Self {
             flows: FlowTable::new_with_timeout(idle_timeout_secs),
             nat: NatTable::new_with_timeout(idle_timeout_secs),
@@ -117,6 +125,7 @@ impl EngineState {
             policy_applied_generation: None,
             service_policy_applied_generation: None,
             intercept_to_host_steering: false,
+            exact_source_policy_index,
         }
     }
 
@@ -194,42 +203,39 @@ impl EngineState {
         self.intercept_to_host_steering = enabled;
     }
 
+    pub fn set_exact_source_policy_index(&mut self, index: SharedExactSourceGroupIndex) {
+        self.exact_source_policy_index = index;
+    }
+
     pub fn clone_for_shard(&self) -> Self {
-        let mut state = Self::new_with_idle_timeout(
-            self.policy.clone(),
-            self.internal_net,
-            self.internal_prefix,
-            self.public_ip,
-            self.data_port,
-            self.flows.idle_timeout_secs(),
-        );
-        state.set_dataplane_config(self.dataplane_config.clone());
-        state.set_overlay_config(self.overlay.clone());
-        state.set_snat_mode(self.snat_mode);
-        state.set_time_override(self.now_override_secs);
-        if let Some(allowlist) = &self.dns_allowlist {
-            state.set_dns_allowlist(allowlist.clone());
-        }
-        state.set_dns_target_ips(self.dns_target_ips.clone());
-        if let Some(emitter) = &self.wiretap {
-            state.set_wiretap_emitter(emitter.clone());
-        }
-        if let Some(emitter) = &self.audit {
-            state.set_audit_emitter(emitter.clone());
-        }
-        if let Some(metrics) = &self.metrics {
-            state.set_metrics_handle(metrics.clone());
-        }
-        if let Some(control) = &self.drain_control {
-            state.set_drain_control(control.clone());
-        }
-        if let Some(tracker) = &self.policy_applied_generation {
-            state.set_policy_applied_generation(tracker.clone());
-        }
-        if let Some(tracker) = &self.service_policy_applied_generation {
-            state.set_service_policy_applied_generation(tracker.clone());
-        }
-        state.set_intercept_to_host_steering(self.intercept_to_host_steering);
+        let state = Self {
+            flows: FlowTable::new_with_timeout(self.flows.idle_timeout_secs()),
+            nat: NatTable::new_with_timeout(self.nat.idle_timeout_secs()),
+            policy: self.policy.clone(),
+            internal_net: self.internal_net,
+            internal_prefix: self.internal_prefix,
+            public_ip: self.public_ip,
+            data_port: self.data_port,
+            tls_verifier: self.tls_verifier.clone(),
+            dataplane_config: self.dataplane_config.clone(),
+            overlay: self.overlay.clone(),
+            snat_mode: self.snat_mode,
+            dns_target_ips: self.dns_target_ips.clone(),
+            dns_allowlist: self.dns_allowlist.clone(),
+            wiretap: self.wiretap.clone(),
+            audit: self.audit.clone(),
+            now_override_secs: self.now_override_secs,
+            last_eviction_check_secs: None,
+            metrics: self.metrics.clone(),
+            drain_control: self.drain_control.clone(),
+            shard_id: None,
+            policy_applied_generation: self.policy_applied_generation.clone(),
+            service_policy_applied_generation: self.service_policy_applied_generation.clone(),
+            intercept_to_host_steering: self.intercept_to_host_steering,
+            exact_source_policy_index: self.exact_source_policy_index.clone(),
+        };
+        state.update_flow_metrics();
+        state.update_nat_metrics();
         state
     }
 
@@ -300,9 +306,17 @@ impl EngineState {
         self.evict_expired(now);
     }
 
-    fn note_flow_open(&self, flow: FlowKey, now: u64) {
+    fn note_flow_open(&self, flow: FlowKey, proto: u8, source_group: &str, now: u64) {
         if let Some(allowlist) = &self.dns_allowlist {
             allowlist.flow_open(flow.dst_ip, now);
+        }
+        if let Some(metrics) = &self.metrics {
+            metrics.inc_dp_flow_open(proto_label(proto), source_group);
+            if let Some(shard_id) = self.shard_id {
+                metrics.add_dp_active_flows_shard(shard_id, 1);
+            } else {
+                metrics.add_dp_active_flows(1);
+            }
         }
     }
 
@@ -358,6 +372,20 @@ impl EngineState {
 
     fn observe_entry_flow_close(&self, entry: &FlowEntry, reason: &str, now: u64) {
         self.observe_flow_close(entry.source_group(), reason, entry.first_seen, now);
+    }
+
+    fn note_flow_close(&self, flow: &FlowKey, entry: &FlowEntry, reason: &str, now: u64) {
+        if let Some(allowlist) = &self.dns_allowlist {
+            allowlist.flow_close(flow.dst_ip, now);
+        }
+        self.observe_entry_flow_close(entry, reason, now);
+        if let Some(metrics) = &self.metrics {
+            if let Some(shard_id) = self.shard_id {
+                metrics.add_dp_active_flows_shard(shard_id, -1);
+            } else {
+                metrics.add_dp_active_flows(-1);
+            }
+        }
     }
 
     fn observe_flow_close(
