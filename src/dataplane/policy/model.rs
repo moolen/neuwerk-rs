@@ -216,6 +216,7 @@ pub struct ExactSourceGroupIndex {
 }
 
 pub type SharedExactSourceGroupIndex = Arc<ArcSwap<ExactSourceGroupIndex>>;
+pub type SharedPolicySnapshot = Arc<ArcSwap<PolicySnapshot>>;
 
 const EXACT_SOURCE_GROUP_INDEX_MAX_BUCKET_LEN: usize = 4;
 

@@ -8,8 +8,9 @@ use crate::controlplane::policy_config::{
 };
 use crate::dataplane::config::DataplaneConfigStore;
 use crate::dataplane::policy::{
-    CidrV4, DefaultPolicy, DynamicIpSetV4, EnforcementMode, IpSetV4, PolicySnapshot, Proto, Rule,
-    RuleAction, RuleMatch, RuleMode, SourceGroup,
+    new_shared_exact_source_group_index, CidrV4, DefaultPolicy, DynamicIpSetV4, EnforcementMode,
+    ExactSourceGroupIndex, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction, RuleMatch, RuleMode,
+    SharedExactSourceGroupIndex, SharedPolicySnapshot, SourceGroup,
 };
 use uuid::Uuid;
 
@@ -30,6 +31,8 @@ struct PolicyStoreState {
 #[derive(Debug, Clone)]
 pub struct PolicyStore {
     snapshot: Arc<RwLock<PolicySnapshot>>,
+    shared_snapshot: SharedPolicySnapshot,
+    exact_source_group_index: SharedExactSourceGroupIndex,
     dns_policy: Arc<RwLock<DnsPolicy>>,
     dns_allowlist: DynamicIpSetV4,
     dataplane_config: DataplaneConfigStore,
@@ -55,7 +58,7 @@ impl PolicyStore {
         dataplane_config: DataplaneConfigStore,
     ) -> Self {
         let dns_allowlist = DynamicIpSetV4::new();
-        let snapshot = Arc::new(RwLock::new(Self::build_snapshot(
+        let initial_snapshot = Self::build_snapshot(
             default_policy,
             internal_net,
             internal_prefix,
@@ -63,7 +66,13 @@ impl PolicyStore {
             dns_allowlist.clone(),
             Vec::new(),
             EnforcementMode::Enforce,
-        )));
+        );
+        let snapshot = Arc::new(RwLock::new(initial_snapshot.clone()));
+        let shared_snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(initial_snapshot));
+        let exact_source_group_index = {
+            let lock = snapshot.read().expect("policy snapshot initialized");
+            new_shared_exact_source_group_index(&lock)
+        };
         let dns_policy = Arc::new(RwLock::new(DnsPolicy::new(Vec::new())));
         let policy_applied_generation = Arc::new(AtomicU64::new(0));
         let service_policy_applied_generation = Arc::new(AtomicU64::new(0));
@@ -80,6 +89,8 @@ impl PolicyStore {
 
         Self {
             snapshot,
+            shared_snapshot,
+            exact_source_group_index,
             dns_policy,
             dns_allowlist,
             dataplane_config,
@@ -91,6 +102,14 @@ impl PolicyStore {
 
     pub fn snapshot(&self) -> Arc<RwLock<PolicySnapshot>> {
         self.snapshot.clone()
+    }
+
+    pub fn shared_snapshot(&self) -> SharedPolicySnapshot {
+        self.shared_snapshot.clone()
+    }
+
+    pub fn exact_source_group_index(&self) -> SharedExactSourceGroupIndex {
+        self.exact_source_group_index.clone()
     }
 
     pub fn dns_allowlist(&self) -> DynamicIpSetV4 {
@@ -198,12 +217,16 @@ impl PolicyStore {
             groups,
             effective_mode,
         );
+        let exact_source_group_index = Arc::new(ExactSourceGroupIndex::for_snapshot(&policy));
 
         if let Ok(mut lock) = self.snapshot.write() {
-            *lock = policy;
+            *lock = policy.clone();
         } else {
             return Err("policy snapshot unavailable".to_string());
         }
+        self.shared_snapshot.store(Arc::new(policy.clone()));
+        self.exact_source_group_index
+            .store(exact_source_group_index);
 
         if let Ok(mut lock) = self.dns_policy.write() {
             *lock = dns_policy;

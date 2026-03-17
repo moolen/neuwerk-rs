@@ -1607,7 +1607,10 @@ mod tests {
             "Action=DescribeAutoScalingGroups&AutoScalingGroupNames.member.1=asg-prod&Version=2011-01-01"
         );
         assert_eq!(signed.amz_date, "20260309T120000Z");
-        assert_eq!(signed.session_token.as_deref(), Some(session_token.as_str()));
+        assert_eq!(
+            signed.session_token.as_deref(),
+            Some(session_token.as_str())
+        );
         let expected_prefix = format!(
             concat!(
                 "AWS4-HMAC-SHA256 Credential={}/20260309/us-east-1/autoscaling/aws4_request, ",
@@ -1623,7 +1626,10 @@ mod tests {
             "a60e60a43db0536f",
         ]
         .concat();
-        assert_eq!(signed.authorization, format!("{expected_prefix}{expected_signature}"));
+        assert_eq!(
+            signed.authorization,
+            format!("{expected_prefix}{expected_signature}")
+        );
     }
 
     #[tokio::test]
@@ -1754,10 +1760,12 @@ mod tests {
             Some(AUTOSCALING_API_VERSION)
         );
         assert_eq!(requests[0].host, "autoscaling.us-east-1.amazonaws.com");
-        let expected_prefix =
-            format!("AWS4-HMAC-SHA256 Credential={}/", access_key_id);
+        let expected_prefix = format!("AWS4-HMAC-SHA256 Credential={}/", access_key_id);
         assert!(requests[0].authorization.starts_with(&expected_prefix));
-        assert_eq!(requests[0].security_token.as_deref(), Some(session_token.as_str()));
+        assert_eq!(
+            requests[0].security_token.as_deref(),
+            Some(session_token.as_str())
+        );
         assert!(!requests[0].amz_date.is_empty());
 
         assert_eq!(requests[1].action, "RecordLifecycleActionHeartbeat");

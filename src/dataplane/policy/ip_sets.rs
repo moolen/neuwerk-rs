@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -44,15 +45,38 @@ struct DynamicIpEntry {
     active_flows: u32,
 }
 
+#[derive(Default)]
+struct Ipv4IdentityHasher(u64);
+
+impl Hasher for Ipv4IdentityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut value = 0u64;
+        for (shift, byte) in bytes.iter().take(8).enumerate() {
+            value |= (*byte as u64) << (shift * 8);
+        }
+        self.0 = value;
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.0 = value as u64;
+    }
+}
+
+type DynamicIpMap = HashMap<u32, DynamicIpEntry, BuildHasherDefault<Ipv4IdentityHasher>>;
+
 #[derive(Debug, Clone, Default)]
 pub struct DynamicIpSetV4 {
-    inner: Arc<RwLock<HashMap<Ipv4Addr, DynamicIpEntry>>>,
+    inner: Arc<RwLock<DynamicIpMap>>,
 }
 
 impl DynamicIpSetV4 {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(RwLock::new(HashMap::new())),
+            inner: Arc::new(RwLock::new(DynamicIpMap::default())),
         }
     }
 
@@ -67,7 +91,7 @@ impl DynamicIpSetV4 {
         let now = now_secs();
         if let Ok(mut lock) = self.inner.write() {
             for ip in ips {
-                lock.entry(ip)
+                lock.entry(u32::from(ip))
                     .and_modify(|entry| {
                         entry.last_seen = entry.last_seen.max(now);
                     })
@@ -81,7 +105,7 @@ impl DynamicIpSetV4 {
 
     pub fn insert_at(&self, ip: Ipv4Addr, now: u64) {
         if let Ok(mut lock) = self.inner.write() {
-            lock.entry(ip)
+            lock.entry(u32::from(ip))
                 .and_modify(|entry| {
                     entry.last_seen = entry.last_seen.max(now);
                 })
@@ -94,14 +118,14 @@ impl DynamicIpSetV4 {
 
     pub fn contains(&self, ip: Ipv4Addr) -> bool {
         match self.inner.read() {
-            Ok(lock) => lock.contains_key(&ip),
+            Ok(lock) => lock.contains_key(&u32::from(ip)),
             Err(_) => false,
         }
     }
 
     pub fn flow_open(&self, ip: Ipv4Addr, now: u64) {
         if let Ok(mut lock) = self.inner.write() {
-            if let Some(entry) = lock.get_mut(&ip) {
+            if let Some(entry) = lock.get_mut(&u32::from(ip)) {
                 entry.last_seen = entry.last_seen.max(now);
                 entry.active_flows = entry.active_flows.saturating_add(1);
             }
@@ -110,7 +134,7 @@ impl DynamicIpSetV4 {
 
     pub fn flow_close(&self, ip: Ipv4Addr, last_seen: u64) {
         if let Ok(mut lock) = self.inner.write() {
-            if let Some(entry) = lock.get_mut(&ip) {
+            if let Some(entry) = lock.get_mut(&u32::from(ip)) {
                 entry.last_seen = entry.last_seen.max(last_seen);
                 entry.active_flows = entry.active_flows.saturating_sub(1);
             }
@@ -147,7 +171,7 @@ impl DynamicIpSetV4 {
     pub fn ips(&self) -> Vec<Ipv4Addr> {
         match self.inner.read() {
             Ok(lock) => {
-                let mut out = lock.keys().copied().collect::<Vec<_>>();
+                let mut out = lock.keys().copied().map(Ipv4Addr::from).collect::<Vec<_>>();
                 out.sort_unstable();
                 out
             }
