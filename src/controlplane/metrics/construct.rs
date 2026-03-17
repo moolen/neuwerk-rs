@@ -144,6 +144,87 @@ impl Metrics {
             &["result"],
         )
         .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_upstream_h2_shard_select = CounterVec::new(
+            Opts::new(
+                "svc_tls_intercept_upstream_h2_shard_select_total",
+                "Service-plane TLS intercept upstream HTTP/2 shard selections",
+            ),
+            &["shard"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_upstream_h2_send_wait = HistogramVec::new(
+            HistogramOpts::new(
+                "svc_tls_intercept_upstream_h2_send_wait_seconds",
+                "Service-plane TLS intercept upstream HTTP/2 send-path wait time seconds",
+            )
+            .buckets(vec![
+                0.000001, 0.000005, 0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05,
+                0.1, 0.5, 1.0,
+            ]),
+            &["phase"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_upstream_h2_selected_inflight = Histogram::with_opts(
+            HistogramOpts::new(
+                "svc_tls_intercept_upstream_h2_selected_inflight",
+                "Service-plane TLS intercept selected upstream HTTP/2 session in-flight stream count",
+            )
+            .buckets(vec![0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0]),
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_upstream_h2_pool_width = Histogram::with_opts(
+            HistogramOpts::new(
+                "svc_tls_intercept_upstream_h2_pool_width",
+                "Service-plane TLS intercept upstream HTTP/2 candidate session count per shard",
+            )
+            .buckets(vec![0.0, 1.0, 2.0, 3.0, 4.0, 8.0, 16.0, 32.0]),
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_upstream_h2_ready_errors = CounterVec::new(
+            Opts::new(
+                "svc_tls_intercept_upstream_h2_ready_errors_total",
+                "Service-plane TLS intercept upstream HTTP/2 ready error kinds",
+            ),
+            &["kind"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_upstream_response_errors = CounterVec::new(
+            Opts::new(
+                "svc_tls_intercept_upstream_response_errors_total",
+                "Service-plane TLS intercept upstream response error kinds",
+            ),
+            &["kind"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_upstream_h2_conn_closed = CounterVec::new(
+            Opts::new(
+                "svc_tls_intercept_upstream_h2_conn_closed_total",
+                "Service-plane TLS intercept upstream HTTP/2 connection close events by reason",
+            ),
+            &["reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_upstream_h2_conn_termination = CounterVec::new(
+            Opts::new(
+                "svc_tls_intercept_upstream_h2_conn_termination_total",
+                "Service-plane TLS intercept upstream HTTP/2 termination classes and reasons",
+            ),
+            &["kind", "reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_upstream_h2_retry = CounterVec::new(
+            Opts::new(
+                "svc_tls_intercept_upstream_h2_retry_total",
+                "Service-plane TLS intercept upstream HTTP/2 reconnect retry causes",
+            ),
+            &["cause"],
+        )
+        .map_err(|err| err.to_string())?;
+        let svc_tls_intercept_upstream_h2_selected_inflight_peak = Gauge::with_opts(Opts::new(
+            "svc_tls_intercept_upstream_h2_selected_inflight_peak",
+            "Service-plane TLS intercept selected upstream HTTP/2 session peak in-flight streams over the current second window",
+        ))
+        .map_err(|err| err.to_string())?;
         let raft_is_leader = Gauge::with_opts(Opts::new("raft_is_leader", "Raft leader status"))
             .map_err(|err| err.to_string())?;
         let raft_leader_changes = Counter::with_opts(Opts::new(
@@ -219,9 +300,19 @@ impl Metrics {
             &["proto", "source_group"],
         )
         .map_err(|err| err.to_string())?;
+        let dp_flow_opens_tcp_default = dp_flow_opens.with_label_values(&["tcp", "default"]);
+        let dp_flow_opens_udp_default = dp_flow_opens.with_label_values(&["udp", "default"]);
         let dp_flow_closes = CounterVec::new(
             Opts::new("dp_flow_closes_total", "Dataplane flow closes"),
             &["reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_flow_lifecycle_events = CounterVec::new(
+            Opts::new(
+                "dp_flow_lifecycle_events_total",
+                "Dataplane flow lifecycle events by worker, event, and reason",
+            ),
+            &["worker", "event", "reason"],
         )
         .map_err(|err| err.to_string())?;
         let dp_active_flows =
@@ -240,6 +331,8 @@ impl Metrics {
             &["source_group"],
         )
         .map_err(|err| err.to_string())?;
+        let dp_active_flows_source_group_default =
+            dp_active_flows_source_group.with_label_values(&["default"]);
         let dp_flow_lifetime_seconds = HistogramVec::new(
             HistogramOpts::new(
                 "dp_flow_lifetime_seconds",
@@ -269,6 +362,104 @@ impl Metrics {
             "Dataplane NAT port utilization ratio",
         ))
         .map_err(|err| err.to_string())?;
+        let dp_flow_table_utilization_ratio = Gauge::with_opts(Opts::new(
+            "dp_flow_table_utilization_ratio",
+            "Dataplane flow-table utilization ratio",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_flow_table_utilization_ratio_shard = GaugeVec::new(
+            Opts::new(
+                "dp_flow_table_utilization_ratio_shard",
+                "Dataplane flow-table utilization ratio per shard",
+            ),
+            &["shard"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_flow_table_capacity = GaugeVec::new(
+            Opts::new(
+                "dp_flow_table_capacity",
+                "Dataplane flow-table slot capacity by worker",
+            ),
+            &["worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_flow_table_tombstones = GaugeVec::new(
+            Opts::new(
+                "dp_flow_table_tombstones",
+                "Dataplane flow-table tombstone slots by worker",
+            ),
+            &["worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_flow_table_used_slots_ratio = GaugeVec::new(
+            Opts::new(
+                "dp_flow_table_used_slots_ratio",
+                "Dataplane flow-table used-slot ratio ((live+tombstones)/capacity) by worker",
+            ),
+            &["worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_flow_table_tombstone_ratio = GaugeVec::new(
+            Opts::new(
+                "dp_flow_table_tombstone_ratio",
+                "Dataplane flow-table tombstone ratio (tombstones/capacity) by worker",
+            ),
+            &["worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_flow_table_resize_events = CounterVec::new(
+            Opts::new(
+                "dp_flow_table_resize_events_total",
+                "Dataplane flow-table resize events by worker and reason",
+            ),
+            &["worker", "reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_syn_only_active_flows = GaugeVec::new(
+            Opts::new(
+                "dp_syn_only_active_flows",
+                "Dataplane SYN-only half-open flows by worker",
+            ),
+            &["worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_syn_only_lookup = CounterVec::new(
+            Opts::new(
+                "dp_syn_only_lookup_total",
+                "Dataplane SYN-only lookup outcomes by worker and result",
+            ),
+            &["worker", "result"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_syn_only_promotions = CounterVec::new(
+            Opts::new(
+                "dp_syn_only_promotions_total",
+                "Dataplane SYN-only promotions into full flow-table entries by worker and reason",
+            ),
+            &["worker", "reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_syn_only_evictions = CounterVec::new(
+            Opts::new(
+                "dp_syn_only_evictions_total",
+                "Dataplane SYN-only evictions/removals by worker and reason",
+            ),
+            &["worker", "reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_nat_table_utilization_ratio = Gauge::with_opts(Opts::new(
+            "dp_nat_table_utilization_ratio",
+            "Dataplane NAT-table utilization ratio",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_nat_table_utilization_ratio_shard = GaugeVec::new(
+            Opts::new(
+                "dp_nat_table_utilization_ratio_shard",
+                "Dataplane NAT-table utilization ratio per shard",
+            ),
+            &["shard"],
+        )
+        .map_err(|err| err.to_string())?;
         let dp_state_lock_wait_seconds = Histogram::with_opts(HistogramOpts::new(
             "dp_state_lock_wait_seconds",
             "Dataplane state lock wait time (seconds)",
@@ -279,6 +470,54 @@ impl Metrics {
             "Dataplane state lock contention events",
         ))
         .map_err(|err| err.to_string())?;
+        let dp_state_lock_wait_seconds_worker = HistogramVec::new(
+            HistogramOpts::new(
+                "dp_state_lock_wait_seconds_worker",
+                "Dataplane state lock wait time by worker (seconds)",
+            ),
+            &["worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_state_lock_wait_seconds_shard = HistogramVec::new(
+            HistogramOpts::new(
+                "dp_state_lock_wait_seconds_shard",
+                "Dataplane state lock wait time by shard (seconds)",
+            ),
+            &["shard"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_state_lock_hold_seconds_worker = HistogramVec::new(
+            HistogramOpts::new(
+                "dp_state_lock_hold_seconds_worker",
+                "Dataplane state lock hold time by worker (seconds)",
+            ),
+            &["worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_state_lock_hold_seconds_shard = HistogramVec::new(
+            HistogramOpts::new(
+                "dp_state_lock_hold_seconds_shard",
+                "Dataplane state lock hold time by shard (seconds)",
+            ),
+            &["shard"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_state_lock_contended_worker = CounterVec::new(
+            Opts::new(
+                "dp_state_lock_contended_worker_total",
+                "Dataplane state lock contention events by worker",
+            ),
+            &["worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_state_lock_contended_shard = CounterVec::new(
+            Opts::new(
+                "dp_state_lock_contended_shard_total",
+                "Dataplane state lock contention events by shard",
+            ),
+            &["shard"],
+        )
+        .map_err(|err| err.to_string())?;
         let dpdk_shared_io_lock_wait_seconds = Histogram::with_opts(HistogramOpts::new(
             "dpdk_shared_io_lock_wait_seconds",
             "DPDK shared IO lock wait time (seconds)",
@@ -288,6 +527,30 @@ impl Metrics {
             "dpdk_shared_io_lock_contended_total",
             "DPDK shared IO lock contention events",
         ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_shared_io_lock_wait_seconds_worker = HistogramVec::new(
+            HistogramOpts::new(
+                "dpdk_shared_io_lock_wait_seconds_worker",
+                "DPDK shared IO lock wait time by worker (seconds)",
+            ),
+            &["worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_shared_io_lock_hold_seconds_worker = HistogramVec::new(
+            HistogramOpts::new(
+                "dpdk_shared_io_lock_hold_seconds_worker",
+                "DPDK shared IO lock hold time by worker (seconds)",
+            ),
+            &["worker"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_shared_io_lock_contended_worker = CounterVec::new(
+            Opts::new(
+                "dpdk_shared_io_lock_contended_worker_total",
+                "DPDK shared IO lock contention events by worker",
+            ),
+            &["worker"],
+        )
         .map_err(|err| err.to_string())?;
         let dp_tls_decisions = CounterVec::new(
             Opts::new("dp_tls_decisions_total", "Dataplane TLS flow decisions"),
@@ -391,6 +654,38 @@ impl Metrics {
             &["queue"],
         )
         .map_err(|err| err.to_string())?;
+        let dpdk_tx_packet_class_by_queue = CounterVec::new(
+            Opts::new(
+                "dpdk_tx_packet_class_queue_total",
+                "DPDK TX accepted packets by queue and classified packet type",
+            ),
+            &["queue", "class"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_tx_stage_packets = CounterVec::new(
+            Opts::new(
+                "dpdk_tx_stage_packets_total",
+                "DPDK TX packets by port, queue, and send-path stage",
+            ),
+            &["port", "queue", "stage"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_tx_stage_bytes = CounterVec::new(
+            Opts::new(
+                "dpdk_tx_stage_bytes_total",
+                "DPDK TX bytes by port, queue, and send-path stage",
+            ),
+            &["port", "queue", "stage"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dpdk_tx_stage_packet_class = CounterVec::new(
+            Opts::new(
+                "dpdk_tx_stage_packet_class_total",
+                "DPDK TX packets by port, queue, send-path stage, and packet class",
+            ),
+            &["port", "queue", "stage", "class"],
+        )
+        .map_err(|err| err.to_string())?;
         let dpdk_flow_steer_dispatch_packets = CounterVec::new(
             Opts::new(
                 "dpdk_flow_steer_dispatch_packets_total",
@@ -431,6 +726,14 @@ impl Metrics {
             &["to_worker"],
         )
         .map_err(|err| err.to_string())?;
+        let dpdk_flow_steer_queue_utilization_ratio = GaugeVec::new(
+            Opts::new(
+                "dpdk_flow_steer_queue_utilization_ratio",
+                "DPDK shared RX software demux queue utilization ratio by target worker",
+            ),
+            &["to_worker"],
+        )
+        .map_err(|err| err.to_string())?;
         let dpdk_service_lane_forward_packets = CounterVec::new(
             Opts::new(
                 "dpdk_service_lane_forward_packets_total",
@@ -459,6 +762,129 @@ impl Metrics {
             "dpdk_service_lane_forward_queue_depth",
             "DPDK service-lane forward queue depth",
         ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_service_lane_forward_queue_utilization_ratio = Gauge::with_opts(Opts::new(
+            "dpdk_service_lane_forward_queue_utilization_ratio",
+            "DPDK service-lane forward queue utilization ratio",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_tcp_handshake_events = CounterVec::new(
+            Opts::new(
+                "dp_tcp_handshake_events_total",
+                "Dataplane TCP handshake packet events by worker",
+            ),
+            &["worker", "event"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_tcp_handshake_events_by_target = CounterVec::new(
+            Opts::new(
+                "dp_tcp_handshake_events_by_target_total",
+                "Dataplane TCP handshake packet events by worker, event, and target host",
+            ),
+            &["worker", "event", "target_host"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_tcp_handshake_final_ack_in = CounterVec::new(
+            Opts::new(
+                "dp_tcp_handshake_final_ack_in_total",
+                "Dataplane TCP final-ACK ingress events by worker and source group",
+            ),
+            &["worker", "source_group"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_tcp_handshake_final_ack_in_by_target = CounterVec::new(
+            Opts::new(
+                "dp_tcp_handshake_final_ack_in_by_target_total",
+                "Dataplane TCP final-ACK ingress events by worker, source group, and target host",
+            ),
+            &["worker", "source_group", "target_host"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_tcp_handshake_synack_out_without_followup_ack = CounterVec::new(
+            Opts::new(
+                "dp_tcp_handshake_synack_out_without_followup_ack_total",
+                "Dataplane TCP SYN-ACK forwards that never observed a follow-up final ACK, by worker, source group, and close reason",
+            ),
+            &["worker", "source_group", "reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_tcp_handshake_synack_out_without_followup_ack_by_target = CounterVec::new(
+            Opts::new(
+                "dp_tcp_handshake_synack_out_without_followup_ack_by_target_total",
+                "Dataplane TCP SYN-ACK forwards that never observed a follow-up final ACK, by worker, source group, target host, and close reason",
+            ),
+            &["worker", "source_group", "target_host", "reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_tcp_handshake_drops = CounterVec::new(
+            Opts::new(
+                "dp_tcp_handshake_drops_total",
+                "Dataplane TCP handshake drops by worker, phase, and reason",
+            ),
+            &["worker", "phase", "reason"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_tcp_handshake_close_age_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "dp_tcp_handshake_close_age_seconds",
+                "Dataplane TCP flow close age by worker, reason, and handshake phase state (seconds)",
+            )
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 30.0,
+                60.0, 120.0, 300.0,
+            ]),
+            &["worker", "reason", "completion"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_handshake_stage_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "dp_handshake_stage_seconds",
+                "Dataplane TCP-handshake stage time by worker, direction, and stage (seconds)",
+            )
+            .buckets(vec![
+                0.000_000_5,
+                0.000_001,
+                0.000_002_5,
+                0.000_005,
+                0.000_01,
+                0.000_025,
+                0.000_05,
+                0.000_1,
+                0.000_25,
+                0.000_5,
+                0.001,
+                0.002_5,
+                0.005,
+                0.01,
+                0.025,
+                0.05,
+            ]),
+            &["worker", "direction", "stage"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_table_probe_steps = HistogramVec::new(
+            HistogramOpts::new(
+                "dp_table_probe_steps",
+                "Dataplane flow/NAT table probe steps by worker, table, operation, and result",
+            )
+            .buckets(vec![
+                1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0, 48.0, 64.0, 96.0, 128.0,
+                256.0,
+            ]),
+            &["worker", "table", "operation", "result"],
+        )
+        .map_err(|err| err.to_string())?;
+        let dp_nat_port_scan_steps = HistogramVec::new(
+            HistogramOpts::new(
+                "dp_nat_port_scan_steps",
+                "Dataplane NAT port-allocation scan steps by worker and result",
+            )
+            .buckets(vec![
+                1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0, 48.0, 64.0, 96.0, 128.0,
+                256.0, 512.0, 1024.0,
+            ]),
+            &["worker", "result"],
+        )
         .map_err(|err| err.to_string())?;
         let dpdk_health_probe_packets = CounterVec::new(
             Opts::new(
@@ -599,6 +1025,42 @@ impl Metrics {
             .register(Box::new(svc_tls_intercept_upstream_h2_pool.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(svc_tls_intercept_upstream_h2_shard_select.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_tls_intercept_upstream_h2_send_wait.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(
+                svc_tls_intercept_upstream_h2_selected_inflight.clone(),
+            ))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_tls_intercept_upstream_h2_pool_width.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_tls_intercept_upstream_h2_ready_errors.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_tls_intercept_upstream_response_errors.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_tls_intercept_upstream_h2_conn_closed.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(
+                svc_tls_intercept_upstream_h2_conn_termination.clone(),
+            ))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(svc_tls_intercept_upstream_h2_retry.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(
+                svc_tls_intercept_upstream_h2_selected_inflight_peak.clone(),
+            ))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(raft_is_leader.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -650,6 +1112,9 @@ impl Metrics {
             .register(Box::new(dp_flow_closes.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dp_flow_lifecycle_events.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dp_active_flows.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -671,16 +1136,82 @@ impl Metrics {
             .register(Box::new(dp_nat_port_utilization_ratio.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dp_flow_table_utilization_ratio.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_flow_table_utilization_ratio_shard.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_flow_table_capacity.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_flow_table_tombstones.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_flow_table_used_slots_ratio.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_flow_table_tombstone_ratio.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_flow_table_resize_events.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_syn_only_active_flows.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_syn_only_lookup.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_syn_only_promotions.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_syn_only_evictions.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_nat_table_utilization_ratio.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_nat_table_utilization_ratio_shard.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dp_state_lock_wait_seconds.clone()))
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dp_state_lock_contended.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dp_state_lock_wait_seconds_worker.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_state_lock_wait_seconds_shard.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_state_lock_hold_seconds_worker.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_state_lock_hold_seconds_shard.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_state_lock_contended_worker.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_state_lock_contended_shard.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dpdk_shared_io_lock_wait_seconds.clone()))
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dpdk_shared_io_lock_contended.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_shared_io_lock_wait_seconds_worker.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_shared_io_lock_hold_seconds_worker.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_shared_io_lock_contended_worker.clone()))
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dp_tls_decisions.clone()))
@@ -752,6 +1283,18 @@ impl Metrics {
             .register(Box::new(dpdk_tx_dropped_by_queue.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dpdk_tx_packet_class_by_queue.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_tx_stage_packets.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_tx_stage_bytes.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_tx_stage_packet_class.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dpdk_flow_steer_dispatch_packets.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -767,6 +1310,9 @@ impl Metrics {
             .register(Box::new(dpdk_flow_steer_queue_depth.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dpdk_flow_steer_queue_utilization_ratio.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dpdk_service_lane_forward_packets.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -779,6 +1325,48 @@ impl Metrics {
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dpdk_service_lane_forward_queue_depth.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(
+                dpdk_service_lane_forward_queue_utilization_ratio.clone(),
+            ))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_tcp_handshake_events.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_tcp_handshake_events_by_target.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_tcp_handshake_final_ack_in.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_tcp_handshake_final_ack_in_by_target.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(
+                dp_tcp_handshake_synack_out_without_followup_ack.clone(),
+            ))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(
+                dp_tcp_handshake_synack_out_without_followup_ack_by_target.clone(),
+            ))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_tcp_handshake_drops.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_tcp_handshake_close_age_seconds.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_handshake_stage_seconds.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_table_probe_steps.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_nat_port_scan_steps.clone()))
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dpdk_health_probe_packets.clone()))
@@ -883,6 +1471,33 @@ impl Metrics {
         svc_tls_intercept_upstream_h2_pool
             .with_label_values(&["hit"])
             .inc_by(0.0);
+        svc_tls_intercept_upstream_h2_shard_select
+            .with_label_values(&["0"])
+            .inc_by(0.0);
+        svc_tls_intercept_upstream_h2_send_wait
+            .with_label_values(&["sender_clone_lock_wait"])
+            .observe(0.0);
+        svc_tls_intercept_upstream_h2_send_wait
+            .with_label_values(&["ready_wait"])
+            .observe(0.0);
+        svc_tls_intercept_upstream_h2_selected_inflight.observe(0.0);
+        svc_tls_intercept_upstream_h2_pool_width.observe(0.0);
+        svc_tls_intercept_upstream_h2_ready_errors
+            .with_label_values(&["other"])
+            .inc_by(0.0);
+        svc_tls_intercept_upstream_response_errors
+            .with_label_values(&["other"])
+            .inc_by(0.0);
+        svc_tls_intercept_upstream_h2_conn_closed
+            .with_label_values(&["other"])
+            .inc_by(0.0);
+        svc_tls_intercept_upstream_h2_conn_termination
+            .with_label_values(&["other", "other"])
+            .inc_by(0.0);
+        svc_tls_intercept_upstream_h2_retry
+            .with_label_values(&["other"])
+            .inc_by(0.0);
+        svc_tls_intercept_upstream_h2_selected_inflight_peak.set(0.0);
         dp_packets
             .with_label_values(&["outbound", "other", "deny", "default"])
             .inc_by(0.0);
@@ -894,6 +1509,12 @@ impl Metrics {
             .inc_by(0.0);
         dp_flow_closes
             .with_label_values(&["idle_timeout"])
+            .inc_by(0.0);
+        dp_flow_lifecycle_events
+            .with_label_values(&["0", "open", "new"])
+            .inc_by(0.0);
+        dp_flow_lifecycle_events
+            .with_label_values(&["0", "close", "idle_timeout"])
             .inc_by(0.0);
         dp_active_flows_source_group
             .with_label_values(&["default"])
@@ -969,6 +1590,24 @@ impl Metrics {
         dpdk_tx_dropped_by_queue
             .with_label_values(&["0"])
             .inc_by(0.0);
+        dpdk_tx_packet_class_by_queue
+            .with_label_values(&["0", "tcp_syn"])
+            .inc_by(0.0);
+        dpdk_tx_packet_class_by_queue
+            .with_label_values(&["0", "tcp_synack"])
+            .inc_by(0.0);
+        dpdk_tx_stage_packets
+            .with_label_values(&["0", "0", "attempted"])
+            .inc_by(0.0);
+        dpdk_tx_stage_bytes
+            .with_label_values(&["0", "0", "attempted"])
+            .inc_by(0.0);
+        dpdk_tx_stage_packet_class
+            .with_label_values(&["0", "0", "attempted", "tcp_syn"])
+            .inc_by(0.0);
+        dpdk_tx_stage_packet_class
+            .with_label_values(&["0", "0", "burst_unsent", "tcp_syn"])
+            .inc_by(0.0);
         dpdk_flow_steer_dispatch_packets
             .with_label_values(&["0", "0"])
             .inc_by(0.0);
@@ -984,6 +1623,9 @@ impl Metrics {
         dpdk_flow_steer_queue_depth
             .with_label_values(&["0"])
             .set(0.0);
+        dpdk_flow_steer_queue_utilization_ratio
+            .with_label_values(&["0"])
+            .set(0.0);
         dpdk_service_lane_forward_packets
             .with_label_values(&["1"])
             .inc_by(0.0);
@@ -994,6 +1636,125 @@ impl Metrics {
             .with_label_values(&["1"])
             .observe(0.0);
         dpdk_service_lane_forward_queue_depth.set(0.0);
+        dpdk_service_lane_forward_queue_utilization_ratio.set(0.0);
+        dp_state_lock_wait_seconds_worker
+            .with_label_values(&["0"])
+            .observe(0.0);
+        dp_state_lock_wait_seconds_shard
+            .with_label_values(&["0"])
+            .observe(0.0);
+        dp_state_lock_hold_seconds_worker
+            .with_label_values(&["0"])
+            .observe(0.0);
+        dp_state_lock_hold_seconds_shard
+            .with_label_values(&["0"])
+            .observe(0.0);
+        dp_state_lock_contended_worker
+            .with_label_values(&["0"])
+            .inc_by(0.0);
+        dp_state_lock_contended_shard
+            .with_label_values(&["0"])
+            .inc_by(0.0);
+        dpdk_shared_io_lock_wait_seconds_worker
+            .with_label_values(&["0"])
+            .observe(0.0);
+        dpdk_shared_io_lock_hold_seconds_worker
+            .with_label_values(&["0"])
+            .observe(0.0);
+        dpdk_shared_io_lock_contended_worker
+            .with_label_values(&["0"])
+            .inc_by(0.0);
+        dp_flow_table_utilization_ratio.set(0.0);
+        dp_flow_table_utilization_ratio_shard
+            .with_label_values(&["0"])
+            .set(0.0);
+        dp_flow_table_capacity.with_label_values(&["0"]).set(0.0);
+        dp_flow_table_tombstones.with_label_values(&["0"]).set(0.0);
+        dp_flow_table_used_slots_ratio
+            .with_label_values(&["0"])
+            .set(0.0);
+        dp_flow_table_tombstone_ratio
+            .with_label_values(&["0"])
+            .set(0.0);
+        dp_flow_table_resize_events
+            .with_label_values(&["0", "grow"])
+            .inc_by(0.0);
+        dp_flow_table_resize_events
+            .with_label_values(&["0", "shrink"])
+            .inc_by(0.0);
+        dp_flow_table_resize_events
+            .with_label_values(&["0", "rehash"])
+            .inc_by(0.0);
+        dp_syn_only_active_flows.with_label_values(&["0"]).set(0.0);
+        dp_syn_only_lookup
+            .with_label_values(&["0", "miss"])
+            .inc_by(0.0);
+        dp_syn_only_lookup
+            .with_label_values(&["0", "hit"])
+            .inc_by(0.0);
+        dp_syn_only_lookup
+            .with_label_values(&["0", "promoted"])
+            .inc_by(0.0);
+        dp_syn_only_lookup
+            .with_label_values(&["0", "removed"])
+            .inc_by(0.0);
+        dp_syn_only_promotions
+            .with_label_values(&["0", "inbound_synack"])
+            .inc_by(0.0);
+        dp_syn_only_evictions
+            .with_label_values(&["0", "idle_timeout"])
+            .inc_by(0.0);
+        dp_nat_table_utilization_ratio.set(0.0);
+        dp_nat_table_utilization_ratio_shard
+            .with_label_values(&["0"])
+            .set(0.0);
+        for event in ["syn_in", "syn_out", "synack_in", "synack_out", "completed"] {
+            dp_tcp_handshake_events
+                .with_label_values(&["0", event])
+                .inc_by(0.0);
+            dp_tcp_handshake_events_by_target
+                .with_label_values(&["0", event, "0.0.0.0"])
+                .inc_by(0.0);
+        }
+        dp_tcp_handshake_final_ack_in
+            .with_label_values(&["0", "default"])
+            .inc_by(0.0);
+        dp_tcp_handshake_final_ack_in_by_target
+            .with_label_values(&["0", "default", "0.0.0.0"])
+            .inc_by(0.0);
+        for reason in [
+            "tcp_rst",
+            "tcp_fin",
+            "idle_timeout",
+            "policy_drop",
+            "policy_deny",
+        ] {
+            dp_tcp_handshake_synack_out_without_followup_ack
+                .with_label_values(&["0", "default", reason])
+                .inc_by(0.0);
+            dp_tcp_handshake_synack_out_without_followup_ack_by_target
+                .with_label_values(&["0", "default", "0.0.0.0", reason])
+                .inc_by(0.0);
+        }
+        for (phase, reason) in [
+            ("syn", "parse"),
+            ("syn", "policy_deny"),
+            ("syn", "nat_alloc_failed"),
+            ("synack", "nat_miss"),
+            ("ack", "rewrite_failed"),
+        ] {
+            dp_tcp_handshake_drops
+                .with_label_values(&["0", phase, reason])
+                .inc_by(0.0);
+        }
+        for reason in ["tcp_rst", "tcp_fin", "idle_timeout"] {
+            for phase in ["unknown", "syn_only", "synack_seen", "completed"] {
+                let _ = dp_tcp_handshake_close_age_seconds.with_label_values(&["0", reason, phase]);
+            }
+        }
+        let _ = dp_handshake_stage_seconds.with_label_values(&["0", "outbound", "flow_probe"]);
+        let _ = dp_table_probe_steps.with_label_values(&["0", "flow", "lookup", "miss"]);
+        let _ = dp_nat_port_scan_steps.with_label_values(&["0", "allocated"]);
         for event in [
             "syn_seen",
             "synack_sent",
@@ -1033,7 +1794,7 @@ impl Metrics {
             .observe(0.0);
         integration_termination_drain_start.observe(0.0);
 
-        Ok(Self {
+        Ok(Self(Arc::new(MetricsInner {
             registry,
             http_requests,
             http_duration,
@@ -1056,6 +1817,16 @@ impl Metrics {
             svc_tls_intercept_phase,
             svc_tls_intercept_inflight,
             svc_tls_intercept_upstream_h2_pool,
+            svc_tls_intercept_upstream_h2_shard_select,
+            svc_tls_intercept_upstream_h2_send_wait,
+            svc_tls_intercept_upstream_h2_selected_inflight,
+            svc_tls_intercept_upstream_h2_pool_width,
+            svc_tls_intercept_upstream_h2_ready_errors,
+            svc_tls_intercept_upstream_response_errors,
+            svc_tls_intercept_upstream_h2_conn_closed,
+            svc_tls_intercept_upstream_h2_conn_termination,
+            svc_tls_intercept_upstream_h2_retry,
+            svc_tls_intercept_upstream_h2_selected_inflight_peak,
             raft_is_leader,
             raft_leader_changes,
             raft_current_term,
@@ -1076,18 +1847,44 @@ impl Metrics {
             dp_packets_inbound_tcp_allow_default,
             dp_bytes_inbound_tcp_allow_default,
             dp_flow_opens,
+            dp_flow_opens_tcp_default,
+            dp_flow_opens_udp_default,
             dp_flow_closes,
+            dp_flow_lifecycle_events,
             dp_active_flows,
             dp_active_flows_shard,
             dp_active_flows_source_group,
+            dp_active_flows_source_group_default,
             dp_flow_lifetime_seconds,
             dp_active_nat_entries,
             dp_active_nat_entries_shard,
             dp_nat_port_utilization_ratio,
+            dp_flow_table_utilization_ratio,
+            dp_flow_table_utilization_ratio_shard,
+            dp_flow_table_capacity,
+            dp_flow_table_tombstones,
+            dp_flow_table_used_slots_ratio,
+            dp_flow_table_tombstone_ratio,
+            dp_flow_table_resize_events,
+            dp_syn_only_active_flows,
+            dp_syn_only_lookup,
+            dp_syn_only_promotions,
+            dp_syn_only_evictions,
+            dp_nat_table_utilization_ratio,
+            dp_nat_table_utilization_ratio_shard,
             dp_state_lock_wait_seconds,
             dp_state_lock_contended,
+            dp_state_lock_wait_seconds_worker,
+            dp_state_lock_wait_seconds_shard,
+            dp_state_lock_hold_seconds_worker,
+            dp_state_lock_hold_seconds_shard,
+            dp_state_lock_contended_worker,
+            dp_state_lock_contended_shard,
             dpdk_shared_io_lock_wait_seconds,
             dpdk_shared_io_lock_contended,
+            dpdk_shared_io_lock_wait_seconds_worker,
+            dpdk_shared_io_lock_hold_seconds_worker,
+            dpdk_shared_io_lock_contended_worker,
             dp_tls_decisions,
             dp_icmp_decisions,
             dp_ipv4_fragments_dropped,
@@ -1111,15 +1908,32 @@ impl Metrics {
             dpdk_tx_packets_by_queue,
             dpdk_tx_bytes_by_queue,
             dpdk_tx_dropped_by_queue,
+            dpdk_tx_packet_class_by_queue,
+            dpdk_tx_stage_packets,
+            dpdk_tx_stage_bytes,
+            dpdk_tx_stage_packet_class,
             dpdk_flow_steer_dispatch_packets,
             dpdk_flow_steer_dispatch_bytes,
             dpdk_flow_steer_fail_open_events,
             dpdk_flow_steer_queue_wait_seconds,
             dpdk_flow_steer_queue_depth,
+            dpdk_flow_steer_queue_utilization_ratio,
             dpdk_service_lane_forward_packets,
             dpdk_service_lane_forward_bytes,
             dpdk_service_lane_forward_queue_wait_seconds,
             dpdk_service_lane_forward_queue_depth,
+            dpdk_service_lane_forward_queue_utilization_ratio,
+            dp_tcp_handshake_events,
+            dp_tcp_handshake_events_by_target,
+            dp_tcp_handshake_final_ack_in,
+            dp_tcp_handshake_final_ack_in_by_target,
+            dp_tcp_handshake_synack_out_without_followup_ack,
+            dp_tcp_handshake_synack_out_without_followup_ack_by_target,
+            dp_tcp_handshake_drops,
+            dp_tcp_handshake_close_age_seconds,
+            dp_handshake_stage_seconds,
+            dp_table_probe_steps,
+            dp_nat_port_scan_steps,
             dpdk_health_probe_packets,
             dpdk_xstats,
             dhcp_lease_active,
@@ -1136,8 +1950,7 @@ impl Metrics {
             integration_drain_duration,
             integration_termination_drain_start,
             dp_active_flows_counts: Arc::new(Mutex::new(HashMap::new())),
-            dp_active_flows_source_group_counts: Arc::new(Mutex::new(HashMap::new())),
             dp_active_nat_counts: Arc::new(Mutex::new(HashMap::new())),
-        })
+        })))
     }
 }

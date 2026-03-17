@@ -1,6 +1,76 @@
 use super::*;
 
 impl Metrics {
+    pub fn bind_dataplane_shard_metrics(&self, shard: usize) -> DataplaneShardMetricHandles {
+        let shard = shard.to_string();
+        DataplaneShardMetricHandles {
+            active_flows_shard: self.dp_active_flows_shard.with_label_values(&[&shard]),
+            active_nat_entries_shard: self
+                .dp_active_nat_entries_shard
+                .with_label_values(&[&shard]),
+        }
+    }
+
+    pub fn bind_dpdk_flow_steer_metrics(&self, worker_count: usize) -> DpdkFlowSteerMetricHandles {
+        let mut dispatch_packets = Vec::with_capacity(worker_count * worker_count);
+        let mut dispatch_bytes = Vec::with_capacity(worker_count * worker_count);
+        let mut fail_open_tx_missing = Vec::with_capacity(worker_count);
+        let mut fail_open_owner_missing = Vec::with_capacity(worker_count);
+        let mut queue_wait = Vec::with_capacity(worker_count);
+        let mut queue_depth = Vec::with_capacity(worker_count);
+        let mut queue_utilization_ratio = Vec::with_capacity(worker_count);
+
+        for from_worker in 0..worker_count {
+            let from_worker = from_worker.to_string();
+            for to_worker in 0..worker_count {
+                let to_worker = to_worker.to_string();
+                dispatch_packets.push(
+                    self.dpdk_flow_steer_dispatch_packets
+                        .with_label_values(&[&from_worker, &to_worker]),
+                );
+                dispatch_bytes.push(
+                    self.dpdk_flow_steer_dispatch_bytes
+                        .with_label_values(&[&from_worker, &to_worker]),
+                );
+            }
+        }
+
+        for worker in 0..worker_count {
+            let worker = worker.to_string();
+            fail_open_tx_missing.push(
+                self.dpdk_flow_steer_fail_open_events
+                    .with_label_values(&[&worker, "tx_missing"]),
+            );
+            fail_open_owner_missing.push(
+                self.dpdk_flow_steer_fail_open_events
+                    .with_label_values(&[&worker, "owner_missing"]),
+            );
+            queue_wait.push(
+                self.dpdk_flow_steer_queue_wait_seconds
+                    .with_label_values(&[&worker]),
+            );
+            queue_depth.push(
+                self.dpdk_flow_steer_queue_depth
+                    .with_label_values(&[&worker]),
+            );
+            queue_utilization_ratio.push(
+                self.dpdk_flow_steer_queue_utilization_ratio
+                    .with_label_values(&[&worker]),
+            );
+        }
+
+        DpdkFlowSteerMetricHandles {
+            worker_count,
+            dispatch_packets,
+            dispatch_bytes,
+            fail_open_tx_missing,
+            fail_open_owner_missing,
+            queue_wait,
+            queue_depth,
+            queue_utilization_ratio,
+        }
+    }
+
     pub fn observe_http(&self, path: &str, method: &str, status: u16, duration: Duration) {
         let status = status.to_string();
         self.http_requests
@@ -112,6 +182,64 @@ impl Metrics {
             .inc();
     }
 
+    pub fn inc_svc_tls_intercept_upstream_h2_shard_select(&self, shard: usize) {
+        let shard = shard.to_string();
+        self.svc_tls_intercept_upstream_h2_shard_select
+            .with_label_values(&[&shard])
+            .inc();
+    }
+
+    pub fn observe_svc_tls_intercept_upstream_h2_send_wait(&self, phase: &str, duration: Duration) {
+        self.svc_tls_intercept_upstream_h2_send_wait
+            .with_label_values(&[phase])
+            .observe(duration.as_secs_f64());
+    }
+
+    pub fn observe_svc_tls_intercept_upstream_h2_selected_inflight(&self, in_flight: usize) {
+        self.svc_tls_intercept_upstream_h2_selected_inflight
+            .observe(in_flight as f64);
+    }
+
+    pub fn observe_svc_tls_intercept_upstream_h2_pool_width(&self, pool_width: usize) {
+        self.svc_tls_intercept_upstream_h2_pool_width
+            .observe(pool_width as f64);
+    }
+
+    pub fn inc_svc_tls_intercept_upstream_h2_ready_error(&self, kind: &str) {
+        self.svc_tls_intercept_upstream_h2_ready_errors
+            .with_label_values(&[kind])
+            .inc();
+    }
+
+    pub fn inc_svc_tls_intercept_upstream_response_error(&self, kind: &str) {
+        self.svc_tls_intercept_upstream_response_errors
+            .with_label_values(&[kind])
+            .inc();
+    }
+
+    pub fn inc_svc_tls_intercept_upstream_h2_conn_closed(&self, reason: &str) {
+        self.svc_tls_intercept_upstream_h2_conn_closed
+            .with_label_values(&[reason])
+            .inc();
+    }
+
+    pub fn inc_svc_tls_intercept_upstream_h2_conn_termination(&self, kind: &str, reason: &str) {
+        self.svc_tls_intercept_upstream_h2_conn_termination
+            .with_label_values(&[kind, reason])
+            .inc();
+    }
+
+    pub fn inc_svc_tls_intercept_upstream_h2_retry(&self, cause: &str) {
+        self.svc_tls_intercept_upstream_h2_retry
+            .with_label_values(&[cause])
+            .inc();
+    }
+
+    pub fn set_svc_tls_intercept_upstream_h2_selected_inflight_peak(&self, value: usize) {
+        self.svc_tls_intercept_upstream_h2_selected_inflight_peak
+            .set(value as f64);
+    }
+
     pub fn set_raft_is_leader(&self, is_leader: bool) {
         self.raft_is_leader.set(if is_leader { 1.0 } else { 0.0 });
     }
@@ -198,10 +326,24 @@ impl Metrics {
     }
 
     pub fn inc_dp_flow_open(&self, proto: &str, source_group: &str) {
+        if source_group == "default" {
+            if proto == "tcp" {
+                self.dp_flow_opens_tcp_default.inc();
+                self.dp_active_flows_source_group_default.inc();
+                return;
+            }
+            if proto == "udp" {
+                self.dp_flow_opens_udp_default.inc();
+                self.dp_active_flows_source_group_default.inc();
+                return;
+            }
+        }
         self.dp_flow_opens
             .with_label_values(&[proto, source_group])
             .inc();
-        self.add_dp_active_flows_source_group(source_group, 1);
+        self.dp_active_flows_source_group
+            .with_label_values(&[source_group])
+            .inc();
     }
 
     pub fn inc_dp_flow_close(&self, reason: &str, count: u64) {
@@ -210,12 +352,53 @@ impl Metrics {
             .inc_by(count as f64);
     }
 
+    pub fn add_dp_flow_lifecycle_event(
+        &self,
+        worker: usize,
+        event: &str,
+        reason: &str,
+        count: u64,
+    ) {
+        let worker = worker.to_string();
+        self.dp_flow_lifecycle_events
+            .with_label_values(&[&worker, event, reason])
+            .inc_by(count as f64);
+    }
+
     pub fn observe_dp_flow_close(&self, source_group: &str, reason: &str, lifetime_secs: f64) {
         self.dp_flow_closes.with_label_values(&[reason]).inc();
         self.dp_flow_lifetime_seconds
             .with_label_values(&[source_group, reason])
             .observe(lifetime_secs.max(0.0));
-        self.add_dp_active_flows_source_group(source_group, -1);
+        if source_group == "default" {
+            self.dp_active_flows_source_group_default.dec();
+        } else {
+            self.dp_active_flows_source_group
+                .with_label_values(&[source_group])
+                .dec();
+        }
+    }
+
+    pub fn add_dp_active_flows(&self, delta: i64) {
+        if delta > 0 {
+            self.dp_active_flows.inc();
+        } else if delta < 0 {
+            self.dp_active_flows.dec();
+        }
+    }
+
+    pub fn add_dp_active_flows_shard(&self, shard: usize, delta: i64) {
+        let shard_label = shard.to_string();
+        let shard_gauge = self
+            .dp_active_flows_shard
+            .with_label_values(&[&shard_label]);
+        if delta > 0 {
+            shard_gauge.inc();
+            self.dp_active_flows.inc();
+        } else if delta < 0 {
+            shard_gauge.dec();
+            self.dp_active_flows.dec();
+        }
     }
 
     pub fn set_dp_active_flows(&self, count: usize) {
@@ -234,21 +417,16 @@ impl Metrics {
         }
     }
 
-    fn add_dp_active_flows_source_group(&self, source_group: &str, delta: i64) {
-        if let Ok(mut lock) = self.dp_active_flows_source_group_counts.lock() {
-            let next = {
-                let entry = lock.entry(source_group.to_string()).or_insert(0);
-                *entry = (*entry + delta).max(0);
-                *entry
-            };
-            self.dp_active_flows_source_group
-                .with_label_values(&[source_group])
-                .set(next as f64);
-        }
-    }
-
     pub fn set_dp_active_nat_entries(&self, count: usize) {
         self.dp_active_nat_entries.set(count as f64);
+    }
+
+    pub fn add_dp_active_nat_entries(&self, delta: i64) {
+        if delta > 0 {
+            self.dp_active_nat_entries.add(delta as f64);
+        } else if delta < 0 {
+            self.dp_active_nat_entries.sub((-delta) as f64);
+        }
     }
 
     pub fn set_dp_active_nat_entries_shard(&self, shard: usize, count: usize) {
@@ -263,8 +441,114 @@ impl Metrics {
         }
     }
 
+    pub fn add_dp_active_nat_entries_shard(&self, shard: usize, delta: i64) {
+        let shard_label = shard.to_string();
+        let shard_gauge = self
+            .dp_active_nat_entries_shard
+            .with_label_values(&[&shard_label]);
+        if delta > 0 {
+            shard_gauge.add(delta as f64);
+            self.dp_active_nat_entries.add(delta as f64);
+        } else if delta < 0 {
+            let delta = (-delta) as f64;
+            shard_gauge.sub(delta);
+            self.dp_active_nat_entries.sub(delta);
+        }
+    }
+
     pub fn set_dp_nat_port_utilization_ratio(&self, ratio: f64) {
         self.dp_nat_port_utilization_ratio.set(ratio);
+    }
+
+    pub fn set_dp_flow_table_utilization_ratio(&self, ratio: f64) {
+        self.dp_flow_table_utilization_ratio.set(ratio);
+    }
+
+    pub fn set_dp_flow_table_utilization_ratio_shard(&self, shard: usize, ratio: f64) {
+        let shard_label = shard.to_string();
+        self.dp_flow_table_utilization_ratio_shard
+            .with_label_values(&[&shard_label])
+            .set(ratio);
+    }
+
+    pub fn set_dp_flow_table_capacity_worker(&self, worker: usize, capacity: usize) {
+        let worker = worker.to_string();
+        self.dp_flow_table_capacity
+            .with_label_values(&[&worker])
+            .set(capacity as f64);
+    }
+
+    pub fn set_dp_flow_table_tombstones_worker(&self, worker: usize, tombstones: usize) {
+        let worker = worker.to_string();
+        self.dp_flow_table_tombstones
+            .with_label_values(&[&worker])
+            .set(tombstones as f64);
+    }
+
+    pub fn set_dp_flow_table_used_slots_ratio_worker(&self, worker: usize, ratio: f64) {
+        let worker = worker.to_string();
+        self.dp_flow_table_used_slots_ratio
+            .with_label_values(&[&worker])
+            .set(ratio);
+    }
+
+    pub fn set_dp_flow_table_tombstone_ratio_worker(&self, worker: usize, ratio: f64) {
+        let worker = worker.to_string();
+        self.dp_flow_table_tombstone_ratio
+            .with_label_values(&[&worker])
+            .set(ratio);
+    }
+
+    pub fn add_dp_flow_table_resize_event(&self, worker: usize, reason: &str, count: u64) {
+        if count == 0 {
+            return;
+        }
+        let worker = worker.to_string();
+        self.dp_flow_table_resize_events
+            .with_label_values(&[&worker, reason])
+            .inc_by(count as f64);
+    }
+
+    pub fn set_dp_syn_only_active_flows(&self, worker: usize, count: usize) {
+        let worker = worker.to_string();
+        self.dp_syn_only_active_flows
+            .with_label_values(&[&worker])
+            .set(count as f64);
+    }
+
+    pub fn inc_dp_syn_only_lookup(&self, worker: usize, result: &str) {
+        let worker = worker.to_string();
+        self.dp_syn_only_lookup
+            .with_label_values(&[&worker, result])
+            .inc();
+    }
+
+    pub fn inc_dp_syn_only_promotion(&self, worker: usize, reason: &str) {
+        let worker = worker.to_string();
+        self.dp_syn_only_promotions
+            .with_label_values(&[&worker, reason])
+            .inc();
+    }
+
+    pub fn add_dp_syn_only_eviction(&self, worker: usize, reason: &str, count: u64) {
+        if count == 0 {
+            return;
+        }
+        let worker = worker.to_string();
+        self.dp_syn_only_evictions
+            .with_label_values(&[&worker, reason])
+            .inc_by(count as f64);
+    }
+
+    pub fn set_dp_nat_table_utilization_ratio(&self, ratio: f64) {
+        self.dp_nat_table_utilization_ratio.set(ratio);
+    }
+
+    pub fn set_dp_nat_table_utilization_ratio_shard(&self, shard: usize, ratio: f64) {
+        let shard_label = shard.to_string();
+        self.dp_nat_table_utilization_ratio_shard
+            .with_label_values(&[&shard_label])
+            .set(ratio);
     }
 
     pub fn observe_dp_state_lock_wait(&self, wait: Duration) {
@@ -275,6 +559,78 @@ impl Metrics {
         self.dp_state_lock_contended.inc();
     }
 
+    pub fn observe_dp_state_lock_wait_worker(&self, worker: usize, shard: usize, wait: Duration) {
+        let worker = worker.to_string();
+        let shard = shard.to_string();
+        let secs = wait.as_secs_f64();
+        self.dp_state_lock_wait_seconds.observe(secs);
+        self.dp_state_lock_wait_seconds_worker
+            .with_label_values(&[&worker])
+            .observe(secs);
+        self.dp_state_lock_wait_seconds_shard
+            .with_label_values(&[&shard])
+            .observe(secs);
+    }
+
+    pub fn observe_dp_state_lock_hold_worker(&self, worker: usize, shard: usize, hold: Duration) {
+        let worker = worker.to_string();
+        let shard = shard.to_string();
+        let secs = hold.as_secs_f64();
+        self.dp_state_lock_hold_seconds_worker
+            .with_label_values(&[&worker])
+            .observe(secs);
+        self.dp_state_lock_hold_seconds_shard
+            .with_label_values(&[&shard])
+            .observe(secs);
+    }
+
+    pub fn inc_dp_state_lock_contended_worker(&self, worker: usize, shard: usize) {
+        let worker = worker.to_string();
+        let shard = shard.to_string();
+        self.dp_state_lock_contended.inc();
+        self.dp_state_lock_contended_worker
+            .with_label_values(&[&worker])
+            .inc();
+        self.dp_state_lock_contended_shard
+            .with_label_values(&[&shard])
+            .inc();
+    }
+
+    pub fn observe_dp_state_lock_wait_detailed(&self, worker: usize, shard: usize, wait: Duration) {
+        let worker = worker.to_string();
+        let shard = shard.to_string();
+        let secs = wait.as_secs_f64();
+        self.dp_state_lock_wait_seconds_worker
+            .with_label_values(&[&worker])
+            .observe(secs);
+        self.dp_state_lock_wait_seconds_shard
+            .with_label_values(&[&shard])
+            .observe(secs);
+    }
+
+    pub fn observe_dp_state_lock_hold_detailed(&self, worker: usize, shard: usize, hold: Duration) {
+        let worker = worker.to_string();
+        let shard = shard.to_string();
+        let secs = hold.as_secs_f64();
+        self.dp_state_lock_hold_seconds_worker
+            .with_label_values(&[&worker])
+            .observe(secs);
+        self.dp_state_lock_hold_seconds_shard
+            .with_label_values(&[&shard])
+            .observe(secs);
+    }
+
+    pub fn inc_dp_state_lock_contended_detailed(&self, worker: usize, shard: usize) {
+        let worker = worker.to_string();
+        let shard = shard.to_string();
+        self.dp_state_lock_contended_worker
+            .with_label_values(&[&worker])
+            .inc();
+        self.dp_state_lock_contended_shard
+            .with_label_values(&[&shard])
+            .inc();
+    }
+
     pub fn observe_dpdk_shared_io_lock_wait(&self, wait: Duration) {
         self.dpdk_shared_io_lock_wait_seconds
             .observe(wait.as_secs_f64());
@@ -282,6 +638,30 @@ impl Metrics {
 
     pub fn inc_dpdk_shared_io_lock_contended(&self) {
         self.dpdk_shared_io_lock_contended.inc();
+    }
+
+    pub fn observe_dpdk_shared_io_lock_wait_worker(&self, worker: usize, wait: Duration) {
+        let worker = worker.to_string();
+        let secs = wait.as_secs_f64();
+        self.dpdk_shared_io_lock_wait_seconds.observe(secs);
+        self.dpdk_shared_io_lock_wait_seconds_worker
+            .with_label_values(&[&worker])
+            .observe(secs);
+    }
+
+    pub fn observe_dpdk_shared_io_lock_hold_worker(&self, worker: usize, hold: Duration) {
+        let worker = worker.to_string();
+        self.dpdk_shared_io_lock_hold_seconds_worker
+            .with_label_values(&[&worker])
+            .observe(hold.as_secs_f64());
+    }
+
+    pub fn inc_dpdk_shared_io_lock_contended_worker(&self, worker: usize) {
+        let worker = worker.to_string();
+        self.dpdk_shared_io_lock_contended.inc();
+        self.dpdk_shared_io_lock_contended_worker
+            .with_label_values(&[&worker])
+            .inc();
     }
 
     pub fn inc_dp_tls_decision(&self, outcome: &str) {
@@ -405,6 +785,37 @@ impl Metrics {
             .inc_by(count as f64);
     }
 
+    pub fn inc_dpdk_tx_packet_class_queue(&self, queue: &str, class: &str, count: u64) {
+        self.dpdk_tx_packet_class_by_queue
+            .with_label_values(&[queue, class])
+            .inc_by(count as f64);
+    }
+
+    pub fn inc_dpdk_tx_stage_packets(&self, port: &str, queue: &str, stage: &str, count: u64) {
+        self.dpdk_tx_stage_packets
+            .with_label_values(&[port, queue, stage])
+            .inc_by(count as f64);
+    }
+
+    pub fn add_dpdk_tx_stage_bytes(&self, port: &str, queue: &str, stage: &str, bytes: u64) {
+        self.dpdk_tx_stage_bytes
+            .with_label_values(&[port, queue, stage])
+            .inc_by(bytes as f64);
+    }
+
+    pub fn inc_dpdk_tx_stage_packet_class(
+        &self,
+        port: &str,
+        queue: &str,
+        stage: &str,
+        class: &str,
+        count: u64,
+    ) {
+        self.dpdk_tx_stage_packet_class
+            .with_label_values(&[port, queue, stage, class])
+            .inc_by(count as f64);
+    }
+
     pub fn inc_dpdk_flow_steer_dispatch(&self, from_worker: usize, to_worker: usize) {
         let from_worker = from_worker.to_string();
         let to_worker = to_worker.to_string();
@@ -465,6 +876,115 @@ impl Metrics {
 
     pub fn set_dpdk_service_lane_forward_queue_depth(&self, depth: usize) {
         self.dpdk_service_lane_forward_queue_depth.set(depth as f64);
+        self.dpdk_service_lane_forward_queue_utilization_ratio
+            .set((depth as f64) / 1024.0);
+    }
+
+    pub fn inc_dp_tcp_handshake_event(&self, worker: usize, event: &str) {
+        let worker = worker.to_string();
+        self.dp_tcp_handshake_events
+            .with_label_values(&[&worker, event])
+            .inc();
+    }
+
+    pub fn inc_dp_tcp_handshake_event_by_target(
+        &self,
+        worker: usize,
+        event: &str,
+        target_host: &str,
+    ) {
+        let worker = worker.to_string();
+        self.dp_tcp_handshake_events
+            .with_label_values(&[&worker, event])
+            .inc();
+        self.dp_tcp_handshake_events_by_target
+            .with_label_values(&[&worker, event, target_host])
+            .inc();
+    }
+
+    pub fn inc_dp_tcp_handshake_final_ack_in(
+        &self,
+        worker: usize,
+        source_group: &str,
+        target_host: &str,
+    ) {
+        let worker = worker.to_string();
+        self.dp_tcp_handshake_final_ack_in
+            .with_label_values(&[&worker, source_group])
+            .inc();
+        self.dp_tcp_handshake_final_ack_in_by_target
+            .with_label_values(&[&worker, source_group, target_host])
+            .inc();
+    }
+
+    pub fn inc_dp_tcp_handshake_synack_out_without_followup_ack(
+        &self,
+        worker: usize,
+        source_group: &str,
+        target_host: &str,
+        reason: &str,
+    ) {
+        let worker = worker.to_string();
+        self.dp_tcp_handshake_synack_out_without_followup_ack
+            .with_label_values(&[&worker, source_group, reason])
+            .inc();
+        self.dp_tcp_handshake_synack_out_without_followup_ack_by_target
+            .with_label_values(&[&worker, source_group, target_host, reason])
+            .inc();
+    }
+
+    pub fn inc_dp_tcp_handshake_drop(&self, worker: usize, phase: &str, reason: &str) {
+        let worker = worker.to_string();
+        self.dp_tcp_handshake_drops
+            .with_label_values(&[&worker, phase, reason])
+            .inc();
+    }
+
+    pub fn observe_dp_tcp_handshake_close_age(
+        &self,
+        worker: usize,
+        reason: &str,
+        phase: &str,
+        age_secs: f64,
+    ) {
+        let worker = worker.to_string();
+        self.dp_tcp_handshake_close_age_seconds
+            .with_label_values(&[&worker, reason, phase])
+            .observe(age_secs.max(0.0));
+    }
+
+    pub fn observe_dp_handshake_stage(
+        &self,
+        worker: usize,
+        direction: &str,
+        stage: &str,
+        duration: Duration,
+    ) {
+        let worker = worker.to_string();
+        self.dp_handshake_stage_seconds
+            .with_label_values(&[&worker, direction, stage])
+            .observe(duration.as_secs_f64());
+    }
+
+    pub fn observe_dp_table_probe(
+        &self,
+        worker: usize,
+        table: &str,
+        operation: &str,
+        result: &str,
+        steps: usize,
+    ) {
+        let worker = worker.to_string();
+        self.dp_table_probe_steps
+            .with_label_values(&[&worker, table, operation, result])
+            .observe(steps as f64);
+    }
+
+    pub fn observe_dp_nat_port_scan(&self, worker: usize, result: &str, steps: usize) {
+        let worker = worker.to_string();
+        self.dp_nat_port_scan_steps
+            .with_label_values(&[&worker, result])
+            .observe(steps as f64);
     }
 
     pub fn inc_dpdk_health_probe(&self, event: &str) {

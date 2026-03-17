@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,6 +12,20 @@ use utoipa::ToSchema;
 
 mod construct;
 mod methods;
+
+thread_local! {
+    static CURRENT_DPDK_WORKER_ID: std::cell::Cell<Option<usize>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+pub fn set_current_dpdk_worker_id(worker_id: Option<usize>) {
+    CURRENT_DPDK_WORKER_ID.with(|cell| cell.set(worker_id));
+}
+
+pub fn current_dpdk_worker_id() -> Option<usize> {
+    CURRENT_DPDK_WORKER_ID.with(std::cell::Cell::get)
+}
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct StatsSnapshot {
@@ -84,7 +99,10 @@ pub struct ClusterNodeCatchup {
 }
 
 #[derive(Clone, Debug)]
-pub struct Metrics {
+pub struct Metrics(Arc<MetricsInner>);
+
+#[derive(Debug)]
+pub struct MetricsInner {
     registry: Registry,
     http_requests: CounterVec,
     http_duration: HistogramVec,
@@ -137,18 +155,44 @@ pub struct Metrics {
     dp_packets_inbound_tcp_allow_default: Counter,
     dp_bytes_inbound_tcp_allow_default: Counter,
     dp_flow_opens: CounterVec,
+    dp_flow_opens_tcp_default: Counter,
+    dp_flow_opens_udp_default: Counter,
     dp_flow_closes: CounterVec,
+    dp_flow_lifecycle_events: CounterVec,
     dp_active_flows: Gauge,
     dp_active_flows_shard: GaugeVec,
     dp_active_flows_source_group: GaugeVec,
+    dp_active_flows_source_group_default: Gauge,
     dp_flow_lifetime_seconds: HistogramVec,
     dp_active_nat_entries: Gauge,
     dp_active_nat_entries_shard: GaugeVec,
     dp_nat_port_utilization_ratio: Gauge,
+    dp_flow_table_utilization_ratio: Gauge,
+    dp_flow_table_utilization_ratio_shard: GaugeVec,
+    dp_flow_table_capacity: GaugeVec,
+    dp_flow_table_tombstones: GaugeVec,
+    dp_flow_table_used_slots_ratio: GaugeVec,
+    dp_flow_table_tombstone_ratio: GaugeVec,
+    dp_flow_table_resize_events: CounterVec,
+    dp_syn_only_active_flows: GaugeVec,
+    dp_syn_only_lookup: CounterVec,
+    dp_syn_only_promotions: CounterVec,
+    dp_syn_only_evictions: CounterVec,
+    dp_nat_table_utilization_ratio: Gauge,
+    dp_nat_table_utilization_ratio_shard: GaugeVec,
     dp_state_lock_wait_seconds: Histogram,
     dp_state_lock_contended: Counter,
+    dp_state_lock_wait_seconds_worker: HistogramVec,
+    dp_state_lock_wait_seconds_shard: HistogramVec,
+    dp_state_lock_hold_seconds_worker: HistogramVec,
+    dp_state_lock_hold_seconds_shard: HistogramVec,
+    dp_state_lock_contended_worker: CounterVec,
+    dp_state_lock_contended_shard: CounterVec,
     dpdk_shared_io_lock_wait_seconds: Histogram,
     dpdk_shared_io_lock_contended: Counter,
+    dpdk_shared_io_lock_wait_seconds_worker: HistogramVec,
+    dpdk_shared_io_lock_hold_seconds_worker: HistogramVec,
+    dpdk_shared_io_lock_contended_worker: CounterVec,
     dp_tls_decisions: CounterVec,
     dp_icmp_decisions: CounterVec,
     dp_ipv4_fragments_dropped: Counter,
@@ -172,15 +216,32 @@ pub struct Metrics {
     dpdk_tx_packets_by_queue: CounterVec,
     dpdk_tx_bytes_by_queue: CounterVec,
     dpdk_tx_dropped_by_queue: CounterVec,
+    dpdk_tx_packet_class_by_queue: CounterVec,
+    dpdk_tx_stage_packets: CounterVec,
+    dpdk_tx_stage_bytes: CounterVec,
+    dpdk_tx_stage_packet_class: CounterVec,
     dpdk_flow_steer_dispatch_packets: CounterVec,
     dpdk_flow_steer_dispatch_bytes: CounterVec,
     dpdk_flow_steer_fail_open_events: CounterVec,
     dpdk_flow_steer_queue_wait_seconds: HistogramVec,
     dpdk_flow_steer_queue_depth: GaugeVec,
+    dpdk_flow_steer_queue_utilization_ratio: GaugeVec,
     dpdk_service_lane_forward_packets: CounterVec,
     dpdk_service_lane_forward_bytes: CounterVec,
     dpdk_service_lane_forward_queue_wait_seconds: HistogramVec,
     dpdk_service_lane_forward_queue_depth: Gauge,
+    dpdk_service_lane_forward_queue_utilization_ratio: Gauge,
+    dp_tcp_handshake_events: CounterVec,
+    dp_tcp_handshake_events_by_target: CounterVec,
+    dp_tcp_handshake_final_ack_in: CounterVec,
+    dp_tcp_handshake_final_ack_in_by_target: CounterVec,
+    dp_tcp_handshake_synack_out_without_followup_ack: CounterVec,
+    dp_tcp_handshake_synack_out_without_followup_ack_by_target: CounterVec,
+    dp_tcp_handshake_drops: CounterVec,
+    dp_tcp_handshake_close_age_seconds: HistogramVec,
+    dp_handshake_stage_seconds: HistogramVec,
+    dp_table_probe_steps: HistogramVec,
+    dp_nat_port_scan_steps: HistogramVec,
     dpdk_health_probe_packets: CounterVec,
     dpdk_xstats: GaugeVec,
     dhcp_lease_active: Gauge,
@@ -197,8 +258,96 @@ pub struct Metrics {
     integration_drain_duration: HistogramVec,
     integration_termination_drain_start: Histogram,
     dp_active_flows_counts: Arc<Mutex<HashMap<usize, usize>>>,
-    dp_active_flows_source_group_counts: Arc<Mutex<HashMap<String, i64>>>,
     dp_active_nat_counts: Arc<Mutex<HashMap<usize, usize>>>,
+}
+
+impl Deref for Metrics {
+    type Target = MetricsInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DpdkFlowSteerMetricHandles {
+    worker_count: usize,
+    dispatch_packets: Vec<Counter>,
+    dispatch_bytes: Vec<Counter>,
+    fail_open_tx_missing: Vec<Counter>,
+    fail_open_owner_missing: Vec<Counter>,
+    queue_wait: Vec<Histogram>,
+    queue_depth: Vec<Gauge>,
+    queue_utilization_ratio: Vec<Gauge>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DataplaneShardMetricHandles {
+    active_flows_shard: Gauge,
+    active_nat_entries_shard: Gauge,
+}
+
+impl DataplaneShardMetricHandles {
+    #[inline]
+    pub fn inc_active_flows(&self) {
+        self.active_flows_shard.inc();
+    }
+
+    #[inline]
+    pub fn dec_active_flows(&self) {
+        self.active_flows_shard.dec();
+    }
+
+    #[inline]
+    pub fn add_active_nat_entries(&self, delta: i64) {
+        if delta > 0 {
+            self.active_nat_entries_shard.add(delta as f64);
+        } else if delta < 0 {
+            self.active_nat_entries_shard.sub((-delta) as f64);
+        }
+    }
+}
+
+impl DpdkFlowSteerMetricHandles {
+    #[inline]
+    fn worker_pair_index(&self, from_worker: usize, to_worker: usize) -> usize {
+        debug_assert!(from_worker < self.worker_count);
+        debug_assert!(to_worker < self.worker_count);
+        from_worker * self.worker_count + to_worker
+    }
+
+    #[inline]
+    pub fn observe_dispatch(
+        &self,
+        from_worker: usize,
+        to_worker: usize,
+        bytes: usize,
+        wait: Duration,
+    ) {
+        let idx = self.worker_pair_index(from_worker, to_worker);
+        self.dispatch_packets[idx].inc();
+        self.dispatch_bytes[idx].inc_by(bytes as f64);
+        self.queue_wait[to_worker].observe(wait.as_secs_f64());
+    }
+
+    #[inline]
+    pub fn set_queue_depth(&self, to_worker: usize, depth: usize) {
+        debug_assert!(to_worker < self.worker_count);
+        self.queue_depth[to_worker].set(depth as f64);
+        self.queue_utilization_ratio[to_worker].set((depth as f64) / 1024.0);
+    }
+
+    #[inline]
+    pub fn inc_fail_open_tx_missing(&self, worker: usize) {
+        debug_assert!(worker < self.worker_count);
+        self.fail_open_tx_missing[worker].inc();
+    }
+
+    #[inline]
+    pub fn inc_fail_open_owner_missing(&self, worker: usize) {
+        debug_assert!(worker < self.worker_count);
+        self.fail_open_owner_missing[worker].inc();
+    }
 }
 
 impl Metrics {
