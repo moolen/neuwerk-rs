@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use crate::dataplane::engine::{Action, EngineState};
 use crate::dataplane::overlay::{self, EncapMode};
@@ -12,6 +13,8 @@ const IFF_TUN: libc::c_short = 0x0001;
 const IFF_TAP: libc::c_short = 0x0002;
 const IFF_NO_PI: libc::c_short = 0x1000;
 static OVERLAY_SWAP_TUNNELS: OnceLock<bool> = OnceLock::new();
+const SOFT_HOUSEKEEPING_INTERVAL_PACKETS: u64 = 64;
+const SOFT_HOUSEKEEPING_INTERVAL: Duration = Duration::from_micros(250);
 
 #[repr(C)]
 struct IfReq {
@@ -67,6 +70,8 @@ impl SoftAdapter {
             "dataplane started (software)"
         );
         let mut buf = vec![0u8; 65535];
+        let mut packets_since_housekeeping = 0u64;
+        let mut next_housekeeping_at = Instant::now() + SOFT_HOUSEKEEPING_INTERVAL;
         loop {
             let n = self
                 .file
@@ -75,6 +80,7 @@ impl SoftAdapter {
             if n == 0 {
                 continue;
             }
+            packets_since_housekeeping = packets_since_housekeeping.saturating_add(1);
 
             if state.overlay.mode == EncapMode::None {
                 let mut pkt = Packet::from_bytes(&buf[..n]);
@@ -85,6 +91,14 @@ impl SoftAdapter {
                             .write_all(pkt.buffer())
                             .map_err(|err| format!("dataplane write failed: {err}"))?;
                     }
+                }
+                let now = Instant::now();
+                if packets_since_housekeeping >= SOFT_HOUSEKEEPING_INTERVAL_PACKETS
+                    || now >= next_housekeeping_at
+                {
+                    state.run_housekeeping();
+                    packets_since_housekeeping = 0;
+                    next_housekeeping_at = now + SOFT_HOUSEKEEPING_INTERVAL;
                 }
                 continue;
             }
@@ -112,6 +126,14 @@ impl SoftAdapter {
                         .write_all(&out)
                         .map_err(|err| format!("dataplane write failed: {err}"))?;
                 }
+            }
+            let now = Instant::now();
+            if packets_since_housekeeping >= SOFT_HOUSEKEEPING_INTERVAL_PACKETS
+                || now >= next_housekeeping_at
+            {
+                state.run_housekeeping();
+                packets_since_housekeeping = 0;
+                next_housekeeping_at = now + SOFT_HOUSEKEEPING_INTERVAL;
             }
         }
     }

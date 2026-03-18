@@ -93,6 +93,12 @@ impl PacketBuf {
         }
     }
 
+    fn take_transfer_bytes(&mut self) -> Vec<u8> {
+        let payload = self.as_slice().to_vec();
+        self.truncate(0);
+        payload
+    }
+
     fn as_slice(&self) -> &[u8] {
         match self {
             Self::Owned(buf) => buf.as_slice(),
@@ -144,7 +150,6 @@ impl Clone for Packet {
 
 include!("packet/impl_packet.rs");
 
-#[derive(Debug, Clone, Copy)]
 pub struct IcmpInnerTuple {
     pub ip_offset: usize,
     pub ihl: usize,

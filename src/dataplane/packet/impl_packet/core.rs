@@ -47,6 +47,10 @@ impl Packet {
         self.buf.into_vec()
     }
 
+    pub fn take_transfer_bytes(&mut self) -> Vec<u8> {
+        self.buf.take_transfer_bytes()
+    }
+
     pub fn is_borrowed(&self) -> bool {
         self.buf.is_borrowed()
     }

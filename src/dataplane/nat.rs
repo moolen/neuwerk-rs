@@ -50,6 +50,7 @@ struct OpenProbe {
     idx: usize,
     slots_len: usize,
     kind: OpenProbeKind,
+    steps: usize,
 }
 
 impl OpenProbe {
@@ -57,6 +58,37 @@ impl OpenProbe {
     fn is_hit(self) -> bool {
         self.kind == OpenProbeKind::Hit
     }
+
+    #[inline]
+    fn steps(self) -> usize {
+        self.steps
+    }
+
+    #[inline]
+    fn result_label(self) -> &'static str {
+        match self.kind {
+            OpenProbeKind::Hit => "hit",
+            OpenProbeKind::Miss => "miss",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NatCreateObservation {
+    pub external_port: u16,
+    pub created: bool,
+    pub map_probe_steps: usize,
+    pub map_probe_result: &'static str,
+    pub reverse_probe_steps: usize,
+    pub reverse_probe_result: &'static str,
+    pub port_scan_steps: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NatReverseLookupObservation {
+    pub flow: Option<FlowKey>,
+    pub probe_steps: usize,
+    pub probe_result: &'static str,
 }
 
 #[derive(Debug)]
@@ -79,6 +111,10 @@ impl<K: Copy + Eq, V> OpenMap<K, V> {
 
     fn len(&self) -> usize {
         self.len
+    }
+
+    fn capacity(&self) -> usize {
+        self.slots.len()
     }
 
     fn clear(&mut self) {
@@ -110,6 +146,16 @@ impl<K: Copy + Eq, V> OpenMap<K, V> {
             .reusable_lookup_index(key, probe)
             .or_else(|| self.find_index(key))?;
         match &mut self.slots[idx] {
+            OpenSlot::Occupied { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+
+    fn get_with_probe(&self, key: &K, probe: OpenProbe) -> Option<&V> {
+        let idx = self
+            .reusable_lookup_index(key, probe)
+            .or_else(|| self.find_index(key))?;
+        match &self.slots[idx] {
             OpenSlot::Occupied { value, .. } => Some(value),
             _ => None,
         }
@@ -264,18 +310,20 @@ impl<K: Copy + Eq, V> OpenMap<K, V> {
                 idx: 0,
                 slots_len: 0,
                 kind: OpenProbeKind::Miss,
+                steps: 0,
             };
         }
         let mask = self.slots.len() - 1;
         let mut first_tombstone = None;
         let mut idx = self.initial_probe_index(key);
-        for _ in 0..self.slots.len() {
+        for step in 0..self.slots.len() {
             match &self.slots[idx] {
                 OpenSlot::Empty => {
                     return OpenProbe {
                         idx: first_tombstone.unwrap_or(idx),
                         slots_len: self.slots.len(),
                         kind: OpenProbeKind::Miss,
+                        steps: step + 1,
                     };
                 }
                 OpenSlot::Tombstone => {
@@ -291,6 +339,7 @@ impl<K: Copy + Eq, V> OpenMap<K, V> {
                             idx,
                             slots_len: self.slots.len(),
                             kind: OpenProbeKind::Hit,
+                            steps: step + 1,
                         };
                     }
                 }
@@ -301,6 +350,7 @@ impl<K: Copy + Eq, V> OpenMap<K, V> {
             idx: first_tombstone.unwrap_or(0),
             slots_len: self.slots.len(),
             kind: OpenProbeKind::Miss,
+            steps: self.slots.len(),
         }
     }
 
@@ -365,6 +415,7 @@ pub struct NatTable {
     map: OpenMap<FlowKey, NatEntry>,
     reverse: OpenMap<ReverseKey, FlowKey>,
     idle_timeout_secs: u64,
+    next_port_hint: u32,
 }
 
 impl Default for NatTable {
@@ -384,6 +435,7 @@ impl NatTable {
             map: OpenMap::new_with_capacity(capacity, flow_hash),
             reverse: OpenMap::new_with_capacity(capacity, reverse_hash),
             idle_timeout_secs,
+            next_port_hint: u32::MAX,
         }
     }
 
@@ -396,18 +448,26 @@ impl NatTable {
             .map(|(port, _)| port)
     }
 
-    pub fn get_or_create_with_status(
+    pub fn get_or_create_with_observation(
         &mut self,
         key: &FlowKey,
         now: u64,
-    ) -> Result<(u16, bool), NatError> {
+    ) -> Result<NatCreateObservation, NatError> {
         let map_probe = self.map.probe(key);
         if let Some(entry) = self.map.get_mut_with_probe(key, map_probe) {
             entry.last_seen = now;
-            return Ok((entry.external_port, false));
+            return Ok(NatCreateObservation {
+                external_port: entry.external_port,
+                created: false,
+                map_probe_steps: map_probe.steps(),
+                map_probe_result: map_probe.result_label(),
+                reverse_probe_steps: 0,
+                reverse_probe_result: "not_needed",
+                port_scan_steps: 0,
+            });
         }
 
-        let (reverse_key, reverse_probe) =
+        let (reverse_key, reverse_probe, port_scan_steps) =
             self.allocate_port(key).ok_or(NatError::PortExhausted)?;
         let external_port = reverse_key.external_port;
         let entry = NatEntry {
@@ -434,11 +494,38 @@ impl NatTable {
             }
         }
 
-        Ok((external_port, true))
+        Ok(NatCreateObservation {
+            external_port,
+            created: true,
+            map_probe_steps: map_probe.steps(),
+            map_probe_result: map_probe.result_label(),
+            reverse_probe_steps: reverse_probe.steps(),
+            reverse_probe_result: reverse_probe.result_label(),
+            port_scan_steps,
+        })
+    }
+
+    pub fn get_or_create_with_status(
+        &mut self,
+        key: &FlowKey,
+        now: u64,
+    ) -> Result<(u16, bool), NatError> {
+        let obs = self.get_or_create_with_observation(key, now)?;
+        Ok((obs.external_port, obs.created))
     }
 
     pub fn reverse_lookup(&self, key: &ReverseKey) -> Option<FlowKey> {
-        self.reverse.get(key).copied()
+        self.reverse_lookup_with_observation(key).flow
+    }
+
+    pub fn reverse_lookup_with_observation(&self, key: &ReverseKey) -> NatReverseLookupObservation {
+        let probe = self.reverse.probe(key);
+        let flow = self.reverse.get_with_probe(key, probe).copied();
+        NatReverseLookupObservation {
+            flow,
+            probe_steps: probe.steps(),
+            probe_result: probe.result_label(),
+        }
     }
 
     #[inline]
@@ -461,6 +548,7 @@ impl NatTable {
         let Some(entry) = self.map.remove(key) else {
             return false;
         };
+        self.next_port_hint = (entry.external_port - PORT_MIN) as u32;
         let reverse_key = ReverseKey {
             external_port: entry.external_port,
             remote_ip: entry.internal.dst_ip,
@@ -491,6 +579,7 @@ impl NatTable {
     pub fn clear(&mut self) {
         self.map.clear();
         self.reverse.clear();
+        self.next_port_hint = u32::MAX;
     }
 
     pub fn idle_timeout_secs(&self) -> u64 {
@@ -501,6 +590,10 @@ impl NatTable {
         self.map.len()
     }
 
+    pub fn capacity(&self) -> usize {
+        self.map.capacity()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.map.len() == 0
     }
@@ -509,9 +602,13 @@ impl NatTable {
         PORT_RANGE_LEN as u32
     }
 
-    fn allocate_port(&mut self, key: &FlowKey) -> Option<(ReverseKey, OpenProbe)> {
+    fn allocate_port(&mut self, key: &FlowKey) -> Option<(ReverseKey, OpenProbe, usize)> {
         let range = Self::port_range_len();
-        let start = flow_hash(key) % range;
+        let start = if self.next_port_hint < range {
+            self.next_port_hint
+        } else {
+            flow_hash(key) % range
+        };
         let mut reverse_key = ReverseKey {
             external_port: PORT_MIN,
             remote_ip: key.dst_ip,
@@ -523,7 +620,8 @@ impl NatTable {
             reverse_key.external_port = PORT_MIN + offset as u16;
             let probe = self.reverse.probe(&reverse_key);
             if !probe.is_hit() {
-                return Some((reverse_key, probe));
+                self.next_port_hint = if offset + 1 == range { 0 } else { offset + 1 };
+                return Some((reverse_key, probe, (i + 1) as usize));
             }
         }
         None
@@ -655,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn evict_expired_allows_deterministic_port_reuse() {
+    fn evict_expired_allows_port_reuse() {
         let mut table = NatTable::new_with_timeout(1);
         let flow = FlowKey {
             src_ip: Ipv4Addr::new(10, 0, 0, 2),
@@ -670,7 +768,8 @@ mod tests {
 
         let (second, created) = table.get_or_create_with_status(&flow, 4).unwrap();
         assert!(created);
-        assert_eq!(second, first);
+        assert!((PORT_MIN..=PORT_MAX).contains(&second));
+        assert!(second == first || second == first.saturating_add(1));
     }
 
     #[test]
@@ -714,20 +813,19 @@ mod tests {
             dst_port: 8443,
             proto: 6,
         };
-        let range = NatTable::port_range_len();
-        while flow_hash(&flow) % range != range - 1 {
+        let range = NatTable::port_range_len() as usize;
+        let mut flows = Vec::with_capacity(2);
+        while flows.len() < 2 {
+            if flow_hash(&flow) % NatTable::port_range_len() == range as u32 - 1 {
+                flows.push(flow);
+            }
             flow.src_port = flow.src_port.wrapping_add(1);
         }
 
-        let occupied = ReverseKey {
-            external_port: PORT_MAX,
-            remote_ip: flow.dst_ip,
-            remote_port: flow.dst_port,
-            proto: flow.proto,
-        };
-        table.reverse.insert(occupied, flow);
+        let occupied = table.get_or_create(&flows[0], 1).unwrap();
+        assert_eq!(occupied, PORT_MAX);
 
-        let (allocated, _) = table.allocate_port(&flow).unwrap();
+        let (allocated, _, _) = table.allocate_port(&flows[1]).unwrap();
         assert_eq!(allocated.external_port, PORT_MIN);
     }
 
@@ -743,5 +841,36 @@ mod tests {
         assert_eq!(first, PORT_MIN);
         assert_eq!(second, PORT_MIN + 1);
         assert_eq!(third, PORT_MIN + 2);
+    }
+
+    #[test]
+    fn remove_reuses_recently_freed_port_first() {
+        let mut table = NatTable::new_with_timeout(300);
+        let remote_ip = Ipv4Addr::new(198, 51, 100, 10);
+        let remote_port = 443;
+
+        for i in 0..1024u32 {
+            let flow = FlowKey {
+                src_ip: Ipv4Addr::new(10, 1, (i / 250) as u8, (i % 250) as u8 + 1),
+                dst_ip: remote_ip,
+                src_port: 10_000 + i as u16,
+                dst_port: remote_port,
+                proto: 6,
+            };
+            table.get_or_create(&flow, 1).unwrap();
+        }
+
+        let flow = FlowKey {
+            src_ip: Ipv4Addr::new(10, 250, 0, 1),
+            dst_ip: remote_ip,
+            src_port: 55_555,
+            dst_port: remote_port,
+            proto: 6,
+        };
+        let first_port = table.get_or_create(&flow, 1).unwrap();
+        assert!(table.remove(&flow));
+        let second_port = table.get_or_create(&flow, 2).unwrap();
+
+        assert_eq!(second_port, first_port);
     }
 }

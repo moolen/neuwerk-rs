@@ -61,3 +61,17 @@ fn recalc_checksums_rejects_malformed_ipv4_total_len_smaller_than_ihl() {
     ]);
     assert!(!pkt.recalc_checksums());
 }
+
+#[test]
+fn take_transfer_bytes_compacts_payload_and_preserves_owned_capacity_for_reuse() {
+    let mut pkt = Packet::new(vec![0u8; 65_536]);
+    pkt.truncate(64);
+
+    let payload = pkt.take_transfer_bytes();
+    assert_eq!(payload.len(), 64);
+    assert_eq!(pkt.len(), 0);
+
+    let reusable = pkt.into_vec();
+    assert_eq!(reusable.len(), 0);
+    assert!(reusable.capacity() >= 65_536);
+}

@@ -27,7 +27,7 @@ pub(super) fn handle_inbound_icmp_no_snat(
         };
         state.flows.prefetch_key(&flow);
         let wiretap = state.wiretap.clone();
-        let mut policy_drop_group: Option<String> = None;
+        let mut policy_drop_group: Option<Arc<str>> = None;
         let (decision_label, entry_source_group) = {
             let entry = match state.flows.get_entry_mut(&flow) {
                 Some(entry) => entry,
@@ -57,27 +57,35 @@ pub(super) fn handle_inbound_icmp_no_snat(
                     icmp_type: Some(icmp_type),
                     icmp_code: Some(icmp_code),
                 };
+                let exact_source_policy_index = &state.exact_source_policy_index;
                 let evaluation = match state.policy.read() {
-                    Ok(lock) => evaluate_policy_outcome(&lock, &meta, None, &state.tls_verifier),
-                    Err(_) => PolicyEvalOutcome {
-                        effective: PolicyDecision::Deny,
-                        raw: PolicyDecision::Deny,
-                        source_group: "default".to_string(),
-                        intercept_requires_service: false,
-                        audit_rule_denied: false,
-                    },
+                    Ok(lock) => evaluate_policy_outcome(
+                        exact_source_policy_index,
+                        &lock,
+                        &meta,
+                        None,
+                        &state.tls_verifier,
+                        state.audit.is_some(),
+                    ),
+                    Err(_) => deny_policy_eval_outcome(),
                 };
                 let next_group = evaluation.source_group.clone();
                 if evaluation.raw == PolicyDecision::Deny || evaluation.audit_rule_denied {
-                    maybe_emit_policy_deny_audit(audit.as_ref(), &meta, &next_group, None, now);
+                    maybe_emit_policy_deny_audit(
+                        audit.as_ref(),
+                        &meta,
+                        source_group_label(next_group.as_ref()),
+                        None,
+                        now,
+                    );
                 }
                 match evaluation.effective {
                     PolicyDecision::Allow => {
                         entry.policy_generation = current_generation;
-                        entry.set_source_group_owned(next_group);
+                        entry.set_source_group_arc(next_group);
                     }
                     PolicyDecision::Deny | PolicyDecision::PendingTls => {
-                        policy_drop_group = Some(next_group);
+                        policy_drop_group = next_group;
                     }
                 }
             }
@@ -85,11 +93,12 @@ pub(super) fn handle_inbound_icmp_no_snat(
                 entry.last_seen = now;
                 entry.packets_in = entry.packets_in.saturating_add(1);
                 maybe_emit_wiretap(&wiretap, &flow, entry, now);
-                (flow_decision_label(entry), entry.source_group().to_string())
+                (flow_decision_label(entry), entry.source_group_arc())
             } else {
-                ("deny", entry.source_group().to_string())
+                ("deny", entry.source_group_arc())
             }
         };
+        let entry_source_group_name = source_group_label(entry_source_group.as_ref());
 
         if let Some(drop_group) = policy_drop_group {
             remove_flow_state(state, &flow, now, "policy_drop");
@@ -98,7 +107,7 @@ pub(super) fn handle_inbound_icmp_no_snat(
                     "inbound",
                     proto_label(1),
                     "deny",
-                    &drop_group,
+                    source_group_label(Some(&drop_group)),
                     pkt.len(),
                 );
                 metrics.observe_dp_icmp_decision(
@@ -106,7 +115,7 @@ pub(super) fn handle_inbound_icmp_no_snat(
                     icmp_type,
                     icmp_code,
                     "deny",
-                    &drop_group,
+                    source_group_label(Some(&drop_group)),
                 );
             }
             return Action::Drop;
@@ -125,7 +134,7 @@ pub(super) fn handle_inbound_icmp_no_snat(
                 "inbound",
                 proto_label(1),
                 decision_label,
-                entry_source_group.as_str(),
+                entry_source_group_name,
                 pkt.len(),
             );
             metrics.observe_dp_icmp_decision(
@@ -133,7 +142,7 @@ pub(super) fn handle_inbound_icmp_no_snat(
                 icmp_type,
                 icmp_code,
                 decision_label,
-                entry_source_group.as_str(),
+                entry_source_group_name,
             );
         }
         return Action::Forward {
@@ -154,7 +163,7 @@ pub(super) fn handle_inbound_icmp_no_snat(
     };
     state.flows.prefetch_key(&flow);
     let wiretap = state.wiretap.clone();
-    let mut policy_drop_group: Option<String> = None;
+    let mut policy_drop_group: Option<Arc<str>> = None;
     let (decision_label, entry_source_group) = {
         let entry = match state.flows.get_entry_mut(&flow) {
             Some(entry) => entry,
@@ -184,27 +193,35 @@ pub(super) fn handle_inbound_icmp_no_snat(
                 icmp_type: Some(icmp_type),
                 icmp_code: Some(icmp_code),
             };
+            let exact_source_policy_index = &state.exact_source_policy_index;
             let evaluation = match state.policy.read() {
-                Ok(lock) => evaluate_policy_outcome(&lock, &meta, None, &state.tls_verifier),
-                Err(_) => PolicyEvalOutcome {
-                    effective: PolicyDecision::Deny,
-                    raw: PolicyDecision::Deny,
-                    source_group: "default".to_string(),
-                    intercept_requires_service: false,
-                    audit_rule_denied: false,
-                },
+                Ok(lock) => evaluate_policy_outcome(
+                    exact_source_policy_index,
+                    &lock,
+                    &meta,
+                    None,
+                    &state.tls_verifier,
+                    state.audit.is_some(),
+                ),
+                Err(_) => deny_policy_eval_outcome(),
             };
             let next_group = evaluation.source_group.clone();
             if evaluation.raw == PolicyDecision::Deny || evaluation.audit_rule_denied {
-                maybe_emit_policy_deny_audit(audit.as_ref(), &meta, &next_group, None, now);
+                maybe_emit_policy_deny_audit(
+                    audit.as_ref(),
+                    &meta,
+                    source_group_label(next_group.as_ref()),
+                    None,
+                    now,
+                );
             }
             match evaluation.effective {
                 PolicyDecision::Allow => {
                     entry.policy_generation = current_generation;
-                    entry.set_source_group_owned(next_group);
+                    entry.set_source_group_arc(next_group);
                 }
                 PolicyDecision::Deny | PolicyDecision::PendingTls => {
-                    policy_drop_group = Some(next_group);
+                    policy_drop_group = next_group;
                 }
             }
         }
@@ -212,17 +229,30 @@ pub(super) fn handle_inbound_icmp_no_snat(
             entry.last_seen = now;
             entry.packets_in = entry.packets_in.saturating_add(1);
             maybe_emit_wiretap(&wiretap, &flow, entry, now);
-            (flow_decision_label(entry), entry.source_group().to_string())
+            (flow_decision_label(entry), entry.source_group_arc())
         } else {
-            ("deny", entry.source_group().to_string())
+            ("deny", entry.source_group_arc())
         }
     };
+    let entry_source_group_name = source_group_label(entry_source_group.as_ref());
 
     if let Some(drop_group) = policy_drop_group {
         remove_flow_state(state, &flow, now, "policy_drop");
         if let Some(metrics) = &metrics {
-            metrics.observe_dp_packet("inbound", proto_label(1), "deny", &drop_group, pkt.len());
-            metrics.observe_dp_icmp_decision("inbound", icmp_type, icmp_code, "deny", &drop_group);
+            metrics.observe_dp_packet(
+                "inbound",
+                proto_label(1),
+                "deny",
+                source_group_label(Some(&drop_group)),
+                pkt.len(),
+            );
+            metrics.observe_dp_icmp_decision(
+                "inbound",
+                icmp_type,
+                icmp_code,
+                "deny",
+                source_group_label(Some(&drop_group)),
+            );
         }
         return Action::Drop;
     }
@@ -240,7 +270,7 @@ pub(super) fn handle_inbound_icmp_no_snat(
             "inbound",
             proto_label(1),
             decision_label,
-            entry_source_group.as_str(),
+            entry_source_group_name,
             pkt.len(),
         );
         metrics.observe_dp_icmp_decision(
@@ -248,7 +278,7 @@ pub(super) fn handle_inbound_icmp_no_snat(
             icmp_type,
             icmp_code,
             decision_label,
-            entry_source_group.as_str(),
+            entry_source_group_name,
         );
     }
     Action::Forward {
@@ -294,7 +324,7 @@ pub(super) fn handle_inbound_icmp(
         state.nat.touch(&flow, now);
         state.flows.prefetch_key(&flow);
         let wiretap = state.wiretap.clone();
-        let mut policy_drop_group: Option<String> = None;
+        let mut policy_drop_group: Option<Arc<str>> = None;
         let (decision_label, entry_source_group) = {
             let entry = match state.flows.get_entry_mut(&flow) {
                 Some(entry) => entry,
@@ -310,27 +340,35 @@ pub(super) fn handle_inbound_icmp(
                     icmp_type: Some(icmp_type),
                     icmp_code: Some(icmp_code),
                 };
+                let exact_source_policy_index = &state.exact_source_policy_index;
                 let evaluation = match state.policy.read() {
-                    Ok(lock) => evaluate_policy_outcome(&lock, &meta, None, &state.tls_verifier),
-                    Err(_) => PolicyEvalOutcome {
-                        effective: PolicyDecision::Deny,
-                        raw: PolicyDecision::Deny,
-                        source_group: "default".to_string(),
-                        intercept_requires_service: false,
-                        audit_rule_denied: false,
-                    },
+                    Ok(lock) => evaluate_policy_outcome(
+                        exact_source_policy_index,
+                        &lock,
+                        &meta,
+                        None,
+                        &state.tls_verifier,
+                        state.audit.is_some(),
+                    ),
+                    Err(_) => deny_policy_eval_outcome(),
                 };
                 let next_group = evaluation.source_group.clone();
                 if evaluation.raw == PolicyDecision::Deny || evaluation.audit_rule_denied {
-                    maybe_emit_policy_deny_audit(audit.as_ref(), &meta, &next_group, None, now);
+                    maybe_emit_policy_deny_audit(
+                        audit.as_ref(),
+                        &meta,
+                        source_group_label(next_group.as_ref()),
+                        None,
+                        now,
+                    );
                 }
                 match evaluation.effective {
                     PolicyDecision::Allow => {
                         entry.policy_generation = current_generation;
-                        entry.set_source_group_owned(next_group);
+                        entry.set_source_group_arc(next_group);
                     }
                     PolicyDecision::Deny | PolicyDecision::PendingTls => {
-                        policy_drop_group = Some(next_group);
+                        policy_drop_group = next_group;
                     }
                 }
             }
@@ -338,11 +376,12 @@ pub(super) fn handle_inbound_icmp(
                 entry.last_seen = now;
                 entry.packets_in = entry.packets_in.saturating_add(1);
                 maybe_emit_wiretap(&wiretap, &flow, entry, now);
-                (flow_decision_label(entry), entry.source_group().to_string())
+                (flow_decision_label(entry), entry.source_group_arc())
             } else {
-                ("deny", entry.source_group().to_string())
+                ("deny", entry.source_group_arc())
             }
         };
+        let entry_source_group_name = source_group_label(entry_source_group.as_ref());
 
         if let Some(drop_group) = policy_drop_group {
             remove_flow_state(state, &flow, now, "policy_drop");
@@ -351,7 +390,7 @@ pub(super) fn handle_inbound_icmp(
                     "inbound",
                     proto_label(1),
                     "deny",
-                    &drop_group,
+                    source_group_label(Some(&drop_group)),
                     pkt.len(),
                 );
                 metrics.observe_dp_icmp_decision(
@@ -359,7 +398,7 @@ pub(super) fn handle_inbound_icmp(
                     icmp_type,
                     icmp_code,
                     "deny",
-                    &drop_group,
+                    source_group_label(Some(&drop_group)),
                 );
             }
             return Action::Drop;
@@ -386,7 +425,7 @@ pub(super) fn handle_inbound_icmp(
                 "inbound",
                 proto_label(1),
                 decision_label,
-                entry_source_group.as_str(),
+                entry_source_group_name,
                 pkt.len(),
             );
             metrics.observe_dp_icmp_decision(
@@ -394,7 +433,7 @@ pub(super) fn handle_inbound_icmp(
                 icmp_type,
                 icmp_code,
                 decision_label,
-                entry_source_group.as_str(),
+                entry_source_group_name,
             );
         }
         return Action::Forward {
@@ -424,7 +463,7 @@ pub(super) fn handle_inbound_icmp(
     state.nat.touch(&flow, now);
     state.flows.prefetch_key(&flow);
     let wiretap = state.wiretap.clone();
-    let mut policy_drop_group: Option<String> = None;
+    let mut policy_drop_group: Option<Arc<str>> = None;
     let (decision_label, entry_source_group) = {
         let entry = match state.flows.get_entry_mut(&flow) {
             Some(entry) => entry,
@@ -440,27 +479,35 @@ pub(super) fn handle_inbound_icmp(
                 icmp_type: Some(icmp_type),
                 icmp_code: Some(icmp_code),
             };
+            let exact_source_policy_index = &state.exact_source_policy_index;
             let evaluation = match state.policy.read() {
-                Ok(lock) => evaluate_policy_outcome(&lock, &meta, None, &state.tls_verifier),
-                Err(_) => PolicyEvalOutcome {
-                    effective: PolicyDecision::Deny,
-                    raw: PolicyDecision::Deny,
-                    source_group: "default".to_string(),
-                    intercept_requires_service: false,
-                    audit_rule_denied: false,
-                },
+                Ok(lock) => evaluate_policy_outcome(
+                    exact_source_policy_index,
+                    &lock,
+                    &meta,
+                    None,
+                    &state.tls_verifier,
+                    state.audit.is_some(),
+                ),
+                Err(_) => deny_policy_eval_outcome(),
             };
             let next_group = evaluation.source_group.clone();
             if evaluation.raw == PolicyDecision::Deny || evaluation.audit_rule_denied {
-                maybe_emit_policy_deny_audit(audit.as_ref(), &meta, &next_group, None, now);
+                maybe_emit_policy_deny_audit(
+                    audit.as_ref(),
+                    &meta,
+                    source_group_label(next_group.as_ref()),
+                    None,
+                    now,
+                );
             }
             match evaluation.effective {
                 PolicyDecision::Allow => {
                     entry.policy_generation = current_generation;
-                    entry.set_source_group_owned(next_group);
+                    entry.set_source_group_arc(next_group);
                 }
                 PolicyDecision::Deny | PolicyDecision::PendingTls => {
-                    policy_drop_group = Some(next_group);
+                    policy_drop_group = next_group;
                 }
             }
         }
@@ -468,17 +515,30 @@ pub(super) fn handle_inbound_icmp(
             entry.last_seen = now;
             entry.packets_in = entry.packets_in.saturating_add(1);
             maybe_emit_wiretap(&wiretap, &flow, entry, now);
-            (flow_decision_label(entry), entry.source_group().to_string())
+            (flow_decision_label(entry), entry.source_group_arc())
         } else {
-            ("deny", entry.source_group().to_string())
+            ("deny", entry.source_group_arc())
         }
     };
+    let entry_source_group_name = source_group_label(entry_source_group.as_ref());
 
     if let Some(drop_group) = policy_drop_group {
         remove_flow_state(state, &flow, now, "policy_drop");
         if let Some(metrics) = &metrics {
-            metrics.observe_dp_packet("inbound", proto_label(1), "deny", &drop_group, pkt.len());
-            metrics.observe_dp_icmp_decision("inbound", icmp_type, icmp_code, "deny", &drop_group);
+            metrics.observe_dp_packet(
+                "inbound",
+                proto_label(1),
+                "deny",
+                source_group_label(Some(&drop_group)),
+                pkt.len(),
+            );
+            metrics.observe_dp_icmp_decision(
+                "inbound",
+                icmp_type,
+                icmp_code,
+                "deny",
+                source_group_label(Some(&drop_group)),
+            );
         }
         return Action::Drop;
     }
@@ -501,7 +561,7 @@ pub(super) fn handle_inbound_icmp(
             "inbound",
             proto_label(1),
             decision_label,
-            entry_source_group.as_str(),
+            entry_source_group_name,
             pkt.len(),
         );
         metrics.observe_dp_icmp_decision(
@@ -509,7 +569,7 @@ pub(super) fn handle_inbound_icmp(
             icmp_type,
             icmp_code,
             decision_label,
-            entry_source_group.as_str(),
+            entry_source_group_name,
         );
     }
     Action::Forward {

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::*;
 
 pub(super) fn resolve_snat_ip(state: &EngineState) -> Option<Ipv4Addr> {
@@ -52,7 +54,7 @@ pub(super) fn process_tls_packet(
     direction: TlsDirection,
     tls_state: &mut TlsFlowState,
     meta: &PacketMeta,
-    policy: &Arc<RwLock<PolicySnapshot>>,
+    policy: &SharedPolicySnapshot,
     verifier: &TlsVerifier,
     audit: Option<&AuditEmitter>,
     source_group: &str,
@@ -99,22 +101,18 @@ pub(super) fn process_tls_packet(
     };
 
     if tls_state.decision == TlsFlowDecision::Pending {
-        let (decision, raw_denied) = match policy.read() {
-            Ok(lock) => {
-                let (effective, _, _) = lock.evaluate_with_source_group_detailed(
-                    meta,
-                    Some(&tls_state.observation),
-                    Some(verifier),
-                );
-                let (raw, _, _) = lock.evaluate_with_source_group_detailed_raw(
-                    meta,
-                    Some(&tls_state.observation),
-                    Some(verifier),
-                );
-                (effective, raw == PolicyDecision::Deny)
-            }
-            Err(_) => (PolicyDecision::Deny, true),
-        };
+        let snapshot = policy.load();
+        let (effective, _, _) = snapshot.evaluate_with_source_group_detailed(
+            meta,
+            Some(&tls_state.observation),
+            Some(verifier),
+        );
+        let (raw, _, _) = snapshot.evaluate_with_source_group_detailed_raw(
+            meta,
+            Some(&tls_state.observation),
+            Some(verifier),
+        );
+        let (decision, raw_denied) = (effective, raw == PolicyDecision::Deny);
         if raw_denied {
             maybe_emit_tls_policy_deny_audit(
                 audit,
@@ -171,6 +169,18 @@ pub(super) fn source_group_label(source_group: Option<&Arc<str>>) -> &str {
     source_group
         .map(|group| group.as_ref())
         .unwrap_or(DEFAULT_SOURCE_GROUP)
+}
+
+pub(super) fn is_tcp_syn(flags: u8) -> bool {
+    (flags & 0x02 != 0) && (flags & 0x10 == 0) && (flags & 0x05 == 0)
+}
+
+pub(super) fn is_tcp_synack(flags: u8) -> bool {
+    (flags & 0x12 == 0x12) && (flags & 0x05 == 0)
+}
+
+pub(super) fn is_tcp_ack_only(flags: u8) -> bool {
+    (flags & 0x10 != 0) && (flags & 0x07 == 0)
 }
 
 pub(super) fn maybe_emit_policy_deny_audit(
@@ -268,10 +278,66 @@ pub(super) fn remove_flow_state(
     let entry = state.flows.remove(flow);
     if let Some(entry_ref) = entry.as_ref() {
         state.note_flow_close(flow, entry_ref, reason, now);
+    } else if let Some(syn_only_entry) = state.syn_only.remove(flow) {
+        state.note_syn_only_lookup("removed");
+        state.note_syn_only_eviction(reason, 1);
+        state.record_recent_syn_only_close(flow, reason, now);
+        state.note_syn_only_close(flow, &syn_only_entry, reason, now);
+        state.update_syn_only_metrics();
     }
-    state.nat.remove(flow);
-    state.update_nat_metrics();
+    if state.nat.remove(flow) {
+        state.note_nat_close();
+    }
     entry
+}
+
+pub(super) fn remove_flow_state_timed(
+    state: &mut EngineState,
+    flow: &FlowKey,
+    now: u64,
+    reason: &str,
+    direction: &str,
+    stage: &str,
+) -> Option<FlowEntry> {
+    let start = Instant::now();
+    let entry = remove_flow_state(state, flow, now, reason);
+    state.note_tcp_handshake_stage(direction, stage, start.elapsed());
+    entry
+}
+
+pub(super) fn maybe_close_tcp_flow(
+    state: &mut EngineState,
+    flow: &FlowKey,
+    pkt: &Packet,
+    now: u64,
+) {
+    let Some(flags) = pkt.tcp_flags() else {
+        return;
+    };
+    if flags & 0x04 != 0 {
+        remove_flow_state(state, flow, now, "tcp_rst");
+    } else if flags & 0x01 != 0 {
+        remove_flow_state(state, flow, now, "tcp_fin");
+    }
+}
+
+pub(super) fn maybe_close_tcp_flow_timed(
+    state: &mut EngineState,
+    flow: &FlowKey,
+    pkt: &Packet,
+    now: u64,
+    direction: &str,
+) {
+    let Some(flags) = pkt.tcp_flags() else {
+        return;
+    };
+    if flags & 0x04 != 0 {
+        let _ =
+            remove_flow_state_timed(state, flow, now, "tcp_rst", direction, "flow_close_tcp_rst");
+    } else if flags & 0x01 != 0 {
+        let _ =
+            remove_flow_state_timed(state, flow, now, "tcp_fin", direction, "flow_close_tcp_fin");
+    }
 }
 
 pub(super) fn handle_ttl(pkt: &mut Packet, state: &EngineState) -> Option<Action> {

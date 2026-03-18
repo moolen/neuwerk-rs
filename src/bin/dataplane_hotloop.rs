@@ -238,6 +238,7 @@ impl ScenarioHarness {
 
     fn reset_cycle(&mut self) {
         self.state.flows.clear();
+        self.state.syn_only.clear();
         self.state.nat.clear();
         self.state.evict_expired_now();
         for (dst, src) in self

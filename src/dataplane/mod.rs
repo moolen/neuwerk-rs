@@ -16,6 +16,8 @@ pub mod wiretap;
 pub use audit::{AuditEmitter, AuditEvent, AuditEventType, DEFAULT_AUDIT_REPORT_INTERVAL_SECS};
 pub use config::{DataplaneConfig, DataplaneConfigStore};
 pub use dhcp::{DhcpRx, DhcpTx, DHCP_CLIENT_PORT, DHCP_SERVER_PORT};
+#[cfg(feature = "dpdk")]
+pub use dpdk_adapter::DpdkTransferredRxPacket;
 pub use dpdk_adapter::{
     preinit_dpdk_eal, DpdkAdapter, DpdkIo, FrameIo, FrameOut, SharedArpState,
     SharedInterceptDemuxState, UnwiredDpdkIo,
