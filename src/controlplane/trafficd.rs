@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use crate::controlplane::audit::AuditStore;
 use crate::controlplane::dns_proxy;
@@ -24,13 +25,18 @@ use futures::FutureExt;
 use h2::{client, server};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::sync::{oneshot, Mutex as AsyncMutex};
+use tokio::sync::{oneshot, Mutex as AsyncMutex, Notify};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{error, info, warn};
 
 const TLS_IO_TIMEOUT: Duration = Duration::from_secs(3);
 const TLS_H2_BODY_IDLE_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
 const TLS_H2_MAX_CONCURRENT_STREAMS_DEFAULT: u32 = 64;
+const TLS_H2_MAX_REQUESTS_PER_CONNECTION_DEFAULT: u32 = 800;
+const TLS_H2_POOL_SHARDS_DEFAULT: u32 = 1;
+const TLS_H2_SELECTION_INFLIGHT_WEIGHT_DEFAULT: u32 = 128;
+const TLS_H2_RECONNECT_BACKOFF_BASE_MS_DEFAULT: u64 = 5;
+const TLS_H2_RECONNECT_BACKOFF_MAX_MS_DEFAULT: u64 = 250;
 const TLS_INTERCEPT_LISTEN_BACKLOG_DEFAULT: u32 = 1024;
 const INTERCEPT_LEAF_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 const INTERCEPT_LEAF_CACHE_MAX_ENTRIES: usize = 1024;
@@ -59,6 +65,17 @@ fn env_positive_u32(name: &str) -> Option<u32> {
         .ok()
         .and_then(|raw| raw.parse::<u32>().ok())
         .filter(|value| *value > 0)
+}
+
+fn env_flag(name: &str) -> Option<bool> {
+    std::env::var(name).ok().and_then(|raw| {
+        let value = raw.trim().to_ascii_lowercase();
+        match value.as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        }
+    })
 }
 
 fn tls_io_timeout() -> Duration {
@@ -95,6 +112,63 @@ fn tls_intercept_listen_backlog() -> u32 {
     })
 }
 
+fn tls_h2_max_requests_per_connection() -> usize {
+    static H2_MAX_REQUESTS_PER_CONNECTION: OnceLock<u32> = OnceLock::new();
+    H2_MAX_REQUESTS_PER_CONNECTION
+        .get_or_init(|| {
+            env_positive_u32("NEUWERK_TLS_H2_MAX_REQUESTS_PER_CONNECTION")
+                .unwrap_or(TLS_H2_MAX_REQUESTS_PER_CONNECTION_DEFAULT)
+        })
+        .to_owned() as usize
+}
+
+fn tls_h2_pool_shards() -> usize {
+    static H2_POOL_SHARDS: OnceLock<u32> = OnceLock::new();
+    H2_POOL_SHARDS
+        .get_or_init(|| {
+            env_positive_u32("NEUWERK_TLS_H2_POOL_SHARDS")
+                .unwrap_or(TLS_H2_POOL_SHARDS_DEFAULT)
+                .clamp(1, 64)
+        })
+        .to_owned() as usize
+}
+
+fn tls_h2_detailed_metrics_enabled() -> bool {
+    static H2_DETAILED_METRICS_ENABLED: OnceLock<bool> = OnceLock::new();
+    *H2_DETAILED_METRICS_ENABLED
+        .get_or_init(|| env_flag("NEUWERK_TLS_H2_DETAILED_METRICS").unwrap_or(false))
+}
+
+fn tls_h2_selection_inflight_weight() -> u64 {
+    static H2_SELECTION_INFLIGHT_WEIGHT: OnceLock<u32> = OnceLock::new();
+    H2_SELECTION_INFLIGHT_WEIGHT
+        .get_or_init(|| {
+            env_positive_u32("NEUWERK_TLS_H2_SELECTION_INFLIGHT_WEIGHT")
+                .unwrap_or(TLS_H2_SELECTION_INFLIGHT_WEIGHT_DEFAULT)
+                .max(1)
+        })
+        .to_owned() as u64
+}
+
+fn tls_h2_reconnect_backoff_base_ms() -> u64 {
+    static H2_RECONNECT_BACKOFF_BASE_MS: OnceLock<u64> = OnceLock::new();
+    *H2_RECONNECT_BACKOFF_BASE_MS.get_or_init(|| {
+        env_positive_u64("NEUWERK_TLS_H2_RECONNECT_BACKOFF_BASE_MS")
+            .unwrap_or(TLS_H2_RECONNECT_BACKOFF_BASE_MS_DEFAULT)
+            .clamp(1, 5_000)
+    })
+}
+
+fn tls_h2_reconnect_backoff_max_ms() -> u64 {
+    static H2_RECONNECT_BACKOFF_MAX_MS: OnceLock<u64> = OnceLock::new();
+    *H2_RECONNECT_BACKOFF_MAX_MS.get_or_init(|| {
+        env_positive_u64("NEUWERK_TLS_H2_RECONNECT_BACKOFF_MAX_MS")
+            .unwrap_or(TLS_H2_RECONNECT_BACKOFF_MAX_MS_DEFAULT)
+            .clamp(1, 60_000)
+            .max(tls_h2_reconnect_backoff_base_ms())
+    })
+}
+
 mod certs;
 mod http_match;
 mod service_lane;
@@ -123,7 +197,7 @@ pub struct TrafficdConfig {
     pub service_lane_iface: String,
     pub service_lane_ip: Ipv4Addr,
     pub service_lane_prefix: u8,
-    pub intercept_demux: Arc<Mutex<SharedInterceptDemuxState>>,
+    pub intercept_demux: Arc<SharedInterceptDemuxState>,
     pub policy_store: PolicyStore,
     pub audit_store: Option<AuditStore>,
     pub node_id: String,
@@ -139,7 +213,7 @@ pub struct TlsInterceptRuntimeConfig {
     pub intercept_ca_key_der: Vec<u8>,
     pub metrics: Metrics,
     pub policy_snapshot: Arc<RwLock<PolicySnapshot>>,
-    pub intercept_demux: Arc<Mutex<SharedInterceptDemuxState>>,
+    pub intercept_demux: Arc<SharedInterceptDemuxState>,
     pub startup_status_tx: Option<oneshot::Sender<Result<(), String>>>,
 }
 
@@ -180,8 +254,17 @@ impl Drop for InflightMetricGuard {
 
 #[derive(Debug)]
 struct UpstreamH2Client {
-    send_request: AsyncMutex<client::SendRequest<Bytes>>,
+    send_request: StdMutex<client::SendRequest<Bytes>>,
     in_flight_streams: AtomicUsize,
+    total_streams_started: AtomicUsize,
+    send_wait_ewma_us: AtomicU64,
+    is_closed: AtomicBool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct UpstreamH2ReconnectBackoffState {
+    failures: u32,
+    next_allowed_at: Instant,
 }
 
 #[derive(Clone)]
@@ -192,6 +275,7 @@ struct UpstreamH2StreamGuard {
 impl UpstreamH2StreamGuard {
     fn new(client: Arc<UpstreamH2Client>) -> Self {
         client.in_flight_streams.fetch_add(1, Ordering::AcqRel);
+        client.total_streams_started.fetch_add(1, Ordering::AcqRel);
         Self { client }
     }
 }
@@ -202,7 +286,84 @@ impl Drop for UpstreamH2StreamGuard {
     }
 }
 
-type UpstreamH2Pool = Arc<AsyncMutex<HashMap<String, Vec<Arc<UpstreamH2Client>>>>>;
+type UpstreamH2PoolEntries = HashMap<String, Vec<Arc<UpstreamH2Client>>>;
+type UpstreamH2ConnectInFlightEntries = HashMap<String, Arc<Notify>>;
+
+#[derive(Debug)]
+struct UpstreamH2PoolState {
+    buckets: Vec<AsyncMutex<UpstreamH2PoolEntries>>,
+}
+
+impl UpstreamH2PoolState {
+    fn new(bucket_count: usize) -> Self {
+        let bucket_count = bucket_count.max(1);
+        let mut buckets = Vec::with_capacity(bucket_count);
+        for _ in 0..bucket_count {
+            buckets.push(AsyncMutex::new(HashMap::new()));
+        }
+        Self { buckets }
+    }
+
+    fn bucket_for_key(&self, pool_key: &str) -> &AsyncMutex<UpstreamH2PoolEntries> {
+        let idx = keyed_bucket_index(pool_key, self.buckets.len());
+        &self.buckets[idx]
+    }
+
+    async fn lock_key(&self, pool_key: &str) -> tokio::sync::MutexGuard<'_, UpstreamH2PoolEntries> {
+        self.bucket_for_key(pool_key).lock().await
+    }
+
+    #[cfg(test)]
+    fn try_lock_key(
+        &self,
+        pool_key: &str,
+    ) -> Result<tokio::sync::MutexGuard<'_, UpstreamH2PoolEntries>, tokio::sync::TryLockError> {
+        self.bucket_for_key(pool_key).try_lock()
+    }
+}
+
+#[derive(Debug)]
+struct UpstreamH2ConnectInFlightState {
+    buckets: Vec<AsyncMutex<UpstreamH2ConnectInFlightEntries>>,
+}
+
+impl UpstreamH2ConnectInFlightState {
+    fn new(bucket_count: usize) -> Self {
+        let bucket_count = bucket_count.max(1);
+        let mut buckets = Vec::with_capacity(bucket_count);
+        for _ in 0..bucket_count {
+            buckets.push(AsyncMutex::new(HashMap::new()));
+        }
+        Self { buckets }
+    }
+
+    fn bucket_for_key(&self, pool_key: &str) -> &AsyncMutex<UpstreamH2ConnectInFlightEntries> {
+        let idx = keyed_bucket_index(pool_key, self.buckets.len());
+        &self.buckets[idx]
+    }
+
+    async fn lock_key(
+        &self,
+        pool_key: &str,
+    ) -> tokio::sync::MutexGuard<'_, UpstreamH2ConnectInFlightEntries> {
+        self.bucket_for_key(pool_key).lock().await
+    }
+}
+
+fn keyed_bucket_index(key: &str, bucket_count: usize) -> usize {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    (hasher.finish() as usize) % bucket_count.max(1)
+}
+
+type UpstreamH2Pool = Arc<UpstreamH2PoolState>;
+type UpstreamH2ConnectInFlight = Arc<UpstreamH2ConnectInFlightState>;
+static UPSTREAM_H2_POOL_SHARD_RR: AtomicUsize = AtomicUsize::new(0);
+static UPSTREAM_H2_SELECTED_INFLIGHT_WINDOW_SEC: AtomicU64 = AtomicU64::new(0);
+static UPSTREAM_H2_SELECTED_INFLIGHT_WINDOW_MAX: AtomicUsize = AtomicUsize::new(0);
+static UPSTREAM_H2_RECONNECT_BACKOFF: OnceLock<
+    std::sync::Mutex<HashMap<String, UpstreamH2ReconnectBackoffState>>,
+> = OnceLock::new();
 
 include!("trafficd/intercept_runtime.rs");
 
@@ -301,12 +462,11 @@ fn find_intercept_http_policy(
 }
 
 fn lookup_intercept_demux_original_dst(
-    demux: &Arc<Mutex<SharedInterceptDemuxState>>,
+    demux: &Arc<SharedInterceptDemuxState>,
     src_ip: Ipv4Addr,
     src_port: u16,
 ) -> Option<SocketAddr> {
-    let mut lock = demux.lock().ok()?;
-    let (upstream_ip, upstream_port) = lock.lookup(src_ip, src_port)?;
+    let (upstream_ip, upstream_port) = demux.lookup(src_ip, src_port)?;
     Some(SocketAddr::new(IpAddr::V4(upstream_ip), upstream_port))
 }
 
@@ -461,7 +621,7 @@ fn spawn_tls_intercept_supervisor(
     listen_addr: SocketAddr,
     enable_kernel_intercept_steering: bool,
     service_lane_iface: String,
-    intercept_demux: Arc<Mutex<SharedInterceptDemuxState>>,
+    intercept_demux: Arc<SharedInterceptDemuxState>,
     metrics: Metrics,
 ) {
     tokio::spawn(async move {

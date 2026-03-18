@@ -288,7 +288,7 @@ async fn supervisor_fails_closed_when_cluster_intercept_ca_cannot_be_loaded() {
     let ca_ready = Arc::new(AtomicBool::new(true));
     let ca_generation = Arc::new(AtomicU64::new(0));
     let intercept_ready = Arc::new(AtomicBool::new(true));
-    let intercept_demux = Arc::new(Mutex::new(SharedInterceptDemuxState::default()));
+    let intercept_demux = Arc::new(SharedInterceptDemuxState::default());
 
     spawn_tls_intercept_supervisor(
         policy_snapshot,
@@ -956,7 +956,7 @@ async fn spawn_intercept_runtime_with_policy_and_metrics(
         intercept_ca_key_der: proxy_ca_key_der,
         metrics,
         policy_snapshot: policy,
-        intercept_demux: Arc::new(Mutex::new(SharedInterceptDemuxState::default())),
+        intercept_demux: Arc::new(SharedInterceptDemuxState::default()),
         startup_status_tx: Some(startup_tx),
     }));
     let startup = tokio::time::timeout(Duration::from_secs(2), startup_rx)
@@ -986,6 +986,18 @@ fn metric_value_with_labels(rendered: &str, metric: &str, labels: &[(&str, &str)
         .unwrap_or(0.0)
 }
 
+fn metric_total(rendered: &str, metric: &str) -> f64 {
+    rendered
+        .lines()
+        .filter_map(|line| {
+            if !line.starts_with(metric) {
+                return None;
+            }
+            line.split_whitespace().last()?.parse::<f64>().ok()
+        })
+        .sum()
+}
+
 #[test]
 fn tls_intercept_runtime_records_h2_body_timeout_metric() {
     let metrics = Metrics::new().expect("metrics");
@@ -999,6 +1011,58 @@ fn tls_intercept_runtime_records_h2_body_timeout_metric() {
             &rendered,
             "svc_tls_intercept_errors_total",
             &[("stage", "h2_request_body_read"), ("reason", "timeout")]
+        ),
+        1.0
+    );
+}
+
+#[test]
+fn tls_intercept_runtime_records_upstream_h2_ready_error_kind_metric() {
+    let metrics = Metrics::new().expect("metrics");
+    record_tls_intercept_connection_error(
+        &metrics,
+        "tls intercept: h2 upstream ready failed: not connected",
+    );
+    let rendered = metrics.render().expect("render metrics");
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_errors_total",
+            &[("stage", "upstream_h2_ready"), ("reason", "failure")]
+        ),
+        1.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_upstream_h2_ready_errors_total",
+            &[("kind", "not_connected")]
+        ),
+        1.0
+    );
+}
+
+#[test]
+fn tls_intercept_runtime_records_upstream_response_error_kind_metric() {
+    let metrics = Metrics::new().expect("metrics");
+    record_tls_intercept_connection_error(
+        &metrics,
+        "tls intercept: h2 upstream response failed: connection error received: not a result of an error",
+    );
+    let rendered = metrics.render().expect("render metrics");
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_errors_total",
+            &[("stage", "upstream_response"), ("reason", "failure")]
+        ),
+        1.0
+    );
+    assert_eq!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_upstream_response_errors_total",
+            &[("kind", "no_error_close")]
         ),
         1.0
     );
@@ -1184,7 +1248,7 @@ async fn tls_intercept_runtime_enforces_request_policy() {
         intercept_ca_key_der: proxy_ca_key_der,
         metrics: Metrics::new().unwrap(),
         policy_snapshot: policy,
-        intercept_demux: Arc::new(Mutex::new(SharedInterceptDemuxState::default())),
+        intercept_demux: Arc::new(SharedInterceptDemuxState::default()),
         startup_status_tx: Some(startup_tx),
     }));
     let startup = tokio::time::timeout(Duration::from_secs(2), startup_rx)
@@ -1255,7 +1319,7 @@ async fn tls_intercept_runtime_audit_mode_allows_policy_denies() {
         intercept_ca_key_der: proxy_ca_key_der,
         metrics: Metrics::new().unwrap(),
         policy_snapshot: policy,
-        intercept_demux: Arc::new(Mutex::new(SharedInterceptDemuxState::default())),
+        intercept_demux: Arc::new(SharedInterceptDemuxState::default()),
         startup_status_tx: Some(startup_tx),
     }));
     let startup = tokio::time::timeout(Duration::from_secs(2), startup_rx)
@@ -1714,7 +1778,7 @@ async fn tls_intercept_runtime_h2_forwards_browser_xhr_headers_end_to_end() {
         intercept_ca_key_der: proxy_ca_key_der,
         metrics: Metrics::new().unwrap(),
         policy_snapshot: policy,
-        intercept_demux: Arc::new(Mutex::new(SharedInterceptDemuxState::default())),
+        intercept_demux: Arc::new(SharedInterceptDemuxState::default()),
         startup_status_tx: Some(startup_tx),
     }));
     let startup = tokio::time::timeout(Duration::from_secs(2), startup_rx)
@@ -1766,57 +1830,57 @@ async fn tls_intercept_runtime_h2_processes_parallel_streams_without_serial_queu
             let acceptor = build_tls_acceptor(&upstream_cert, &upstream_key).unwrap();
             loop {
                 tokio::select! {
-                    _ = &mut upstream_shutdown_rx => break,
-                    accepted = upstream_listener.accept() => {
-                        let Ok((stream, _)) = accepted else {
-                            break;
-                        };
-                        let acceptor = acceptor.clone();
-                        let in_flight = in_flight.clone();
-                        let peak_in_flight = peak_in_flight.clone();
-                        tokio::spawn(async move {
-                            let tls = match acceptor.accept(stream).await {
-                                Ok(tls) => tls,
-                                Err(_) => return,
-                            };
-                        let mut builder = server::Builder::new();
-                        builder.max_concurrent_streams(32);
-                        let mut conn = match tokio::time::timeout(TLS_IO_TIMEOUT, builder.handshake::<_, Bytes>(tls)).await {
-                            Ok(Ok(conn)) => conn,
-                            _ => return,
-                        };
-                        let mut stream_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
-                        loop {
-                            let next = match tokio::time::timeout(Duration::from_millis(500), conn.accept()).await {
-                                Ok(next) => next,
-                                Err(_) => break,
-                            };
-                            let Some(Ok((_request, mut respond))) = next else {
+                        _ = &mut upstream_shutdown_rx => break,
+                        accepted = upstream_listener.accept() => {
+                            let Ok((stream, _)) = accepted else {
                                 break;
                             };
+                            let acceptor = acceptor.clone();
                             let in_flight = in_flight.clone();
                             let peak_in_flight = peak_in_flight.clone();
-                            stream_tasks.spawn(async move {
-                                let now = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
-                                update_peak(&peak_in_flight, now);
-                                tokio::time::sleep(Duration::from_millis(200)).await;
-                                let response = Response::builder()
-                                    .status(200)
-                                    .header("content-type", "text/plain")
-                                    .body(())
-                                    .expect("response build failed");
-                                if let Ok(mut send) = respond.send_response(response, false) {
-                                    let _ = send.send_data(Bytes::from_static(b"ok"), true);
-                                }
-                                in_flight.fetch_sub(1, Ordering::AcqRel);
-                            });
-                        }
-                        while stream_tasks.join_next().await.is_some() {}
-                        conn.graceful_shutdown();
-                        let _ = tokio::time::timeout(Duration::from_millis(50), conn.accept()).await;
-                    });
+                            tokio::spawn(async move {
+                                let tls = match acceptor.accept(stream).await {
+                                    Ok(tls) => tls,
+                                    Err(_) => return,
+                                };
+                            let mut builder = server::Builder::new();
+                            builder.max_concurrent_streams(32);
+                            let mut conn = match tokio::time::timeout(TLS_IO_TIMEOUT, builder.handshake::<_, Bytes>(tls)).await {
+                                Ok(Ok(conn)) => conn,
+                                _ => return,
+                            };
+                            let mut stream_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+                            loop {
+                                let next = match tokio::time::timeout(Duration::from_millis(500), conn.accept()).await {
+                                    Ok(next) => next,
+                                    Err(_) => break,
+                                };
+                                let Some(Ok((_request, mut respond))) = next else {
+                                    break;
+                                };
+                                let in_flight = in_flight.clone();
+                                let peak_in_flight = peak_in_flight.clone();
+                                stream_tasks.spawn(async move {
+                                    let now = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+                                    update_peak(&peak_in_flight, now);
+                                    tokio::time::sleep(Duration::from_millis(200)).await;
+                                    let response = Response::builder()
+                                        .status(200)
+                                        .header("content-type", "text/plain")
+                                        .body(())
+                                        .expect("response build failed");
+                                    if let Ok(mut send) = respond.send_response(response, false) {
+                                        let _ = send.send_data(Bytes::from_static(b"ok"), true);
+                                    }
+                                    in_flight.fetch_sub(1, Ordering::AcqRel);
+                                });
+                            }
+                            while stream_tasks.join_next().await.is_some() {}
+                            conn.graceful_shutdown();
+                            let _ = tokio::time::timeout(Duration::from_millis(50), conn.accept()).await;
+                        });
+                    }
                 }
-            }
             }
         })
     };
@@ -1835,7 +1899,7 @@ async fn tls_intercept_runtime_h2_processes_parallel_streams_without_serial_queu
         intercept_ca_key_der: proxy_ca_key_der,
         metrics: Metrics::new().unwrap(),
         policy_snapshot: policy,
-        intercept_demux: Arc::new(Mutex::new(SharedInterceptDemuxState::default())),
+        intercept_demux: Arc::new(SharedInterceptDemuxState::default()),
         startup_status_tx: Some(startup_tx),
     }));
     let startup = tokio::time::timeout(Duration::from_secs(2), startup_rx)
@@ -2156,6 +2220,131 @@ async fn tls_intercept_runtime_h2_reuses_upstream_connection_across_client_conne
         ),
         1.0
     );
+
+    proxy_task.abort();
+    let _ = upstream_shutdown_tx.send(());
+    let _ = upstream_task.await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tls_intercept_runtime_h2_prunes_closed_upstream_connection_before_reuse() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    let (upstream_cert, upstream_key) = cert_der_pair("foo.allowed");
+    let accept_count = Arc::new(AtomicUsize::new(0));
+    let (upstream_shutdown_tx, mut upstream_shutdown_rx) = oneshot::channel();
+    let upstream_task = {
+        let accept_count = accept_count.clone();
+        tokio::spawn(async move {
+            let acceptor = build_tls_acceptor(&upstream_cert, &upstream_key).unwrap();
+            loop {
+                tokio::select! {
+                    _ = &mut upstream_shutdown_rx => break,
+                    accepted = upstream_listener.accept() => {
+                        let Ok((stream, _)) = accepted else {
+                            break;
+                        };
+                        accept_count.fetch_add(1, Ordering::AcqRel);
+                        let tls = match acceptor.accept(stream).await {
+                            Ok(tls) => tls,
+                            Err(_) => continue,
+                        };
+                        let mut builder = server::Builder::new();
+                        builder.max_concurrent_streams(8);
+                        let mut conn = match tokio::time::timeout(TLS_IO_TIMEOUT, builder.handshake::<_, Bytes>(tls)).await {
+                            Ok(Ok(conn)) => conn,
+                            _ => continue,
+                        };
+                        let Some(Ok((_request, mut respond))) = (match tokio::time::timeout(TLS_IO_TIMEOUT, conn.accept()).await {
+                            Ok(next) => next,
+                            Err(_) => continue,
+                        }) else {
+                            continue;
+                        };
+                        let response = Response::builder()
+                            .status(200)
+                            .header("content-type", "text/plain")
+                            .body(())
+                            .expect("response build failed");
+                        if let Ok(mut send) = respond.send_response(response, false) {
+                            let _ = send.send_data(Bytes::from_static(b"ok"), true);
+                        }
+                        conn.graceful_shutdown();
+                        let _ = tokio::time::timeout(Duration::from_millis(100), conn.accept()).await;
+                    }
+                }
+            }
+        })
+    };
+
+    let metrics = Metrics::new().unwrap();
+    let (intercept_addr, proxy_task) = spawn_intercept_runtime_with_policy_and_metrics(
+        intercept_h2_passthrough_snapshot(19),
+        upstream_addr,
+        metrics.clone(),
+    )
+    .await;
+
+    let (status_a, body_len_a, _) =
+        tls_h2_request_with_headers(intercept_addr, "foo.allowed", "GET", "/first", &[])
+            .await
+            .expect("first h2 request failed");
+    assert_eq!(status_a, 200);
+    assert_eq!(body_len_a, 2);
+
+    let mut observed_conn_closed = false;
+    for _ in 0..40 {
+        let rendered = metrics.render().expect("render metrics");
+        if metric_total(&rendered, "svc_tls_intercept_upstream_h2_conn_closed_total") >= 1.0 {
+            observed_conn_closed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        observed_conn_closed,
+        "expected upstream h2 conn close to be observed before second request"
+    );
+
+    let (status_b, body_len_b, _) =
+        tls_h2_request_with_headers(intercept_addr, "foo.allowed", "GET", "/second", &[])
+            .await
+            .expect("second h2 request failed");
+    assert_eq!(status_b, 200);
+    assert_eq!(body_len_b, 2);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        accept_count.load(Ordering::Acquire),
+        2,
+        "expected a new upstream TCP connection after previous pooled h2 connection closed"
+    );
+
+    let rendered = metrics.render().expect("render metrics");
+    assert!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_upstream_h2_pool_total",
+            &[("result", "miss")]
+        ) >= 2.0
+    );
+    assert!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_upstream_h2_pool_total",
+            &[("result", "stale_pruned")]
+        ) >= 1.0
+    );
+    assert!(
+        metric_value_with_labels(
+            &rendered,
+            "svc_tls_intercept_upstream_h2_pool_total",
+            &[("result", "conn_closed")]
+        ) >= 1.0
+    );
+    assert!(metric_total(&rendered, "svc_tls_intercept_upstream_h2_conn_closed_total") >= 1.0);
 
     proxy_task.abort();
     let _ = upstream_shutdown_tx.send(());
@@ -3031,8 +3220,8 @@ fn intercept_cert_resolver_caches_by_host() {
 
 #[test]
 fn lookup_intercept_demux_original_dst_returns_stored_tuple() {
-    let demux = Arc::new(Mutex::new(SharedInterceptDemuxState::default()));
-    demux.lock().unwrap().upsert(
+    let demux = Arc::new(SharedInterceptDemuxState::default());
+    demux.upsert(
         Ipv4Addr::new(10, 0, 0, 42),
         40000,
         Ipv4Addr::new(203, 0, 113, 10),
