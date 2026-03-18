@@ -2,7 +2,7 @@ use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use firewall::controlplane;
@@ -37,7 +37,7 @@ pub struct ControlplaneRuntimeHandles {
     pub http_shutdown: controlplane::http_api::HttpApiShutdown,
     pub wiretap_emitter: WiretapEmitter,
     pub audit_emitter: AuditEmitter,
-    pub shared_intercept_demux: Arc<Mutex<SharedInterceptDemuxState>>,
+    pub shared_intercept_demux: Arc<SharedInterceptDemuxState>,
 }
 
 fn env_u64_with_default(name: &str, default: u64) -> u64 {
@@ -174,7 +174,7 @@ pub async fn start_controlplane_runtime(
         }
     };
     let tls_intercept_listen_port = 15443u16;
-    let shared_intercept_demux = Arc::new(Mutex::new(SharedInterceptDemuxState::default()));
+    let shared_intercept_demux = Arc::new(SharedInterceptDemuxState::default());
 
     let dns_cfg = controlplane::trafficd::TrafficdConfig {
         dns_bind: dns_listen,

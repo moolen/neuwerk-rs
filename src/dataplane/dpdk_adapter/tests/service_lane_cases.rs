@@ -153,7 +153,7 @@ fn drain_service_lane_egress_reads_tap_rewrites_intercept_tuple_and_sends_dpdk_f
 #[test]
 fn shared_intercept_demux_gc_is_amortized_between_lookups() {
     with_default_intercept_env(|| {
-        let mut demux = SharedInterceptDemuxState::default();
+        let demux = SharedInterceptDemuxState::default();
         let stale_key = InterceptDemuxKey {
             client_ip: Ipv4Addr::new(10, 0, 0, 10),
             client_port: 40000,
@@ -162,50 +162,78 @@ fn shared_intercept_demux_gc_is_amortized_between_lookups() {
             client_ip: Ipv4Addr::new(10, 0, 0, 11),
             client_port: 40001,
         };
-        demux.map.insert(
-            stale_key,
-            InterceptDemuxEntry {
-                upstream_ip: Ipv4Addr::new(198, 51, 100, 10),
-                upstream_port: 443,
-                last_seen: Instant::now()
-                    - Duration::from_secs(INTERCEPT_DEMUX_IDLE_SECS + 1),
-            },
+        demux.test_insert_with_last_seen(
+            stale_key.client_ip,
+            stale_key.client_port,
+            Ipv4Addr::new(198, 51, 100, 10),
+            443,
+            Instant::now() - Duration::from_secs(INTERCEPT_DEMUX_IDLE_SECS + 1),
         );
-        demux.map.insert(
-            fresh_key,
-            InterceptDemuxEntry {
-                upstream_ip: Ipv4Addr::new(198, 51, 100, 11),
-                upstream_port: 443,
-                last_seen: Instant::now(),
-            },
+        demux.test_insert_with_last_seen(
+            fresh_key.client_ip,
+            fresh_key.client_port,
+            Ipv4Addr::new(198, 51, 100, 11),
+            443,
+            Instant::now(),
         );
 
-        demux.last_gc = Instant::now();
+        demux.test_set_last_gc_all(Instant::now());
         assert_eq!(
             demux.lookup(fresh_key.client_ip, fresh_key.client_port),
             Some((Ipv4Addr::new(198, 51, 100, 11), 443))
         );
         assert!(
-            demux.map.contains_key(&stale_key),
+            demux.test_contains(stale_key.client_ip, stale_key.client_port),
             "stale entries should not be swept on every fast-path lookup"
         );
 
-        demux.last_gc = Instant::now() - intercept_demux_gc_interval() - Duration::from_millis(1);
+        demux.test_set_last_gc_all(
+            Instant::now() - intercept_demux_gc_interval() - Duration::from_millis(1),
+        );
         assert_eq!(
             demux.lookup(fresh_key.client_ip, fresh_key.client_port),
             Some((Ipv4Addr::new(198, 51, 100, 11), 443))
         );
         assert!(
-            !demux.map.contains_key(&stale_key),
+            !demux.test_contains(stale_key.client_ip, stale_key.client_port),
             "stale entries should still be collected after the gc interval elapses"
         );
     });
 }
 
 #[test]
+fn flush_host_frames_writes_all_pending_frames_to_service_lane_tap() {
+    with_default_intercept_env(|| {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let mut fds = [0i32; 2];
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "pipe setup failed");
+        let mut reader = unsafe { File::from_raw_fd(fds[0]) };
+        let writer = unsafe { File::from_raw_fd(fds[1]) };
+        adapter.service_lane_tap = Some(writer);
+
+        let frame_a = vec![0x11; 64];
+        let frame_b = vec![0x22; 96];
+        adapter.enqueue_host_frame(frame_a.clone());
+        adapter.enqueue_host_frame(frame_b.clone());
+
+        let mut io = RecordingIo::default();
+        adapter
+            .flush_host_frames(&mut io)
+            .expect("flush service-lane host frames");
+        assert!(adapter.next_host_frame().is_none());
+
+        let mut observed = vec![0u8; frame_a.len() + frame_b.len()];
+        std::io::Read::read_exact(&mut reader, &mut observed).expect("read flushed bytes");
+        assert_eq!(&observed[..frame_a.len()], frame_a.as_slice());
+        assert_eq!(&observed[frame_a.len()..], frame_b.as_slice());
+    });
+}
+
+#[test]
 fn process_service_lane_egress_uses_shared_intercept_demux_across_adapters() {
     with_default_intercept_env(|| {
-        let shared = Arc::new(Mutex::new(SharedInterceptDemuxState::default()));
+        let shared = Arc::new(SharedInterceptDemuxState::default());
         let mut ingress = DpdkAdapter::new("data0".to_string()).unwrap();
         let mut egress = DpdkAdapter::new("data0".to_string()).unwrap();
         ingress.set_shared_intercept_demux(shared.clone());

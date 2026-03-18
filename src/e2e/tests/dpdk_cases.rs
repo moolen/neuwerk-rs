@@ -380,7 +380,7 @@ pub(super) fn dpdk_tls_intercept_service_lane_round_trip(
     });
 
     let shared_arp = Arc::new(Mutex::new(SharedArpState::default()));
-    let shared_demux = Arc::new(Mutex::new(SharedInterceptDemuxState::default()));
+    let shared_demux = Arc::new(SharedInterceptDemuxState::default());
     let mut ingress = DpdkAdapter::new("dpdk-ingress".to_string())?;
     let mut egress = DpdkAdapter::new("dpdk-egress".to_string())?;
     ingress.set_mac(fw_mac);

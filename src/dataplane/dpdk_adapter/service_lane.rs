@@ -23,6 +23,20 @@ struct IfReq {
     ifr_flags: libc::c_short,
 }
 
+fn env_truthy_default_true(name: &str) -> bool {
+    std::env::var(name)
+        .map(|raw| !matches!(raw.as_str(), "0" | "false" | "FALSE" | "no" | "NO"))
+        .unwrap_or(true)
+}
+
+fn tap_ifreq_flags() -> libc::c_short {
+    let mut flags = super::IFF_TAP | super::IFF_NO_PI;
+    if env_truthy_default_true("NEUWERK_DPDK_SERVICE_LANE_MULTI_QUEUE") {
+        flags |= libc::IFF_MULTI_QUEUE as libc::c_short;
+    }
+    flags
+}
+
 pub(super) fn open_tap(name: &str) -> Result<File, String> {
     if name.is_empty() {
         return Err("dpdk: service lane interface cannot be empty".to_string());
@@ -42,13 +56,26 @@ pub(super) fn open_tap(name: &str) -> Result<File, String> {
     }
     let mut ifr = IfReq {
         ifr_name: [0; libc::IFNAMSIZ],
-        ifr_flags: super::IFF_TAP | super::IFF_NO_PI,
+        ifr_flags: tap_ifreq_flags(),
     };
     for (dst, src) in ifr.ifr_name.iter_mut().zip(name.as_bytes().iter()) {
         *dst = *src as libc::c_char;
     }
-    let rc = unsafe { libc::ioctl(fd, super::TUNSETIFF, &ifr) };
-    if rc < 0 {
+    let mut rc = unsafe { libc::ioctl(fd, super::TUNSETIFF, &ifr) };
+    if rc < 0 && (ifr.ifr_flags & libc::IFF_MULTI_QUEUE as libc::c_short) != 0 {
+        let first_err = std::io::Error::last_os_error();
+        ifr.ifr_flags &= !(libc::IFF_MULTI_QUEUE as libc::c_short);
+        rc = unsafe { libc::ioctl(fd, super::TUNSETIFF, &ifr) };
+        if rc < 0 {
+            let fallback_err = std::io::Error::last_os_error();
+            unsafe {
+                libc::close(fd);
+            }
+            return Err(format!(
+                "dpdk: TUNSETIFF {name} failed with multiqueue ({first_err}); fallback failed: {fallback_err}"
+            ));
+        }
+    } else if rc < 0 {
         let err = std::io::Error::last_os_error();
         unsafe {
             libc::close(fd);
@@ -112,4 +139,46 @@ pub(super) fn select_mac(fallback: [u8; 6], candidate: Option<[u8; 6]>) -> [u8; 
         }
     }
     fallback
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_env_var<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let old = std::env::var(name).ok();
+        match value {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+        let out = f();
+        match old {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+        out
+    }
+
+    #[test]
+    fn tap_ifreq_flags_enables_multiqueue_by_default() {
+        with_env_var("NEUWERK_DPDK_SERVICE_LANE_MULTI_QUEUE", None, || {
+            let flags = tap_ifreq_flags();
+            assert_ne!(flags & libc::IFF_MULTI_QUEUE as libc::c_short, 0);
+        });
+    }
+
+    #[test]
+    fn tap_ifreq_flags_honors_multiqueue_disable_override() {
+        with_env_var(
+            "NEUWERK_DPDK_SERVICE_LANE_MULTI_QUEUE",
+            Some("false"),
+            || {
+                let flags = tap_ifreq_flags();
+                assert_eq!(flags & libc::IFF_MULTI_QUEUE as libc::c_short, 0);
+            },
+        );
+    }
 }

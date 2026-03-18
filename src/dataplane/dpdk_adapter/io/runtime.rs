@@ -25,6 +25,7 @@ impl DpdkIo {
         }
         Ok(Self {
             port_id: setup.port_id,
+            port_label: setup.port_id.to_string(),
             queue_id,
             queue_label: queue_id.to_string(),
             mempool: setup.mempool,
@@ -37,6 +38,7 @@ impl DpdkIo {
             held_rx_mbuf: ptr::null_mut(),
             tx_bufs: [ptr::null_mut(); TX_BURST_SIZE],
             tx_lens: [0; TX_BURST_SIZE],
+            tx_classes: [TxPacketClass::Other; TX_BURST_SIZE],
             tx_count: 0,
             metric_batch: IoMetricBatch::default(),
             ena_xstat_ids: setup.ena_xstat_ids.clone(),
@@ -65,6 +67,64 @@ impl DpdkIo {
     fn record_tx_dropped(&mut self, count: u64) {
         self.metric_batch.tx_dropped = self.metric_batch.tx_dropped.saturating_add(count);
         self.flush_metrics_if_needed(false);
+    }
+
+    fn observe_tx_stage(
+        &self,
+        stage: &str,
+        packet_count: u64,
+        byte_count: u64,
+        classes: &[TxPacketClass],
+    ) {
+        if packet_count == 0 {
+            return;
+        }
+        let Some(metrics) = &self.metrics else {
+            return;
+        };
+        metrics.inc_dpdk_tx_stage_packets(
+            &self.port_label,
+            &self.queue_label,
+            stage,
+            packet_count,
+        );
+        if byte_count > 0 {
+            metrics.add_dpdk_tx_stage_bytes(
+                &self.port_label,
+                &self.queue_label,
+                stage,
+                byte_count,
+            );
+        }
+        let mut other = 0u64;
+        let mut syn = 0u64;
+        let mut synack = 0u64;
+        for class in classes {
+            match class {
+                TxPacketClass::Other => other = other.saturating_add(1),
+                TxPacketClass::TcpSyn => syn = syn.saturating_add(1),
+                TxPacketClass::TcpSynAck => synack = synack.saturating_add(1),
+            }
+        }
+        for (label, count) in [
+            (TxPacketClass::Other.as_metric_label(), other),
+            (TxPacketClass::TcpSyn.as_metric_label(), syn),
+            (TxPacketClass::TcpSynAck.as_metric_label(), synack),
+        ] {
+            if count > 0 {
+                metrics.inc_dpdk_tx_stage_packet_class(
+                    &self.port_label,
+                    &self.queue_label,
+                    stage,
+                    label,
+                    count,
+                );
+            }
+        }
+    }
+
+    fn observe_single_tx_stage(&self, stage: &str, class: TxPacketClass, frame_len: usize) {
+        self.observe_tx_stage(stage, 1, frame_len as u64, &[class]);
     }
 
     fn flush_metrics_if_needed(&mut self, force: bool) {
@@ -139,7 +199,8 @@ impl DpdkIo {
             if DPDK_XSTATS_LOGS.fetch_add(1, Ordering::Relaxed) < 5 {
                 tracing::warn!(
                     "dpdk: rte_eth_xstats_get_by_id failed ret={} port={}",
-                    ret, self.port_id
+                    ret,
+                    self.port_id
                 );
             }
             return;
@@ -157,13 +218,49 @@ impl DpdkIo {
         }
     }
 
-    fn enqueue_tx_mbuf(&mut self, mbuf: *mut rte_mbuf, frame_len: usize) -> Result<(), String> {
+    pub fn take_rx_packet_for_transfer(&mut self, pkt: &Packet) -> Option<DpdkTransferredRxPacket> {
+        let mbuf = self.held_rx_mbuf;
+        if mbuf.is_null() {
+            return None;
+        }
+        let mbuf_data = unsafe { rust_rte_pktmbuf_mtod(mbuf) } as *const u8;
+        let mbuf_len = unsafe { rust_rte_pktmbuf_pkt_len(mbuf) as usize };
+        if mbuf_data.is_null() || pkt.buffer().as_ptr() != mbuf_data || pkt.len() != mbuf_len {
+            return None;
+        }
+        self.held_rx_mbuf = ptr::null_mut();
+        Some(DpdkTransferredRxPacket::new(mbuf, mbuf_len))
+    }
+
+    pub fn adopt_transferred_rx_packet(
+        &mut self,
+        transferred: DpdkTransferredRxPacket,
+    ) -> Result<Packet, String> {
+        let data_ptr = transferred.data_ptr();
+        if data_ptr.is_null() || transferred.len() == 0 {
+            return Err("dpdk: transferred rx packet missing payload".to_string());
+        }
+        let packet = unsafe { Packet::from_borrowed_mut(data_ptr, transferred.len()) }
+            .ok_or_else(|| "dpdk: failed to rebuild transferred rx packet".to_string())?;
+        self.release_held_rx_mbuf();
+        let (mbuf, _) = transferred.into_raw();
+        self.held_rx_mbuf = mbuf;
+        Ok(packet)
+    }
+
+    fn enqueue_tx_mbuf(
+        &mut self,
+        mbuf: *mut rte_mbuf,
+        frame_len: usize,
+        class: TxPacketClass,
+    ) -> Result<(), String> {
         if self.tx_count as usize >= TX_BURST_SIZE {
             self.flush_tx()?;
         }
         let idx = self.tx_count as usize;
         self.tx_bufs[idx] = mbuf;
         self.tx_lens[idx] = frame_len as u32;
+        self.tx_classes[idx] = class;
         self.tx_count += 1;
         if self.tx_count as usize >= TX_BURST_SIZE {
             self.flush_tx()?;
@@ -176,6 +273,8 @@ impl DpdkIo {
             return Ok(());
         }
         let mut queued = self.tx_count as usize;
+        let attempted_bytes: u64 = self.tx_lens.iter().take(queued).map(|len| *len as u64).sum();
+        self.observe_tx_stage("attempted", queued as u64, attempted_bytes, &self.tx_classes[..queued]);
         if self.tx_csum_offload.any() {
             let prepared = unsafe {
                 rust_rte_eth_tx_prepare(
@@ -187,6 +286,16 @@ impl DpdkIo {
             } as usize;
             if prepared < queued {
                 let dropped = queued.saturating_sub(prepared);
+                let dropped_bytes: u64 = self.tx_lens[prepared..queued]
+                    .iter()
+                    .map(|len| *len as u64)
+                    .sum();
+                self.observe_tx_stage(
+                    "prepare_rejected",
+                    dropped as u64,
+                    dropped_bytes,
+                    &self.tx_classes[prepared..queued],
+                );
                 for idx in prepared..queued {
                     let mbuf = self.tx_bufs[idx];
                     if !mbuf.is_null() {
@@ -202,6 +311,8 @@ impl DpdkIo {
                 return Ok(());
             }
         }
+        let prepared_bytes: u64 = self.tx_lens.iter().take(queued).map(|len| *len as u64).sum();
+        self.observe_tx_stage("prepared", queued as u64, prepared_bytes, &self.tx_classes[..queued]);
         let sent = unsafe {
             rust_rte_eth_tx_burst(
                 self.port_id,
@@ -212,12 +323,44 @@ impl DpdkIo {
         };
         let sent_usize = sent as usize;
         let mut bytes = 0u64;
+        let mut syn_sent = 0u64;
+        let mut synack_sent = 0u64;
         for len in self.tx_lens.iter().take(sent_usize) {
             bytes += *len as u64;
         }
+        for class in self.tx_classes.iter().take(sent_usize) {
+            match class {
+                TxPacketClass::TcpSyn => syn_sent = syn_sent.saturating_add(1),
+                TxPacketClass::TcpSynAck => synack_sent = synack_sent.saturating_add(1),
+                TxPacketClass::Other => {}
+            }
+        }
         self.record_tx_packet(sent as u64, bytes);
+        self.observe_tx_stage("sent", sent as u64, bytes, &self.tx_classes[..sent_usize]);
+        if let Some(metrics) = &self.metrics {
+            if syn_sent > 0 {
+                metrics.inc_dpdk_tx_packet_class_queue(&self.queue_label, "tcp_syn", syn_sent);
+            }
+            if synack_sent > 0 {
+                metrics.inc_dpdk_tx_packet_class_queue(
+                    &self.queue_label,
+                    "tcp_synack",
+                    synack_sent,
+                );
+            }
+        }
         if sent_usize < queued {
             let dropped = queued.saturating_sub(sent_usize);
+            let dropped_bytes: u64 = self.tx_lens[sent_usize..queued]
+                .iter()
+                .map(|len| *len as u64)
+                .sum();
+            self.observe_tx_stage(
+                "burst_unsent",
+                dropped as u64,
+                dropped_bytes,
+                &self.tx_classes[sent_usize..queued],
+            );
             for idx in sent_usize..queued {
                 let mbuf = self.tx_bufs[idx];
                 if !mbuf.is_null() {
@@ -420,7 +563,10 @@ impl FrameIo for DpdkIo {
             if DPDK_RX_OVERSIZE_LOGS.fetch_add(1, Ordering::Relaxed) < 10 {
                 tracing::warn!(
                     "dpdk: rx frame too large (pkt_len={}, buf_len={}, nb_segs={}, data_len={})",
-                    pkt_len, MAX_RX_PACKET_LEN, nb_segs, data_len
+                    pkt_len,
+                    MAX_RX_PACKET_LEN,
+                    nb_segs,
+                    data_len
                 );
             }
             unsafe { rust_rte_pktmbuf_free(mbuf) };
@@ -511,19 +657,23 @@ impl FrameIo for DpdkIo {
     }
 
     fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+        let class = classify_tx_packet(frame);
         let mbuf = unsafe { rust_rte_pktmbuf_alloc(self.mempool) };
         if mbuf.is_null() {
+            self.observe_single_tx_stage("alloc_failed", class, frame.len());
             self.record_tx_dropped(1);
             return Err("dpdk: failed to allocate mbuf".to_string());
         }
         if frame.len() > u16::MAX as usize {
             unsafe { rust_rte_pktmbuf_free(mbuf) };
+            self.observe_single_tx_stage("append_failed", class, frame.len());
             self.record_tx_dropped(1);
             return Err("dpdk: frame exceeds mbuf max length".to_string());
         }
         let dst = unsafe { rust_rte_pktmbuf_append(mbuf, frame.len() as u16) };
         if dst.is_null() {
             unsafe { rust_rte_pktmbuf_free(mbuf) };
+            self.observe_single_tx_stage("append_failed", class, frame.len());
             self.record_tx_dropped(1);
             return Err("dpdk: frame exceeds mbuf tailroom".to_string());
         }
@@ -531,8 +681,9 @@ impl FrameIo for DpdkIo {
             ptr::copy_nonoverlapping(frame.as_ptr(), dst as *mut u8, frame.len());
         }
         maybe_prepare_tx_checksum_offload(mbuf, frame, self.tx_csum_offload);
-        if let Err(err) = self.enqueue_tx_mbuf(mbuf, frame.len()) {
+        if let Err(err) = self.enqueue_tx_mbuf(mbuf, frame.len(), class) {
             unsafe { rust_rte_pktmbuf_free(mbuf) };
+            self.observe_single_tx_stage("enqueue_failed", class, frame.len());
             self.record_tx_dropped(1);
             return Err(err);
         }
@@ -540,6 +691,7 @@ impl FrameIo for DpdkIo {
     }
 
     fn send_borrowed_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+        let class = classify_tx_packet(frame);
         if self.tx_csum_offload.any() {
             // Keep offload path conservative: avoid reusing RX mbufs as TX
             // buffers while checksum offload metadata is active.
@@ -558,8 +710,9 @@ impl FrameIo for DpdkIo {
 
         self.held_rx_mbuf = ptr::null_mut();
         maybe_prepare_tx_checksum_offload(mbuf, frame, self.tx_csum_offload);
-        if let Err(err) = self.enqueue_tx_mbuf(mbuf, frame.len()) {
+        if let Err(err) = self.enqueue_tx_mbuf(mbuf, frame.len(), class) {
             unsafe { rust_rte_pktmbuf_free(mbuf) };
+            self.observe_single_tx_stage("enqueue_failed", class, frame.len());
             self.record_tx_dropped(1);
             return Err(err);
         }
@@ -580,4 +733,48 @@ impl FrameIo for DpdkIo {
     fn mac(&self) -> Option<[u8; 6]> {
         Some(self.mac)
     }
+}
+
+fn classify_tx_packet(frame: &[u8]) -> TxPacketClass {
+    const ETH_HDR_LEN: usize = 14;
+    const ETH_TYPE_IPV4: u16 = 0x0800;
+    const IPPROTO_TCP: u8 = 6;
+    const TCP_FLAG_SYN: u8 = 0x02;
+    const TCP_FLAG_RST: u8 = 0x04;
+    const TCP_FLAG_ACK: u8 = 0x10;
+    const TCP_SYN_MASK: u8 = TCP_FLAG_SYN | TCP_FLAG_ACK | TCP_FLAG_RST;
+
+    if frame.len() < ETH_HDR_LEN + 20 {
+        return TxPacketClass::Other;
+    }
+    let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+    if ethertype != ETH_TYPE_IPV4 {
+        return TxPacketClass::Other;
+    }
+
+    let ip_off = ETH_HDR_LEN;
+    if (frame[ip_off] >> 4) != 4 {
+        return TxPacketClass::Other;
+    }
+    let ihl = ((frame[ip_off] & 0x0f) as usize) * 4;
+    if ihl < 20 || frame.len() < ip_off + ihl + 20 {
+        return TxPacketClass::Other;
+    }
+    if frame[ip_off + 9] != IPPROTO_TCP {
+        return TxPacketClass::Other;
+    }
+
+    let tcp_off = ip_off + ihl;
+    let data_offset = ((frame[tcp_off + 12] >> 4) as usize) * 4;
+    if data_offset < 20 || frame.len() < tcp_off + data_offset {
+        return TxPacketClass::Other;
+    }
+    let flags = frame[tcp_off + 13];
+    if (flags & TCP_SYN_MASK) == TCP_FLAG_SYN {
+        return TxPacketClass::TcpSyn;
+    }
+    if (flags & TCP_SYN_MASK) == (TCP_FLAG_SYN | TCP_FLAG_ACK) {
+        return TxPacketClass::TcpSynAck;
+    }
+    TxPacketClass::Other
 }

@@ -302,20 +302,30 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
             }
 
             // Let PMD constrain descriptor counts to hardware-supported values.
-            let mut rx_desc = RX_RING_SIZE;
-            let mut tx_desc = TX_RING_SIZE;
+            let requested_rx_desc =
+                parse_ring_size_override("NEUWERK_DPDK_RX_RING_SIZE", RX_RING_SIZE);
+            let requested_tx_desc =
+                parse_ring_size_override("NEUWERK_DPDK_TX_RING_SIZE", TX_RING_SIZE);
+            let mut rx_desc = requested_rx_desc;
+            let mut tx_desc = requested_tx_desc;
             let adjust_ret = unsafe {
                 rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &mut rx_desc, &mut tx_desc)
             };
             if adjust_ret < 0 {
                 tracing::warn!(
-                    "dpdk: descriptor adjust failed (ret={}); using rx={} tx={}",
-                    adjust_ret, rx_desc, tx_desc
+                    "dpdk: descriptor adjust failed (ret={}); using requested rx={} tx={}",
+                    adjust_ret, requested_rx_desc, requested_tx_desc
                 );
-            } else if rx_desc != RX_RING_SIZE || tx_desc != TX_RING_SIZE {
+            } else if rx_desc != requested_rx_desc || tx_desc != requested_tx_desc {
                 tracing::info!(
                     "dpdk: descriptor sizes adjusted by PMD rx={}=>{} tx={}=>{}",
-                    RX_RING_SIZE, rx_desc, TX_RING_SIZE, tx_desc
+                    requested_rx_desc, rx_desc, requested_tx_desc, tx_desc
+                );
+            } else {
+                tracing::info!(
+                    rx_desc,
+                    tx_desc,
+                    "dpdk descriptor sizes configured"
                 );
             }
 

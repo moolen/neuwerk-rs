@@ -66,6 +66,7 @@ unsafe impl Sync for PortSetup {}
 
 pub struct DpdkIo {
     port_id: u16,
+    port_label: String,
     queue_id: u16,
     queue_label: String,
     mempool: *mut rte_mempool,
@@ -78,6 +79,7 @@ pub struct DpdkIo {
     held_rx_mbuf: *mut rte_mbuf,
     tx_bufs: [*mut rte_mbuf; TX_BURST_SIZE],
     tx_lens: [u32; TX_BURST_SIZE],
+    tx_classes: [TxPacketClass; TX_BURST_SIZE],
     tx_count: u16,
     metric_batch: IoMetricBatch,
     ena_xstat_ids: Vec<EnaXstatId>,
@@ -89,6 +91,50 @@ pub struct DpdkIo {
 // intrinsically synchronized. We only move `DpdkIo` across threads and use
 // shared instances behind `Mutex` in the software-demux path.
 unsafe impl Send for DpdkIo {}
+
+#[derive(Debug)]
+pub struct DpdkTransferredRxPacket {
+    mbuf: *mut rte_mbuf,
+    len: usize,
+}
+
+// Safety: DPDK mbufs are refcounted buffers allocated from thread-safe mempools.
+// Ownership is transferred between workers by moving this handle.
+unsafe impl Send for DpdkTransferredRxPacket {}
+
+impl DpdkTransferredRxPacket {
+    fn new(mbuf: *mut rte_mbuf, len: usize) -> Self {
+        Self { mbuf, len }
+    }
+
+    fn data_ptr(&self) -> *mut u8 {
+        if self.mbuf.is_null() {
+            return ptr::null_mut();
+        }
+        unsafe { rust_rte_pktmbuf_mtod(self.mbuf) as *mut u8 }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    fn into_raw(mut self) -> (*mut rte_mbuf, usize) {
+        let mbuf = self.mbuf;
+        let len = self.len;
+        self.mbuf = ptr::null_mut();
+        self.len = 0;
+        (mbuf, len)
+    }
+}
+
+impl Drop for DpdkTransferredRxPacket {
+    fn drop(&mut self) {
+        if !self.mbuf.is_null() {
+            unsafe { rust_rte_pktmbuf_free(self.mbuf) };
+            self.mbuf = ptr::null_mut();
+        }
+    }
+}
 
 static DPDK_RX_LOGGED: AtomicBool = AtomicBool::new(false);
 static DPDK_RX_OVERSIZE_LOGS: AtomicU32 = AtomicU32::new(0);
@@ -109,6 +155,24 @@ struct IoMetricBatch {
     tx_packets: u64,
     tx_bytes: u64,
     tx_dropped: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TxPacketClass {
+    #[default]
+    Other,
+    TcpSyn,
+    TcpSynAck,
+}
+
+impl TxPacketClass {
+    fn as_metric_label(self) -> &'static str {
+        match self {
+            Self::Other => "other",
+            Self::TcpSyn => "tcp_syn",
+            Self::TcpSynAck => "tcp_synack",
+        }
+    }
 }
 
 impl IoMetricBatch {
@@ -317,6 +381,40 @@ fn parse_port_mtu_override() -> Option<u16> {
     Some(value)
 }
 
+fn parse_ring_size_override(name: &str, default_value: u16) -> u16 {
+    let Some(value) = parse_u16_env(name) else {
+        return default_value;
+    };
+    if value == 0 {
+        tracing::warn!(env_var = %name, "dpdk ring size override must be > 0; using default");
+        return default_value;
+    }
+    value
+}
+
+fn parse_mbuf_pool_size_override() -> Option<u32> {
+    let raw = std::env::var("NEUWERK_DPDK_MBUF_POOL_SIZE").ok()?;
+    let parsed = match raw.trim().parse::<u32>() {
+        Ok(value) => value,
+        Err(_) => {
+            tracing::warn!(
+                raw = %raw,
+                "dpdk invalid NEUWERK_DPDK_MBUF_POOL_SIZE; ignoring"
+            );
+            return None;
+        }
+    };
+    if parsed <= MBUF_CACHE_SIZE + 1 {
+        tracing::warn!(
+            parsed,
+            minimum = MBUF_CACHE_SIZE + 2,
+            "dpdk NEUWERK_DPDK_MBUF_POOL_SIZE below minimum; ignoring"
+        );
+        return None;
+    }
+    Some(parsed)
+}
+
 fn discover_ena_allowance_xstats(port_id: u16) -> Vec<EnaXstatId> {
     let mut out = Vec::new();
     for name in ENA_ALLOWANCE_XSTATS {
@@ -408,6 +506,13 @@ fn next_pow2_minus_one(mut value: u32) -> u32 {
 }
 
 fn mempool_size_candidates(queue_count: u16) -> Vec<u32> {
+    if let Some(override_count) = parse_mbuf_pool_size_override() {
+        tracing::info!(
+            count = override_count,
+            "dpdk mempool size override configured"
+        );
+        return vec![override_count];
+    }
     let scaled_target = MBUF_PER_POOL.saturating_mul(queue_count.max(1) as u32);
     let mut current = next_pow2_minus_one(scaled_target).min(MBUF_PER_POOL_MAX_CANDIDATE);
     let mut candidates = Vec::with_capacity(8);
@@ -593,5 +698,25 @@ mod tests {
         assert!(!should_force_single_queue_without_reta(2, false, 0, false));
         assert!(!should_force_single_queue_without_reta(2, true, 128, false));
         assert!(!should_force_single_queue_without_reta(2, true, 0, true));
+    }
+
+    #[test]
+    fn parse_ring_size_override_uses_default_for_invalid_values() {
+        std::env::remove_var("NEUWERK_DPDK_RX_RING_SIZE");
+        assert_eq!(
+            parse_ring_size_override("NEUWERK_DPDK_RX_RING_SIZE", 1024),
+            1024
+        );
+        std::env::set_var("NEUWERK_DPDK_RX_RING_SIZE", "0");
+        assert_eq!(
+            parse_ring_size_override("NEUWERK_DPDK_RX_RING_SIZE", 1024),
+            1024
+        );
+        std::env::set_var("NEUWERK_DPDK_RX_RING_SIZE", "2048");
+        assert_eq!(
+            parse_ring_size_override("NEUWERK_DPDK_RX_RING_SIZE", 1024),
+            2048
+        );
+        std::env::remove_var("NEUWERK_DPDK_RX_RING_SIZE");
     }
 }

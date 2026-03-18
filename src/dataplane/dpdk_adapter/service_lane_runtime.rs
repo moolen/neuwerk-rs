@@ -80,10 +80,8 @@ impl DpdkAdapter {
         upstream_port: u16,
     ) {
         if let Some(shared) = &self.shared_intercept_demux {
-            if let Ok(mut lock) = shared.lock() {
-                lock.upsert(client_ip, client_port, upstream_ip, upstream_port);
-                return;
-            }
+            shared.upsert(client_ip, client_port, upstream_ip, upstream_port);
+            return;
         }
         self.maybe_gc_local_intercept_demux();
         self.intercept_demux.insert(
@@ -101,10 +99,8 @@ impl DpdkAdapter {
 
     fn remove_intercept_demux_entry(&mut self, client_ip: Ipv4Addr, client_port: u16) {
         if let Some(shared) = &self.shared_intercept_demux {
-            if let Ok(mut lock) = shared.lock() {
-                lock.remove(client_ip, client_port);
-                return;
-            }
+            shared.remove(client_ip, client_port);
+            return;
         }
         self.intercept_demux.remove(&InterceptDemuxKey {
             client_ip,
@@ -118,15 +114,13 @@ impl DpdkAdapter {
         client_port: u16,
     ) -> Option<InterceptDemuxEntry> {
         if let Some(shared) = &self.shared_intercept_demux {
-            if let Ok(mut lock) = shared.lock() {
-                return lock
-                    .lookup(client_ip, client_port)
-                    .map(|(upstream_ip, upstream_port)| InterceptDemuxEntry {
-                        upstream_ip,
-                        upstream_port,
-                        last_seen: Instant::now(),
-                    });
-            }
+            return shared.lookup(client_ip, client_port).map(|(upstream_ip, upstream_port)| {
+                InterceptDemuxEntry {
+                    upstream_ip,
+                    upstream_port,
+                    last_seen: Instant::now(),
+                }
+            });
         }
         self.maybe_gc_local_intercept_demux();
         let key = InterceptDemuxKey {
