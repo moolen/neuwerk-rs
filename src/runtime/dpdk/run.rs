@@ -3,8 +3,16 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use crossbeam_queue::ArrayQueue;
 use firewall::controlplane;
-use firewall::dataplane::policy::{DynamicIpSetV4, PolicySnapshot};
+use firewall::controlplane::metrics::{
+    current_dpdk_worker_id, set_current_dpdk_worker_id, DpdkFlowSteerMetricHandles,
+};
+use firewall::dataplane::policy::{
+    DynamicIpSetV4, PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
+};
+#[cfg(feature = "dpdk")]
+use firewall::dataplane::DpdkTransferredRxPacket;
 use firewall::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo, DrainControl,
     EngineState, FrameIo, FrameOut, OverlayConfig, Packet, SharedArpState,
@@ -19,8 +27,8 @@ use super::affinity::{choose_dpdk_worker_core_ids, cpu_core_count, pin_thread_to
 use super::worker_plan::{
     choose_dpdk_worker_plan, dpdk_force_shared_rx_demux, dpdk_lockless_queue_per_worker_enabled,
     dpdk_pin_https_demux_owner, dpdk_service_lane_enabled, env_flag_enabled, flow_steer_payload,
-    shard_index_for_packet, shared_demux_owner_for_packet_with_policy, DpdkPerfMode,
-    DpdkSingleQueueStrategy, DpdkWorkerMode,
+    parse_truthy_flag, shard_index_for_packet, shared_demux_owner_for_packet_with_policy,
+    DpdkPerfMode, DpdkSingleQueueStrategy, DpdkWorkerMode,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -29,10 +37,12 @@ fn run_dpdk_housekeeping(
     force: bool,
     service_lane_enabled: bool,
     housekeeping_shard_idx: usize,
+    metrics: &controlplane::metrics::Metrics,
+    detailed_lock_observability: bool,
     shared_state: Option<&std::sync::Arc<Vec<std::sync::Mutex<EngineState>>>>,
     local_state: Option<&mut EngineState>,
     adapter: &mut DpdkAdapter,
-    io: &mut DpdkWorkerIo,
+    io: &mut impl FrameIo,
 ) -> Result<(), String> {
     let emit_dhcp = worker_emits_dhcp_housekeeping(worker_id);
     if let Some(shared) = shared_state {
@@ -40,20 +50,27 @@ fn run_dpdk_housekeeping(
             .get(housekeeping_shard_idx)
             .ok_or_else(|| "dpdk: state shard missing".to_string())?;
         let guard = if force {
-            shard
-                .lock()
-                .map_err(|_| "dpdk: state lock poisoned".to_string())?
+            lock_state_shard_blocking(
+                shard,
+                worker_id,
+                housekeeping_shard_idx,
+                metrics,
+                detailed_lock_observability,
+            )?
         } else {
-            match shard.try_lock() {
-                Ok(guard) => guard,
-                Err(std::sync::TryLockError::Poisoned(_)) => {
-                    return Err("dpdk: state lock poisoned".to_string());
-                }
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    return Ok(());
-                }
+            match try_lock_state_shard(
+                shard,
+                worker_id,
+                housekeeping_shard_idx,
+                metrics,
+                detailed_lock_observability,
+            )? {
+                Some(guard) => guard,
+                None => return Ok(()),
             }
         };
+        let mut guard = guard;
+        guard.run_housekeeping();
         if service_lane_enabled {
             adapter.drain_service_lane_egress(&guard, io)?;
         }
@@ -65,6 +82,7 @@ fn run_dpdk_housekeeping(
         return Ok(());
     }
     let local = local_state.ok_or_else(|| "dpdk: local state missing".to_string())?;
+    local.run_housekeeping();
     if service_lane_enabled {
         adapter.drain_service_lane_egress(local, io)?;
     }
@@ -97,79 +115,251 @@ fn worker_emits_dhcp_housekeeping(worker_id: usize) -> bool {
     worker_id == 0
 }
 
+struct ObservedStateGuard<'a> {
+    guard: std::sync::MutexGuard<'a, EngineState>,
+    metrics: controlplane::metrics::Metrics,
+    worker_id: usize,
+    shard_id: usize,
+    acquired_at: Option<Instant>,
+    detailed_lock_observability: bool,
+}
+
+impl std::ops::Deref for ObservedStateGuard<'_> {
+    type Target = EngineState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for ObservedStateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl Drop for ObservedStateGuard<'_> {
+    fn drop(&mut self) {
+        if self.detailed_lock_observability {
+            let Some(acquired_at) = self.acquired_at else {
+                return;
+            };
+            self.metrics.observe_dp_state_lock_hold_detailed(
+                self.worker_id,
+                self.shard_id,
+                acquired_at.elapsed(),
+            );
+        }
+    }
+}
+
+fn observed_state_guard<'a>(
+    guard: std::sync::MutexGuard<'a, EngineState>,
+    worker_id: usize,
+    shard_id: usize,
+    metrics: &controlplane::metrics::Metrics,
+    detailed_lock_observability: bool,
+) -> ObservedStateGuard<'a> {
+    ObservedStateGuard {
+        guard,
+        metrics: metrics.clone(),
+        worker_id,
+        shard_id,
+        acquired_at: detailed_lock_observability.then(Instant::now),
+        detailed_lock_observability,
+    }
+}
+
+fn try_lock_state_shard<'a>(
+    shard: &'a std::sync::Mutex<EngineState>,
+    worker_id: usize,
+    shard_id: usize,
+    metrics: &controlplane::metrics::Metrics,
+    detailed_lock_observability: bool,
+) -> Result<Option<ObservedStateGuard<'a>>, String> {
+    match shard.try_lock() {
+        Ok(guard) => Ok(Some(observed_state_guard(
+            guard,
+            worker_id,
+            shard_id,
+            metrics,
+            detailed_lock_observability,
+        ))),
+        Err(std::sync::TryLockError::Poisoned(_)) => Err("dpdk: state lock poisoned".to_string()),
+        Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+    }
+}
+
+fn lock_state_shard_blocking<'a>(
+    shard: &'a std::sync::Mutex<EngineState>,
+    worker_id: usize,
+    shard_id: usize,
+    metrics: &controlplane::metrics::Metrics,
+    detailed_lock_observability: bool,
+) -> Result<ObservedStateGuard<'a>, String> {
+    match shard.try_lock() {
+        Ok(guard) => Ok(observed_state_guard(
+            guard,
+            worker_id,
+            shard_id,
+            metrics,
+            detailed_lock_observability,
+        )),
+        Err(std::sync::TryLockError::Poisoned(_)) => Err("dpdk: state lock poisoned".to_string()),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            metrics.inc_dp_state_lock_contended();
+            if detailed_lock_observability {
+                metrics.inc_dp_state_lock_contended_detailed(worker_id, shard_id);
+            }
+            let start = Instant::now();
+            let guard = shard
+                .lock()
+                .map_err(|_| "dpdk: state lock poisoned".to_string())?;
+            let wait = start.elapsed();
+            metrics.observe_dp_state_lock_wait(wait);
+            if detailed_lock_observability {
+                metrics.observe_dp_state_lock_wait_detailed(worker_id, shard_id, wait);
+            }
+            Ok(observed_state_guard(
+                guard,
+                worker_id,
+                shard_id,
+                metrics,
+                detailed_lock_observability,
+            ))
+        }
+    }
+}
+
 fn direct_rx_poll_enabled(shared_rx_owner_only: bool, worker_id: usize) -> bool {
     !shared_rx_owner_only || worker_id == 0
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FlowSteerDispatchResult {
-    Dispatched,
-    ProcessLocally,
+fn shared_rx_owner_only_enabled(
+    shared_io_present: bool,
+    shared_rx_demux: bool,
+    env_value: Option<&str>,
+) -> bool {
+    if !shared_io_present || !shared_rx_demux {
+        return false;
+    }
+    env_value.map(parse_truthy_flag).unwrap_or(true)
 }
 
+fn requested_dpdk_workers_target(max_workers: usize, env_value: Option<&str>) -> (usize, bool) {
+    let max_workers = max_workers.max(1);
+    let auto_target = if max_workers <= 2 {
+        max_workers
+    } else {
+        max_workers - 1
+    };
+    match env_value.map(str::trim) {
+        None | Some("") | Some("0") => (auto_target, false),
+        Some(value) if value.eq_ignore_ascii_case("auto") => (auto_target, false),
+        Some(value) => match value.parse::<usize>() {
+            Ok(n) if n > 0 => (n, false),
+            Ok(_) | Err(_) => (auto_target, true),
+        },
+    }
+}
+
+#[derive(Debug)]
+enum FlowSteerDispatchResult {
+    Dispatched,
+    ProcessLocally(FlowSteerPayload),
+}
+
+#[derive(Debug)]
+enum FlowSteerPayload {
+    Bytes(Vec<u8>),
+    #[cfg(feature = "dpdk")]
+    DpdkRx(DpdkTransferredRxPacket),
+}
+
+impl FlowSteerPayload {
+    fn len(&self) -> usize {
+        match self {
+            FlowSteerPayload::Bytes(frame) => frame.len(),
+            #[cfg(feature = "dpdk")]
+            FlowSteerPayload::DpdkRx(packet) => packet.len(),
+        }
+    }
+}
+
+type FlowSteerQueue = Arc<ArrayQueue<FlowSteerPayload>>;
+type FlowSteerQueues = Arc<Vec<FlowSteerQueue>>;
+
 fn dispatch_flow_steer_packet(
-    flow_steer_tx: Option<&Arc<Vec<std::sync::mpsc::SyncSender<Vec<u8>>>>>,
+    flow_steer_queues: Option<&FlowSteerQueues>,
     owner: usize,
-    payload: Vec<u8>,
+    payload: FlowSteerPayload,
     worker_id: usize,
-    metrics: &controlplane::metrics::Metrics,
     queue_depth: Option<&Arc<AtomicUsize>>,
+    flow_steer_metrics: Option<&DpdkFlowSteerMetricHandles>,
     dispatch_enabled: &mut bool,
 ) -> FlowSteerDispatchResult {
     if !*dispatch_enabled {
         if let Some(queue_depth) = queue_depth {
             let depth = decrement_queue_depth(queue_depth);
-            metrics.set_dpdk_flow_steer_queue_depth(owner, depth);
+            if let Some(metrics) = flow_steer_metrics {
+                metrics.set_queue_depth(owner, depth);
+            }
         }
-        return FlowSteerDispatchResult::ProcessLocally;
+        return FlowSteerDispatchResult::ProcessLocally(payload);
     }
 
-    let Some(flow_steer_tx) = flow_steer_tx else {
+    let Some(flow_steer_queues) = flow_steer_queues else {
         if let Some(queue_depth) = queue_depth {
             let depth = decrement_queue_depth(queue_depth);
-            metrics.set_dpdk_flow_steer_queue_depth(owner, depth);
+            if let Some(metrics) = flow_steer_metrics {
+                metrics.set_queue_depth(owner, depth);
+            }
         }
         *dispatch_enabled = false;
-        metrics.inc_dpdk_flow_steer_fail_open_event(worker_id, "tx_missing");
+        if let Some(metrics) = flow_steer_metrics {
+            metrics.inc_fail_open_tx_missing(worker_id);
+        }
         warn!(
             worker_id,
             owner, "dpdk flow steer tx missing; disabling dispatch and failing open"
         );
-        return FlowSteerDispatchResult::ProcessLocally;
+        return FlowSteerDispatchResult::ProcessLocally(payload);
     };
-    let Some(tx) = flow_steer_tx.get(owner) else {
+    let Some(queue) = flow_steer_queues.get(owner) else {
         if let Some(queue_depth) = queue_depth {
             let depth = decrement_queue_depth(queue_depth);
-            metrics.set_dpdk_flow_steer_queue_depth(owner, depth);
+            if let Some(metrics) = flow_steer_metrics {
+                metrics.set_queue_depth(owner, depth);
+            }
         }
         *dispatch_enabled = false;
-        metrics.inc_dpdk_flow_steer_fail_open_event(worker_id, "owner_missing");
+        if let Some(metrics) = flow_steer_metrics {
+            metrics.inc_fail_open_owner_missing(worker_id);
+        }
         warn!(
             worker_id,
             owner, "dpdk flow steer owner sender missing; disabling dispatch and failing open"
         );
-        return FlowSteerDispatchResult::ProcessLocally;
+        return FlowSteerDispatchResult::ProcessLocally(payload);
     };
 
     let payload_len = payload.len();
     let wait_start = Instant::now();
-    if tx.send(payload).is_err() {
-        if let Some(queue_depth) = queue_depth {
-            let depth = decrement_queue_depth(queue_depth);
-            metrics.set_dpdk_flow_steer_queue_depth(owner, depth);
+    let mut payload = payload;
+    loop {
+        match queue.push(payload) {
+            Ok(()) => break,
+            Err(returned) => {
+                payload = returned;
+                std::hint::spin_loop();
+                std::thread::yield_now();
+            }
         }
-        *dispatch_enabled = false;
-        metrics.inc_dpdk_flow_steer_fail_open_event(worker_id, "dispatch_failed");
-        warn!(
-            worker_id,
-            owner, "dpdk flow steer dispatch failed; disabling dispatch and failing open"
-        );
-        return FlowSteerDispatchResult::ProcessLocally;
     }
 
-    metrics.observe_dpdk_flow_steer_queue_wait(owner, wait_start.elapsed());
-    metrics.inc_dpdk_flow_steer_dispatch(worker_id, owner);
-    metrics.add_dpdk_flow_steer_bytes(worker_id, owner, payload_len);
+    if let Some(metrics) = flow_steer_metrics {
+        metrics.observe_dispatch(worker_id, owner, payload_len, wait_start.elapsed());
+    }
     FlowSteerDispatchResult::Dispatched
 }
 
@@ -178,24 +368,158 @@ struct SharedDpdkIo {
     metrics: controlplane::metrics::Metrics,
 }
 
+struct ObservedSharedDpdkIoGuard<'a> {
+    guard: std::sync::MutexGuard<'a, DpdkIo>,
+    metrics: controlplane::metrics::Metrics,
+    worker_id: Option<usize>,
+    acquired_at: Instant,
+}
+
+impl std::ops::Deref for ObservedSharedDpdkIoGuard<'_> {
+    type Target = DpdkIo;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for ObservedSharedDpdkIoGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl Drop for ObservedSharedDpdkIoGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(worker_id) = self.worker_id {
+            self.metrics
+                .observe_dpdk_shared_io_lock_hold_worker(worker_id, self.acquired_at.elapsed());
+        }
+    }
+}
+
 impl SharedDpdkIo {
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, DpdkIo>, String> {
+    fn lock(&self) -> Result<ObservedSharedDpdkIoGuard<'_>, String> {
+        let worker_id = current_dpdk_worker_id();
         match self.io.try_lock() {
-            Ok(guard) => Ok(guard),
+            Ok(guard) => Ok(ObservedSharedDpdkIoGuard {
+                guard,
+                metrics: self.metrics.clone(),
+                worker_id,
+                acquired_at: Instant::now(),
+            }),
             Err(std::sync::TryLockError::Poisoned(_)) => {
                 Err("dpdk: shared io lock poisoned".to_string())
             }
             Err(std::sync::TryLockError::WouldBlock) => {
-                self.metrics.inc_dpdk_shared_io_lock_contended();
+                if let Some(worker_id) = worker_id {
+                    self.metrics
+                        .inc_dpdk_shared_io_lock_contended_worker(worker_id);
+                } else {
+                    self.metrics.inc_dpdk_shared_io_lock_contended();
+                }
                 let start = Instant::now();
                 let guard = self
                     .io
                     .lock()
                     .map_err(|_| "dpdk: shared io lock poisoned".to_string())?;
-                self.metrics
-                    .observe_dpdk_shared_io_lock_wait(start.elapsed());
-                Ok(guard)
+                if let Some(worker_id) = worker_id {
+                    self.metrics
+                        .observe_dpdk_shared_io_lock_wait_worker(worker_id, start.elapsed());
+                } else {
+                    self.metrics
+                        .observe_dpdk_shared_io_lock_wait(start.elapsed());
+                }
+                Ok(ObservedSharedDpdkIoGuard {
+                    guard,
+                    metrics: self.metrics.clone(),
+                    worker_id,
+                    acquired_at: Instant::now(),
+                })
             }
+        }
+    }
+}
+
+enum LockedDpdkWorkerIo<'a> {
+    Dedicated(&'a mut DpdkIo),
+    Shared(ObservedSharedDpdkIoGuard<'a>),
+}
+
+impl FrameIo for LockedDpdkWorkerIo<'_> {
+    fn recv_frame(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        match self {
+            LockedDpdkWorkerIo::Dedicated(io) => io.recv_frame(buf),
+            LockedDpdkWorkerIo::Shared(io) => io.recv_frame(buf),
+        }
+    }
+
+    fn recv_packet(&mut self, pkt: &mut Packet) -> Result<usize, String> {
+        match self {
+            LockedDpdkWorkerIo::Dedicated(io) => io.recv_packet(pkt),
+            LockedDpdkWorkerIo::Shared(io) => io.recv_packet(pkt),
+        }
+    }
+
+    fn finish_rx_packet(&mut self) {
+        match self {
+            LockedDpdkWorkerIo::Dedicated(io) => io.finish_rx_packet(),
+            LockedDpdkWorkerIo::Shared(io) => io.finish_rx_packet(),
+        }
+    }
+
+    fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+        match self {
+            LockedDpdkWorkerIo::Dedicated(io) => io.send_frame(frame),
+            LockedDpdkWorkerIo::Shared(io) => io.send_frame(frame),
+        }
+    }
+
+    fn send_borrowed_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+        match self {
+            LockedDpdkWorkerIo::Dedicated(io) => io.send_borrowed_frame(frame),
+            LockedDpdkWorkerIo::Shared(io) => io.send_borrowed_frame(frame),
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), String> {
+        match self {
+            LockedDpdkWorkerIo::Dedicated(io) => io.flush(),
+            LockedDpdkWorkerIo::Shared(io) => io.flush(),
+        }
+    }
+
+    fn mac(&self) -> Option<[u8; 6]> {
+        match self {
+            LockedDpdkWorkerIo::Dedicated(io) => io.mac(),
+            LockedDpdkWorkerIo::Shared(io) => io.mac(),
+        }
+    }
+}
+
+impl LockedDpdkWorkerIo<'_> {
+    fn take_flow_steer_payload(&mut self, pkt: &mut Packet) -> FlowSteerPayload {
+        #[cfg(feature = "dpdk")]
+        {
+            let transferred = match self {
+                LockedDpdkWorkerIo::Dedicated(io) => io.take_rx_packet_for_transfer(pkt),
+                LockedDpdkWorkerIo::Shared(io) => io.take_rx_packet_for_transfer(pkt),
+            };
+            if let Some(packet) = transferred {
+                return FlowSteerPayload::DpdkRx(packet);
+            }
+        }
+        FlowSteerPayload::Bytes(flow_steer_payload(pkt))
+    }
+
+    fn restore_flow_steer_payload(&mut self, payload: FlowSteerPayload) -> Result<Packet, String> {
+        match payload {
+            FlowSteerPayload::Bytes(frame) => Ok(Packet::new(frame)),
+            #[cfg(feature = "dpdk")]
+            FlowSteerPayload::DpdkRx(packet) => match self {
+                LockedDpdkWorkerIo::Dedicated(io) => io.adopt_transferred_rx_packet(packet),
+                LockedDpdkWorkerIo::Shared(io) => io.adopt_transferred_rx_packet(packet),
+            },
         }
     }
 }
@@ -212,68 +536,40 @@ impl DpdkWorkerIo {
             DpdkWorkerIo::Shared(io) => io.lock().ok().and_then(|guard| guard.mac()),
         }
     }
+
+    fn lock_io(&mut self) -> Result<LockedDpdkWorkerIo<'_>, String> {
+        match self {
+            DpdkWorkerIo::Dedicated(io) => Ok(LockedDpdkWorkerIo::Dedicated(io)),
+            DpdkWorkerIo::Shared(io) => io.lock().map(LockedDpdkWorkerIo::Shared),
+        }
+    }
 }
 
 impl FrameIo for DpdkWorkerIo {
     fn recv_frame(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        match self {
-            DpdkWorkerIo::Dedicated(io) => io.recv_frame(buf),
-            DpdkWorkerIo::Shared(io) => io
-                .lock()
-                .map_err(|_| "dpdk: shared io lock poisoned".to_string())?
-                .recv_frame(buf),
-        }
+        self.lock_io()?.recv_frame(buf)
     }
 
     fn recv_packet(&mut self, pkt: &mut Packet) -> Result<usize, String> {
-        match self {
-            DpdkWorkerIo::Dedicated(io) => io.recv_packet(pkt),
-            DpdkWorkerIo::Shared(io) => io
-                .lock()
-                .map_err(|_| "dpdk: shared io lock poisoned".to_string())?
-                .recv_packet(pkt),
-        }
+        self.lock_io()?.recv_packet(pkt)
     }
 
     fn finish_rx_packet(&mut self) {
-        match self {
-            DpdkWorkerIo::Dedicated(io) => io.finish_rx_packet(),
-            DpdkWorkerIo::Shared(io) => {
-                if let Ok(mut guard) = io.lock() {
-                    guard.finish_rx_packet();
-                }
-            }
+        if let Ok(mut io) = self.lock_io() {
+            io.finish_rx_packet();
         }
     }
 
     fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
-        match self {
-            DpdkWorkerIo::Dedicated(io) => io.send_frame(frame),
-            DpdkWorkerIo::Shared(io) => io
-                .lock()
-                .map_err(|_| "dpdk: shared io lock poisoned".to_string())?
-                .send_frame(frame),
-        }
+        self.lock_io()?.send_frame(frame)
     }
 
     fn send_borrowed_frame(&mut self, frame: &[u8]) -> Result<(), String> {
-        match self {
-            DpdkWorkerIo::Dedicated(io) => io.send_borrowed_frame(frame),
-            DpdkWorkerIo::Shared(io) => io
-                .lock()
-                .map_err(|_| "dpdk: shared io lock poisoned".to_string())?
-                .send_borrowed_frame(frame),
-        }
+        self.lock_io()?.send_borrowed_frame(frame)
     }
 
     fn flush(&mut self) -> Result<(), String> {
-        match self {
-            DpdkWorkerIo::Dedicated(io) => io.flush(),
-            DpdkWorkerIo::Shared(io) => io
-                .lock()
-                .map_err(|_| "dpdk: shared io lock poisoned".to_string())?
-                .flush(),
-        }
+        self.lock_io()?.flush()
     }
 }
 
@@ -287,6 +583,8 @@ pub fn run_dataplane(
     data_plane_mode: DataPlaneMode,
     idle_timeout_secs: u64,
     policy: Arc<RwLock<PolicySnapshot>>,
+    policy_snapshot: SharedPolicySnapshot,
+    exact_source_group_index: SharedExactSourceGroupIndex,
     policy_applied_generation: Arc<AtomicU64>,
     service_policy_applied_generation: Arc<AtomicU64>,
     dns_allowlist: DynamicIpSetV4,
@@ -307,20 +605,14 @@ pub fn run_dataplane(
     shared_intercept_demux: Arc<SharedInterceptDemuxState>,
     metrics: controlplane::metrics::Metrics,
 ) -> Result<(), String> {
-    let observer_policy = policy.clone();
+    let observer_policy = policy_snapshot.clone();
     let observer_applied = policy_applied_generation.clone();
     std::thread::Builder::new()
         .name("policy-generation-observer".to_string())
         .spawn(move || {
             let mut last = observer_applied.load(Ordering::Acquire);
             loop {
-                let generation = match observer_policy.read() {
-                    Ok(lock) => lock.generation(),
-                    Err(_) => {
-                        std::thread::sleep(Duration::from_millis(10));
-                        continue;
-                    }
-                };
+                let generation = observer_policy.load().generation();
                 if generation != last {
                     observer_applied.store(generation, Ordering::Release);
                     last = generation;
@@ -337,6 +629,8 @@ pub fn run_dataplane(
         data_port,
         idle_timeout_secs,
     );
+    state.set_policy_snapshot(policy_snapshot);
+    state.set_exact_source_policy_index(exact_source_group_index);
     state.set_snat_mode(snat_mode);
     state.set_overlay_config(overlay);
     state.set_dns_allowlist(dns_allowlist);
@@ -353,10 +647,10 @@ pub fn run_dataplane(
         DpdkPerfMode::Standard
     };
     let perf_aggressive = matches!(dpdk_perf_mode, DpdkPerfMode::Aggressive);
+    state.set_metrics(metrics.clone());
     if perf_aggressive {
-        info!("dpdk perf mode aggressive enabled; disabling dataplane state metrics/audit/wiretap");
+        info!("dpdk perf mode aggressive enabled; disabling dataplane audit/wiretap");
     } else {
-        state.set_metrics(metrics.clone());
         if let Some(emitter) = wiretap_emitter {
             state.set_wiretap_emitter(emitter);
         }
@@ -373,27 +667,33 @@ pub fn run_dataplane(
         DataPlaneMode::Dpdk => {
             info!(perf_mode = ?dpdk_perf_mode, "dpdk perf mode selected");
             let max_workers = cpu_core_count();
-            let requested_workers_raw = std::env::var("NEUWERK_DPDK_WORKERS")
+            let requested_workers_env = std::env::var("NEUWERK_DPDK_WORKERS")
                 .ok()
-                .and_then(|val| val.parse::<usize>().ok());
-            let requested_workers_target = match requested_workers_raw {
-                Some(0) => max_workers.max(1),
-                Some(n) => n.max(1),
-                None => 1,
-            };
+                .map(|value| value.trim().to_string());
+            let requested_workers_raw = requested_workers_env.as_deref().unwrap_or("unset");
+            let (requested_workers_target, invalid_workers_env) =
+                requested_dpdk_workers_target(max_workers, requested_workers_env.as_deref());
+            if invalid_workers_env {
+                warn!(
+                    value = requested_workers_raw,
+                    "invalid NEUWERK_DPDK_WORKERS value; falling back to auto worker count"
+                );
+            }
             let mut worker_core_ids =
                 choose_dpdk_worker_core_ids(requested_workers_target, max_workers.max(1));
             if worker_core_ids.is_empty() {
                 worker_core_ids.push(0);
             }
             let mut requested_workers = requested_workers_target.min(worker_core_ids.len()).max(1);
-            let azure_reliability_guard = matches!(
+            let running_on_azure = matches!(
                 std::env::var("NEUWERK_CLOUD_PROVIDER")
                     .ok()
                     .as_deref()
                     .map(|v| v.to_ascii_lowercase()),
                 Some(ref v) if v == "azure"
-            ) && requested_workers > 1
+            );
+            let azure_reliability_guard = running_on_azure
+                && requested_workers > 1
                 && !env_flag_enabled("NEUWERK_DPDK_ALLOW_AZURE_MULTIWORKER");
             if azure_reliability_guard {
                 warn!(
@@ -401,6 +701,17 @@ pub fn run_dataplane(
                     "dpdk azure reliability guard active; forcing single worker (set NEUWERK_DPDK_ALLOW_AZURE_MULTIWORKER=1 to override)"
                 );
                 requested_workers = 1;
+            }
+            // Azure D8-class failsafe/tap datapaths still crash during startup once the worker
+            // count rises above 4. Keep the default below that cliff on 8-vCPU Azure shapes unless
+            // the user explicitly pins a lower value.
+            if running_on_azure && max_workers == 8 && requested_workers > 4 {
+                warn!(
+                    requested_workers,
+                    capped_workers = 4,
+                    "dpdk azure D8 worker cap active; limiting worker count to avoid known startup crash"
+                );
+                requested_workers = 4;
             }
             worker_core_ids.truncate(requested_workers);
             let worker_core_list = worker_core_ids
@@ -416,8 +727,7 @@ pub fn run_dataplane(
                 );
             }
             info!(
-                requested_workers_raw = %std::env::var("NEUWERK_DPDK_WORKERS")
-                    .unwrap_or_else(|_| "unset".to_string()),
+                requested_workers_raw,
                 cpu_cores = max_workers,
                 requested_workers,
                 core_ids = %worker_core_list,
@@ -516,6 +826,7 @@ pub fn run_dataplane(
                         return Err(err);
                     }
                 };
+                set_current_dpdk_worker_id(Some(0));
                 adapter.run_with_io(&mut state, &mut io)
             } else {
                 let worker_count = plan.worker_count;
@@ -565,11 +876,18 @@ pub fn run_dataplane(
                     .and_then(|val| val.parse::<u32>().ok())
                     .filter(|val| *val > 0)
                     .unwrap_or(64);
+                let detailed_lock_observability =
+                    env_flag_enabled("NEUWERK_DP_DETAILED_OBSERVABILITY");
                 info!(
                     pin_state_shard_guard,
                     pin_state_shard_burst, "dpdk state shard guard configuration"
                 );
-                let shard_count = if lockless_qpw {
+                info!(
+                    detailed_lock_observability,
+                    "dpdk detailed lock observability configuration"
+                );
+                let owner_local_state = lockless_qpw || shared_rx_demux;
+                let shard_count = if owner_local_state {
                     worker_count
                 } else {
                     std::env::var("NEUWERK_DPDK_STATE_SHARDS")
@@ -580,7 +898,7 @@ pub fn run_dataplane(
                 };
                 info!(shard_count, "dpdk state shard count");
                 let base_state = state;
-                let (shared_state, mut worker_local_states) = if lockless_qpw {
+                let (shared_state, mut worker_local_states) = if owner_local_state {
                     let mut states = Vec::with_capacity(worker_count);
                     for worker_id in 0..worker_count {
                         let mut local = base_state.clone_for_shard();
@@ -609,26 +927,33 @@ pub fn run_dataplane(
                         Some(metrics.clone()),
                     )?)))
                 };
-                // Optional owner-only RX polling for shared-demux + shared-IO mode.
-                // Disabled by default; enable with NEUWERK_DPDK_SHARED_RX_OWNER_ONLY=true.
-                let shared_rx_owner_only = shared_io.is_some()
-                    && shared_rx_demux
-                    && env_flag_enabled("NEUWERK_DPDK_SHARED_RX_OWNER_ONLY");
+                // Shared-I/O plus software demux contends heavily if every worker polls RX.
+                // Default to owner-only polling here, with an explicit opt-out via
+                // NEUWERK_DPDK_SHARED_RX_OWNER_ONLY=false.
+                let shared_rx_owner_only = shared_rx_owner_only_enabled(
+                    shared_io.is_some(),
+                    shared_rx_demux,
+                    std::env::var("NEUWERK_DPDK_SHARED_RX_OWNER_ONLY")
+                        .ok()
+                        .as_deref(),
+                );
                 info!(shared_rx_owner_only, "dpdk shared rx owner-only polling");
                 let enable_flow_steer = shared_rx_demux;
-                let (flow_steer_txs, mut flow_steer_rxs, flow_steer_depths) = if enable_flow_steer {
-                    let mut txs = Vec::with_capacity(worker_count);
-                    let mut rxs = Vec::with_capacity(worker_count);
+                let (flow_steer_queues, flow_steer_depths) = if enable_flow_steer {
+                    let mut queues = Vec::with_capacity(worker_count);
                     let mut depths = Vec::with_capacity(worker_count);
                     for _ in 0..worker_count {
-                        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
-                        txs.push(tx);
-                        rxs.push(Some(rx));
+                        queues.push(Arc::new(ArrayQueue::new(1024)));
                         depths.push(Arc::new(AtomicUsize::new(0)));
                     }
-                    (Some(Arc::new(txs)), Some(rxs), Some(Arc::new(depths)))
+                    (Some(Arc::new(queues)), Some(Arc::new(depths)))
                 } else {
-                    (None, None, None)
+                    (None, None)
+                };
+                let flow_steer_metrics = if enable_flow_steer {
+                    Some(Arc::new(metrics.bind_dpdk_flow_steer_metrics(worker_count)))
+                } else {
+                    None
                 };
                 let mut handles = Vec::with_capacity(worker_count);
                 for worker_id in 0..worker_count {
@@ -644,21 +969,23 @@ pub fn run_dataplane(
                     let dhcp_tx = dhcp_tx.clone();
                     let dhcp_rx = if worker_id == 0 { dhcp_rx.take() } else { None };
                     let shared_io = shared_io.clone();
-                    let flow_steer_tx = flow_steer_txs.clone();
+                    let flow_steer_queues = flow_steer_queues.clone();
                     let flow_steer_depth = flow_steer_depths
                         .as_ref()
                         .and_then(|depths| depths.get(worker_id))
                         .cloned();
-                    let mut flow_steer_rx = flow_steer_rxs
-                        .as_mut()
-                        .and_then(|rxs| rxs.get_mut(worker_id))
-                        .and_then(Option::take);
+                    let flow_steer_queue = flow_steer_queues
+                        .as_ref()
+                        .and_then(|queues| queues.get(worker_id))
+                        .cloned();
                     let flow_steer_depths = flow_steer_depths.clone();
+                    let flow_steer_metrics = flow_steer_metrics.clone();
                     let housekeeping_interval_packets = housekeeping_interval_packets;
                     let housekeeping_interval = housekeeping_interval;
                     let pin_state_shard_guard = pin_state_shard_guard;
                     let pin_state_shard_burst = pin_state_shard_burst;
-                    let lockless_qpw = lockless_qpw;
+                    let detailed_lock_observability = detailed_lock_observability;
+                    let owner_local_state = owner_local_state;
                     let service_lane_enabled = service_lane_enabled;
                     let shard_count = shard_count;
                     let pin_https_demux_owner = pin_https_demux_owner;
@@ -684,6 +1011,7 @@ pub fn run_dataplane(
                             } else {
                                 info!(worker_id, core_id, "dpdk worker pinned to core");
                             }
+                            set_current_dpdk_worker_id(Some(worker_id));
                             let mut adapter = DpdkAdapter::new(iface.clone())?;
                             if let Some(publisher) = mac_publisher {
                                 adapter.set_mac_publisher(publisher);
@@ -715,9 +1043,8 @@ pub fn run_dataplane(
                             let mut pkt = Packet::new(vec![0u8; 65536]);
                             let mut pinned_shard_idx: Option<usize> = None;
                             let mut pinned_shard_run_len: u32 = 0;
-                            let mut pinned_shard_guard: Option<std::sync::MutexGuard<EngineState>> =
-                                None;
-                            let mut flow_steer_dispatch_enabled = flow_steer_tx.is_some();
+                            let mut pinned_shard_guard = None;
+                            let mut flow_steer_dispatch_enabled = flow_steer_queues.is_some();
                             let mut packets_since_housekeeping = 0u64;
                             let mut next_housekeeping_at = Instant::now() + housekeeping_interval;
                             loop {
@@ -727,82 +1054,75 @@ pub fn run_dataplane(
                                     adapter.service_lane_ready()
                                 };
                                 let mut from_steer_queue = false;
-                                let mut received_from_io = false;
-                                if let Some(rx) = flow_steer_rx.as_ref() {
-                                    match rx.try_recv() {
-                                        Ok(frame) => {
-                                            if let Some(queue_depth) = flow_steer_depth.as_ref() {
-                                                let depth = decrement_queue_depth(queue_depth);
-                                                metrics.set_dpdk_flow_steer_queue_depth(
-                                                    worker_id,
-                                                    depth,
-                                                );
+                                let mut steered_payload = None;
+                                if let Some(queue) = flow_steer_queue.as_ref() {
+                                    if let Some(payload) = queue.pop() {
+                                        if let Some(queue_depth) = flow_steer_depth.as_ref() {
+                                            let depth = decrement_queue_depth(queue_depth);
+                                            if let Some(flow_steer_metrics) =
+                                                flow_steer_metrics.as_deref()
+                                            {
+                                                flow_steer_metrics
+                                                    .set_queue_depth(worker_id, depth);
                                             }
-                                            pkt = Packet::new(frame);
-                                            from_steer_queue = true;
                                         }
-                                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                            flow_steer_rx = None;
-                                            metrics.inc_dpdk_flow_steer_fail_open_event(
-                                                worker_id,
-                                                "rx_disconnected",
-                                            );
-                                            warn!(
-                                                worker_id,
-                                                "dpdk flow steer rx disconnected; failing open to local processing"
-                                            );
-                                        }
+                                        steered_payload = Some(payload);
+                                        from_steer_queue = true;
                                     }
                                 }
                                 if !from_steer_queue {
                                     if !allow_direct_rx {
-                                        io.flush()?;
+                                        let mut locked_io = io.lock_io()?;
+                                        locked_io.flush()?;
                                         if service_lane_ready {
-                                            adapter.flush_host_frames(&mut io)?;
+                                            adapter.flush_host_frames(&mut locked_io)?;
                                         }
                                         run_dpdk_housekeeping(
                                             worker_id,
                                             false,
                                             service_lane_enabled,
                                             housekeeping_shard_idx,
+                                            &metrics,
+                                            detailed_lock_observability,
                                             shared_state.as_ref(),
                                             local_state.as_mut(),
                                             &mut adapter,
-                                            &mut io,
+                                            &mut locked_io,
                                         )?;
                                         std::thread::yield_now();
                                         continue;
                                     }
-                                    let n = io.recv_packet(&mut pkt).map_err(|err| {
+                                    let mut locked_io = io.lock_io()?;
+                                    let n = locked_io.recv_packet(&mut pkt).map_err(|err| {
                                         format!("dpdk worker {worker_id} recv failed: {err}")
                                     })?;
                                     if n == 0 {
                                         pinned_shard_guard = None;
                                         pinned_shard_idx = None;
                                         pinned_shard_run_len = 0;
-                                        io.finish_rx_packet();
-                                        io.flush()?;
+                                        locked_io.finish_rx_packet();
+                                        locked_io.flush()?;
                                         run_dpdk_housekeeping(
                                             worker_id,
                                             true,
                                             service_lane_enabled,
                                             housekeeping_shard_idx,
+                                            &metrics,
+                                            detailed_lock_observability,
                                             shared_state.as_ref(),
                                             local_state.as_mut(),
                                             &mut adapter,
-                                            &mut io,
+                                            &mut locked_io,
                                         )?;
                                         if service_lane_ready {
-                                            adapter.flush_host_frames(&mut io)?;
+                                            adapter.flush_host_frames(&mut locked_io)?;
                                         }
                                         packets_since_housekeeping = 0;
                                         next_housekeeping_at =
                                             Instant::now() + housekeeping_interval;
                                         continue;
                                     }
-                                    received_from_io = true;
-                                    if flow_steer_tx.is_some() {
+                                    if flow_steer_queues.is_some() {
                                         let owner = shared_demux_owner_for_packet_with_policy(
                                             &pkt,
                                             shard_count,
@@ -810,7 +1130,7 @@ pub fn run_dataplane(
                                             pin_https_demux_owner,
                                         );
                                         if owner != worker_id && flow_steer_dispatch_enabled {
-                                            let payload = flow_steer_payload(&mut pkt);
+                                            let payload = locked_io.take_flow_steer_payload(&mut pkt);
                                             let flow_steer_queue_depth = flow_steer_depths
                                                 .as_ref()
                                                 .and_then(|depths| depths.get(owner))
@@ -819,34 +1139,178 @@ pub fn run_dataplane(
                                                 flow_steer_queue_depth.as_ref()
                                             {
                                                 let depth = increment_queue_depth(queue_depth);
-                                                metrics.set_dpdk_flow_steer_queue_depth(
-                                                    owner,
-                                                    depth,
-                                                );
+                                                if let Some(flow_steer_metrics) =
+                                                    flow_steer_metrics.as_deref()
+                                                {
+                                                    flow_steer_metrics
+                                                        .set_queue_depth(owner, depth);
+                                                }
                                             }
-                                            if matches!(
-                                                dispatch_flow_steer_packet(
-                                                    flow_steer_tx.as_ref(),
-                                                    owner,
-                                                    payload,
-                                                    worker_id,
-                                                    &metrics,
-                                                    flow_steer_queue_depth.as_ref(),
-                                                    &mut flow_steer_dispatch_enabled,
-                                                ),
-                                                FlowSteerDispatchResult::Dispatched
+                                            match dispatch_flow_steer_packet(
+                                                flow_steer_queues.as_ref(),
+                                                owner,
+                                                payload,
+                                                worker_id,
+                                                flow_steer_queue_depth.as_ref(),
+                                                flow_steer_metrics.as_deref(),
+                                                &mut flow_steer_dispatch_enabled,
                                             ) {
-                                                io.finish_rx_packet();
-                                                continue;
+                                                FlowSteerDispatchResult::Dispatched => {
+                                                    locked_io.finish_rx_packet();
+                                                    continue;
+                                                }
+                                                FlowSteerDispatchResult::ProcessLocally(payload) => {
+                                                    if owner_local_state {
+                                                        locked_io.finish_rx_packet();
+                                                        return Err(format!(
+                                                            "dpdk flow steer dispatch failed for owner {owner} in owner-local state mode"
+                                                        ));
+                                                    }
+                                                    pkt = locked_io
+                                                        .restore_flow_steer_payload(payload)?;
+                                                }
                                             }
                                         }
                                     }
+                                    let step_result = (|| -> Result<(), String> {
+                                        packets_since_housekeeping =
+                                            packets_since_housekeeping.saturating_add(1);
+                                        if let Some(out) = {
+                                            if owner_local_state {
+                                                let local = local_state.as_mut().ok_or_else(|| {
+                                                    "dpdk: local state missing".to_string()
+                                                })?;
+                                                local.set_intercept_to_host_steering(
+                                                    service_lane_ready,
+                                                );
+                                                adapter.process_packet_in_place(&mut pkt, local)
+                                            } else {
+                                                let shared =
+                                                    shared_state.as_ref().ok_or_else(|| {
+                                                        "dpdk: shared state missing".to_string()
+                                                    })?;
+                                                let shard_idx =
+                                                    shard_index_for_packet(&pkt, shared.len());
+                                                if pin_state_shard_guard {
+                                                    if pinned_shard_idx != Some(shard_idx) {
+                                                        pinned_shard_guard = None;
+                                                        pinned_shard_idx = None;
+                                                        pinned_shard_run_len = 0;
+                                                        let shard = shared
+                                                            .get(shard_idx)
+                                                            .ok_or_else(|| {
+                                                                "dpdk: state shard missing"
+                                                                    .to_string()
+                                                            })?;
+                                                        let guard = lock_state_shard_blocking(
+                                                            shard,
+                                                            worker_id,
+                                                            shard_idx,
+                                                            &metrics,
+                                                            detailed_lock_observability,
+                                                        )?;
+                                                        pinned_shard_idx = Some(shard_idx);
+                                                        pinned_shard_guard = Some(guard);
+                                                    }
+                                                    let guard = pinned_shard_guard
+                                                        .as_mut()
+                                                        .ok_or_else(|| {
+                                                            "dpdk: pinned state shard missing"
+                                                                .to_string()
+                                                        })?;
+                                                    guard.set_intercept_to_host_steering(
+                                                        service_lane_ready,
+                                                    );
+                                                    let out = adapter
+                                                        .process_packet_in_place(&mut pkt, guard);
+                                                    pinned_shard_run_len =
+                                                        pinned_shard_run_len.saturating_add(1);
+                                                    if pinned_shard_run_len
+                                                        >= pin_state_shard_burst
+                                                    {
+                                                        pinned_shard_guard = None;
+                                                        pinned_shard_idx = None;
+                                                        pinned_shard_run_len = 0;
+                                                    }
+                                                    out
+                                                } else {
+                                                    let shard = shared.get(shard_idx).ok_or_else(
+                                                        || "dpdk: state shard missing".to_string(),
+                                                    )?;
+                                                    let mut guard = lock_state_shard_blocking(
+                                                        shard,
+                                                        worker_id,
+                                                        shard_idx,
+                                                        &metrics,
+                                                        detailed_lock_observability,
+                                                    )?;
+                                                    guard.set_intercept_to_host_steering(
+                                                        service_lane_ready,
+                                                    );
+                                                    adapter.process_packet_in_place(
+                                                        &mut pkt,
+                                                        &mut guard,
+                                                    )
+                                                }
+                                            }
+                                        } {
+                                            match out {
+                                                FrameOut::Borrowed(frame) => {
+                                                    locked_io.send_borrowed_frame(frame)?
+                                                }
+                                                FrameOut::Owned(frame) => {
+                                                    locked_io.send_frame(&frame)?
+                                                }
+                                            }
+                                        }
+                                        if service_lane_ready {
+                                            adapter.flush_host_frames(&mut locked_io)?;
+                                        }
+                                        if !allow_direct_rx {
+                                            locked_io.flush()?;
+                                        }
+                                        let now = Instant::now();
+                                        if packets_since_housekeeping
+                                            >= housekeeping_interval_packets
+                                            || now >= next_housekeeping_at
+                                        {
+                                            run_dpdk_housekeeping(
+                                                worker_id,
+                                                false,
+                                                service_lane_enabled,
+                                                housekeeping_shard_idx,
+                                                &metrics,
+                                                detailed_lock_observability,
+                                                shared_state.as_ref(),
+                                                local_state.as_mut(),
+                                                &mut adapter,
+                                                &mut locked_io,
+                                            )?;
+                                            packets_since_housekeeping = 0;
+                                            next_housekeeping_at = now + housekeeping_interval;
+                                        }
+                                        Ok(())
+                                    })();
+                                    locked_io.finish_rx_packet();
+                                    if let Err(err) = step_result {
+                                        warn!(
+                                            worker_id,
+                                            error = %err,
+                                            "dpdk worker exiting on error"
+                                        );
+                                        return Err(err);
+                                    }
+                                    continue;
+                                }
+                                let mut locked_io = io.lock_io()?;
+                                if let Some(payload) = steered_payload.take() {
+                                    pkt = locked_io.restore_flow_steer_payload(payload)?;
                                 }
                                 let step_result = (|| -> Result<(), String> {
                                     packets_since_housekeeping =
                                         packets_since_housekeeping.saturating_add(1);
                                     if let Some(out) = {
-                                        if lockless_qpw {
+                                        if owner_local_state {
                                             let local = local_state.as_mut().ok_or_else(|| {
                                                 "dpdk: local state missing".to_string()
                                             })?;
@@ -869,32 +1333,13 @@ pub fn run_dataplane(
                                                         shared.get(shard_idx).ok_or_else(|| {
                                                             "dpdk: state shard missing".to_string()
                                                         })?;
-                                                    let guard = match shard.try_lock() {
-                                                        Ok(guard) => guard,
-                                                        Err(std::sync::TryLockError::Poisoned(
-                                                            _,
-                                                        )) => {
-                                                            return Err(
-                                                                "dpdk: state lock poisoned"
-                                                                    .to_string(),
-                                                            );
-                                                        }
-                                                        Err(
-                                                            std::sync::TryLockError::WouldBlock,
-                                                        ) => {
-                                                            metrics.inc_dp_state_lock_contended();
-                                                            let start = Instant::now();
-                                                            let guard =
-                                                                shard.lock().map_err(|_| {
-                                                                    "dpdk: state lock poisoned"
-                                                                        .to_string()
-                                                                })?;
-                                                            metrics.observe_dp_state_lock_wait(
-                                                                start.elapsed(),
-                                                            );
-                                                            guard
-                                                        }
-                                                    };
+                                                    let guard = lock_state_shard_blocking(
+                                                        shard,
+                                                        worker_id,
+                                                        shard_idx,
+                                                        &metrics,
+                                                        detailed_lock_observability,
+                                                    )?;
                                                     pinned_shard_idx = Some(shard_idx);
                                                     pinned_shard_guard = Some(guard);
                                                 }
@@ -907,8 +1352,8 @@ pub fn run_dataplane(
                                                 guard.set_intercept_to_host_steering(
                                                     service_lane_ready,
                                                 );
-                                                let out = adapter
-                                                    .process_packet_in_place(&mut pkt, guard);
+                                                let out =
+                                                    adapter.process_packet_in_place(&mut pkt, guard);
                                                 pinned_shard_run_len =
                                                     pinned_shard_run_len.saturating_add(1);
                                                 if pinned_shard_run_len >= pin_state_shard_burst {
@@ -922,25 +1367,13 @@ pub fn run_dataplane(
                                                     shared.get(shard_idx).ok_or_else(|| {
                                                         "dpdk: state shard missing".to_string()
                                                     })?;
-                                                let mut guard = match shard.try_lock() {
-                                                    Ok(guard) => guard,
-                                                    Err(std::sync::TryLockError::Poisoned(_)) => {
-                                                        return Err(
-                                                            "dpdk: state lock poisoned".to_string()
-                                                        );
-                                                    }
-                                                    Err(std::sync::TryLockError::WouldBlock) => {
-                                                        metrics.inc_dp_state_lock_contended();
-                                                        let start = Instant::now();
-                                                        let guard = shard.lock().map_err(|_| {
-                                                            "dpdk: state lock poisoned".to_string()
-                                                        })?;
-                                                        metrics.observe_dp_state_lock_wait(
-                                                            start.elapsed(),
-                                                        );
-                                                        guard
-                                                    }
-                                                };
+                                                let mut guard = lock_state_shard_blocking(
+                                                    shard,
+                                                        worker_id,
+                                                        shard_idx,
+                                                        &metrics,
+                                                        detailed_lock_observability,
+                                                    )?;
                                                 guard.set_intercept_to_host_steering(
                                                     service_lane_ready,
                                                 );
@@ -951,16 +1384,16 @@ pub fn run_dataplane(
                                     } {
                                         match out {
                                             FrameOut::Borrowed(frame) => {
-                                                io.send_borrowed_frame(frame)?
+                                                locked_io.send_borrowed_frame(frame)?
                                             }
-                                            FrameOut::Owned(frame) => io.send_frame(&frame)?,
+                                            FrameOut::Owned(frame) => locked_io.send_frame(&frame)?,
                                         }
                                     }
                                     if service_lane_ready {
-                                        adapter.flush_host_frames(&mut io)?;
+                                        adapter.flush_host_frames(&mut locked_io)?;
                                     }
                                     if !allow_direct_rx {
-                                        io.flush()?;
+                                        locked_io.flush()?;
                                     }
                                     let now = Instant::now();
                                     if packets_since_housekeeping >= housekeeping_interval_packets
@@ -971,19 +1404,19 @@ pub fn run_dataplane(
                                             false,
                                             service_lane_enabled,
                                             housekeeping_shard_idx,
+                                            &metrics,
+                                            detailed_lock_observability,
                                             shared_state.as_ref(),
                                             local_state.as_mut(),
                                             &mut adapter,
-                                            &mut io,
+                                            &mut locked_io,
                                         )?;
                                         packets_since_housekeeping = 0;
                                         next_housekeeping_at = now + housekeeping_interval;
                                     }
                                     Ok(())
                                 })();
-                                if received_from_io {
-                                    io.finish_rx_packet();
-                                }
+                                locked_io.finish_rx_packet();
                                 if let Err(err) = step_result {
                                     warn!(worker_id, error = %err, "dpdk worker exiting on error");
                                     return Err(err);
@@ -1036,47 +1469,54 @@ mod tests {
     #[test]
     fn dispatch_flow_steer_packet_success_keeps_dispatch_enabled() {
         let metrics = controlplane::metrics::Metrics::new().expect("metrics");
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
-        let txs = Arc::new(vec![tx]);
+        let flow_steer_metrics = metrics.bind_dpdk_flow_steer_metrics(2);
+        let queues = Arc::new(vec![Arc::new(ArrayQueue::new(8))]);
         let queue_depth = Arc::new(AtomicUsize::new(1));
         let mut dispatch_enabled = true;
 
         let result = dispatch_flow_steer_packet(
-            Some(&txs),
+            Some(&queues),
             0,
-            vec![1, 2, 3],
+            FlowSteerPayload::Bytes(vec![1, 2, 3]),
             1,
-            &metrics,
             Some(&queue_depth),
+            Some(&flow_steer_metrics),
             &mut dispatch_enabled,
         );
 
-        assert_eq!(result, FlowSteerDispatchResult::Dispatched);
+        assert!(matches!(result, FlowSteerDispatchResult::Dispatched));
         assert!(dispatch_enabled);
         assert_eq!(queue_depth.load(Ordering::Acquire), 1);
-        assert_eq!(rx.recv().expect("steered payload"), vec![1, 2, 3]);
+        match queues[0].pop() {
+            Some(FlowSteerPayload::Bytes(frame)) => assert_eq!(frame, vec![1, 2, 3]),
+            other => panic!("unexpected queue payload: {other:?}"),
+        }
     }
 
     #[test]
-    fn dispatch_flow_steer_packet_send_failure_fails_open() {
+    fn dispatch_flow_steer_packet_missing_owner_fails_open() {
         let metrics = controlplane::metrics::Metrics::new().expect("metrics");
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
-        drop(rx);
-        let txs = Arc::new(vec![tx]);
+        let flow_steer_metrics = metrics.bind_dpdk_flow_steer_metrics(3);
+        let queues = Arc::new(Vec::new());
         let queue_depth = Arc::new(AtomicUsize::new(1));
         let mut dispatch_enabled = true;
 
         let result = dispatch_flow_steer_packet(
-            Some(&txs),
+            Some(&queues),
             0,
-            vec![9, 8, 7],
+            FlowSteerPayload::Bytes(vec![9, 8, 7]),
             2,
-            &metrics,
             Some(&queue_depth),
+            Some(&flow_steer_metrics),
             &mut dispatch_enabled,
         );
 
-        assert_eq!(result, FlowSteerDispatchResult::ProcessLocally);
+        match result {
+            FlowSteerDispatchResult::ProcessLocally(FlowSteerPayload::Bytes(frame)) => {
+                assert_eq!(frame, vec![9, 8, 7]);
+            }
+            other => panic!("unexpected dispatch result: {other:?}"),
+        }
         assert!(!dispatch_enabled);
         assert_eq!(queue_depth.load(Ordering::Acquire), 0);
 
@@ -1085,7 +1525,7 @@ mod tests {
             metric_value_with_labels(
                 &rendered,
                 "dpdk_flow_steer_fail_open_events_total",
-                &[("worker", "2"), ("event", "dispatch_failed")]
+                &[("worker", "2"), ("event", "owner_missing")]
             ),
             1.0
         );
@@ -1101,9 +1541,51 @@ mod tests {
     }
 
     #[test]
+    fn shared_rx_owner_only_defaults_on_for_shared_io_demux() {
+        assert!(shared_rx_owner_only_enabled(true, true, None));
+        assert!(!shared_rx_owner_only_enabled(false, true, None));
+        assert!(!shared_rx_owner_only_enabled(true, false, None));
+    }
+
+    #[test]
+    fn shared_rx_owner_only_env_can_disable_or_enable() {
+        assert!(!shared_rx_owner_only_enabled(true, true, Some("0")));
+        assert!(!shared_rx_owner_only_enabled(true, true, Some("false")));
+        assert!(shared_rx_owner_only_enabled(true, true, Some("1")));
+        assert!(shared_rx_owner_only_enabled(true, true, Some("true")));
+    }
+
+    #[test]
     fn worker_emits_dhcp_housekeeping_only_on_worker_zero() {
         assert!(worker_emits_dhcp_housekeeping(0));
         assert!(!worker_emits_dhcp_housekeeping(1));
         assert!(!worker_emits_dhcp_housekeeping(2));
+    }
+
+    #[test]
+    fn requested_dpdk_workers_target_defaults_to_auto_core_count() {
+        assert_eq!(requested_dpdk_workers_target(8, None), (7, false));
+        assert_eq!(requested_dpdk_workers_target(8, Some("")), (7, false));
+        assert_eq!(requested_dpdk_workers_target(8, Some("0")), (7, false));
+        assert_eq!(requested_dpdk_workers_target(8, Some("auto")), (7, false));
+        assert_eq!(requested_dpdk_workers_target(8, Some("AUTO")), (7, false));
+    }
+
+    #[test]
+    fn requested_dpdk_workers_target_keeps_full_cores_for_tiny_nodes() {
+        assert_eq!(requested_dpdk_workers_target(1, None), (1, false));
+        assert_eq!(requested_dpdk_workers_target(2, None), (2, false));
+    }
+
+    #[test]
+    fn requested_dpdk_workers_target_respects_valid_override() {
+        assert_eq!(requested_dpdk_workers_target(8, Some("1")), (1, false));
+        assert_eq!(requested_dpdk_workers_target(8, Some("6")), (6, false));
+    }
+
+    #[test]
+    fn requested_dpdk_workers_target_rejects_invalid_override() {
+        assert_eq!(requested_dpdk_workers_target(8, Some("nope")), (7, true));
+        assert_eq!(requested_dpdk_workers_target(8, Some("-1")), (7, true));
     }
 }

@@ -355,6 +355,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         data_plane_mode: cfg.data_plane_mode,
         idle_timeout_secs: cfg.idle_timeout_secs,
         policy: policy_store.snapshot(),
+        policy_snapshot: policy_store.shared_snapshot(),
+        exact_source_group_index: policy_store.exact_source_group_index(),
         policy_applied_generation,
         service_policy_applied_generation,
         dns_allowlist: dns_allowlist_for_dp,

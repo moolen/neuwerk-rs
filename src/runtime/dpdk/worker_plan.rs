@@ -174,7 +174,7 @@ pub fn dpdk_force_shared_rx_demux() -> bool {
 pub fn dpdk_pin_https_demux_owner() -> bool {
     std::env::var("NEUWERK_DPDK_PIN_HTTPS_OWNER")
         .map(|raw| parse_truthy_flag(&raw))
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 pub fn service_lane_enabled_with_override(
@@ -200,14 +200,6 @@ pub fn dpdk_lockless_queue_per_worker_enabled() -> bool {
         .unwrap_or(false)
 }
 
-pub fn shared_demux_owner_for_packet(
-    pkt: &Packet,
-    shard_count: usize,
-    worker_count: usize,
-) -> usize {
-    shared_demux_owner_for_packet_with_policy(pkt, shard_count, worker_count, true)
-}
-
 pub fn shared_demux_owner_for_packet_with_policy(
     pkt: &Packet,
     shard_count: usize,
@@ -219,7 +211,7 @@ pub fn shared_demux_owner_for_packet_with_policy(
     }
     if pin_https_owner {
         if let Some((src_port, dst_port)) = pkt.ports() {
-            // Keep HTTPS/TLS flows on worker 0, which owns service-lane flush.
+            // Compatibility mode: pin HTTPS/TLS flows to worker 0 when explicitly requested.
             if src_port == 443 || dst_port == 443 {
                 return 0;
             }
@@ -229,10 +221,51 @@ pub fn shared_demux_owner_for_packet_with_policy(
     shard_idx % worker_count
 }
 
+#[cfg(test)]
+pub fn shared_demux_owner_for_packet(
+    pkt: &Packet,
+    shard_count: usize,
+    worker_count: usize,
+) -> usize {
+    shared_demux_owner_for_packet_with_policy(pkt, shard_count, worker_count, false)
+}
+
 pub fn flow_steer_payload(pkt: &mut Packet) -> Vec<u8> {
-    if pkt.is_borrowed() {
-        pkt.buffer().to_vec()
-    } else {
-        std::mem::replace(pkt, Packet::new(Vec::new())).into_vec()
+    pkt.take_transfer_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_env_var<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let old = std::env::var(name).ok();
+        match value {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+        let result = f();
+        match old {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+        result
+    }
+
+    #[test]
+    fn dpdk_pin_https_demux_owner_defaults_to_disabled() {
+        with_env_var("NEUWERK_DPDK_PIN_HTTPS_OWNER", None, || {
+            assert!(!dpdk_pin_https_demux_owner());
+        });
+    }
+
+    #[test]
+    fn dpdk_pin_https_demux_owner_honors_truthy_override() {
+        with_env_var("NEUWERK_DPDK_PIN_HTTPS_OWNER", Some("true"), || {
+            assert!(dpdk_pin_https_demux_owner());
+        });
     }
 }

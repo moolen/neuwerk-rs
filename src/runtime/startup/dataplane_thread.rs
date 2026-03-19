@@ -1,9 +1,11 @@
 use std::net::Ipv4Addr;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use firewall::controlplane::metrics::Metrics;
-use firewall::dataplane::policy::{DynamicIpSetV4, PolicySnapshot};
+use firewall::dataplane::policy::{
+    DynamicIpSetV4, PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
+};
 use firewall::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DrainControl, OverlayConfig,
     SharedInterceptDemuxState, SnatMode, WiretapEmitter,
@@ -18,6 +20,8 @@ pub struct DataplaneRuntimeConfig {
     pub data_plane_mode: DataPlaneMode,
     pub idle_timeout_secs: u64,
     pub policy: Arc<RwLock<PolicySnapshot>>,
+    pub policy_snapshot: SharedPolicySnapshot,
+    pub exact_source_group_index: SharedExactSourceGroupIndex,
     pub policy_applied_generation: Arc<AtomicU64>,
     pub service_policy_applied_generation: Arc<AtomicU64>,
     pub dns_allowlist: DynamicIpSetV4,
@@ -35,7 +39,7 @@ pub struct DataplaneRuntimeConfig {
     pub dhcp_tx: Option<mpsc::Sender<DhcpRx>>,
     pub dhcp_rx: Option<mpsc::Receiver<DhcpTx>>,
     pub mac_tx: Option<watch::Sender<[u8; 6]>>,
-    pub shared_intercept_demux: Arc<Mutex<SharedInterceptDemuxState>>,
+    pub shared_intercept_demux: Arc<SharedInterceptDemuxState>,
     pub metrics: Metrics,
 }
 
@@ -52,6 +56,8 @@ pub fn spawn_dataplane_runtime_thread(
                     cfg.data_plane_mode,
                     cfg.idle_timeout_secs,
                     cfg.policy,
+                    cfg.policy_snapshot,
+                    cfg.exact_source_group_index,
                     cfg.policy_applied_generation,
                     cfg.service_policy_applied_generation,
                     cfg.dns_allowlist,
