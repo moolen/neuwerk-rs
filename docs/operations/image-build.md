@@ -2,9 +2,67 @@
 
 The image factory uses target manifests under `packaging/targets/` and Packer templates under `packer/`.
 
-## Current Target
+## Current Targets
 
 - `ubuntu-24.04-amd64`
+- `ubuntu-24.04-minimal-amd64`
+
+## Local VM Demo Direction
+
+The current local-image release flow produces a `qcow2` appliance artifact.
+
+For the laptop demo workflow, the preferred direction is a separate Vagrant-oriented VM artifact
+published as a provider-native box. See [local-vm-demo.md](/home/moritz/dev/neuwerk-rs/firewall/docs/operations/local-vm-demo.md).
+
+If a provider-native `.box` has already been built and staged, generate a Vagrant `metadata.json`
+for release packaging with:
+
+```bash
+make package.vagrant.metadata \
+  TARGET=ubuntu-24.04-minimal-amd64 \
+  RELEASE_VERSION=v0.1.0 \
+  VAGRANT_BOX_URL='<box-url>' \
+  VAGRANT_BOX_CHECKSUM='<sha256>'
+```
+
+This writes metadata under `artifacts/image-build/vagrant/<target>/`. The existing
+`package.image.release-assets` target will include any staged Vagrant metadata or box artifacts in
+the GitHub release asset directory.
+
+## Build A Local Vagrant Box
+
+The current Vagrant packaging path is a post-processing step over an existing local `qemu` build.
+It requires:
+
+- an existing `qcow2` from `make package.image.build.qemu`
+- `VBoxManage`
+- `qemu-img`
+
+Build the VirtualBox provider box with:
+
+```bash
+make package.vagrant.box \
+  TARGET=ubuntu-24.04-minimal-amd64 \
+  RELEASE_VERSION=dev
+```
+
+This writes:
+
+- `artifacts/image-build/vagrant/<target>/*.box`
+- `artifacts/image-build/vagrant/<target>/*.box.sha256`
+
+If you already know the eventual download URL, generate Vagrant `metadata.json` in the same step:
+
+```bash
+make package.vagrant.box \
+  TARGET=ubuntu-24.04-minimal-amd64 \
+  RELEASE_VERSION=v0.1.0 \
+  VAGRANT_BOX_URL='<box-download-url>'
+```
+
+That also writes:
+
+- `artifacts/image-build/vagrant/<target>/metadata.json`
 
 ## Validate The Pipeline
 
@@ -21,7 +79,7 @@ This validates:
 
 ## What The Build Produces
 
-The current Ubuntu 24.04 target builds:
+The Ubuntu 24.04 targets build:
 
 - a vendored DPDK `23.11.2` runtime under `/opt/neuwerk/runtime`
 - a release-mode firewall binary compiled against that vendored DPDK
@@ -39,7 +97,7 @@ The build also preserves a staged `rootfs/` copy in the release artifact directo
 ## Build A Local `qcow2`
 
 ```bash
-make package.image.build.qemu TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=dev
+make package.image.build.qemu TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=dev
 ```
 
 By default this writes artifacts under `artifacts/image-build/`.
@@ -92,7 +150,7 @@ The repository now includes a manual-only workflow at `.github/workflows/image-r
 It is intentionally not triggered on push or merge. Use GitHub Actions `workflow_dispatch` with:
 
 - `release_version`, for example `v0.1.0`
-- `target`, currently `ubuntu-24.04-amd64`
+- `target`, currently `ubuntu-24.04-amd64` or `ubuntu-24.04-minimal-amd64`
 - `draft` / `prerelease`
 - `runner`, default `ubuntu-latest`
 - `qemu_accelerator`, default `none`

@@ -20,7 +20,11 @@ def sha256(path: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate a release manifest for image artifacts.")
     parser.add_argument("--target", required=True)
-    parser.add_argument("--provider", required=True, choices=("aws", "azure", "gcp", "qemu"))
+    parser.add_argument(
+        "--provider",
+        required=True,
+        choices=("aws", "azure", "gcp", "qemu", "virtualbox"),
+    )
     parser.add_argument("--release-version", required=True)
     parser.add_argument("--git-revision", required=True)
     parser.add_argument("--artifact", action="append", default=[], help="Artifact path to include; may be repeated")

@@ -107,6 +107,7 @@ require_cmd zstd
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 release_dir="${artifact_dir}/release/${target}"
 qemu_dir="${artifact_dir}/qemu/${target}"
+vagrant_dir="${artifact_dir}/vagrant/${target}"
 packer_manifest_path="${artifact_dir}/packer-manifest.json"
 source_bundle_path="${artifact_dir}/source/${target}.tar.gz"
 rootfs_dir="${release_dir}/rootfs"
@@ -144,6 +145,12 @@ cp "$packer_manifest_path" "$output_dir/"
 
 if [[ -f "$source_bundle_path" ]]; then
   cp "$source_bundle_path" "$output_dir/neuwerk-${target}-source.tar.gz"
+fi
+
+if [[ -d "$vagrant_dir" ]]; then
+  while IFS= read -r path; do
+    cp "$path" "$output_dir/"
+  done < <(find "$vagrant_dir" -maxdepth 1 -type f | sort)
 fi
 
 rootfs_archive_path="$output_dir/neuwerk-${target}-rootfs.tar.zst"

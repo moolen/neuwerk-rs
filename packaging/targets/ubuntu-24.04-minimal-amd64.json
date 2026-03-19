@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "id": "ubuntu-24.04-minimal-amd64",
+  "description": "Ubuntu 24.04 LTS Minimal x86_64 image target for the Neuwerk local VM demo appliance.",
+  "os": {
+    "family": "ubuntu",
+    "version": "24.04",
+    "arch": "amd64"
+  },
+  "base_images": {
+    "aws": {
+      "owner": "099720109477",
+      "name_filter": "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
+    },
+    "azure": {
+      "publisher": "Canonical",
+      "offer": "ubuntu-24_04-lts",
+      "sku": "server",
+      "version": "latest"
+    },
+    "gcp": {
+      "project": "ubuntu-os-cloud",
+      "family": "ubuntu-2404-lts-amd64"
+    },
+    "qemu": {
+      "image_url": "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img",
+      "image_name": "ubuntu-24.04-minimal-cloudimg-amd64.img"
+    }
+  },
+  "packages": {
+    "build": [
+      "ansible",
+      "build-essential",
+      "clang",
+      "curl",
+      "git",
+      "libclang-dev",
+      "libnuma-dev",
+      "llvm-dev",
+      "meson",
+      "ninja-build",
+      "patch",
+      "pkg-config",
+      "protobuf-compiler",
+      "python3",
+      "python3-pyelftools",
+      "zstd"
+    ],
+    "runtime": [
+      "auditd",
+      "audispd-plugins",
+      "ca-certificates",
+      "curl",
+      "ethtool",
+      "iproute2",
+      "libarchive13t64",
+      "libfdt1",
+      "libpam-pwquality",
+      "libnuma1",
+      "pciutils",
+      "rsyslog"
+    ]
+  },
+  "dpdk": {
+    "version": "23.11.2",
+    "profile": "generic-cloud",
+    "abi": "so.24",
+    "disable_drivers": [
+      "net/ionic"
+    ],
+    "enable_pmd_sets": [
+      "generic",
+      "aws-ena",
+      "azure-mana",
+      "gcp-gve"
+    ]
+  },
+  "runtime": {
+    "prefix": "/opt/neuwerk/runtime",
+    "binary_dir": "/opt/neuwerk/bin",
+    "ui_dir": "/opt/neuwerk/ui",
+    "env_file": "/etc/neuwerk/firewall.env",
+    "appliance_env_file": "/etc/neuwerk/appliance.env",
+    "bootstrap_path": "/opt/neuwerk/bin/firewall-bootstrap",
+    "service_file": "/etc/systemd/system/firewall.service",
+    "launcher_path": "/opt/neuwerk/bin/firewall-launch",
+    "link_name": "/usr/local/bin/firewall",
+    "dpdk_library_globs": [
+      "lib/libdpdk.so*",
+      "lib/librte_*.so*",
+      "lib/x86_64-linux-gnu/libdpdk.so*",
+      "lib/x86_64-linux-gnu/librte_*.so*",
+      "lib64/libdpdk.so*",
+      "lib64/librte_*.so*"
+    ],
+    "dpdk_pmd_globs": [
+      "lib/dpdk/pmds-*/*.so*",
+      "lib/x86_64-linux-gnu/dpdk/pmds-*/*.so*"
+    ]
+  },
+  "hardening": {
+    "profile": "cis-l2",
+    "waiver_file": "packer/cis/waivers/ubuntu-24.04-amd64.txt"
+  },
+  "sbom": {
+    "formats": [
+      "spdx-json",
+      "cyclonedx-json"
+    ]
+  }
+}
