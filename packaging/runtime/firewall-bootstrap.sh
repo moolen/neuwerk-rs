@@ -268,8 +268,13 @@ main() {
     exit 1
   fi
 
+  data_mode="$(resolve_data_plane_mode)"
   data_iface="$(resolve_dataplane_iface "$mgmt_iface")"
-  if [[ -z "$data_iface" || ! -d "/sys/class/net/$data_iface" ]]; then
+  if [[ -z "$data_iface" ]]; then
+    echo "unable to resolve dataplane interface" >&2
+    exit 1
+  fi
+  if [[ "$data_mode" == "dpdk" && ! -d "/sys/class/net/$data_iface" ]]; then
     echo "unable to resolve dataplane interface" >&2
     exit 1
   fi
@@ -284,7 +289,6 @@ main() {
     exit 1
   fi
 
-  data_mode="$(resolve_data_plane_mode)"
   data_selector="$(resolve_data_plane_selector "$provider" "$data_iface" "$data_mode")"
   dns_target_ips="$(resolve_dns_target_ips "$mgmt_ip")"
   dns_upstreams="$(resolve_dns_upstreams)"

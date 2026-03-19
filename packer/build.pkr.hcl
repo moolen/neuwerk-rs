@@ -39,7 +39,8 @@ build {
   provisioner "shell" {
     environment_vars = [
       "NEUWERK_REPO_DIR=${local.guest_repo_dir}",
-      "NEUWERK_TARGET=${var.target}"
+      "NEUWERK_TARGET=${var.target}",
+      "NEUWERK_USE_PREBUILT_ARTIFACTS=${var.use_prebuilt_artifacts}"
     ]
     script = "${path.root}/scripts/build-dpdk.sh"
   }
@@ -86,7 +87,7 @@ build {
       "NEUWERK_TARGET=${var.target}",
       "NEUWERK_RELEASE_ARTIFACT_DIR=${local.guest_release_artifact_dir}"
     ]
-    script = "${path.root}/scripts/cleanup-image.sh"
+    script = "${path.root}/scripts/generate-image-sbom.sh"
   }
 
   provisioner "shell" {
@@ -95,7 +96,7 @@ build {
       "NEUWERK_TARGET=${var.target}",
       "NEUWERK_RELEASE_ARTIFACT_DIR=${local.guest_release_artifact_dir}"
     ]
-    script = "${path.root}/scripts/generate-image-sbom.sh"
+    script = "${path.root}/scripts/cleanup-image.sh"
   }
 
   provisioner "file" {

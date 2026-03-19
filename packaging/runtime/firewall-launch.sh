@@ -6,6 +6,12 @@ if [[ -f "$env_file" ]]; then
   # shellcheck disable=SC1090
   source "$env_file"
 fi
+if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+  export LD_LIBRARY_PATH
+fi
+if [[ -n "${RTE_EAL_PMD_PATH:-}" ]]; then
+  export RTE_EAL_PMD_PATH
+fi
 
 require_value() {
   local name="$1"

@@ -54,6 +54,8 @@
       "curl",
       "ethtool",
       "iproute2",
+      "libarchive13t64",
+      "libfdt1",
       "libpam-pwquality",
       "libnuma1",
       "pciutils",

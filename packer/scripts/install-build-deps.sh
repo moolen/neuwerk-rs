@@ -14,17 +14,18 @@ packages_json="$(python3 "$repo_dir/packaging/scripts/resolve_target.py" --targe
 build_packages="$(printf '%s\n' "$packages_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)["packages"]["build"]))')"
 runtime_packages="$(printf '%s\n' "$packages_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)["packages"]["runtime"]))')"
 
-sudo apt-get update
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $build_packages $runtime_packages
-
 case "$use_prebuilt" in
   1|true|TRUE|yes|YES)
     install_compilers=0
+    build_packages="ansible python3 curl zstd"
     ;;
   *)
     install_compilers=1
     ;;
 esac
+
+sudo apt-get update
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $build_packages $runtime_packages
 
 if [[ "$install_compilers" -eq 1 ]]; then
   if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'process.versions.node.split(`.`)[0]' 2>/dev/null || printf 0)" -lt 20 ]]; then

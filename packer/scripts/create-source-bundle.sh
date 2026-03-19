@@ -12,11 +12,16 @@ fi
 mkdir -p "$(dirname "$bundle_output")"
 tar \
   --exclude='.git' \
+  --exclude='.bin' \
+  --exclude='artifacts' \
+  --exclude='cloud-tests' \
+  --exclude='demo/vagrant/.vagrant' \
+  --exclude='fuzz/target' \
+  --exclude='target-*' \
   --exclude='target' \
   --exclude='ui/node_modules' \
-  --exclude='cloud-tests/*/artifacts' \
-  --exclude='cloud-tests/runner/target' \
-  --exclude='artifacts/image-build' \
+  --exclude='www/dist' \
+  --exclude='www/node_modules' \
   --exclude='third_party/dpdk/src' \
   --exclude='third_party/dpdk/build' \
   --exclude='third_party/dpdk/install' \
