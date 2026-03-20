@@ -39,7 +39,7 @@ Expected result: a restored `neuwerk-<target>.qcow2` image is produced in your w
 
 - Convert the restored `qcow2` to a raw image:
   `qemu-img convert -f qcow2 -O raw neuwerk-<target>.qcow2 neuwerk-<target>.raw`
-- Upload the restored image to S3.
+- Upload the converted raw image (`neuwerk-<target>.raw`) to S3.
 - Use the EC2 VM import path to create an EBS-backed image.
 - Launch a VM from the imported image and verify networking before enabling traffic.
 
