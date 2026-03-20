@@ -20,7 +20,7 @@ pub struct ThreatIntelSettings {
     pub remote_enrichment: ThreatRemoteEnrichmentSettings,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
 #[serde(default)]
 pub struct ThreatBaselineFeeds {
     pub threatfox: ThreatFeedToggle,
@@ -35,7 +35,7 @@ pub struct ThreatFeedToggle {
     pub refresh_interval_secs: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
 #[serde(default)]
 pub struct ThreatRemoteEnrichmentSettings {
     pub enabled: bool,
@@ -67,28 +67,12 @@ impl Default for ThreatIntelSettings {
     }
 }
 
-impl Default for ThreatBaselineFeeds {
-    fn default() -> Self {
-        Self {
-            threatfox: ThreatFeedToggle::default(),
-            urlhaus: ThreatFeedToggle::default(),
-            spamhaus_drop: ThreatFeedToggle::default(),
-        }
-    }
-}
-
 impl Default for ThreatFeedToggle {
     fn default() -> Self {
         Self {
             enabled: true,
             refresh_interval_secs: 3600,
         }
-    }
-}
-
-impl Default for ThreatRemoteEnrichmentSettings {
-    fn default() -> Self {
-        Self { enabled: false }
     }
 }
 
