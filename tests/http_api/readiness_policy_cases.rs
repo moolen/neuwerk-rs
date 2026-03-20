@@ -600,6 +600,9 @@ async fn http_api_policy_write_times_out_when_dataplane_ack_missing() {
     wait_for_file(&auth_path, Duration::from_secs(2))
         .await
         .unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
     let keyset = api_auth::load_keyset_from_file(&auth_path)
         .unwrap()
         .expect("missing local api keyset");
@@ -709,6 +712,9 @@ async fn http_api_policy_write_waits_for_dataplane_ack() {
         .unwrap();
     let auth_path = api_auth::local_keyset_path(&tls_dir);
     wait_for_file(&auth_path, Duration::from_secs(2))
+        .await
+        .unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2))
         .await
         .unwrap();
     let keyset = api_auth::load_keyset_from_file(&auth_path)
@@ -846,6 +852,9 @@ async fn http_api_policy_write_times_out_when_service_plane_ack_missing() {
         .unwrap();
     let auth_path = api_auth::local_keyset_path(&tls_dir);
     wait_for_file(&auth_path, Duration::from_secs(2))
+        .await
+        .unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2))
         .await
         .unwrap();
     let keyset = api_auth::load_keyset_from_file(&auth_path)
