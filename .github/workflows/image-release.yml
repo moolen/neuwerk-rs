@@ -24,6 +24,11 @@ on:
         required: true
         default: false
         type: boolean
+      build_vagrant_assets:
+        description: Build optional VirtualBox/Vagrant release assets
+        required: true
+        default: false
+        type: boolean
       runner:
         description: Runner label to use for the build
         required: true
@@ -109,7 +114,7 @@ jobs:
             xorriso
             zstd
           )
-          if [[ "$TARGET" == "ubuntu-24.04-minimal-amd64" ]]; then
+          if [[ "${{ inputs.build_vagrant_assets }}" == "true" ]]; then
             packages+=(virtualbox)
           fi
           sudo apt-get update
@@ -157,8 +162,11 @@ jobs:
             QEMU_ACCELERATOR="${{ steps.qemu.outputs.accelerator }}" \
             USE_PREBUILT_ARTIFACTS=true
 
+      - name: Reset Vagrant release asset staging
+        run: rm -rf "${PACKER_ARTIFACT_DIR}/vagrant/${TARGET}"
+
       - name: Build Vagrant box release assets
-        if: inputs.target == 'ubuntu-24.04-minimal-amd64'
+        if: inputs.build_vagrant_assets
         run: |
           metadata_name="neuwerk-${TARGET}-${RELEASE_VERSION}-virtualbox.metadata.json"
           box_name="neuwerk-${TARGET}-${RELEASE_VERSION}-virtualbox.box"

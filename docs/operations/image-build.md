@@ -162,8 +162,9 @@ It is intentionally not triggered on push or merge. Use GitHub Actions `workflow
 
 - `release_version`, for example `v0.1.0`
 - `target`, `ubuntu-24.04-minimal-amd64`
+- `build_vagrant_assets`, default `false`
 - `draft` / `prerelease`
-- `runner`, default `ubuntu-latest`
+- `runner`, default `ubuntu-24.04`
 - `qemu_accelerator`, default `none`
 
 The workflow:
@@ -171,8 +172,9 @@ The workflow:
 1. validates the Packer/image configuration
 2. builds and caches the release binary, UI, and vendored DPDK on the host runner
 3. builds the qemu image and reuses those prebuilt artifacts inside the guest when enabled
-4. packages GitHub-safe release assets
-5. creates or updates the GitHub Release for the requested tag
+4. optionally builds VirtualBox/Vagrant release assets when requested
+5. packages GitHub-safe release assets
+6. creates or updates the GitHub Release for the requested tag
 
 This host-prebuild path exists to avoid compiling DPDK and the Rust workspace inside a software-emulated guest on GitHub-hosted runners. Local builds still default to the original in-guest compile path unless `USE_PREBUILT_ARTIFACTS=true` is passed to `make package.image.build.qemu`.
 

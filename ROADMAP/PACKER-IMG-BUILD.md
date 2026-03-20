@@ -494,15 +494,16 @@ Produce an SBOM that describes the shipped OS image, not only the Rust crate gra
 
 For each built target:
 
-1. `image-rootfs.spdx.json`
-2. `image-rootfs.cyclonedx.json`
-3. `image-packages.json`
-4. `image-manifest.json`
+1. `<target>-rootfs.spdx.json`
+2. `<target>-rootfs.cyclonedx.json`
+3. `<target>-image.spdx.json`
+4. `<target>-image.cyclonedx.json`
 
 Optional later:
 
 5. `Neuwerk-source.spdx.json`
-6. provenance and signature attestations
+6. release/distribution `manifest.json`
+7. provenance and signature attestations
 
 ### Recommended Generation Flow
 
