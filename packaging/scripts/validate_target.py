@@ -11,7 +11,7 @@ from common import load_json, load_target, schema_path, validate_target
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate an image target manifest.")
-    parser.add_argument("--target", help="Target ID, for example ubuntu-24.04-amd64")
+    parser.add_argument("--target", help="Target ID, for example ubuntu-24.04-minimal-amd64")
     parser.add_argument("--path", type=Path, help="Path to a target manifest JSON file")
     parser.add_argument("--print-schema", action="store_true", help="Print the repository JSON schema path")
     args = parser.parse_args()

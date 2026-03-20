@@ -10,10 +10,9 @@ on:
       target:
         description: Appliance image target manifest id
         required: true
-        default: ubuntu-24.04-amd64
+        default: ubuntu-24.04-minimal-amd64
         type: choice
         options:
-          - ubuntu-24.04-amd64
           - ubuntu-24.04-minimal-amd64
       draft:
         description: Publish the GitHub release as a draft

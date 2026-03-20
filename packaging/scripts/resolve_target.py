@@ -12,7 +12,7 @@ from common import flatten, load_target, validate_target
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Resolve a target manifest into JSON or shell env output.")
-    parser.add_argument("--target", required=True, help="Target ID, for example ubuntu-24.04-amd64")
+    parser.add_argument("--target", required=True, help="Target ID, for example ubuntu-24.04-minimal-amd64")
     parser.add_argument(
         "--format",
         choices=("json", "env"),

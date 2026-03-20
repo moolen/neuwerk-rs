@@ -1,6 +1,6 @@
 variable "target" {
   type    = string
-  default = "ubuntu-24.04-amd64"
+  default = "ubuntu-24.04-minimal-amd64"
 }
 
 variable "release_version" {

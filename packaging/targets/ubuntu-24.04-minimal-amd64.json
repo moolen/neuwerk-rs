@@ -100,7 +100,7 @@
   },
   "hardening": {
     "profile": "cis-l2",
-    "waiver_file": "packer/cis/waivers/ubuntu-24.04-amd64.txt"
+    "waiver_file": "packer/cis/waivers/ubuntu-24.04-minimal-amd64.txt"
   },
   "sbom": {
     "formats": [
