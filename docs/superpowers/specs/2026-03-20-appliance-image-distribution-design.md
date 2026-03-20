@@ -221,7 +221,7 @@ workflow rather than only an internal image build workflow.
 - Generate release metadata that matches the appliance distribution contract.
 - Ensure release notes clearly state:
   - Ubuntu 24.04 is the supported appliance base
-  - AWS, Azure, and GCP are supported manual import targets
+  - AWS, Azure, and GCP are supported as manual import targets
   - provider-native publication is not yet automated
 - Ensure the uploaded GitHub Release asset set is intentional and stable.
 - Rename or reframe workflow steps where needed so the pipeline reads as an appliance

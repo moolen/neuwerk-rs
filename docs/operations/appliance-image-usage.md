@@ -3,16 +3,16 @@
 ## Supported Scope
 
 - Ubuntu 24.04 is the only supported appliance base in this phase.
-- Published Ubuntu appliance artifacts target `ubuntu-24.04-minimal-amd64`.
+- The currently supported published Ubuntu appliance target is `ubuntu-24.04-minimal-amd64`.
 - GitHub Releases is the canonical distribution channel for appliance artifacts.
 - AWS, Azure, and GCP are supported as manual import targets.
 - This guide covers operator usage of published release artifacts only (not Terraform automation or provider-native publication pipelines).
 
 ## Download And Verify Release Assets
 
-Download the full asset set required for your selected target from the selected GitHub Release before running checksum verification. `SHA256SUMS` covers the published files in that checksum set, so partial downloads can cause `sha256sum -c SHA256SUMS` to fail with missing-file errors.
+Download the full asset set required for your selected target from the selected GitHub Release before running checksum verification. Before running `sha256sum -c SHA256SUMS`, make sure you have downloaded every asset listed in `SHA256SUMS` for that target's checksum set.
 
-Do not rely on a partial subset. Download every asset required for the selected target and its checksum set before running checksum verification.
+Do not rely on a partial subset. Download every asset listed in `SHA256SUMS`, or otherwise every asset required by the selected target's checksum set, before running checksum verification.
 
 The release asset set typically includes:
 
