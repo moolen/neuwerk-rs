@@ -8,10 +8,10 @@ import { docsNavigation } from '../../data/docsNavigation';
   description="Operator-focused documentation for deploying, configuring, running, and integrating Neuwerk."
 >
   <p>
-    These docs are organized by what you are trying to do. Start with a tutorial if you are new to
-    the product, use a how-to guide when you need a specific outcome, read the explanations to
-    understand the model behind Neuwerk, and use the reference section for exact API and
-    schema details.
+    These docs are organized by what you are trying to do. Start with the getting started guides if
+    you are new to the product, use a how-to guide when you need a specific outcome, read the
+    explanations to understand the model behind Neuwerk, and use the reference section for exact
+    API and schema details.
   </p>
 
   <h2 id="recommended-structure">How To Use These Docs</h2>
@@ -35,7 +35,7 @@ import { docsNavigation } from '../../data/docsNavigation';
       <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
         <h3 class="text-lg font-semibold text-white">{section.title}</h3>
         <p class="mt-2 text-sm text-slate-400">
-          {section.title === 'Tutorials' && 'Guided paths for a local demo box, a first deployment, a first policy, and a first cluster.'}
+          {section.title === 'Getting Started' && 'Guided paths for a local demo box, a first deployment, a first policy, and a first cluster.'}
           {section.title === 'How-To Guides' && 'Task-focused instructions for access, policy authoring, safer rollout, upgrades, integrations, and recovery work.'}
           {section.title === 'Concepts' && 'Conceptual pages that explain Neuwerk behavior, boundaries, tradeoffs, and operational switches.'}
           {section.title === 'Reference' && 'Precise schemas, endpoints, interfaces, and fixed protocol details.'}

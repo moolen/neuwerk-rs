@@ -10,7 +10,7 @@ export interface DocsNavSection {
 
 export const docsNavigation: DocsNavSection[] = [
   {
-    title: 'Tutorials',
+    title: 'Getting Started',
     items: [
       { href: '/docs/tutorials/run-the-vagrant-demo-box', label: 'Run The Vagrant Demo Box' },
       { href: '/docs/tutorials/deploy-a-single-node', label: 'Deploy A Single Node' },
