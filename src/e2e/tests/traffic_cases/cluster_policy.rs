@@ -155,10 +155,17 @@ pub(super) fn cluster_policy_update_denies_existing_flow(
             .await
             .map_err(|e| format!("udp send before failed: {e}"))?;
         let mut buf = vec![0u8; 2048];
-        tokio::time::timeout(Duration::from_secs(1), socket.recv_from(&mut buf))
-            .await
-            .map_err(|_| "udp recv before timed out".to_string())?
-            .map_err(|e| format!("udp recv before failed: {e}"))?;
+        if !recv_expected_udp_echo(
+            &socket,
+            &mut buf,
+            udp_server,
+            b"before",
+            Duration::from_secs(1),
+        )
+        .await?
+        {
+            return Err("udp recv before timed out".to_string());
+        }
 
         http_set_policy(
             api_addr,
@@ -193,30 +200,24 @@ pub(super) fn cluster_policy_update_denies_existing_flow(
             .send_to(b"after", udp_server)
             .await
             .map_err(|e| format!("udp send after failed: {e}"))?;
-        match tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await {
-            Ok(Ok((_len, _))) => {
-                http_set_policy(
-                    api_addr,
-                    &tls_dir,
-                    baseline_policy.clone(),
-                    PolicyMode::Enforce,
-                    Some(&token),
-                )
-                .await?;
-                return Err("udp to foo.allowed succeeded after deny update".to_string());
-            }
-            Ok(Err(err)) => {
-                http_set_policy(
-                    api_addr,
-                    &tls_dir,
-                    baseline_policy.clone(),
-                    PolicyMode::Enforce,
-                    Some(&token),
-                )
-                .await?;
-                return Err(format!("udp recv after failed: {err}"));
-            }
-            Err(_) => {}
+        if recv_expected_udp_echo(
+            &socket,
+            &mut buf,
+            udp_server,
+            b"after",
+            Duration::from_millis(500),
+        )
+        .await?
+        {
+            http_set_policy(
+                api_addr,
+                &tls_dir,
+                baseline_policy.clone(),
+                PolicyMode::Enforce,
+                Some(&token),
+            )
+            .await?;
+            return Err("udp to foo.allowed succeeded after deny update".to_string());
         }
 
         http_set_policy(
@@ -229,6 +230,36 @@ pub(super) fn cluster_policy_update_denies_existing_flow(
         .await?;
         Ok(())
     })
+}
+
+async fn recv_expected_udp_echo(
+    socket: &UdpSocket,
+    buf: &mut [u8],
+    expected_peer: SocketAddr,
+    expected_payload: &[u8],
+    timeout: Duration,
+) -> Result<bool, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Ok(false);
+        }
+        match tokio::time::timeout(
+            deadline.saturating_duration_since(now),
+            socket.recv_from(buf),
+        )
+        .await
+        {
+            Ok(Ok((len, peer))) => {
+                if peer == expected_peer && &buf[..len] == expected_payload {
+                    return Ok(true);
+                }
+            }
+            Ok(Err(err)) => return Err(format!("udp recv failed: {err}")),
+            Err(_) => return Ok(false),
+        }
+    }
 }
 
 pub(super) fn cluster_policy_update_https_udp(cfg: &TopologyConfig) -> Result<(), String> {

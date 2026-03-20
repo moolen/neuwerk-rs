@@ -212,6 +212,7 @@ pub(super) fn handle_outbound_icmp(
 
     let wiretap = state.wiretap.clone();
     let metrics = state.metrics.clone();
+    let mut policy_drop = false;
     let mut policy_drop_group: Option<Arc<str>> = None;
     let (decision_label, entry_source_group) = {
         let entry = match state.flows.get_entry_mut(&flow) {
@@ -247,11 +248,12 @@ pub(super) fn handle_outbound_icmp(
                     entry.set_source_group_arc(next_group);
                 }
                 PolicyDecision::Deny | PolicyDecision::PendingTls => {
+                    policy_drop = true;
                     policy_drop_group = next_group;
                 }
             }
         }
-        if policy_drop_group.is_none() {
+        if !policy_drop {
             entry.last_seen = now;
             entry.packets_out = entry.packets_out.saturating_add(1);
             maybe_emit_wiretap(&wiretap, &flow, entry, now);
@@ -262,14 +264,14 @@ pub(super) fn handle_outbound_icmp(
     };
     let entry_source_group_name = source_group_label(entry_source_group.as_ref());
 
-    if let Some(drop_group) = policy_drop_group {
+    if policy_drop {
         remove_flow_state(state, &flow, now, "policy_drop");
         if let Some(metrics) = &metrics {
             metrics.observe_dp_packet(
                 "outbound",
                 proto_label(1),
                 "deny",
-                source_group_label(Some(&drop_group)),
+                source_group_label(policy_drop_group.as_ref()),
                 pkt.len(),
             );
             metrics.observe_dp_icmp_decision(
@@ -277,7 +279,7 @@ pub(super) fn handle_outbound_icmp(
                 icmp_type,
                 icmp_code,
                 "deny",
-                source_group_label(Some(&drop_group)),
+                source_group_label(policy_drop_group.as_ref()),
             );
         }
         return Action::Drop;
@@ -427,6 +429,7 @@ pub(super) fn handle_outbound_icmp_no_snat(
 
     let wiretap = state.wiretap.clone();
     let metrics = state.metrics.clone();
+    let mut policy_drop = false;
     let mut policy_drop_group: Option<Arc<str>> = None;
     let (decision_label, entry_source_group) = {
         let entry = match state.flows.get_entry_mut(&flow) {
@@ -462,11 +465,12 @@ pub(super) fn handle_outbound_icmp_no_snat(
                     entry.set_source_group_arc(next_group);
                 }
                 PolicyDecision::Deny | PolicyDecision::PendingTls => {
+                    policy_drop = true;
                     policy_drop_group = next_group;
                 }
             }
         }
-        if policy_drop_group.is_none() {
+        if !policy_drop {
             entry.last_seen = now;
             entry.packets_out = entry.packets_out.saturating_add(1);
             maybe_emit_wiretap(&wiretap, &flow, entry, now);
@@ -477,14 +481,14 @@ pub(super) fn handle_outbound_icmp_no_snat(
     };
     let entry_source_group_name = source_group_label(entry_source_group.as_ref());
 
-    if let Some(drop_group) = policy_drop_group {
+    if policy_drop {
         remove_flow_state(state, &flow, now, "policy_drop");
         if let Some(metrics) = &metrics {
             metrics.observe_dp_packet(
                 "outbound",
                 proto_label(1),
                 "deny",
-                source_group_label(Some(&drop_group)),
+                source_group_label(policy_drop_group.as_ref()),
                 pkt.len(),
             );
             metrics.observe_dp_icmp_decision(
@@ -492,7 +496,7 @@ pub(super) fn handle_outbound_icmp_no_snat(
                 icmp_type,
                 icmp_code,
                 "deny",
-                source_group_label(Some(&drop_group)),
+                source_group_label(policy_drop_group.as_ref()),
             );
         }
         return Action::Drop;

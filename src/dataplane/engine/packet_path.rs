@@ -268,6 +268,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
         let verifier = &state.tls_verifier;
         let wiretap = state.wiretap.clone();
         let metrics = state.metrics.clone();
+        let mut policy_drop = false;
         let mut policy_drop_group: Option<Arc<str>> = None;
         let mut policy_drop_intercept_requires_service = false;
         let mut mark_handshake_completed = false;
@@ -394,6 +395,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                                 true
                             };
                             if evaluation.intercept_requires_service && !service_ready {
+                                policy_drop = true;
                                 policy_drop_group = next_group;
                                 policy_drop_intercept_requires_service = true;
                             } else {
@@ -414,6 +416,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                             }
                         }
                         PolicyDecision::Deny => {
+                            policy_drop = true;
                             policy_drop_group = next_group;
                             policy_drop_intercept_requires_service =
                                 evaluation.intercept_requires_service;
@@ -421,7 +424,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                         }
                     }
                 }
-                if policy_drop_group.is_none() {
+                if !policy_drop {
                     entry.last_seen = now;
                     entry.packets_out = entry.packets_out.saturating_add(1);
                     if outbound_syn {
@@ -494,7 +497,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             .as_deref()
             .unwrap_or(DEFAULT_SOURCE_GROUP);
 
-        if let Some(drop_group) = policy_drop_group {
+        if policy_drop {
             let _ = remove_flow_state_timed(
                 state,
                 &flow,
@@ -512,7 +515,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                 if let Some(action) = maybe_intercept_fail_closed_rst(
                     pkt,
                     state,
-                    source_group_label(Some(&drop_group)),
+                    source_group_label(policy_drop_group.as_ref()),
                     "outbound",
                 ) {
                     return action;
@@ -523,7 +526,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                     "outbound",
                     proto_label(proto),
                     "deny",
-                    source_group_label(Some(&drop_group)),
+                    source_group_label(policy_drop_group.as_ref()),
                     pkt.len(),
                 );
             }
@@ -778,6 +781,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                 icmp_type: None,
                 icmp_code: None,
             };
+            let mut policy_drop = false;
             let mut policy_drop_group: Option<Arc<str>> = None;
             let mut note_synack_in = false;
             let mut note_synack_in_first = false;
@@ -870,11 +874,12 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                             }
                         }
                         PolicyDecision::Deny => {
+                            policy_drop = true;
                             policy_drop_group = next_group;
                         }
                     }
                 }
-                if policy_drop_group.is_none() {
+                if !policy_drop {
                     entry.last_seen = now;
                     entry.packets_in = entry.packets_in.saturating_add(1);
                     if inbound_synack {
@@ -944,7 +949,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                 }
             }
 
-            if let Some(drop_group) = policy_drop_group {
+            if policy_drop {
                 let _ = remove_flow_state_timed(
                     state,
                     &flow,
@@ -961,7 +966,7 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                         "inbound",
                         proto_label(proto),
                         "deny",
-                        source_group_label(Some(&drop_group)),
+                        source_group_label(policy_drop_group.as_ref()),
                         pkt.len(),
                     );
                 }
