@@ -1,6 +1,6 @@
 # Packer Image Build
 
-Last updated: 2026-03-11
+Last updated: 2026-03-20
 Owner: Neuwerk team
 Scope: build and release immutable Ubuntu 24.04 LTS Neuwerk images for cloud platforms and `qcow2`, with deterministic DPDK linkage, CIS Level 2 hardening, and attachable SBOMs.
 
@@ -191,52 +191,65 @@ packaging/
           azure-mana.meson
           gcp-gve.meson
     targets/
-      ubuntu-24.04-minimal-amd64.yaml
+      ubuntu-24.04-minimal-amd64.json
 ```
 
 The target manifest owns:
 
-- `dpdk_version`
-- `dpdk_profile`
+- `dpdk.version`
+- `dpdk.profile`
 - enabled PMDs
 - disabled PMDs
-- extra build args
-- runtime library include list
 - expected soname ABI
+- base image lineage per provider
+- hardening waiver file selection
 
 Example target manifest:
 
-```yaml
-id: ubuntu-24.04-minimal-amd64
-os:
-  family: ubuntu
-  version: "24.04"
-  arch: amd64
-base_images:
-  aws: ubuntu-noble-24.04
-  azure: canonical-ubuntu-24_04-lts-server
-  gcp: ubuntu-2404-lts-amd64
-  qemu: ubuntu-24.04-server-cloudimg-amd64.img
-dpdk:
-  version: 23.11.2
-  profile: generic-cloud
-  abi: so.24
-  disable_drivers:
-    - net/ionic
-  enable_pmd_sets:
-    - generic
-    - aws-ena
-    - azure-mana
-    - gcp-gve
-runtime:
-  prefix: /opt/neuwerk/runtime
-hardening:
-  profile: cis-l2
-  waiver_file: cis/waivers/ubuntu-24.04-minimal-amd64.yaml
-sbom:
-  formats:
-    - spdx-json
-    - cyclonedx-json
+```json
+{
+  "schema_version": 1,
+  "id": "ubuntu-24.04-minimal-amd64",
+  "os": {
+    "family": "ubuntu",
+    "version": "24.04",
+    "arch": "amd64"
+  },
+  "base_images": {
+    "aws": {
+      "name_filter": "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
+    },
+    "azure": {
+      "offer": "ubuntu-24_04-lts",
+      "sku": "server",
+      "version": "latest"
+    },
+    "gcp": {
+      "family": "ubuntu-2404-lts-amd64"
+    },
+    "qemu": {
+      "image_name": "ubuntu-24.04-minimal-cloudimg-amd64.img"
+    }
+  },
+  "dpdk": {
+    "version": "23.11.2",
+    "profile": "generic-cloud",
+    "abi": "so.24"
+  },
+  "runtime": {
+    "prefix": "/opt/neuwerk/runtime"
+  },
+  "hardening": {
+    "profile": "cis-l2",
+    "waiver_file": "packer/cis/waivers/ubuntu-24.04-minimal-amd64.txt"
+  },
+  "sbom": {
+    "formats": [
+      "spdx-json",
+      "cyclonedx-json"
+    ]
+  }
+}
 ```
 
 ### Concrete DPDK Build Rules

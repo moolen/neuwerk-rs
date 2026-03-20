@@ -14,7 +14,7 @@ This document remains build-facing and covers how Neuwerk image artifacts are pr
 The current local-image release flow produces a `qcow2` appliance artifact.
 
 For the laptop demo workflow, the preferred direction is a separate Vagrant-oriented VM artifact
-published as a provider-native box. See [local-vm-demo.md](/home/moritz/dev/neuwerk-rs/firewall/docs/operations/local-vm-demo.md).
+published as a provider-native box. See [Local VM Demo](./local-vm-demo.md).
 
 If a provider-native `.box` has already been built and staged, generate a Vagrant `metadata.json`
 for release packaging with:

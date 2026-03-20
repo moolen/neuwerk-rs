@@ -42,7 +42,7 @@ This design keeps the current packaging model intact and makes it operator-facin
 
 The repository already has an image-oriented packaging model:
 
-- A Ubuntu 24.04 image target exists for the minimal appliance variant.
+- An Ubuntu 24.04 image target exists for the minimal appliance variant.
 - The image build stages a Neuwerk runtime tree under `/opt/neuwerk`, including the
   release binary, UI assets, vendored DPDK runtime, bootstrap scripts, and systemd
   unit.

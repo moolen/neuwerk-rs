@@ -44,8 +44,8 @@ through Neuwerk.
 
 The repository now includes:
 
-- a checked-in [Vagrantfile](/home/moritz/dev/neuwerk-rs/firewall/demo/vagrant/Vagrantfile)
-- a first-boot guest provisioner at [provision-demo.sh](/home/moritz/dev/neuwerk-rs/firewall/demo/vagrant/provision-demo.sh)
+- a checked-in [Vagrantfile](../../demo/vagrant/Vagrantfile)
+- a first-boot guest provisioner at [provision-demo.sh](../../demo/vagrant/provision-demo.sh)
 
 That provisioner turns a base appliance box into a local demo guest by:
 
@@ -77,7 +77,7 @@ The box publication should be treated as a first-class release artifact, not as 
 post-processing step.
 
 The repository now includes
-[generate_vagrant_box_metadata.py](/home/moritz/dev/neuwerk-rs/firewall/packaging/scripts/generate_vagrant_box_metadata.py)
+[generate_vagrant_box_metadata.py](../../packaging/scripts/generate_vagrant_box_metadata.py)
 for generating that `metadata.json`.
 
 ## Future Expansion
