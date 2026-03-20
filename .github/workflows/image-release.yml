@@ -53,6 +53,7 @@ jobs:
     env:
       TARGET: ${{ inputs.target }}
       RELEASE_VERSION: ${{ inputs.release_version }}
+      PACKER_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/image-build
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
