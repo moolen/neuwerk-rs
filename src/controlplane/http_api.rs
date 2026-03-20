@@ -80,6 +80,7 @@ mod service_accounts_api;
 mod sso_auth_routes;
 mod sso_settings;
 mod support;
+mod threats;
 mod tls_intercept;
 mod wiretap;
 
@@ -108,6 +109,7 @@ use sso_settings::{
     test_sso_provider, update_sso_provider,
 };
 use support::{cluster_sysdump, node_sysdump};
+use threats::{get_threat_settings, put_threat_settings};
 use wiretap::wiretap_stream;
 
 #[derive(Clone)]
@@ -408,6 +410,10 @@ pub async fn run_http_api_with_shutdown(
         .route(
             "/settings/performance-mode",
             get(get_performance_mode).put(put_performance_mode),
+        )
+        .route(
+            "/settings/threat-intel",
+            get(get_threat_settings).put(put_threat_settings),
         )
         .route(
             "/settings/tls-intercept-ca/cert",

@@ -88,6 +88,8 @@ impl Modify for SecurityAddon {
         super::service_accounts_api::revoke_service_account_token,
         super::performance_mode::get_performance_mode,
         super::performance_mode::put_performance_mode,
+        super::threats::get_threat_settings,
+        super::threats::put_threat_settings,
         super::tls_intercept::get_tls_intercept_ca,
         super::tls_intercept::get_tls_intercept_ca_cert,
         super::tls_intercept::put_tls_intercept_ca,
@@ -132,6 +134,15 @@ impl Modify for SecurityAddon {
             crate::controlplane::service_accounts::ServiceAccount,
             crate::controlplane::service_accounts::TokenStatus,
             crate::controlplane::service_accounts::TokenMeta,
+            crate::controlplane::threat_intel::settings::ThreatIntelSettings,
+            crate::controlplane::threat_intel::settings::ThreatBaselineFeeds,
+            crate::controlplane::threat_intel::settings::ThreatFeedToggle,
+            crate::controlplane::threat_intel::settings::ThreatRemoteEnrichmentSettings,
+            crate::controlplane::threat_intel::types::ThreatSeverity,
+            crate::controlplane::threat_intel::types::ThreatIndicatorType,
+            crate::controlplane::threat_intel::types::ThreatObservationLayer,
+            super::threats::ThreatIntelSettingsStatus,
+            super::threats::ThreatIntelSettingsUpdateRequest,
             crate::controlplane::metrics::StatsSnapshot,
             crate::controlplane::metrics::DataplaneStats,
             crate::controlplane::metrics::DecisionCounters,
@@ -202,5 +213,6 @@ mod tests {
         assert!(paths.contains_key("/api/v1/policies"));
         assert!(paths.contains_key("/api/v1/service-accounts"));
         assert!(paths.contains_key("/api/v1/settings/performance-mode"));
+        assert!(paths.contains_key("/api/v1/settings/threat-intel"));
     }
 }
