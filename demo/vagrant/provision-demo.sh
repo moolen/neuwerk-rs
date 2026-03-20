@@ -315,7 +315,7 @@ NEUWERK_BOOTSTRAP_DNS_UPSTREAMS=1.1.1.1:53,8.8.8.8:53
 NEUWERK_INTERNAL_CIDR=${CLIENT_NET}/${NEUWERK_VAGRANT_CLIENT_PREFIX}
 NEUWERK_HTTP_ADVERTISE=${NEUWERK_VAGRANT_MGMT_IP}:8443
 NEUWERK_HTTP_EXTERNAL_URL=https://${NEUWERK_VAGRANT_MGMT_IP}:8443
-NEUWERK_EXTRA_ARGS='--http-tls-san localhost,127.0.0.1,${NEUWERK_VAGRANT_MGMT_IP} --cluster-bind 127.0.0.1:9600 --cluster-join-bind 127.0.0.1:9601 --cluster-advertise 127.0.0.1:9600 --cluster-data-dir /var/lib/neuwerk/cluster --node-id-path /var/lib/neuwerk/node_id --bootstrap-token-path /var/lib/neuwerk/bootstrap-token'
+NEUWERK_EXTRA_ARGS='--http-tls-san localhost,127.0.0.1,${NEUWERK_VAGRANT_MGMT_IP}'
 APPLIANCE
 EOF
 chmod 0755 /usr/local/bin/neuwerk-demo-configure
@@ -447,8 +447,7 @@ if [[ -n "${RTE_EAL_PMD_PATH:-}" ]]; then
 fi
 
 TOKEN_PATH="${NEUWERK_DEMO_ADMIN_TOKEN_PATH:-/var/lib/neuwerk-demo/admin.token}"
-CLUSTER_ADDR="${NEUWERK_DEMO_CLUSTER_ADDR:-127.0.0.1:9600}"
-CLUSTER_TLS_DIR="${NEUWERK_DEMO_CLUSTER_TLS_DIR:-/var/lib/neuwerk/cluster/tls}"
+HTTP_TLS_DIR="${NEUWERK_DEMO_HTTP_TLS_DIR:-/var/lib/neuwerk/http-tls}"
 HEALTH_URL="${NEUWERK_DEMO_HEALTH_URL:-https://${NEUWERK_DEMO_MGMT_IP:-127.0.0.1}:8443/health}"
 
 install -d -m 0755 "$(dirname "${TOKEN_PATH}")"
@@ -458,8 +457,7 @@ for _ in $(seq 1 90); do
     if neuwerk auth token mint \
       --sub demo-admin \
       --roles admin \
-      --cluster-addr "${CLUSTER_ADDR}" \
-      --cluster-tls-dir "${CLUSTER_TLS_DIR}" >"${TOKEN_PATH}.tmp" 2>/dev/null; then
+      --http-tls-dir "${HTTP_TLS_DIR}" >"${TOKEN_PATH}.tmp" 2>/dev/null; then
       mv "${TOKEN_PATH}.tmp" "${TOKEN_PATH}"
       chmod 0644 "${TOKEN_PATH}"
       exit 0
@@ -575,16 +573,6 @@ print_firewall_failure() {
   journalctl -u neuwerk.service --no-pager -n 200 || true
 }
 
-write_bootstrap_token() {
-  local bootstrap_token=""
-  install -d -m 0700 /var/lib/neuwerk
-  bootstrap_token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  cat >/var/lib/neuwerk/bootstrap-token <<EOF
-{"tokens":[{"kid":"local-demo","token":"hex:${bootstrap_token}"}]}
-EOF
-  chmod 0600 /var/lib/neuwerk/bootstrap-token
-}
-
 start_demo_runtime() {
   rm -rf \
     /var/lib/neuwerk/cluster \
@@ -592,13 +580,11 @@ start_demo_runtime() {
     /var/lib/neuwerk/http-tls \
     /var/lib/neuwerk/node_id
   rm -f \
-    /var/lib/neuwerk/bootstrap-token \
     /var/lib/neuwerk-demo/admin.token
-  write_bootstrap_token
   systemctl restart neuwerk-demo-configure.service
   systemctl reset-failed neuwerk.service >/dev/null 2>&1 || true
   systemctl start neuwerk.service
-  wait_for_file /var/lib/neuwerk/cluster/tls/ca.crt 90 1 || return 1
+  wait_for_file /var/lib/neuwerk/http-tls/api-auth.json 90 1 || return 1
   wait_for_health "https://${MGMT_IP}:8443/health" 90 1 || return 1
 }
 

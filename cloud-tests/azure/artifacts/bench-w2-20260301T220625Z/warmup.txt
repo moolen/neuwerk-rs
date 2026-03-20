@@ -1,8 +1,0 @@
-Running 15s test @ http://10.20.4.10/
-  4 threads and 100 connections
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     1.35ms  344.84us  14.27ms   82.29%
-    Req/Sec    17.76k     1.64k   46.10k    91.01%
-  1062117 requests in 15.10s, 185.36MB read
-Requests/sec:  70350.07
-Transfer/sec:     12.28MB

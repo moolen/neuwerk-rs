@@ -539,15 +539,8 @@ fn resolve_external_url(
 
 fn metrics_bind_requires_guardrail(bind: SocketAddr) -> bool {
     match bind.ip() {
-        IpAddr::V4(ip) => {
-            !(ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified())
-        }
-        IpAddr::V6(ip) => {
-            !(ip.is_loopback()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
-                || ip.is_unspecified())
-        }
+        IpAddr::V4(ip) => !(ip.is_loopback() || ip.is_private() || ip.is_link_local()),
+        IpAddr::V6(ip) => !(ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local()),
     }
 }
 

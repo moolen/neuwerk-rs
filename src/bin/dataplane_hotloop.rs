@@ -5,13 +5,13 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use neuwerk::controlplane::metrics::Metrics;
 use neuwerk::dataplane::config::DataplaneConfig;
 use neuwerk::dataplane::policy::{
     CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction,
     RuleMatch, RuleMode, SourceGroup,
 };
 use neuwerk::dataplane::{handle_packet, Action, EngineState, Packet, SnatMode};
+use neuwerk::metrics::Metrics;
 
 const BENCH_NOW_SECS: u64 = 1;
 const SOURCE_PORT_BASE: usize = 10_000;

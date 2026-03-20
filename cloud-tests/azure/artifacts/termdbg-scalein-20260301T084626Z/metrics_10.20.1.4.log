@@ -1,8 +1,0 @@
-Warning: Permanently added '10.20.1.4' (ED25519) to the list of known hosts.
-ts=2026-03-01T08:46:34Z events=1 complete=0 drain_start=1
-ts=2026-03-01T08:46:36Z events=1 complete=0 drain_start=1
-ts=2026-03-01T08:46:38Z events=1 complete=0 drain_start=1
-ts=2026-03-01T08:46:40Z events=1 complete=0 drain_start=1
-ts=2026-03-01T08:46:42Z events=1 complete=0 drain_start=1
-Connection to 20.79.249.152 closed by remote host.
-Connection to 10.20.1.4 closed by remote host.

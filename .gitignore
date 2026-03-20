@@ -3,6 +3,10 @@
 /cloud-tests/.secrets/
 /cloud-tests/**/artifacts/
 /cloud-tests/**/run-tests.log
+/cloud-tests/azure/terraform/assets/neuwerk
+/cloud-tests/azure/terraform/assets/neuwerk-*
+!/cloud-tests/azure/terraform/assets/neuwerk-placeholder
+/cloud-tests/gcp/assets/*.tar.gz
 /third_party/dpdk/src/
 /third_party/dpdk/build/
 /third_party/dpdk/install/

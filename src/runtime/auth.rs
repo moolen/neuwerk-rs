@@ -1,29 +1,31 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use neuwerk::controlplane::api_auth::DEFAULT_TTL_SECS;
+use neuwerk::controlplane::api_auth::{self, ApiKeySet, DEFAULT_TTL_SECS};
 use neuwerk::controlplane::cluster::rpc::{AuthClient, RaftTlsConfig};
 
 use crate::runtime::cli::{parse_socket, take_flag_value};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub(crate) enum AuthTarget {
+    Cluster { addr: SocketAddr, tls_dir: PathBuf },
+    Local { tls_dir: PathBuf },
+}
+
+#[derive(Debug, Clone)]
 pub enum AuthCommand {
     KeyRotate {
-        addr: SocketAddr,
-        tls_dir: PathBuf,
+        target: AuthTarget,
     },
     KeyList {
-        addr: SocketAddr,
-        tls_dir: PathBuf,
+        target: AuthTarget,
     },
     KeyRetire {
-        addr: SocketAddr,
-        tls_dir: PathBuf,
+        target: AuthTarget,
         kid: String,
     },
     TokenMint {
-        addr: SocketAddr,
-        tls_dir: PathBuf,
+        target: AuthTarget,
         sub: String,
         ttl_secs: Option<i64>,
         kid: Option<String>,
@@ -33,7 +35,7 @@ pub enum AuthCommand {
 
 pub fn auth_usage(bin: &str) -> String {
     format!(
-        "Usage:\n  {bin} auth key rotate --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key list --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key retire <kid> --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] [--roles <csv>] --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n"
+        "Usage:\n  {bin} auth key rotate --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key rotate --http-tls-dir <path>\n  {bin} auth key list --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key list --http-tls-dir <path>\n  {bin} auth key retire <kid> --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth key retire <kid> --http-tls-dir <path>\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] [--roles <csv>] --cluster-addr <ip:port> [--cluster-tls-dir <path>]\n  {bin} auth token mint --sub <id> [--ttl <dur>] [--kid <kid>] [--roles <csv>] --http-tls-dir <path>\n"
     )
 }
 
@@ -77,6 +79,7 @@ pub fn parse_auth_args(bin: &str, args: &[String]) -> Result<AuthCommand, String
     };
     let mut cluster_addr = None;
     let mut cluster_tls_dir = None;
+    let mut http_tls_dir = None;
 
     let mut kid = None;
     let mut sub = None;
@@ -105,6 +108,11 @@ pub fn parse_auth_args(bin: &str, args: &[String]) -> Result<AuthCommand, String
         if arg == "--cluster-tls-dir" || arg.starts_with("--cluster-tls-dir=") {
             let value = take_flag_value("--cluster-tls-dir", &arg, &mut args)?;
             cluster_tls_dir = Some(PathBuf::from(value));
+            continue;
+        }
+        if arg == "--http-tls-dir" || arg.starts_with("--http-tls-dir=") {
+            let value = take_flag_value("--http-tls-dir", &arg, &mut args)?;
+            http_tls_dir = Some(PathBuf::from(value));
             continue;
         }
         if arg == "--sub" || arg.starts_with("--sub=") {
@@ -143,16 +151,34 @@ pub fn parse_auth_args(bin: &str, args: &[String]) -> Result<AuthCommand, String
         return Err(format!("unknown auth flag: {arg}"));
     }
 
-    let addr = cluster_addr.ok_or_else(|| "missing --cluster-addr".to_string())?;
-    let tls_dir = cluster_tls_dir.unwrap_or_else(|| PathBuf::from("/var/lib/neuwerk/cluster/tls"));
+    let target = match (cluster_addr, http_tls_dir) {
+        (Some(addr), None) => AuthTarget::Cluster {
+            addr,
+            tls_dir: cluster_tls_dir
+                .unwrap_or_else(|| PathBuf::from("/var/lib/neuwerk/cluster/tls")),
+        },
+        (None, Some(tls_dir)) => AuthTarget::Local { tls_dir },
+        (Some(_), Some(_)) => {
+            return Err(
+                "choose either cluster auth (--cluster-addr) or local auth (--http-tls-dir), not both"
+                    .to_string(),
+            )
+        }
+        (None, None) => {
+            return Err(
+                "missing auth target: pass --cluster-addr for cluster mode or --http-tls-dir for local mode"
+                    .to_string(),
+            )
+        }
+    };
 
     match mode.as_str() {
         "key" => match action.as_str() {
-            "rotate" => Ok(AuthCommand::KeyRotate { addr, tls_dir }),
-            "list" => Ok(AuthCommand::KeyList { addr, tls_dir }),
+            "rotate" => Ok(AuthCommand::KeyRotate { target }),
+            "list" => Ok(AuthCommand::KeyList { target }),
             "retire" => {
                 let kid = action_arg.ok_or_else(|| "missing kid".to_string())?;
-                Ok(AuthCommand::KeyRetire { addr, tls_dir, kid })
+                Ok(AuthCommand::KeyRetire { target, kid })
             }
             _ => Err(format!("unknown auth key action: {action}")),
         },
@@ -160,8 +186,7 @@ pub fn parse_auth_args(bin: &str, args: &[String]) -> Result<AuthCommand, String
             "mint" => {
                 let sub = sub.ok_or_else(|| "missing --sub".to_string())?;
                 Ok(AuthCommand::TokenMint {
-                    addr,
-                    tls_dir,
+                    target,
                     sub,
                     ttl_secs,
                     kid,
@@ -174,39 +199,43 @@ pub fn parse_auth_args(bin: &str, args: &[String]) -> Result<AuthCommand, String
     }
 }
 
-pub async fn run_auth_command(cmd: AuthCommand) -> Result<(), String> {
+async fn execute_cluster_command(
+    target: AuthTarget,
+    cmd: AuthCommand,
+) -> Result<Vec<String>, String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let (addr, tls_dir) = match &cmd {
-        AuthCommand::KeyRotate { addr, tls_dir }
-        | AuthCommand::KeyList { addr, tls_dir }
-        | AuthCommand::KeyRetire { addr, tls_dir, .. }
-        | AuthCommand::TokenMint { addr, tls_dir, .. } => (addr, tls_dir),
+    let (addr, tls_dir) = match target {
+        AuthTarget::Cluster { addr, tls_dir } => (addr, tls_dir),
+        AuthTarget::Local { .. } => {
+            return Err("local auth target passed to cluster command handler".to_string())
+        }
     };
-    let tls = RaftTlsConfig::load(tls_dir.clone())?;
-    let mut client = AuthClient::connect(*addr, tls).await?;
+    let tls = RaftTlsConfig::load(tls_dir)?;
+    let mut client = AuthClient::connect(addr, tls).await?;
 
     match cmd {
         AuthCommand::KeyRotate { .. } => {
             let key = client.rotate_key().await?;
-            println!(
+            Ok(vec![format!(
                 "rotated key: {} (created {}, status {:?})",
                 key.kid, key.created_at, key.status
-            );
+            )])
         }
         AuthCommand::KeyList { .. } => {
             let (active_kid, keys) = client.list_keys().await?;
-            println!("active kid: {active_kid}");
+            let mut lines = vec![format!("active kid: {active_kid}")];
             for key in keys {
                 let active = if key.signing { "signing" } else { "" };
-                println!(
+                lines.push(format!(
                     "kid: {} status: {:?} created: {} {}",
                     key.kid, key.status, key.created_at, active
-                );
+                ));
             }
+            Ok(lines)
         }
         AuthCommand::KeyRetire { kid, .. } => {
             client.retire_key(&kid).await?;
-            println!("retired key: {kid}");
+            Ok(vec![format!("retired key: {kid}")])
         }
         AuthCommand::TokenMint {
             sub,
@@ -217,8 +246,159 @@ pub async fn run_auth_command(cmd: AuthCommand) -> Result<(), String> {
         } => {
             let ttl = ttl_secs.or(Some(DEFAULT_TTL_SECS));
             let (token, _kid, _exp) = client.mint_token(&sub, ttl, kid.as_deref(), roles).await?;
-            println!("{token}");
+            Ok(vec![token])
         }
     }
+}
+
+fn ensure_local_keyset(tls_dir: &Path) -> Result<(PathBuf, ApiKeySet), String> {
+    let keyset = api_auth::ensure_local_keyset(tls_dir)?;
+    Ok((api_auth::local_keyset_path(tls_dir), keyset))
+}
+
+fn execute_local_command(target: AuthTarget, cmd: AuthCommand) -> Result<Vec<String>, String> {
+    let tls_dir = match target {
+        AuthTarget::Local { tls_dir } => tls_dir,
+        AuthTarget::Cluster { .. } => {
+            return Err("cluster auth target passed to local command handler".to_string())
+        }
+    };
+    let (path, mut keyset) = ensure_local_keyset(&tls_dir)?;
+
+    match cmd {
+        AuthCommand::KeyRotate { .. } => {
+            let key = api_auth::rotate_key(&mut keyset)?;
+            api_auth::persist_keyset_to_file(&path, &keyset)?;
+            Ok(vec![format!(
+                "rotated key: {} (created {}, status {:?})",
+                key.kid, key.created_at, key.status
+            )])
+        }
+        AuthCommand::KeyList { .. } => {
+            let mut lines = vec![format!("active kid: {}", keyset.active_kid)];
+            for key in api_auth::list_summaries(&keyset) {
+                let active = if key.signing { "signing" } else { "" };
+                lines.push(format!(
+                    "kid: {} status: {:?} created: {} {}",
+                    key.kid, key.status, key.created_at, active
+                ));
+            }
+            Ok(lines)
+        }
+        AuthCommand::KeyRetire { kid, .. } => {
+            api_auth::retire_key(&mut keyset, &kid)?;
+            api_auth::persist_keyset_to_file(&path, &keyset)?;
+            Ok(vec![format!("retired key: {kid}")])
+        }
+        AuthCommand::TokenMint {
+            sub,
+            ttl_secs,
+            kid,
+            roles,
+            ..
+        } => {
+            let ttl = ttl_secs.or(Some(DEFAULT_TTL_SECS));
+            let token =
+                api_auth::mint_token_with_roles(&keyset, &sub, ttl, kid.as_deref(), roles)?.token;
+            Ok(vec![token])
+        }
+    }
+}
+
+async fn execute_auth_command(cmd: AuthCommand) -> Result<Vec<String>, String> {
+    let target = match &cmd {
+        AuthCommand::KeyRotate { target }
+        | AuthCommand::KeyList { target }
+        | AuthCommand::KeyRetire { target, .. }
+        | AuthCommand::TokenMint { target, .. } => target.clone(),
+    };
+
+    match target {
+        AuthTarget::Cluster { .. } => execute_cluster_command(target, cmd).await,
+        AuthTarget::Local { .. } => execute_local_command(target, cmd),
+    }
+}
+
+pub async fn run_auth_command(cmd: AuthCommand) -> Result<(), String> {
+    for line in execute_auth_command(cmd).await? {
+        println!("{line}");
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn parse_auth_args_accepts_local_token_mint() {
+        let args = vec![
+            "token".to_string(),
+            "mint".to_string(),
+            "--sub".to_string(),
+            "demo-admin".to_string(),
+            "--roles".to_string(),
+            "admin,viewer".to_string(),
+            "--http-tls-dir".to_string(),
+            "/tmp/http-tls".to_string(),
+        ];
+        let cmd = parse_auth_args("neuwerk", &args).expect("parse auth args");
+        match cmd {
+            AuthCommand::TokenMint {
+                target: AuthTarget::Local { tls_dir },
+                sub,
+                roles,
+                ..
+            } => {
+                assert_eq!(tls_dir, PathBuf::from("/tmp/http-tls"));
+                assert_eq!(sub, "demo-admin");
+                assert_eq!(roles, Some(vec!["admin".to_string(), "viewer".to_string()]));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_auth_args_rejects_mixed_cluster_and_local_targets() {
+        let args = vec![
+            "token".to_string(),
+            "mint".to_string(),
+            "--sub".to_string(),
+            "demo-admin".to_string(),
+            "--cluster-addr".to_string(),
+            "127.0.0.1:9600".to_string(),
+            "--http-tls-dir".to_string(),
+            "/tmp/http-tls".to_string(),
+        ];
+        let err = parse_auth_args("neuwerk", &args).expect_err("expected mixed target error");
+        assert!(err.contains("choose either cluster auth"));
+    }
+
+    #[tokio::test]
+    async fn execute_auth_command_mints_local_token() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let tls_dir = tempdir.path().join("http-tls");
+        let output = execute_auth_command(AuthCommand::TokenMint {
+            target: AuthTarget::Local {
+                tls_dir: tls_dir.clone(),
+            },
+            sub: "demo-admin".to_string(),
+            ttl_secs: Some(300),
+            kid: None,
+            roles: Some(vec!["admin".to_string()]),
+        })
+        .await
+        .expect("mint token");
+        assert_eq!(output.len(), 1);
+
+        let keyset_path = api_auth::local_keyset_path(&tls_dir);
+        let keyset = api_auth::load_keyset_from_file(&keyset_path)
+            .expect("load keyset")
+            .expect("missing keyset");
+        let claims = api_auth::validate_token(&output[0], &keyset).expect("validate token");
+        assert_eq!(claims.sub, "demo-admin");
+        assert_eq!(claims.roles, Some(vec!["admin".to_string()]));
+    }
 }

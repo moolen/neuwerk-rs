@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
 use neuwerk::controlplane::dhcp::{DhcpClient, DhcpClientConfig};
-use neuwerk::controlplane::metrics::Metrics;
 use neuwerk::controlplane::ready::ReadinessState;
 use neuwerk::controlplane::PolicyStore;
 use neuwerk::dataplane::{DataplaneConfigStore, DhcpRx, DhcpTx};
+use neuwerk::metrics::Metrics;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 

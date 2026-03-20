@@ -9,7 +9,7 @@ INDEX ?= 0
 UI_LOCAL_PORT ?= 9443
 RESOLVE_FW_IPS ?= $(CURDIR)/scripts/resolve-neuwerk-mgmt-ips.sh
 MINT_API_TOKEN ?= $(CURDIR)/scripts/mint-api-token.sh
-NEUWERK_BINARY_PATH ?= $(abspath $(TF_DIR)/assets/neuwerk-dpdk24)
+NEUWERK_BINARY_PATH ?=
 
 .PHONY: ssh.jumpbox ssh.consumer ssh.upstream ssh.neuwerk ui.port-forward health policy-smoke performance.scenario lifecycle-rollout lifecycle-termination-drain http-perf.setup http-perf.run http-perf.quick throughput.matrix pps.matrix cps.matrix cps.instance-matrix cps.instance-matrix.netopt-path shape.netopt-path.apply connscale.matrix scaling.benchmark scaling.report
 

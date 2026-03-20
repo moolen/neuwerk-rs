@@ -1,2 +1,0 @@
-Cpus_allowed_list:	0
-Mems_allowed_list:	0

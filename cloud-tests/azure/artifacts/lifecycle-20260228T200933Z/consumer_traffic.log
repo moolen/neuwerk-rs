@@ -1,7 +1,0 @@
-Warning: Permanently added '20.79.249.152' (ED25519) to the list of known hosts.
-Warning: Permanently added '10.20.3.4' (ED25519) to the list of known hosts.
-lifecycle_consumer_class_summary class=dns_udp total=15284 ok=15284 fail=0
-lifecycle_consumer_class_summary class=http total=31768 ok=31768 fail=0
-lifecycle_consumer_class_summary class=https total=21651 ok=21651 fail=0
-lifecycle_consumer_class_summary class=delayed_http total=107 ok=107 fail=0
-lifecycle_consumer_summary total=68810 ok=68810 fail=0

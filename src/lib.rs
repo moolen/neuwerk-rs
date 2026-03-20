@@ -5,4 +5,5 @@ pub mod dataplane;
 #[cfg(target_os = "linux")]
 pub mod e2e;
 pub mod logging;
+pub mod metrics;
 pub mod support;

@@ -1,8 +1,0 @@
-artifact_dir=/home/moritz/dev/neuwerk-rs/firewall/cloud-tests/azure/artifacts/termdbg-reboot-imds-20260301T053416Z
-lifecycle_artifact_dir=/home/moritz/dev/neuwerk-rs/firewall/cloud-tests/azure/artifacts/lifecycle-termdrain-20260301T053416Z
-rg=neuwerk-azure-e2e
-vmss=neuwerk-e2e-ziqsc3-fw
-target_name=neuwerk-e2e-ziqsc3-fw_bdb971a7
-target_id=neuwerk-e2e-ziqsc3-fw_bdb971a7
-target_ip=10.20.1.4
-imds_pid=593006

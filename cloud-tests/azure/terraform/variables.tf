@@ -36,8 +36,13 @@ variable "ssh_public_key_path" {
 
 variable "neuwerk_binary_path" {
   type        = string
-  default     = "./assets/neuwerk-dpdk24"
-  description = "Path to the Neuwerk binary to upload to blob storage."
+  default     = ""
+  description = "Explicit path to the DPDK-enabled Neuwerk binary to upload to blob storage."
+
+  validation {
+    condition     = trimspace(var.neuwerk_binary_path) != ""
+    error_message = "Set neuwerk_binary_path explicitly. Azure cloud tests no longer use a checked-in bench binary."
+  }
 }
 
 variable "neuwerk_blob_name" {
