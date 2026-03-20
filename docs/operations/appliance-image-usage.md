@@ -10,9 +10,9 @@
 
 ## Download And Verify Release Assets
 
-Download the full release asset set from the selected GitHub Release before running checksum verification. `SHA256SUMS` covers all published release files, so partial downloads can cause `sha256sum -c SHA256SUMS` to fail with missing-file errors.
+Download the full asset set required for your selected target from the selected GitHub Release before running checksum verification. `SHA256SUMS` covers the published files in that checksum set, so partial downloads can cause `sha256sum -c SHA256SUMS` to fail with missing-file errors.
 
-Do not rely on a partial subset. Download every asset attached to the selected release page for the appliance target (`ubuntu-24.04-minimal-amd64`) before running checksum verification.
+Do not rely on a partial subset. Download every asset required for the selected target and its checksum set before running checksum verification.
 
 The release asset set typically includes:
 
