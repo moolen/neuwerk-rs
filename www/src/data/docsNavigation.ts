@@ -12,6 +12,7 @@ export const docsNavigation: DocsNavSection[] = [
   {
     title: 'Tutorials',
     items: [
+      { href: '/docs/tutorials/run-the-vagrant-demo-box', label: 'Run The Vagrant Demo Box' },
       { href: '/docs/tutorials/deploy-a-single-node', label: 'Deploy A Single Node' },
       { href: '/docs/tutorials/create-your-first-policy', label: 'Create Your First Policy' },
       { href: '/docs/tutorials/build-a-two-node-cluster', label: 'Build A Two-Node Cluster' },

@@ -16,9 +16,11 @@ import { docsNavigation } from '../../data/docsNavigation';
 
   <h2 id="recommended-structure">How To Use These Docs</h2>
   <p>
-    Most operators should begin with <a href="/docs/tutorials/deploy-a-single-node">Deploy A
-    Single Node</a> and <a href="/docs/tutorials/create-your-first-policy">Create Your First
-    Policy</a>. If you are planning a clustered rollout, continue with <a
+    If you want a local single-VM demo first, begin with <a
+    href="/docs/tutorials/run-the-vagrant-demo-box">Run The Vagrant Demo Box</a>. Most operators
+    then continue with <a href="/docs/tutorials/deploy-a-single-node">Deploy A Single Node</a> and
+    <a href="/docs/tutorials/create-your-first-policy">Create Your First Policy</a>. If you are
+    planning a clustered rollout, continue with <a
     href="/docs/tutorials/build-a-two-node-cluster">Build A Two-Node Cluster</a>.
   </p>
 
@@ -33,7 +35,7 @@ import { docsNavigation } from '../../data/docsNavigation';
       <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
         <h3 class="text-lg font-semibold text-white">{section.title}</h3>
         <p class="mt-2 text-sm text-slate-400">
-          {section.title === 'Tutorials' && 'Guided paths for a first deployment, first policy, and first cluster.'}
+          {section.title === 'Tutorials' && 'Guided paths for a local demo box, a first deployment, a first policy, and a first cluster.'}
           {section.title === 'How-To Guides' && 'Task-focused instructions for access, policy authoring, safer rollout, upgrades, integrations, and recovery work.'}
           {section.title === 'Concepts' && 'Conceptual pages that explain firewall behavior, boundaries, tradeoffs, and operational switches.'}
           {section.title === 'Reference' && 'Precise schemas, endpoints, interfaces, and fixed protocol details.'}

@@ -1,0 +1,159 @@
+---
+title: Run The Vagrant Demo Box
+description: Launch the release-backed Vagrant demo, log into the UI, and verify HTTPS and HTTP/2 traffic through the dataplane.
+order: 1
+---
+
+This tutorial brings up the local demo appliance as a single VirtualBox VM with three useful paths:
+
+- a management IP for the UI and API
+- a client-side gateway IP that your host can route traffic through
+- a bridged uplink that returns real internet traffic through the dataplane
+
+The demo launcher does the setup work for you. It resolves the host uplink, fetches the right
+Vagrant box metadata from a GitHub release, asks for confirmation, starts the VM, waits for the
+UI to become healthy, and prints the admin token for your first login.
+
+You will finish with:
+
+- the demo VM running from a published GitHub release asset
+- the management UI answering on `https://192.168.57.10:8443`
+- an admin token printed by the launcher
+- a verified HTTPS and HTTP/2 path through the demo dataplane
+
+## Before You Start
+
+This path is currently aimed at Linux hosts with:
+
+- `vagrant`
+- `VirtualBox`
+- `curl`
+- `ssh`
+- an uplink interface that VirtualBox can bridge
+
+You do not need to build the appliance image locally. The launcher pulls the box metadata from a
+GitHub release by default.
+
+## Launch The Demo
+
+Clone the repository and move into the Vagrant demo directory:
+
+```bash
+git clone https://github.com/moolen/neuwerk-rs.git
+cd neuwerk-rs/firewall/demo/vagrant
+```
+
+Run the launcher:
+
+```bash
+./launch-demo.sh
+```
+
+What the launcher does:
+
+- resolves the host default uplink and uses it as the VirtualBox bridge target
+- resolves the latest GitHub release tag unless you pin one explicitly
+- validates that the release metadata asset is reachable
+- runs `vagrant up --provision`
+- waits for the management health endpoint
+- prints the admin token for the UI
+
+Useful overrides:
+
+- set `NEUWERK_BRIDGED_IFACE=<iface>` if your host uplink is not the default-route interface
+- set `NEUWERK_RELEASE_VERSION=vX.Y.Z` to pin a specific published release
+- pass `--yes` to skip the interactive confirmation prompt
+
+## Open The UI
+
+The launcher prints the admin token after the VM is ready.
+
+Open:
+
+```text
+https://192.168.57.10:8443
+```
+
+Use the printed token when the UI asks for authentication.
+
+The default management surfaces are:
+
+- UI and API: `https://192.168.57.10:8443`
+- metrics: `http://192.168.57.10:8080/metrics`
+
+## Send Traffic Through The Demo
+
+The demo exposes the client-side gateway on `192.168.56.10`.
+
+The safest first test is a single-route override for `1.1.1.1`, not a full default-route swap:
+
+```bash
+sudo ip route replace 1.1.1.1/32 via 192.168.56.10 dev vboxnet0
+```
+
+Now send HTTPS traffic through the gateway and verify that HTTP/2 negotiates successfully:
+
+```bash
+curl -4skI --http2 https://1.1.1.1
+```
+
+Expected result:
+
+- the response status is `HTTP/2 301`
+- the remote endpoint is `1.1.1.1`
+
+If you want an explicit TLS handshake check as well:
+
+```bash
+openssl s_client -connect 1.1.1.1:443 -servername one.one.one.one -brief </dev/null
+```
+
+That confirms:
+
+- the dataplane forwarded the TCP session
+- TLS completed successfully
+- ALPN and HTTP/2 are working through the demo path
+
+## Roll Back The Host Route
+
+Remove the temporary route when you are done testing:
+
+```bash
+sudo ip route del 1.1.1.1/32 dev vboxnet0
+```
+
+## Inspect The Demo VM
+
+The regular management shell path is still available:
+
+```bash
+vagrant ssh
+```
+
+Useful guest checks:
+
+```bash
+cat /var/lib/neuwerk-demo/admin.token
+ip -4 addr show
+ip rule show
+ip route show table 100
+ip route show table 110
+curl -sk https://192.168.57.10:8443/health
+curl -sf http://192.168.57.10:8080/metrics | grep '^dp_'
+```
+
+## Tear Down The Demo
+
+When you are done:
+
+```bash
+vagrant destroy -f
+```
+
+## Next Steps
+
+- Continue with [Create Your First Policy](/docs/tutorials/create-your-first-policy) once you have
+  confirmed the local datapath.
+- Read [Web UI](/docs/interfaces/web-ui) for the management surface layout.
+- Read [Troubleshoot Enforcement](/docs/operations/troubleshooting) if the dataplane counters do
+  not move during your traffic test.

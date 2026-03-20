@@ -1,0 +1,116 @@
+Vagrant.configure("2") do |config|
+  mgmt_ip = ENV.fetch("NEUWERK_MGMT_IP", "192.168.57.10")
+  client_gateway_ip = ENV.fetch("NEUWERK_CLIENT_GATEWAY_IP", "192.168.56.10")
+  mgmt_prefix = ENV.fetch("NEUWERK_MGMT_PREFIX", "24")
+  client_prefix = ENV.fetch("NEUWERK_CLIENT_PREFIX", "24")
+  uplink_bridge = ENV.fetch("NEUWERK_BRIDGED_IFACE", "wlan0")
+  local_box_target = ENV.fetch("NEUWERK_LOCAL_BOX_TARGET", "ubuntu-24.04-minimal-amd64")
+  preferred_local_box = Dir.glob(File.expand_path("../../artifacts/image-build/vagrant/#{local_box_target}/*.box", __dir__)).sort.last
+  fallback_local_box = Dir.glob(File.expand_path("../../artifacts/image-build/vagrant/*/*.box", __dir__)).sort.last
+  local_box = preferred_local_box || fallback_local_box
+  default_box_name = ENV.fetch("NEUWERK_BOX", "neuwerk/firewall-demo")
+  local_box_name =
+    if local_box && !local_box.empty?
+      local_box_stamp = "#{File.size(local_box)}-#{File.mtime(local_box).to_i}"
+      "neuwerk/firewall-demo-local-#{local_box_stamp}"
+    end
+  explicit_box_url = ENV["NEUWERK_BOX_URL"]
+  resolved_box_url =
+    if explicit_box_url && !explicit_box_url.empty?
+      explicit_box_url
+    elsif local_box && !local_box.empty?
+      local_box
+    end
+  resolved_box_name =
+    if resolved_box_url == local_box && local_box_name
+      local_box_name
+    else
+      default_box_name
+    end
+
+  config.vm.box = resolved_box_name
+  config.vm.hostname = "neuwerk-demo"
+  config.vm.box_check_update = false
+  ssh_password = ENV["NEUWERK_SSH_PASSWORD"]
+  config.ssh.username = ENV.fetch("NEUWERK_SSH_USERNAME", "ubuntu")
+  config.ssh.private_key_path = ENV.fetch("NEUWERK_SSH_PRIVATE_KEY", File.expand_path("~/.vagrant.d/insecure_private_key"))
+  config.ssh.insert_key = false
+  if ssh_password && !ssh_password.empty?
+    config.ssh.password = ssh_password
+  end
+
+  if ENV["NEUWERK_BOX_VERSION"] && !ENV["NEUWERK_BOX_VERSION"].empty? && resolved_box_url.nil?
+    config.vm.box_version = ENV["NEUWERK_BOX_VERSION"]
+  end
+
+  if resolved_box_url
+    config.vm.box_url = resolved_box_url
+  end
+  config.vm.network "private_network", ip: mgmt_ip
+  config.vm.network "private_network", ip: client_gateway_ip
+  config.vm.network "public_network", bridge: uplink_bridge, auto_config: true
+
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.provision "shell",
+    path: File.expand_path("provision-demo.sh", __dir__),
+    env: {
+      "NEUWERK_VAGRANT_MGMT_IP" => mgmt_ip,
+      "NEUWERK_VAGRANT_MGMT_PREFIX" => mgmt_prefix,
+      "NEUWERK_VAGRANT_CLIENT_GATEWAY_IP" => client_gateway_ip,
+      "NEUWERK_VAGRANT_CLIENT_PREFIX" => client_prefix,
+      "NEUWERK_VAGRANT_UPLINK_BRIDGE" => uplink_bridge
+    },
+    privileged: true
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.gui = ENV.fetch("NEUWERK_GUI", "false") == "true"
+    vb.memory = Integer(ENV.fetch("NEUWERK_VM_MEMORY", "4096"))
+    vb.cpus = Integer(ENV.fetch("NEUWERK_VM_CPUS", "4"))
+    vb.name = "neuwerk-demo"
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+  end
+
+  config.vm.post_up_message = <<~MSG
+    Neuwerk demo VM is ready.
+
+    UI:
+      https://#{mgmt_ip}:8443
+
+    Metrics:
+      http://#{mgmt_ip}:8080/metrics
+
+    Shell access:
+      vagrant ssh
+      Legacy password fallback:
+      NEUWERK_SSH_PASSWORD=neuwerk vagrant ssh
+
+    Admin token inside the guest:
+      cat /var/lib/neuwerk-demo/admin.token
+
+    Gateway IP for host traffic:
+      #{client_gateway_ip}
+
+    Linux host default route example:
+      sudo ip route replace default via #{client_gateway_ip}
+
+    macOS host default route example:
+      sudo route -n change default #{client_gateway_ip}
+
+    Linux rollback example:
+      sudo dhclient
+
+    macOS rollback example:
+      sudo route -n change default <previous-gateway>
+
+    Notes:
+      - Adapter 1 stays as NAT for Vagrant SSH bootstrap.
+      - Adapter 4 is bridged to #{uplink_bridge} and is used as the uplink datapath.
+      - The management plane is on #{mgmt_ip}/#{mgmt_prefix}.
+      - The client-facing gateway is on #{client_gateway_ip}/#{client_prefix}.
+      - The firewall SNATs through the bridged uplink's primary DHCP address.
+      - Preferred local box target: #{local_box_target}
+      - Local box autodetect: #{resolved_box_url || "not found; using remote box name"}
+      - Resolved box name: #{resolved_box_name}
+      - The first supported provider is VirtualBox.
+  MSG
+end

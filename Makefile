@@ -1,4 +1,4 @@
-.PHONY: build test test.clippy test.integration test.integration.sso test.security fuzz.check fuzz.smoke fuzz.nightly ha.up ha.down dpdk.prepare package.target.validate package.image.bundle package.image.prebuilt-bundle package.image.qemu-key package.image.validate package.image.build.qemu package.image.build.aws package.image.build.azure package.image.build.gcp package.image.release-manifest package.image.release-assets
+.PHONY: build test test.clippy test.integration test.integration.sso test.security fuzz.check fuzz.smoke fuzz.nightly ha.up ha.down dpdk.prepare bench.dataplane package.target.validate package.image.bundle package.image.prebuilt-bundle package.image.qemu-key package.image.validate package.image.build.qemu package.image.build.aws package.image.build.azure package.image.build.gcp package.image.release-manifest package.image.release-assets package.vagrant.box package.vagrant.metadata
 
 DPDK_VERSION := $(shell cat third_party/dpdk/VERSION 2>/dev/null)
 DPDK_INSTALL := third_party/dpdk/install/$(DPDK_VERSION)
@@ -10,13 +10,22 @@ PACKER ?= packer
 PACKER_DIR ?= $(CURDIR)/packer
 PACKER_ARTIFACT_DIR ?= $(CURDIR)/artifacts/image-build
 GITHUB_RELEASE_ARTIFACT_DIR ?= $(PACKER_ARTIFACT_DIR)/github-release/$(TARGET)
+VAGRANT_ARTIFACT_DIR ?= $(PACKER_ARTIFACT_DIR)/vagrant/$(TARGET)
 QEMU_SSH_KEY_DIR ?= $(PACKER_ARTIFACT_DIR)/qemu-keys
 QEMU_SSH_PRIVATE_KEY ?= $(QEMU_SSH_KEY_DIR)/id_ed25519
 QEMU_SSH_PUBLIC_KEY ?= $(QEMU_SSH_KEY_DIR)/id_ed25519.pub
+QEMU_SOURCE_IMAGE_URL = $(shell python3 packaging/scripts/resolve_target.py --target $(TARGET) | python3 -c 'import json,sys; print(json.load(sys.stdin)["base_images"]["qemu"]["image_url"])')
 QEMU_ACCELERATOR ?=
 USE_PREBUILT_ARTIFACTS ?=
 RELEASE_VERSION ?= dev
 GIT_REVISION ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf "unknown")
+VAGRANT_BOX_NAME ?= neuwerk/firewall-demo
+VAGRANT_BOX_VERSION ?= $(RELEASE_VERSION)
+VAGRANT_PROVIDER ?= virtualbox
+VAGRANT_BOX_OUTPUT ?= $(VAGRANT_ARTIFACT_DIR)/neuwerk-$(TARGET)-$(RELEASE_VERSION)-$(VAGRANT_PROVIDER).box
+VAGRANT_METADATA_OUTPUT ?= $(VAGRANT_ARTIFACT_DIR)/neuwerk-$(TARGET)-$(RELEASE_VERSION)-$(VAGRANT_PROVIDER).metadata.json
+VAGRANT_VM_MEMORY ?= 4096
+VAGRANT_VM_CPUS ?= 4
 SUDO := $(shell if [ "$$(id -u)" -eq 0 ]; then printf ""; else printf "sudo"; fi)
 
 build: build.ui dpdk.prepare
@@ -28,6 +37,9 @@ build.release:
 dpdk.prepare:
 	@if [ -z "$(DPDK_VERSION)" ]; then echo "Missing third_party/dpdk/VERSION"; exit 1; fi
 	@if [ ! -d "$(DPDK_INSTALL)" ] || [ "$$DPDK_FORCE_REBUILD" = "1" ]; then ./scripts/build-dpdk.sh; fi
+
+bench.dataplane:
+	./scripts/bench-dataplane.sh
 
 build.ui:
 	@echo "Building UI..."
@@ -89,6 +101,7 @@ package.image.build.qemu: package.image.bundle package.image.prebuilt-bundle pac
 		-var "artifact_dir=$(PACKER_ARTIFACT_DIR)" \
 		-var "release_version=$(RELEASE_VERSION)" \
 		-var "git_revision=$(GIT_REVISION)" \
+		-var "qemu_source_image_url=$(QEMU_SOURCE_IMAGE_URL)" \
 		$(if $(QEMU_ACCELERATOR),-var "qemu_accelerator=$(QEMU_ACCELERATOR)") \
 		$(if $(USE_PREBUILT_ARTIFACTS),-var "use_prebuilt_artifacts=$(USE_PREBUILT_ARTIFACTS)") \
 		-var "qemu_ssh_private_key_file=$(QEMU_SSH_PRIVATE_KEY)" \
@@ -143,6 +156,31 @@ package.image.release-assets: package.target.validate
 		--release-version $(RELEASE_VERSION) \
 		--git-revision $(GIT_REVISION) \
 		--output-dir $(GITHUB_RELEASE_ARTIFACT_DIR)
+
+package.vagrant.box: package.target.validate
+	bash packaging/scripts/build_vagrant_box.sh \
+		--target $(TARGET) \
+		--artifact-dir $(PACKER_ARTIFACT_DIR) \
+		--release-version $(RELEASE_VERSION) \
+		--provider $(VAGRANT_PROVIDER) \
+		--box-name "$(VAGRANT_BOX_NAME)" \
+		--box-version "$(VAGRANT_BOX_VERSION)" \
+		--output-box "$(VAGRANT_BOX_OUTPUT)" \
+		--memory "$(VAGRANT_VM_MEMORY)" \
+		--cpus "$(VAGRANT_VM_CPUS)" \
+		$(if $(VAGRANT_BOX_URL),--box-url "$(VAGRANT_BOX_URL)") \
+		$(if $(VAGRANT_METADATA_OUTPUT),--metadata-output "$(VAGRANT_METADATA_OUTPUT)")
+
+package.vagrant.metadata:
+	@test -n "$(VAGRANT_BOX_URL)" || { echo "VAGRANT_BOX_URL is required" >&2; exit 1; }
+	@test -n "$(VAGRANT_BOX_CHECKSUM)" || { echo "VAGRANT_BOX_CHECKSUM is required" >&2; exit 1; }
+	python3 packaging/scripts/generate_vagrant_box_metadata.py \
+		--box-name "$(VAGRANT_BOX_NAME)" \
+		--version "$(VAGRANT_BOX_VERSION)" \
+		--provider "$(VAGRANT_PROVIDER)" \
+		--url "$(VAGRANT_BOX_URL)" \
+		--checksum "$(VAGRANT_BOX_CHECKSUM)" \
+		--output "$(VAGRANT_METADATA_OUTPUT)"
 
 test.security:
 	cargo audit

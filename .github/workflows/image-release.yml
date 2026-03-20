@@ -14,6 +14,7 @@ on:
         type: choice
         options:
           - ubuntu-24.04-amd64
+          - ubuntu-24.04-minimal-amd64
       draft:
         description: Publish the GitHub release as a draft
         required: true
@@ -93,21 +94,26 @@ jobs:
 
       - name: Install qemu host dependencies
         run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            genisoimage \
-            libclang-dev \
-            libnuma-dev \
-            llvm-dev \
-            meson \
-            ninja-build \
-            pkg-config \
-            protobuf-compiler \
-            python3-pyelftools \
-            qemu-system-x86 \
-            qemu-utils \
-            xorriso \
+          packages=(
+            genisoimage
+            libclang-dev
+            libnuma-dev
+            llvm-dev
+            meson
+            ninja-build
+            pkg-config
+            protobuf-compiler
+            python3-pyelftools
+            qemu-system-x86
+            qemu-utils
+            xorriso
             zstd
+          )
+          if [[ "$TARGET" == "ubuntu-24.04-minimal-amd64" ]]; then
+            packages+=(virtualbox)
+          fi
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
 
       - name: Validate image configuration
         run: make package.image.validate TARGET="$TARGET" PACKER=packer RELEASE_VERSION="$RELEASE_VERSION"
@@ -192,6 +198,19 @@ jobs:
             PACKER=packer \
             QEMU_ACCELERATOR="${{ steps.qemu.outputs.accelerator }}" \
             USE_PREBUILT_ARTIFACTS=true
+
+      - name: Build Vagrant box release assets
+        if: inputs.target == 'ubuntu-24.04-minimal-amd64'
+        run: |
+          metadata_name="neuwerk-${TARGET}-${RELEASE_VERSION}-virtualbox.metadata.json"
+          box_name="neuwerk-${TARGET}-${RELEASE_VERSION}-virtualbox.box"
+          release_base_url="https://github.com/${{ github.repository }}/releases/download/${RELEASE_VERSION}"
+          make package.vagrant.box \
+            TARGET="$TARGET" \
+            RELEASE_VERSION="$RELEASE_VERSION" \
+            VAGRANT_BOX_VERSION="${RELEASE_VERSION#v}" \
+            VAGRANT_BOX_URL="${release_base_url}/${box_name}" \
+            VAGRANT_METADATA_OUTPUT="${PACKER_ARTIFACT_DIR}/vagrant/${TARGET}/${metadata_name}"
 
       - name: Prepare GitHub release assets
         run: |
