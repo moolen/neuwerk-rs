@@ -1,4 +1,7 @@
 use super::*;
+
+static NEXT_ICMP_ID: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
 pub(in crate::e2e::tests) fn icmp_echo(
     bind_ip: Ipv4Addr,
     dst_ip: Ipv4Addr,
@@ -12,7 +15,9 @@ pub(in crate::e2e::tests) fn icmp_echo(
         bind_raw_socket(fd, bind_ip)?;
         set_socket_timeout(fd, timeout)?;
 
-        let id = (unsafe { libc::getpid() } as u16) ^ 0x1234;
+        let id = NEXT_ICMP_ID
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add((unsafe { libc::getpid() } as u16) ^ 0x1234);
         let seq = 1u16;
         let mut payload = Vec::new();
         payload.extend_from_slice(b"ping");
