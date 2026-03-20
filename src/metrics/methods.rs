@@ -277,10 +277,41 @@ impl Metrics {
             .set(age as f64);
     }
 
+    pub fn set_threat_feed_indicators(&self, feed: &str, indicator_type: &str, count: usize) {
+        self.threat_feed_indicators
+            .with_label_values(&[feed, indicator_type])
+            .set(count as f64);
+    }
+
+    pub fn inc_threat_backfill_run(&self, outcome: &str) {
+        self.threat_backfill_runs
+            .with_label_values(&[outcome])
+            .inc();
+    }
+
+    pub fn observe_threat_backfill_duration(&self, duration: Duration) {
+        self.threat_backfill_duration_seconds
+            .observe(duration.as_secs_f64());
+    }
+
+    pub fn inc_threat_enrichment_request(&self, provider: &str, outcome: &str) {
+        self.threat_enrichment_requests
+            .with_label_values(&[provider, outcome])
+            .inc();
+    }
+
+    pub fn set_threat_enrichment_queue_depth(&self, depth: usize) {
+        self.threat_enrichment_queue_depth.set(depth as f64);
+    }
+
     pub fn set_threat_findings_active(&self, severity: &str, count: usize) {
         self.threat_findings_active
             .with_label_values(&[severity])
             .set(count as f64);
+    }
+
+    pub fn set_threat_cluster_snapshot_version(&self, version: u64) {
+        self.threat_cluster_snapshot_version.set(version as f64);
     }
 
     pub fn set_raft_is_leader(&self, is_leader: bool) {
