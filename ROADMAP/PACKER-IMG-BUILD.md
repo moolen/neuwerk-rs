@@ -1,6 +1,6 @@
 # Packer Image Build
 
-Last updated: 2026-03-20
+Last updated: 2026-03-21
 Owner: Neuwerk team
 Scope: build and release immutable Ubuntu 24.04 LTS Neuwerk images for cloud platforms and `qcow2`, with deterministic DPDK linkage, CIS Level 2 hardening, and attachable SBOMs.
 
