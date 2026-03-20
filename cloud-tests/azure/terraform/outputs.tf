@@ -22,6 +22,10 @@ output "upstream_private_ip" {
   value = module.upstream_vm.private_ip
 }
 
+output "upstream_private_ips" {
+  value = module.upstream_vm.private_ips
+}
+
 output "consumer_private_ips" {
   value = module.consumer_vms.private_ips
 }
@@ -51,9 +55,9 @@ output "gwlb_tunnel" {
   }
 }
 
-output "firewall_vmss" {
+output "neuwerk_vmss" {
   value = {
-    name           = module.firewall_vmss.name
+    name           = module.neuwerk_vmss.name
     resource_group = azurerm_resource_group.main.name
   }
 }

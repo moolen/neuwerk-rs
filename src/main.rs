@@ -1,13 +1,13 @@
 use std::env;
 use std::net::Ipv4Addr;
 
-use firewall::controlplane::ready::ReadinessState;
-use firewall::controlplane::wiretap::{load_or_create_node_id, WiretapHub};
-use firewall::controlplane::{self, PolicyStore};
+use neuwerk::controlplane::ready::ReadinessState;
+use neuwerk::controlplane::wiretap::{load_or_create_node_id, WiretapHub};
+use neuwerk::controlplane::{self, PolicyStore};
 #[cfg(test)]
-use firewall::dataplane::Packet;
-use firewall::dataplane::{DataplaneConfigStore, DrainControl, SnatMode};
-use firewall::logging;
+use neuwerk::dataplane::Packet;
+use neuwerk::dataplane::{DataplaneConfigStore, DrainControl, SnatMode};
+use neuwerk::logging;
 mod runtime;
 use tracing::{error, info, warn};
 
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(err) = logging::init_logging() {
         eprintln!("{err}");
     }
-    let bin = env::args().next().unwrap_or_else(|| "firewall".to_string());
+    let bin = env::args().next().unwrap_or_else(|| "neuwerk".to_string());
     let args: Vec<String> = env::args().skip(1).collect();
     if args.first().map(|arg| arg.as_str()) == Some("auth") {
         let cmd = match parse_auth_args(&bin, &args[1..]) {
@@ -139,7 +139,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dataplane_config.clone(),
     );
     if let Some((ip, prefix, mac)) = soft_dp_config {
-        dataplane_config.set(firewall::dataplane::DataplaneConfig {
+        dataplane_config.set(neuwerk::dataplane::DataplaneConfig {
             ip,
             prefix,
             gateway: Ipv4Addr::UNSPECIFIED,
@@ -167,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if dpdk_enabled && dataplane_config.get().is_none() {
         match imds_dataplane_from_mgmt_ip(management_ip).await {
             Ok((ip, prefix, gateway, mac)) => {
-                dataplane_config.set(firewall::dataplane::DataplaneConfig {
+                dataplane_config.set(neuwerk::dataplane::DataplaneConfig {
                     ip,
                     prefix,
                     gateway,
@@ -225,7 +225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     if dpdk_enabled {
-        match firewall::dataplane::preinit_dpdk_eal(&cfg.data_plane_iface) {
+        match neuwerk::dataplane::preinit_dpdk_eal(&cfg.data_plane_iface) {
             Ok(()) => {
                 metrics.set_dpdk_init_ok(true);
                 info!("dpdk preinit complete");

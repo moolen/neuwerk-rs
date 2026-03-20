@@ -27,20 +27,20 @@ data "aws_ami" "ubuntu" {
 }
 
 locals {
-  name_suffix       = random_string.suffix.result
-  name_prefix       = "${var.name_prefix}-${local.name_suffix}"
-  bucket_name       = substr(replace(lower("${var.name_prefix}-${data.aws_caller_identity.current.account_id}-${local.name_suffix}"), "_", "-"), 0, 63)
-  runtime_enabled   = trimspace(var.firewall_dpdk_runtime_bundle_path) != ""
-  use_gwlb          = var.traffic_architecture == "gwlb"
-  firewall_encap    = local.use_gwlb ? "geneve" : "none"
-  dpdk_port_mtu     = local.use_gwlb ? var.firewall_dpdk_port_mtu : var.firewall_dpdk_port_mtu_no_encap
-  endpoint_mtu      = local.use_gwlb ? var.firewall_encap_mtu : local.dpdk_port_mtu
-  ssh_public_key    = file(var.ssh_public_key_path)
-  dns_target_ips    = length(var.dns_target_ips) > 0 ? var.dns_target_ips : ["$${MGMT_IP}"]
-  dns_upstreams     = length(var.dns_upstreams) > 0 ? var.dns_upstreams : ["${aws_instance.upstream.private_ip}:53"]
-  firewall_tag_set  = merge(var.tags, { "Name" = "${local.name_prefix}-firewall-0" })
-  firewall_asg_name = "${local.name_prefix}-fw-asg"
-  firewall_ami_id   = trimspace(var.firewall_ami_id) != "" ? trimspace(var.firewall_ami_id) : data.aws_ami.ubuntu.id
+  name_suffix      = random_string.suffix.result
+  name_prefix      = "${var.name_prefix}-${local.name_suffix}"
+  bucket_name      = substr(replace(lower("${var.name_prefix}-${data.aws_caller_identity.current.account_id}-${local.name_suffix}"), "_", "-"), 0, 63)
+  runtime_enabled  = trimspace(var.neuwerk_dpdk_runtime_bundle_path) != ""
+  use_gwlb         = var.traffic_architecture == "gwlb"
+  neuwerk_encap    = local.use_gwlb ? "geneve" : "none"
+  dpdk_port_mtu    = local.use_gwlb ? var.neuwerk_dpdk_port_mtu : var.neuwerk_dpdk_port_mtu_no_encap
+  endpoint_mtu     = local.use_gwlb ? var.neuwerk_encap_mtu : local.dpdk_port_mtu
+  ssh_public_key   = file(var.ssh_public_key_path)
+  dns_target_ips   = length(var.dns_target_ips) > 0 ? var.dns_target_ips : ["$${MGMT_IP}"]
+  dns_upstreams    = length(var.dns_upstreams) > 0 ? var.dns_upstreams : ["${aws_instance.upstream.private_ip}:53"]
+  neuwerk_tag_set  = merge(var.tags, { "Name" = "${local.name_prefix}-neuwerk-0" })
+  neuwerk_asg_name = "${local.name_prefix}-fw-asg"
+  neuwerk_ami_id   = trimspace(var.neuwerk_ami_id) != "" ? trimspace(var.neuwerk_ami_id) : data.aws_ami.ubuntu.id
 }
 
 resource "aws_key_pair" "main" {
@@ -221,7 +221,7 @@ resource "aws_route" "consumer_to_upstream_eni" {
   count                  = local.use_gwlb ? 0 : 1
   route_table_id         = aws_route_table.consumer.id
   destination_cidr_block = var.upstream_subnet_cidr
-  network_interface_id   = aws_network_interface.firewall_data[0].id
+  network_interface_id   = aws_network_interface.neuwerk_data[0].id
 }
 
 resource "aws_route" "upstream_to_consumer_gwlbe" {
@@ -236,7 +236,7 @@ resource "aws_route" "upstream_to_consumer_eni" {
   count                  = local.use_gwlb ? 0 : 1
   route_table_id         = aws_route_table.upstream.id
   destination_cidr_block = var.consumer_subnet_cidr
-  network_interface_id   = aws_network_interface.firewall_data[0].id
+  network_interface_id   = aws_network_interface.neuwerk_data[0].id
 }
 
 resource "aws_route_table" "gwlbe_consumer" {
@@ -293,9 +293,9 @@ resource "aws_security_group" "jumpbox" {
   tags = merge(var.tags, { Name = "${local.name_prefix}-sg-jumpbox" })
 }
 
-resource "aws_security_group" "firewall_mgmt" {
+resource "aws_security_group" "neuwerk_mgmt" {
   name        = "${local.name_prefix}-fw-mgmt"
-  description = "Firewall management interface"
+  description = "Neuwerk management interface"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -343,9 +343,9 @@ resource "aws_security_group" "firewall_mgmt" {
   tags = merge(var.tags, { Name = "${local.name_prefix}-sg-fw-mgmt" })
 }
 
-resource "aws_security_group" "firewall_data" {
+resource "aws_security_group" "neuwerk_data" {
   name        = "${local.name_prefix}-fw-data"
-  description = "Firewall dataplane interface"
+  description = "Neuwerk dataplane interface"
   vpc_id      = aws_vpc.main.id
 
   dynamic "ingress" {
@@ -501,36 +501,36 @@ resource "aws_security_group" "upstream" {
   tags = merge(var.tags, { Name = "${local.name_prefix}-sg-upstream" })
 }
 
-resource "aws_s3_bucket" "firewall" {
+resource "aws_s3_bucket" "neuwerk" {
   bucket        = local.bucket_name
   force_destroy = true
-  tags          = merge(var.tags, { Name = "${local.name_prefix}-firewall-bin" })
+  tags          = merge(var.tags, { Name = "${local.name_prefix}-neuwerk-bin" })
 }
 
-resource "aws_s3_bucket_public_access_block" "firewall" {
-  bucket                  = aws_s3_bucket.firewall.id
+resource "aws_s3_bucket_public_access_block" "neuwerk" {
+  bucket                  = aws_s3_bucket.neuwerk.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
 
-resource "aws_s3_object" "firewall_binary" {
-  bucket = aws_s3_bucket.firewall.id
-  key    = var.firewall_object_key
-  source = var.firewall_binary_path
-  etag   = filemd5(var.firewall_binary_path)
+resource "aws_s3_object" "neuwerk_binary" {
+  bucket = aws_s3_bucket.neuwerk.id
+  key    = var.neuwerk_object_key
+  source = var.neuwerk_binary_path
+  etag   = filemd5(var.neuwerk_binary_path)
 }
 
-resource "aws_s3_object" "firewall_runtime_bundle" {
+resource "aws_s3_object" "neuwerk_runtime_bundle" {
   count  = local.runtime_enabled ? 1 : 0
-  bucket = aws_s3_bucket.firewall.id
-  key    = var.firewall_dpdk_runtime_object_key
-  source = var.firewall_dpdk_runtime_bundle_path
-  etag   = filemd5(var.firewall_dpdk_runtime_bundle_path)
+  bucket = aws_s3_bucket.neuwerk.id
+  key    = var.neuwerk_dpdk_runtime_object_key
+  source = var.neuwerk_dpdk_runtime_bundle_path
+  etag   = filemd5(var.neuwerk_dpdk_runtime_bundle_path)
 }
 
-resource "aws_iam_role" "firewall" {
+resource "aws_iam_role" "neuwerk" {
   name = "${local.name_prefix}-fw-role"
 
   assume_role_policy = jsonencode({
@@ -545,9 +545,9 @@ resource "aws_iam_role" "firewall" {
   })
 }
 
-resource "aws_iam_role_policy" "firewall_s3_read" {
+resource "aws_iam_role_policy" "neuwerk_s3_read" {
   name = "${local.name_prefix}-fw-s3-read"
-  role = aws_iam_role.firewall.id
+  role = aws_iam_role.neuwerk.id
 
   policy = jsonencode({
     Version = "2012-10-17",
@@ -555,14 +555,14 @@ resource "aws_iam_role_policy" "firewall_s3_read" {
       {
         Effect   = "Allow",
         Action   = ["s3:ListBucket"],
-        Resource = [aws_s3_bucket.firewall.arn]
+        Resource = [aws_s3_bucket.neuwerk.arn]
       },
       {
         Effect = "Allow",
         Action = ["s3:GetObject"],
         Resource = [
-          "${aws_s3_bucket.firewall.arn}/${var.firewall_object_key}",
-          "${aws_s3_bucket.firewall.arn}/${var.firewall_dpdk_runtime_object_key}"
+          "${aws_s3_bucket.neuwerk.arn}/${var.neuwerk_object_key}",
+          "${aws_s3_bucket.neuwerk.arn}/${var.neuwerk_dpdk_runtime_object_key}"
         ]
       },
       {
@@ -587,15 +587,15 @@ resource "aws_iam_role_policy" "firewall_s3_read" {
   })
 }
 
-resource "aws_iam_instance_profile" "firewall" {
+resource "aws_iam_instance_profile" "neuwerk" {
   name = "${local.name_prefix}-fw-profile"
-  role = aws_iam_role.firewall.name
+  role = aws_iam_role.neuwerk.name
 }
 
-resource "aws_network_interface" "firewall_mgmt" {
+resource "aws_network_interface" "neuwerk_mgmt" {
   count           = local.use_gwlb ? 0 : 1
   subnet_id       = aws_subnet.mgmt.id
-  security_groups = [aws_security_group.firewall_mgmt.id]
+  security_groups = [aws_security_group.neuwerk_mgmt.id]
   tags = merge(var.tags, {
     Name                    = "${local.name_prefix}-fw-mgmt-eni"
     "neuwerk.io/management" = "true"
@@ -603,10 +603,10 @@ resource "aws_network_interface" "firewall_mgmt" {
   })
 }
 
-resource "aws_network_interface" "firewall_data" {
+resource "aws_network_interface" "neuwerk_data" {
   count             = local.use_gwlb ? 0 : 1
   subnet_id         = aws_subnet.dataplane.id
-  security_groups   = [aws_security_group.firewall_data.id]
+  security_groups   = [aws_security_group.neuwerk_data.id]
   source_dest_check = false
   tags = merge(var.tags, {
     Name                    = "${local.name_prefix}-fw-data-eni"
@@ -615,20 +615,20 @@ resource "aws_network_interface" "firewall_data" {
   })
 }
 
-resource "aws_instance" "firewall" {
+resource "aws_instance" "neuwerk" {
   count                = local.use_gwlb ? 0 : 1
-  ami                  = local.firewall_ami_id
-  instance_type        = var.firewall_instance_type
+  ami                  = local.neuwerk_ami_id
+  instance_type        = var.neuwerk_instance_type
   key_name             = aws_key_pair.main.key_name
-  iam_instance_profile = aws_iam_instance_profile.firewall.name
+  iam_instance_profile = aws_iam_instance_profile.neuwerk.name
 
   network_interface {
-    network_interface_id = aws_network_interface.firewall_mgmt[0].id
+    network_interface_id = aws_network_interface.neuwerk_mgmt[0].id
     device_index         = 0
   }
 
   network_interface {
-    network_interface_id = aws_network_interface.firewall_data[0].id
+    network_interface_id = aws_network_interface.neuwerk_data[0].id
     device_index         = 1
   }
 
@@ -642,46 +642,46 @@ resource "aws_instance" "firewall" {
     volume_type = "gp3"
   }
 
-  user_data = templatefile("${path.module}/cloud-init/firewall.yaml.tmpl", {
+  user_data = templatefile("${path.module}/cloud-init/neuwerk.yaml.tmpl", {
     admin_username                      = var.admin_username
     cloud_provider                      = "aws"
     dns_target_ips                      = local.dns_target_ips
     dns_upstreams                       = local.dns_upstreams
     dns_zone_name                       = var.dns_zone_name
     internal_cidr                       = var.consumer_subnet_cidr
-    snat_mode                           = var.firewall_snat_mode
-    dpdk_workers                        = var.firewall_dpdk_workers
-    encap_mode                          = local.firewall_encap
-    encap_mtu                           = var.firewall_encap_mtu
-    dpdk_mbuf_data_room                 = var.firewall_dpdk_mbuf_data_room
+    snat_mode                           = var.neuwerk_snat_mode
+    dpdk_workers                        = var.neuwerk_dpdk_workers
+    encap_mode                          = local.neuwerk_encap
+    encap_mtu                           = var.neuwerk_encap_mtu
+    dpdk_mbuf_data_room                 = var.neuwerk_dpdk_mbuf_data_room
     dpdk_port_mtu                       = local.dpdk_port_mtu
-    dpdk_queue_override                 = var.firewall_dpdk_queue_override
-    dpdk_state_shards                   = var.firewall_dpdk_state_shards
-    dpdk_overlay_debug                  = var.firewall_dpdk_overlay_debug
+    dpdk_queue_override                 = var.neuwerk_dpdk_queue_override
+    dpdk_state_shards                   = var.neuwerk_dpdk_state_shards
+    dpdk_overlay_debug                  = var.neuwerk_dpdk_overlay_debug
     use_gwlb                            = local.use_gwlb
-    s3_bucket                           = aws_s3_bucket.firewall.id
-    s3_object                           = aws_s3_object.firewall_binary.key
+    s3_bucket                           = aws_s3_bucket.neuwerk.id
+    s3_object                           = aws_s3_object.neuwerk_binary.key
     runtime_enabled                     = local.runtime_enabled
-    s3_runtime_object                   = var.firewall_dpdk_runtime_object_key
+    s3_runtime_object                   = var.neuwerk_dpdk_runtime_object_key
     aws_region                          = var.region
     integration_mode                    = "none"
     integration_drain_timeout_secs      = 300
     integration_reconcile_interval_secs = 15
     aws_vpc_id                          = aws_vpc.main.id
-    aws_asg_name                        = local.firewall_asg_name
+    aws_asg_name                        = local.neuwerk_asg_name
     asg_target_group_arn                = ""
   })
   user_data_replace_on_change = true
 
-  tags = local.firewall_tag_set
+  tags = local.neuwerk_tag_set
 
   depends_on = [
-    aws_s3_object.firewall_binary,
-    aws_s3_object.firewall_runtime_bundle
+    aws_s3_object.neuwerk_binary,
+    aws_s3_object.neuwerk_runtime_bundle
   ]
 }
 
-resource "aws_lb_target_group" "firewall" {
+resource "aws_lb_target_group" "neuwerk" {
   count       = local.use_gwlb ? 1 : 0
   name_prefix = "nwkgw"
   port        = 6081
@@ -700,29 +700,29 @@ resource "aws_lb_target_group" "firewall" {
   tags = merge(var.tags, { Name = "${local.name_prefix}-gwlb-tg" })
 }
 
-resource "aws_launch_template" "firewall" {
+resource "aws_launch_template" "neuwerk" {
   count       = local.use_gwlb ? 1 : 0
   name_prefix = "${local.name_prefix}-fw-"
-  image_id    = local.firewall_ami_id
+  image_id    = local.neuwerk_ami_id
 
-  instance_type = var.firewall_instance_type
+  instance_type = var.neuwerk_instance_type
   key_name      = aws_key_pair.main.key_name
 
   iam_instance_profile {
-    name = aws_iam_instance_profile.firewall.name
+    name = aws_iam_instance_profile.neuwerk.name
   }
 
   network_interfaces {
     device_index          = 0
     subnet_id             = aws_subnet.mgmt.id
-    security_groups       = [aws_security_group.firewall_mgmt.id]
+    security_groups       = [aws_security_group.neuwerk_mgmt.id]
     delete_on_termination = true
   }
 
   network_interfaces {
     device_index          = 1
     subnet_id             = aws_subnet.dataplane.id
-    security_groups       = [aws_security_group.firewall_data.id]
+    security_groups       = [aws_security_group.neuwerk_data.id]
     delete_on_termination = true
   }
 
@@ -739,75 +739,75 @@ resource "aws_launch_template" "firewall" {
     }
   }
 
-  user_data = base64encode(templatefile("${path.module}/cloud-init/firewall.yaml.tmpl", {
+  user_data = base64encode(templatefile("${path.module}/cloud-init/neuwerk.yaml.tmpl", {
     admin_username                      = var.admin_username
     cloud_provider                      = "aws"
     dns_target_ips                      = local.dns_target_ips
     dns_upstreams                       = local.dns_upstreams
     dns_zone_name                       = var.dns_zone_name
     internal_cidr                       = var.consumer_subnet_cidr
-    snat_mode                           = var.firewall_snat_mode
-    dpdk_workers                        = var.firewall_dpdk_workers
-    encap_mode                          = local.firewall_encap
-    encap_mtu                           = var.firewall_encap_mtu
-    dpdk_mbuf_data_room                 = var.firewall_dpdk_mbuf_data_room
+    snat_mode                           = var.neuwerk_snat_mode
+    dpdk_workers                        = var.neuwerk_dpdk_workers
+    encap_mode                          = local.neuwerk_encap
+    encap_mtu                           = var.neuwerk_encap_mtu
+    dpdk_mbuf_data_room                 = var.neuwerk_dpdk_mbuf_data_room
     dpdk_port_mtu                       = local.dpdk_port_mtu
-    dpdk_queue_override                 = var.firewall_dpdk_queue_override
-    dpdk_state_shards                   = var.firewall_dpdk_state_shards
-    dpdk_overlay_debug                  = var.firewall_dpdk_overlay_debug
+    dpdk_queue_override                 = var.neuwerk_dpdk_queue_override
+    dpdk_state_shards                   = var.neuwerk_dpdk_state_shards
+    dpdk_overlay_debug                  = var.neuwerk_dpdk_overlay_debug
     use_gwlb                            = local.use_gwlb
-    s3_bucket                           = aws_s3_bucket.firewall.id
-    s3_object                           = aws_s3_object.firewall_binary.key
+    s3_bucket                           = aws_s3_bucket.neuwerk.id
+    s3_object                           = aws_s3_object.neuwerk_binary.key
     runtime_enabled                     = local.runtime_enabled
-    s3_runtime_object                   = var.firewall_dpdk_runtime_object_key
+    s3_runtime_object                   = var.neuwerk_dpdk_runtime_object_key
     aws_region                          = var.region
     integration_mode                    = "aws-asg"
-    integration_drain_timeout_secs      = max(300, var.firewall_asg_heartbeat_timeout_secs - 60)
+    integration_drain_timeout_secs      = max(300, var.neuwerk_asg_heartbeat_timeout_secs - 60)
     integration_reconcile_interval_secs = 5
     aws_vpc_id                          = aws_vpc.main.id
-    aws_asg_name                        = local.firewall_asg_name
-    asg_target_group_arn                = aws_lb_target_group.firewall[0].arn
+    aws_asg_name                        = local.neuwerk_asg_name
+    asg_target_group_arn                = aws_lb_target_group.neuwerk[0].arn
   }))
 
   tag_specifications {
     resource_type = "instance"
     tags = merge(var.tags, {
-      Name = "${local.name_prefix}-firewall"
+      Name = "${local.name_prefix}-neuwerk"
     })
   }
 
   tag_specifications {
     resource_type = "volume"
     tags = merge(var.tags, {
-      Name = "${local.name_prefix}-firewall"
+      Name = "${local.name_prefix}-neuwerk"
     })
   }
 
   update_default_version = true
 
   depends_on = [
-    aws_s3_object.firewall_binary,
-    aws_s3_object.firewall_runtime_bundle
+    aws_s3_object.neuwerk_binary,
+    aws_s3_object.neuwerk_runtime_bundle
   ]
 }
 
-resource "aws_autoscaling_group" "firewall" {
+resource "aws_autoscaling_group" "neuwerk" {
   count               = local.use_gwlb ? 1 : 0
-  name                = local.firewall_asg_name
-  min_size            = var.firewall_asg_min_size
-  max_size            = var.firewall_asg_max_size
-  desired_capacity    = var.firewall_asg_desired_capacity
+  name                = local.neuwerk_asg_name
+  min_size            = var.neuwerk_asg_min_size
+  max_size            = var.neuwerk_asg_max_size
+  desired_capacity    = var.neuwerk_asg_desired_capacity
   health_check_type   = "EC2"
   force_delete        = true
   vpc_zone_identifier = [aws_subnet.mgmt.id]
 
   launch_template {
-    id      = aws_launch_template.firewall[0].id
+    id      = aws_launch_template.neuwerk[0].id
     version = "$Latest"
   }
 
   dynamic "tag" {
-    for_each = merge(var.tags, { Name = "${local.name_prefix}-firewall" })
+    for_each = merge(var.tags, { Name = "${local.name_prefix}-neuwerk" })
     content {
       key                 = tag.key
       value               = tag.value
@@ -816,16 +816,16 @@ resource "aws_autoscaling_group" "firewall" {
   }
 }
 
-resource "aws_autoscaling_lifecycle_hook" "firewall_terminating" {
+resource "aws_autoscaling_lifecycle_hook" "neuwerk_terminating" {
   count                  = local.use_gwlb ? 1 : 0
   name                   = "${local.name_prefix}-fw-terminating"
-  autoscaling_group_name = aws_autoscaling_group.firewall[0].name
+  autoscaling_group_name = aws_autoscaling_group.neuwerk[0].name
   lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
-  heartbeat_timeout      = var.firewall_asg_heartbeat_timeout_secs
+  heartbeat_timeout      = var.neuwerk_asg_heartbeat_timeout_secs
   default_result         = "CONTINUE"
 }
 
-resource "aws_lb" "firewall" {
+resource "aws_lb" "neuwerk" {
   count              = local.use_gwlb ? 1 : 0
   name               = substr(replace("${local.name_prefix}-gwlb", "_", "-"), 0, 32)
   load_balancer_type = "gateway"
@@ -833,20 +833,20 @@ resource "aws_lb" "firewall" {
   tags               = merge(var.tags, { Name = "${local.name_prefix}-gwlb" })
 }
 
-resource "aws_lb_listener" "firewall" {
+resource "aws_lb_listener" "neuwerk" {
   count             = local.use_gwlb ? 1 : 0
-  load_balancer_arn = aws_lb.firewall[0].arn
+  load_balancer_arn = aws_lb.neuwerk[0].arn
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.firewall[0].arn
+    target_group_arn = aws_lb_target_group.neuwerk[0].arn
   }
 }
 
 resource "aws_vpc_endpoint_service" "gwlb" {
   count                      = local.use_gwlb ? 1 : 0
   acceptance_required        = false
-  gateway_load_balancer_arns = [aws_lb.firewall[0].arn]
+  gateway_load_balancer_arns = [aws_lb.neuwerk[0].arn]
   supported_ip_address_types = ["ipv4"]
   tags                       = merge(var.tags, { Name = "${local.name_prefix}-gwlb-svc" })
 }

@@ -5,7 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/azure_e2e}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 COMMON_SETUP="${ROOT_DIR}/../common/http-perf-setup.sh"
 UPSTREAM_CONFIGURE_SCRIPT="${UPSTREAM_CONFIGURE_SCRIPT:-${ROOT_DIR}/../common/http-perf-upstream-configure.sh}"
 

@@ -1,10 +1,10 @@
-# UI Migration Plan (Neuwerk Firewall)
+# UI Migration Plan (Neuwerk)
 
 ## Goals
 - Serve the migrated React UI from the control-plane HTTPS server.
 - Standardize API base path to `/api/v1` across server + tests + UI.
 - JWT-only login (token input), with server auth endpoints for current and future OIDC integration.
-- Align UI pages with the current firewall API and data model.
+- Align UI pages with the current Neuwerk API and data model.
 - Add missing APIs: policy edit/delete, DNS cache (grouped), stats.
 
 ## Plan

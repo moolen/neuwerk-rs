@@ -19,7 +19,7 @@ sudo bash "$repo_dir/packaging/scripts/stage_runtime.sh" \
 
 sudo install -d -m 0755 /etc/neuwerk /var/lib/neuwerk
 sudo systemctl daemon-reload
-sudo systemctl enable firewall.service
+sudo systemctl enable neuwerk.service
 
 bash "$repo_dir/packaging/scripts/stage_runtime.sh" \
   --target "$target_id" \

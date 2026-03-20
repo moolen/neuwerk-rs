@@ -2,14 +2,14 @@ mod support;
 
 use std::fs;
 
-use firewall::controlplane::cloud::types::TerminationEvent;
-use firewall::controlplane::cluster::bootstrap;
-use firewall::controlplane::cluster::migration;
-use firewall::controlplane::cluster::rpc::{IntegrationClient, RaftTlsConfig};
-use firewall::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
-use firewall::controlplane::http_tls::{ensure_http_tls, HttpTlsConfig};
-use firewall::controlplane::policy_config::{PolicyConfig, PolicyMode};
-use firewall::controlplane::policy_repository::{PolicyDiskStore, PolicyRecord};
+use neuwerk::controlplane::cloud::types::TerminationEvent;
+use neuwerk::controlplane::cluster::bootstrap;
+use neuwerk::controlplane::cluster::migration;
+use neuwerk::controlplane::cluster::rpc::{IntegrationClient, RaftTlsConfig};
+use neuwerk::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
+use neuwerk::controlplane::http_tls::{ensure_http_tls, HttpTlsConfig};
+use neuwerk::controlplane::policy_config::{PolicyConfig, PolicyMode};
+use neuwerk::controlplane::policy_repository::{PolicyDiskStore, PolicyRecord};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 use support::cluster_fixture::{

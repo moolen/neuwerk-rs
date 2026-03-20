@@ -8,7 +8,7 @@ from pathlib import Path
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate Vagrant box metadata.json.")
-    parser.add_argument("--box-name", required=True, help="Vagrant box name, for example neuwerk/firewall-demo")
+    parser.add_argument("--box-name", required=True, help="Vagrant box name, for example neuwerk/neuwerk-demo")
     parser.add_argument("--version", required=True, help="Box version")
     parser.add_argument("--provider", required=True, help="Provider name, for example virtualbox")
     parser.add_argument("--url", required=True, help="Provider box URL")

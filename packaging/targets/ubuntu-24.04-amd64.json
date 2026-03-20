@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "ubuntu-24.04-amd64",
-  "description": "Ubuntu 24.04 LTS x86_64 image target for the Neuwerk firewall appliance.",
+  "description": "Ubuntu 24.04 LTS x86_64 image target for the Neuwerk appliance.",
   "os": {
     "family": "ubuntu",
     "version": "24.04",
@@ -80,12 +80,12 @@
     "prefix": "/opt/neuwerk/runtime",
     "binary_dir": "/opt/neuwerk/bin",
     "ui_dir": "/opt/neuwerk/ui",
-    "env_file": "/etc/neuwerk/firewall.env",
+    "env_file": "/etc/neuwerk/neuwerk.env",
     "appliance_env_file": "/etc/neuwerk/appliance.env",
-    "bootstrap_path": "/opt/neuwerk/bin/firewall-bootstrap",
-    "service_file": "/etc/systemd/system/firewall.service",
-    "launcher_path": "/opt/neuwerk/bin/firewall-launch",
-    "link_name": "/usr/local/bin/firewall",
+    "bootstrap_path": "/opt/neuwerk/bin/neuwerk-bootstrap",
+    "service_file": "/etc/systemd/system/neuwerk.service",
+    "launcher_path": "/opt/neuwerk/bin/neuwerk-launch",
+    "link_name": "/usr/local/bin/neuwerk",
     "dpdk_library_globs": [
       "lib/libdpdk.so*",
       "lib/librte_*.so*",

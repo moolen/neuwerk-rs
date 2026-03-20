@@ -30,6 +30,7 @@ RUN_SECONDS="${RUN_SECONDS:-60}"
 WARMUP_SECONDS="${WARMUP_SECONDS:-15}"
 REPEATS="${REPEATS:-5}"
 IPERF_PORT="${IPERF_PORT:-5201}"
+CLIENT_BIND_IP="${CLIENT_BIND_IP:-}"
 ENABLE_TCP="${ENABLE_TCP:-1}"
 ENABLE_UDP="${ENABLE_UDP:-1}"
 CPU_INVALID_AVG="${CPU_INVALID_AVG:-80}"
@@ -37,9 +38,11 @@ CPU_INVALID_MAX="${CPU_INVALID_MAX:-90}"
 SSH_USER="${SSH_USER:-ubuntu}"
 UPSTREAM_VIP="${UPSTREAM_VIP:-${UPSTREAM_IP}}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-}"
-FIREWALL_INSTANCE_TYPE="${FIREWALL_INSTANCE_TYPE:-}"
+NEUWERK_INSTANCE_TYPE="${NEUWERK_INSTANCE_TYPE:-}"
 CONSUMER_INSTANCE_TYPE="${CONSUMER_INSTANCE_TYPE:-}"
 UPSTREAM_INSTANCE_TYPE="${UPSTREAM_INSTANCE_TYPE:-}"
+DPDK_ALLOW_AZURE_MULTIWORKER="${DPDK_ALLOW_AZURE_MULTIWORKER:-}"
+DPDK_PERF_MODE="${DPDK_PERF_MODE:-aggressive}"
 
 ARTIFACT_DIR="${ARTIFACT_DIR:-${ROOT_DIR}/artifacts/throughput-matrix-$(date -u +%Y%m%dT%H%M%SZ)}"
 RAW_DIR="${ARTIFACT_DIR}/raw"
@@ -97,7 +100,7 @@ collect_fw_dpdk_bytes() {
   local ip metrics rx tx
   for ip in $FW_MGMT_IPS; do
     metrics="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
-      "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" 2>/dev/null || true)"
+      "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" 2>/dev/null || true)"
     rx="$(echo "$metrics" | awk '/^dpdk_rx_bytes_total /{print $2}' | tail -n1)"
     tx="$(echo "$metrics" | awk '/^dpdk_tx_bytes_total /{print $2}' | tail -n1)"
     [ -z "$rx" ] && rx=0
@@ -136,10 +139,14 @@ run_warmup() {
   local out_json="${RAW_DIR}/iperf.warmup.${proto}.p${streams}.json"
   local err_file="${RAW_DIR}/iperf.warmup.${proto}.p${streams}.err"
   local cmd
+  local bind_arg=""
+  if [ -n "${CLIENT_BIND_IP// }" ]; then
+    bind_arg="-B ${CLIENT_BIND_IP}"
+  fi
   if [ "$proto" = "udp" ]; then
-    cmd="iperf3 -c ${UPSTREAM_IP} -p ${IPERF_PORT} -u -b 0 -t ${WARMUP_SECONDS} -P ${streams} --connect-timeout 5000 -J"
+    cmd="iperf3 -c ${UPSTREAM_IP} -p ${IPERF_PORT} -u -b 0 -t ${WARMUP_SECONDS} -P ${streams} ${bind_arg} --connect-timeout 5000 -J"
   else
-    cmd="iperf3 -c ${UPSTREAM_IP} -p ${IPERF_PORT} -t ${WARMUP_SECONDS} -P ${streams} --connect-timeout 5000 -J"
+    cmd="iperf3 -c ${UPSTREAM_IP} -p ${IPERF_PORT} -t ${WARMUP_SECONDS} -P ${streams} ${bind_arg} --connect-timeout 5000 -J"
   fi
   ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$CONSUMER_IP" "$cmd" >"$out_json" 2>"$err_file" || true
 }
@@ -156,21 +163,25 @@ run_measured() {
   local post_file="${RAW_DIR}/fw-metrics.${run_id}.post.txt"
   local run_result="${RUNS_DIR}/run.${run_id}.json"
   local cmd
+  local bind_arg=""
+  if [ -n "${CLIENT_BIND_IP// }" ]; then
+    bind_arg="-B ${CLIENT_BIND_IP}"
+  fi
 
   collect_fw_dpdk_bytes "$pre_file"
 
   local cpu_secs=$((RUN_SECONDS + 10))
   local ip
   for ip in $FW_MGMT_IPS; do
-    start_cpu_monitor "firewall" "$ip" "$run_id" "$cpu_secs"
+    start_cpu_monitor "neuwerk" "$ip" "$run_id" "$cpu_secs"
   done
   start_cpu_monitor "consumer" "$CONSUMER_IP" "$run_id" "$cpu_secs"
   start_cpu_monitor "upstream" "$UPSTREAM_IP" "$run_id" "$cpu_secs"
 
   if [ "$proto" = "udp" ]; then
-    cmd="iperf3 -c ${UPSTREAM_IP} -p ${IPERF_PORT} -u -b 0 -t ${RUN_SECONDS} -P ${streams} --connect-timeout 5000 -J"
+    cmd="iperf3 -c ${UPSTREAM_IP} -p ${IPERF_PORT} -u -b 0 -t ${RUN_SECONDS} -P ${streams} ${bind_arg} --connect-timeout 5000 -J"
   else
-    cmd="iperf3 -c ${UPSTREAM_IP} -p ${IPERF_PORT} -t ${RUN_SECONDS} -P ${streams} --connect-timeout 5000 -J"
+    cmd="iperf3 -c ${UPSTREAM_IP} -p ${IPERF_PORT} -t ${RUN_SECONDS} -P ${streams} ${bind_arg} --connect-timeout 5000 -J"
   fi
 
   set +e
@@ -424,7 +435,7 @@ result = {
     "tcp_retransmits": retransmits,
     "udp_lost_percent": udp_lost_percent,
     "udp_jitter_ms": udp_jitter_ms,
-    "firewall_dpdk": {
+    "neuwerk_dpdk": {
         "rx_bytes_delta_total": fw_rx_delta,
         "tx_bytes_delta_total": fw_tx_delta,
         "per_instance": per_fw,
@@ -443,6 +454,7 @@ PY
 
 remote_require_iperf3 "$CONSUMER_IP"
 remote_require_iperf3 "$UPSTREAM_IP"
+ensure_neuwerk_dpdk_runtime_overrides "$JUMPBOX_IP" "$KEY_PATH" "$FW_MGMT_IPS"
 ensure_upstream_iperf_server
 
 consumer_iperf3_version="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$CONSUMER_IP" "iperf3 --version | head -n1" || echo unknown)"
@@ -460,7 +472,7 @@ jq -n \
   --arg upstream_vip "$UPSTREAM_VIP" \
   --arg fw_mgmt_ips "$FW_MGMT_IPS" \
   --arg resource_group "$RESOURCE_GROUP" \
-  --arg firewall_instance_type "$FIREWALL_INSTANCE_TYPE" \
+  --arg neuwerk_instance_type "$NEUWERK_INSTANCE_TYPE" \
   --arg consumer_instance_type "$CONSUMER_INSTANCE_TYPE" \
   --arg upstream_instance_type "$UPSTREAM_INSTANCE_TYPE" \
   --arg consumer_iperf3_version "$consumer_iperf3_version" \
@@ -474,11 +486,11 @@ jq -n \
       consumer_ip: $consumer_ip,
       upstream_ip: $upstream_ip,
       upstream_vip: $upstream_vip,
-      firewall_mgmt_ips: ($fw_mgmt_ips | split(" ") | map(select(length > 0)))
+      neuwerk_mgmt_ips: ($fw_mgmt_ips | split(" ") | map(select(length > 0)))
     },
     cloud_context: {
       resource_group: (if $resource_group == "" then null else $resource_group end),
-      firewall_instance_type: (if $firewall_instance_type == "" then null else $firewall_instance_type end),
+      neuwerk_instance_type: (if $neuwerk_instance_type == "" then null else $neuwerk_instance_type end),
       consumer_instance_type: (if $consumer_instance_type == "" then null else $consumer_instance_type end),
       upstream_instance_type: (if $upstream_instance_type == "" then null else $upstream_instance_type end)
     },
@@ -499,6 +511,8 @@ jq -n \
   --argjson enable_udp "$ENABLE_UDP" \
   --argjson cpu_invalid_avg "$CPU_INVALID_AVG" \
   --argjson cpu_invalid_max "$CPU_INVALID_MAX" \
+  --arg dpdk_perf_mode "$DPDK_PERF_MODE" \
+  --arg dpdk_allow_azure_multiworker "$DPDK_ALLOW_AZURE_MULTIWORKER" \
   '{
     scenario: "raw_ip_throughput_per_core",
     fw_vcpu: $fw_vcpu,
@@ -508,6 +522,10 @@ jq -n \
     repeats: $repeats,
     iperf_port: $iperf_port,
     protocols: ([if $enable_tcp == 1 then "tcp" else empty end, if $enable_udp == 1 then "udp" else empty end]),
+    runtime_overrides: {
+      dpdk_perf_mode: (if $dpdk_perf_mode == "" then null else $dpdk_perf_mode end),
+      dpdk_allow_azure_multiworker: (if $dpdk_allow_azure_multiworker == "" then null else $dpdk_allow_azure_multiworker end)
+    },
     invalidation_thresholds: {
       consumer_or_upstream_avg_cpu_pct_gt: $cpu_invalid_avg,
       consumer_or_upstream_max_cpu_pct_gt: $cpu_invalid_max

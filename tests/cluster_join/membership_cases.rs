@@ -193,11 +193,11 @@ async fn mtls_requires_client_cert() {
         .await
         .unwrap();
     let mut client =
-        firewall::controlplane::cluster::rpc::proto::raft_service_client::RaftServiceClient::new(
+        neuwerk::controlplane::cluster::rpc::proto::raft_service_client::RaftServiceClient::new(
             channel,
         );
     let resp = client
-        .vote(firewall::controlplane::cluster::rpc::proto::RaftRequest {
+        .vote(neuwerk::controlplane::cluster::rpc::proto::RaftRequest {
             payload: Vec::new(),
         })
         .await;
@@ -215,11 +215,11 @@ async fn mtls_requires_client_cert() {
         .identity(identity);
     let channel = endpoint.tls_config(tls).unwrap().connect().await.unwrap();
     let mut client =
-        firewall::controlplane::cluster::rpc::proto::raft_service_client::RaftServiceClient::new(
+        neuwerk::controlplane::cluster::rpc::proto::raft_service_client::RaftServiceClient::new(
             channel,
         );
     let resp = client
-        .vote(firewall::controlplane::cluster::rpc::proto::RaftRequest {
+        .vote(neuwerk::controlplane::cluster::rpc::proto::RaftRequest {
             payload: Vec::new(),
         })
         .await;

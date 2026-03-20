@@ -6,7 +6,7 @@ ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/azure_e2e}"
 POLICY_FILE="${POLICY_FILE:-${ROOT_DIR}/policies/allow-upstream.json}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 CONSUMER_SCRIPT_LOCAL="${SCRIPT_DIR}/lifecycle-consumer-http.sh"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${ROOT_DIR}/artifacts/lifecycle-termdrain-$(date -u +%Y%m%dT%H%M%SZ)}"
 ROLLING_TIMEOUT_SECS="${ROLLING_TIMEOUT_SECS:-1800}"
@@ -50,11 +50,11 @@ JUMPBOX_IP="$(terraform output -raw jumpbox_public_ip)"
 UPSTREAM_IP="$(terraform output -raw upstream_private_ip)"
 UPSTREAM_VIP="$(terraform output -raw upstream_vip)"
 CONSUMERS="$(terraform output -json consumer_private_ips | jq -r '.[]')"
-FW_VMSS="$(terraform output -json firewall_vmss | jq -r '.name')"
+FW_VMSS="$(terraform output -json neuwerk_vmss | jq -r '.name')"
 popd >/dev/null
 
 if [ -z "$RG" ] || [ -z "$JUMPBOX_IP" ] || [ -z "$UPSTREAM_IP" ] || [ -z "$UPSTREAM_VIP" ] || [ -z "$FW_VMSS" ]; then
-  echo "missing terraform outputs (resource_group/jumpbox/upstream/upstream_vip/firewall_vmss)" >&2
+  echo "missing terraform outputs (resource_group/jumpbox/upstream/upstream_vip/neuwerk_vmss)" >&2
   exit 1
 fi
 
@@ -83,11 +83,11 @@ wait_ready() {
   return 1
 }
 
-wait_all_firewalls_ready() {
+wait_all_neuwerk_nodes_ready() {
   local ips
   ips="$(TF_DIR="$TF_DIR" "$RESOLVE_FW_IPS")"
   if [ -z "$ips" ]; then
-    echo "no firewall management IPs resolved" >&2
+    echo "no neuwerk management IPs resolved" >&2
     return 1
   fi
   for ip in $ips; do
@@ -110,7 +110,7 @@ configure_policy_with_retry() {
     if [ "$i" -lt "$attempts" ]; then
       echo "policy push failed (attempt ${i}/${attempts}); retrying in ${delay_secs}s"
       sleep "$delay_secs"
-      wait_all_firewalls_ready || true
+      wait_all_neuwerk_nodes_ready || true
     fi
   done
   echo "policy push failed after ${attempts} attempts" >&2
@@ -287,7 +287,7 @@ stop_consumer_traffic() {
 read_target_metrics_local() {
   local ip="$1"
   local out
-  out="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" 2>/dev/null || true)"
+  out="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" 2>/dev/null || true)"
   if [ -z "$out" ]; then
     return 1
   fi
@@ -309,7 +309,7 @@ start_target_metric_stream() {
   : >"$TARGET_METRIC_STREAM_LOG"
   ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -s" <<'EOF' >"$TARGET_METRIC_STREAM_LOG" 2>&1 &
 set -euo pipefail
-METRICS_HOST="$(grep "^MGMT_IP=" /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2)"
+METRICS_HOST="$(grep "^MGMT_IP=" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2)"
 [ -z "$METRICS_HOST" ] && METRICS_HOST="127.0.0.1"
 while true; do
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -357,7 +357,7 @@ trigger_instance_event() {
         --new-capacity "$((capacity + 1))" \
         >/dev/null
       wait_for_vmss_capacity "$((capacity + 1))" "$deadline"
-      wait_all_firewalls_ready
+      wait_all_neuwerk_nodes_ready
 
       echo "deleting target instance ${target_name} (instance_id=${target_instance_id})"
       az vmss delete-instances \
@@ -400,7 +400,7 @@ cleanup() {
 
 trap 'cleanup $?' EXIT
 
-wait_all_firewalls_ready
+wait_all_neuwerk_nodes_ready
 echo "configuring policy from ${POLICY_FILE}"
 configure_policy_with_retry
 
@@ -461,7 +461,7 @@ if [ "$TRIGGER_ACTION" = "terminate" ]; then
   wait_for_instance_absent "$target_name" "$deadline"
   wait_for_vmss_capacity "$capacity" "$deadline"
 fi
-wait_all_firewalls_ready
+wait_all_neuwerk_nodes_ready
 
 stop_target_metric_stream
 

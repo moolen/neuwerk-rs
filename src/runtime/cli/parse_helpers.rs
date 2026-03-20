@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
-use firewall::controlplane::cloud::types::IntegrationMode;
-use firewall::dataplane::policy::DefaultPolicy;
+use neuwerk::controlplane::cloud::types::IntegrationMode;
+use neuwerk::dataplane::policy::DefaultPolicy;
 
 pub fn looks_like_pci(value: &str) -> bool {
     let value = value.trim();

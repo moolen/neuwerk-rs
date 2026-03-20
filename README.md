@@ -1,4 +1,4 @@
-# DNS-Aware Egress Firewall
+# Neuwerk
 
 Most cloud environments accidentally allow outbound traffic to the entire internet.
 
@@ -96,3 +96,17 @@ It’s a **programmable, API-driven egress firewall** designed for modern infras
 The goal is simple:
 
 **make default-deny egress practical again.**
+
+---
+
+## Local Benchmarking
+
+For dataplane microbenchmarks, use the repo runner instead of ad hoc `cargo bench` commands:
+
+```bash
+make bench.dataplane
+NEUWERK_BENCH_CORE=2 NEUWERK_BENCH_SAVE_BASELINE=before make bench.dataplane
+NEUWERK_BENCH_CORE=2 NEUWERK_BENCH_COMPARE_BASELINE=before make bench.dataplane
+```
+
+The runner lives at `scripts/bench-dataplane.sh` and standardizes sample size, warm-up time, optional CPU affinity, optional nice level, and log capture under `target/criterion-runs/`.

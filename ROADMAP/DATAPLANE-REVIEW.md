@@ -19,7 +19,7 @@
 
 **Assumptions**
 - One DPDK-bound dataplane interface and one kernel-owned management interface.
-- The internet gateway performs public NAT; the firewall SNATs to its own dataplane IPv4 address.
+- The internet gateway performs public NAT; the Neuwerk SNATs to its own dataplane IPv4 address.
 - All policy source groups are internal networks.
 - DNS allowlist enforcement is per source group.
 

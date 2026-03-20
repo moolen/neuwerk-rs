@@ -246,7 +246,7 @@ impl AwsProvider {
         _filter: &DiscoveryFilter,
     ) -> Result<Vec<SubnetRef>, CloudError> {
         // AWS ASG integration is lifecycle-only in GWLB/NLB steering mode.
-        // Route ownership stays external to the firewall integration.
+        // Route ownership stays external to the Neuwerk integration.
         Ok(Vec::new())
     }
 

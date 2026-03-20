@@ -27,7 +27,7 @@ fi
 
 mkdir -p "${ARTIFACT_DIR}/raw"
 
-combined_prom="${ARTIFACT_DIR}/firewall-metrics-${STAGE}.prom"
+combined_prom="${ARTIFACT_DIR}/neuwerk-metrics-${STAGE}.prom"
 cpu_tsv="${ARTIFACT_DIR}/raw/cpu-${STAGE}.tsv"
 : > "$combined_prom"
 : > "$cpu_tsv"
@@ -36,9 +36,13 @@ for ip in $FW_MGMT_IPS; do
   safe_ip="${ip//./_}"
   metrics_file="${ARTIFACT_DIR}/raw/${STAGE}.${safe_ip}.metrics.prom"
   cpu_log="${ARTIFACT_DIR}/raw/${STAGE}.${safe_ip}.cpu.log"
+  ss_summary_file="${ARTIFACT_DIR}/raw/${STAGE}.${safe_ip}.ss-s.txt"
+  softnet_file="${ARTIFACT_DIR}/raw/${STAGE}.${safe_ip}.softnet_stat.txt"
+  nstat_file="${ARTIFACT_DIR}/raw/${STAGE}.${safe_ip}.nstat.txt"
+  ip_link_file="${ARTIFACT_DIR}/raw/${STAGE}.${safe_ip}.ip-link-s.txt"
 
   metrics="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
-    "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" || true)"
+    "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" || true)"
   printf "%s\n" "$metrics" > "$metrics_file"
 
   {
@@ -50,9 +54,21 @@ for ip in $FW_MGMT_IPS; do
   cpu_out="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'if command -v mpstat >/dev/null 2>&1; then mpstat 1 1; else vmstat 1 2; fi'" || true)"
   printf "%s\n" "$cpu_out" > "$cpu_log"
   printf "%s\t%s\n" "$ip" "$cpu_log" >> "$cpu_tsv"
+
+  ss_summary="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'ss -s 2>/dev/null || true'" || true)"
+  printf "%s\n" "$ss_summary" > "$ss_summary_file"
+
+  softnet="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'cat /proc/net/softnet_stat 2>/dev/null || true'" || true)"
+  printf "%s\n" "$softnet" > "$softnet_file"
+
+  nstat_out="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'if command -v nstat >/dev/null 2>&1; then nstat -az; fi'" || true)"
+  printf "%s\n" "$nstat_out" > "$nstat_file"
+
+  ip_link_out="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'ip -s link 2>/dev/null || true'" || true)"
+  printf "%s\n" "$ip_link_out" > "$ip_link_file"
 done
 
-python3 - "$cpu_tsv" "${ARTIFACT_DIR}/cpu-firewall-${STAGE}.json" <<'PY'
+python3 - "$cpu_tsv" "${ARTIFACT_DIR}/cpu-neuwerk-${STAGE}.json" <<'PY'
 import json
 import re
 import statistics

@@ -133,12 +133,12 @@ PY
 source "$manifest_env_file"
 rm -f "$manifest_env_file"
 
-binary_path="$repo_dir/target/$profile/firewall"
+binary_path="$repo_dir/target/$profile/neuwerk"
 ui_dist="$repo_dir/ui/dist"
 dpdk_prefix="$repo_dir/third_party/dpdk/install/$TARGET_DPDK_VERSION"
 
 if [[ ! -x "$binary_path" ]]; then
-  echo "built firewall binary not found: $binary_path" >&2
+  echo "built neuwerk binary not found: $binary_path" >&2
   exit 1
 fi
 if [[ ! -d "$ui_dist" ]]; then
@@ -158,7 +158,7 @@ install -d "$(dirname "$(join_root "$output_root" "$RUNTIME_APPLIANCE_ENV_FILE")
 install -d "$(dirname "$(join_root "$output_root" "$RUNTIME_SERVICE_FILE")")"
 install -d "$(dirname "$(join_root "$output_root" "$RUNTIME_LINK_NAME")")"
 
-install -m 0755 "$binary_path" "$(join_root "$output_root" "$RUNTIME_BINARY_DIR")/firewall"
+install -m 0755 "$binary_path" "$(join_root "$output_root" "$RUNTIME_BINARY_DIR")/neuwerk"
 cp -a "$ui_dist/." "$(join_root "$output_root" "$RUNTIME_UI_DIR")/"
 
 runtime_dpdk_dir="$(join_root "$output_root" "$RUNTIME_PREFIX")/dpdk/$TARGET_DPDK_VERSION"
@@ -196,9 +196,9 @@ chmod 0640 "$(join_root "$output_root" "$RUNTIME_ENV_FILE")"
 cp "$runtime_template_dir/appliance.env" "$(join_root "$output_root" "$RUNTIME_APPLIANCE_ENV_FILE")"
 chmod 0644 "$(join_root "$output_root" "$RUNTIME_APPLIANCE_ENV_FILE")"
 
-launcher_path="$(join_root "$output_root" "$RUNTIME_BINARY_DIR")/firewall-launch"
+launcher_path="$(join_root "$output_root" "$RUNTIME_BINARY_DIR")/neuwerk-launch"
 render_template \
-  "$runtime_template_dir/firewall-launch.sh" \
+  "$runtime_template_dir/neuwerk-launch.sh" \
   "$launcher_path" \
   "__RUNTIME_ENV_FILE__=$RUNTIME_ENV_FILE" \
   "__RUNTIME_BINARY_DIR__=$RUNTIME_BINARY_DIR"
@@ -206,7 +206,7 @@ chmod 0755 "$launcher_path"
 
 bootstrap_path="$(join_root "$output_root" "$RUNTIME_BOOTSTRAP_PATH")"
 render_template \
-  "$runtime_template_dir/firewall-bootstrap.sh" \
+  "$runtime_template_dir/neuwerk-bootstrap.sh" \
   "$bootstrap_path" \
   "__RUNTIME_ENV_FILE__=$RUNTIME_ENV_FILE" \
   "__APPLIANCE_ENV_FILE__=$RUNTIME_APPLIANCE_ENV_FILE" \
@@ -216,10 +216,10 @@ render_template \
 chmod 0755 "$bootstrap_path"
 
 render_template \
-  "$runtime_template_dir/firewall.service.in" \
+  "$runtime_template_dir/neuwerk.service.in" \
   "$(join_root "$output_root" "$RUNTIME_SERVICE_FILE")" \
   "__RUNTIME_BINARY_DIR__=$RUNTIME_BINARY_DIR" \
   "__RUNTIME_PREFIX__=$RUNTIME_PREFIX"
 chmod 0644 "$(join_root "$output_root" "$RUNTIME_SERVICE_FILE")"
 
-ln -sfn "$RUNTIME_BINARY_DIR/firewall" "$(join_root "$output_root" "$RUNTIME_LINK_NAME")"
+ln -sfn "$RUNTIME_BINARY_DIR/neuwerk" "$(join_root "$output_root" "$RUNTIME_LINK_NAME")"

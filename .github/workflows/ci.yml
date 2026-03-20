@@ -74,7 +74,7 @@ jobs:
           echo "PKG_CONFIG_PATH=$DPDK_INSTALL/lib/pkgconfig:$DPDK_INSTALL/lib/x86_64-linux-gnu/pkgconfig:$DPDK_INSTALL/lib64/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$DPDK_INSTALL/lib:$DPDK_INSTALL/lib/x86_64-linux-gnu:$DPDK_INSTALL/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
-      - name: Build firewall with all features
+      - name: Build Neuwerk with all features
         run: cargo build --all-features
 
       - name: Run Terraform provider tests

@@ -15,7 +15,7 @@ fi
 mkdir -p "$artifact_dir"
 "$repo_dir/packaging/scripts/verify_linkage.sh" \
   --target "$target_id" \
-  --binary "$repo_dir/target/release/firewall" \
+  --binary "$repo_dir/target/release/neuwerk" \
   --output-json "$artifact_dir/linkage.json"
 
 if command -v syft >/dev/null 2>&1; then

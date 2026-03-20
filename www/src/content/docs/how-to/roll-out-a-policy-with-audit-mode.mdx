@@ -65,7 +65,7 @@ curl -sk \
   -H "Authorization: Bearer $NEUWERK_TOKEN" \
   -H "Content-Type: application/json" \
   -X PUT \
-  https://firewall.example/api/v1/policies/by-name/office-egress \
+  https://neuwerk.example/api/v1/policies/by-name/office-egress \
   --data @policy.json
 ```
 
@@ -99,7 +99,7 @@ Use the evidence surfaces that fit the change:
 - `GET /api/v1/wiretap/stream` for live confirmation
 
 Audit findings are the most useful signal when they are available, because they show what the
-firewall would have denied without turning the deny into an outage.
+Neuwerk would have denied without turning the deny into an outage.
 
 ## Step 5: Tighten The Policy
 

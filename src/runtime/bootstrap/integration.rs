@@ -1,12 +1,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use firewall::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
-use firewall::controlplane::cloud::providers::{
+use neuwerk::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
+use neuwerk::controlplane::cloud::providers::{
     aws::AwsProvider, azure::AzureProvider, gcp::GcpProvider,
 };
-use firewall::controlplane::cloud::types::{DiscoveryFilter, IntegrationMode};
-use firewall::controlplane::cloud::{self};
+use neuwerk::controlplane::cloud::types::{DiscoveryFilter, IntegrationMode};
+use neuwerk::controlplane::cloud::{self};
 
 pub fn build_integration_provider(
     cfg: &crate::runtime::cli::CliConfig,

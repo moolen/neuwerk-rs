@@ -245,11 +245,11 @@ match:
 
 ### Remove mgmt DNS LB
 - Remove `module "mgmt_dns_lb"` from Azure Terraform root.
-- Remove related backend pool attachment for firewall mgmt NIC.
+- Remove related backend pool attachment for Neuwerk mgmt NIC.
 - Remove output `mgmt_dns_lb_ip`.
 - Remove scripts logic that prefers DNS LB IP.
 
-### Firewall cloud-init/systemd args
+### Neuwerk cloud-init/systemd args
 - Remove `--dns-listen`.
 - Pass new DNS service flags:
   - repeated `--dns-target-ip ...`
@@ -261,9 +261,9 @@ match:
 ### Azure vars/modules to update
 - `cloud-tests/azure/terraform/variables.tf`
 - `cloud-tests/azure/terraform/main.tf`
-- `cloud-tests/azure/terraform/modules/firewall_vmss/variables.tf`
-- `cloud-tests/azure/terraform/modules/firewall_vmss/main.tf`
-- `cloud-tests/azure/terraform/cloud-init/firewall.yaml.tmpl`
+- `cloud-tests/azure/terraform/modules/neuwerk_vmss/variables.tf`
+- `cloud-tests/azure/terraform/modules/neuwerk_vmss/main.tf`
+- `cloud-tests/azure/terraform/cloud-init/neuwerk.yaml.tmpl`
 - Delete/retire `modules/mgmt_dns_lb` references.
 
 ### Azure docs/scripts
@@ -363,7 +363,7 @@ match:
 - Validate rollover behavior for CA updates and policy generation sync.
 
 ## Acceptance Criteria
-- Firewall starts without `--dns-listen`; old DNS runtime is removed.
+- Neuwerk starts without `--dns-listen`; old DNS runtime is removed.
 - DNS target IP short-circuit works for UDP and TCP port 53.
 - Non-target DNS traffic uses normal policy path.
 - TLS intercept mode is distinct from existing TLS metadata mode.
@@ -401,8 +401,8 @@ match:
   - `cloud-tests/azure/terraform/main.tf`
   - `cloud-tests/azure/terraform/variables.tf`
   - `cloud-tests/azure/terraform/outputs.tf`
-  - `cloud-tests/azure/terraform/modules/firewall_vmss/{main.tf,variables.tf}`
-  - `cloud-tests/azure/terraform/cloud-init/firewall.yaml.tmpl`
+  - `cloud-tests/azure/terraform/modules/neuwerk_vmss/{main.tf,variables.tf}`
+  - `cloud-tests/azure/terraform/cloud-init/neuwerk.yaml.tmpl`
   - `cloud-tests/azure/scripts/run-tests.sh`
   - `cloud-tests/common/run-policy-smoke.sh`
   - `cloud-tests/runner/src/main.rs`

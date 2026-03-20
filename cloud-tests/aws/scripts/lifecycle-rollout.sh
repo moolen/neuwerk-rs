@@ -40,14 +40,14 @@ fi
 
 pushd "$TF_DIR" >/dev/null
 REGION=$(terraform output -raw region)
-ASG_NAME=$(terraform output -raw firewall_asg_name)
+ASG_NAME=$(terraform output -raw neuwerk_asg_name)
 JUMPBOX_IP=$(terraform output -raw jumpbox_public_ip)
 UPSTREAM_VIP=$(terraform output -raw upstream_vip)
 CONSUMER_IP=$(terraform output -json consumer_private_ips | jq -r '.[0]')
 popd >/dev/null
 
 if [ -z "$ASG_NAME" ] || [ "$ASG_NAME" = "null" ]; then
-  echo "firewall_asg_name output is empty; this bench is not running ASG-backed firewall nodes" >&2
+  echo "neuwerk_asg_name output is empty; this bench is not running ASG-backed neuwerk nodes" >&2
   exit 1
 fi
 

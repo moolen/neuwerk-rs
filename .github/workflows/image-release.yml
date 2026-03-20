@@ -121,7 +121,7 @@ jobs:
       - name: Build host artifacts
         run: |
           make dpdk.prepare
-          bash packaging/scripts/build_firewall.sh --target "$TARGET" --profile release
+          bash packaging/scripts/build_neuwerk.sh --target "$TARGET" --profile release
 
       - name: Test Terraform provider
         run: cd terraform-provider-neuwerk && go test ./...

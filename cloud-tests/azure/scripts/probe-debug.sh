@@ -5,7 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/azure_e2e}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 OFFSET="${OFFSET:-30m}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${ROOT_DIR}/artifacts/probe-debug-$(date -u +%Y%m%dT%H%M%SZ)}"
 
@@ -25,7 +25,7 @@ popd >/dev/null
 
 FW_MGMT_IPS=$(TF_DIR="$TF_DIR" "$RESOLVE_FW_IPS")
 if [ -z "$FW_MGMT_IPS" ]; then
-  echo "no firewall management IPs resolved" >&2
+  echo "no neuwerk management IPs resolved" >&2
   exit 1
 fi
 
@@ -50,8 +50,8 @@ for ip in $FW_MGMT_IPS; do
      hostname -f || hostname
      echo \"== timestamp_utc ==\"
      date -u +%Y-%m-%dT%H:%M:%SZ
-     echo \"== firewall_cmdline ==\"
-     tr '\\0' ' ' </proc/\$(pgrep -x firewall | head -n1)/cmdline || true
+     echo \"== neuwerk_cmdline ==\"
+     tr '\\0' ' ' </proc/\$(pgrep -x neuwerk | head -n1)/cmdline || true
      echo
      echo \"== listeners_8080_8443 ==\"
      ss -lntp | egrep '(:8080|:8443)|State' || true
@@ -59,10 +59,10 @@ for ip in $FW_MGMT_IPS; do
      ip route get 168.63.129.16 || true
      echo \"== ip_brief ==\"
      ip -br a || true
-     echo \"== firewall_env ==\"
-     sudo cat /etc/neuwerk/firewall.env || true
+     echo \"== neuwerk_env ==\"
+     sudo cat /etc/neuwerk/neuwerk.env || true
      echo \"== probe_metrics ==\"
-     METRICS_HOST=\$(grep '^MGMT_IP=' /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2)
+     METRICS_HOST=\$(grep '^MGMT_IP=' /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2)
      [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1
      curl -fsS http://\${METRICS_HOST}:8080/metrics | egrep '^dpdk_health_probe_packets_total|^dpdk_(rx|tx)_(packets|bytes)_total' || true
     " >"$out"

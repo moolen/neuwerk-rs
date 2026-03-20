@@ -35,10 +35,10 @@ The local demo guest should boot with demo defaults:
 - metrics on the management adapter
 - a dedicated client-facing host-only adapter
 - a dedicated internet uplink adapter
-- firewall service running in software `tun` mode for compatibility
+- `neuwerk.service` running in software `tun` mode for compatibility
 
 This lets the user point the host default route at the VM and exercise real browser or CLI traffic
-through the firewall.
+through Neuwerk.
 
 ## Checked-In Demo Workflow
 
@@ -52,7 +52,7 @@ That provisioner turns a base appliance box into a local demo guest by:
 - discovering the uplink, management, and client interfaces
 - forcing the runtime into software `tun` mode
 - enabling a local single-node cluster on loopback for token minting
-- assigning a dedicated secondary uplink SNAT IP for firewall-translated traffic
+- assigning a dedicated secondary uplink SNAT IP for Neuwerk-translated traffic
 - installing policy-routing rules that steer client traffic into `dp0` and only steer return
   traffic for the dedicated SNAT IP back through `dp0`
 - minting an admin token into `/var/lib/neuwerk-demo/admin.token`

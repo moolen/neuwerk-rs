@@ -5,7 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/aws_e2e}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 COMMON_RUN="${ROOT_DIR}/../common/http-perf-run.sh"
 COMMON_SETUP="${ROOT_DIR}/../common/http-perf-setup.sh"
 COMMON_COLLECT="${ROOT_DIR}/../common/http-perf-collect.sh"
@@ -52,7 +52,7 @@ fi
 FW_MGMT_IPS="$(TF_DIR="$TF_DIR" "$RESOLVE_FW_IPS" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ //; s/ $//')"
 CONSUMER_IPS="$(printf '%s ' "${CONSUMERS[@]}")"
 
-FW_INSTANCE_TYPE="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.firewall // "unknown"')"
+FW_INSTANCE_TYPE="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.neuwerk // "unknown"')"
 CONSUMER_INSTANCE_TYPE="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.consumer // "unknown"')"
 UPSTREAM_INSTANCE_TYPE="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.upstream // "unknown"')"
 RESOURCE_GROUP="aws:${REGION}:${TRAFFIC_ARCHITECTURE}"

@@ -7,9 +7,9 @@ output "account_id" {
 }
 
 output "container_name" {
-  value = azurerm_storage_container.firewall.name
+  value = azurerm_storage_container.neuwerk.name
 }
 
 output "blob_name" {
-  value = azurerm_storage_blob.firewall.name
+  value = azurerm_storage_blob.neuwerk.name
 }

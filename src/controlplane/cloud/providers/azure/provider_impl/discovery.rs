@@ -116,7 +116,7 @@ impl AzureProvider {
         _filter: &DiscoveryFilter,
     ) -> Result<Vec<SubnetRef>, CloudError> {
         // Azure VMSS integration is lifecycle-only when steering is handled externally.
-        // Route ownership stays outside of the firewall integration.
+        // Route ownership stays outside of the Neuwerk integration.
         Ok(Vec::new())
     }
 }

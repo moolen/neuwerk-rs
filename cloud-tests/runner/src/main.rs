@@ -249,8 +249,8 @@ fn main() {
             func: test_icmp_echo_deny,
         },
         TestCase {
-            name: "policy_consistency_all_firewalls",
-            func: test_policy_consistency_all_firewalls,
+            name: "policy_consistency_all_neuwerk_nodes",
+            func: test_policy_consistency_all_neuwerk_nodes,
         },
         TestCase {
             name: "metrics_protocol_specific_validation",
@@ -579,7 +579,7 @@ fn test_dns_allowlist_allow(ctx: &mut Context) -> Result<(), String> {
         Duration::from_secs(20),
         Duration::from_millis(400),
         || {
-            // Fan queries across mgmt LB backends so each firewall can learn allowlist entries.
+            // Fan queries across mgmt LB backends so each neuwerk can learn allowlist entries.
             let probe = dig_query(&ctx.cfg, &ctx.cfg.dns_zone)?;
             if probe.status != "NOERROR" {
                 return Ok(false);
@@ -1012,7 +1012,7 @@ fn test_icmp_echo_deny(ctx: &mut Context) -> Result<(), String> {
     ping_expect_failure(ctx.cfg.upstream_ip)
 }
 
-fn test_policy_consistency_all_firewalls(ctx: &mut Context) -> Result<(), String> {
+fn test_policy_consistency_all_neuwerk_nodes(ctx: &mut Context) -> Result<(), String> {
     let marker = "consistency-rule";
     let policy = policy_with_rules(
         ctx.consumer_ip,
@@ -1849,7 +1849,7 @@ fn parse_test_filter(filter: Option<&str>) -> std::collections::HashSet<&'static
             "udp_policy_swap_allow_to_deny" => Some("udp_policy_swap_allow_to_deny"),
             "icmp_echo_allow" => Some("icmp_echo_allow"),
             "icmp_echo_deny" => Some("icmp_echo_deny"),
-            "policy_consistency_all_firewalls" => Some("policy_consistency_all_firewalls"),
+            "policy_consistency_all_neuwerk_nodes" => Some("policy_consistency_all_neuwerk_nodes"),
             "metrics_protocol_specific_validation" => Some("metrics_protocol_specific_validation"),
             "dns_allowlist_allow" => Some("dns_allowlist_allow"),
             "dns_allowlist_allow_tcp" => Some("dns_allowlist_allow_tcp"),

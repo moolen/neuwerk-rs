@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TF_DIR="$ROOT/azure/terraform"
 KEY="$ROOT/.secrets/ssh/azure_e2e"
-RESOLVE="$ROOT/azure/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE="$ROOT/azure/scripts/resolve-neuwerk-mgmt-ips.sh"
 SUFFIX="${1:-manual}"
 
 JUMP="$(cd "$TF_DIR" && terraform output -raw jumpbox_public_ip)"
@@ -20,7 +20,7 @@ printf 'suffix=%s\n' "$SUFFIX" >> "$ART/context.txt"
 printf 'jumpbox=%s\n' "$JUMP" >> "$ART/context.txt"
 printf 'consumer=%s\n' "$CONSUMER" >> "$ART/context.txt"
 printf 'vip=%s\n' "$VIP" >> "$ART/context.txt"
-printf 'firewalls=%s\n' "${FWS[*]}" >> "$ART/context.txt"
+printf 'neuwerk_nodes=%s\n' "${FWS[*]}" >> "$ART/context.txt"
 
 echo "artifact_dir=$ART"
 
@@ -35,9 +35,9 @@ hostname > "$OUT/hostname.txt"
 uname -r > "$OUT/kernel.txt"
 date -u +%Y-%m-%dT%H:%M:%SZ > "$OUT/date.txt"
 
-pid="$(pgrep -n firewall || true)"
+pid="$(pgrep -n neuwerk || true)"
 if [ -z "$pid" ]; then
-  echo "missing firewall process" > "$OUT/error.txt"
+  echo "missing neuwerk process" > "$OUT/error.txt"
   tar -C "$OUT" -czf - .
   exit 0
 fi
@@ -69,7 +69,7 @@ chmod +x "$ART/remote_perf.sh"
 ssh_proxy=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY" -o ProxyCommand="ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i $KEY -W %h:%p ubuntu@$JUMP")
 
 for ip in "${FWS[@]}"; do
-  "${ssh_proxy[@]}" ubuntu@"$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -s http://\${METRICS_HOST}:8080/metrics | grep -E \"^dpdk_(rx|tx)_(packets|bytes)_total \" || true'" > "$ART/$ip.metrics.pre" || true
+  "${ssh_proxy[@]}" ubuntu@"$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -s http://\${METRICS_HOST}:8080/metrics | grep -E \"^dpdk_(rx|tx)_(packets|bytes)_total \" || true'" > "$ART/$ip.metrics.pre" || true
 done
 
 collector_pids=()
@@ -96,7 +96,7 @@ for ip in "${FWS[@]}"; do
   if [ -s "$ART/raw/$ip.tgz" ]; then
     tar -xzf "$ART/raw/$ip.tgz" -C "$ART/$ip" || true
   fi
-  "${ssh_proxy[@]}" ubuntu@"$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -s http://\${METRICS_HOST}:8080/metrics | grep -E \"^dpdk_(rx|tx)_(packets|bytes)_total \" || true'" > "$ART/$ip.metrics.post" || true
+  "${ssh_proxy[@]}" ubuntu@"$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -s http://\${METRICS_HOST}:8080/metrics | grep -E \"^dpdk_(rx|tx)_(packets|bytes)_total \" || true'" > "$ART/$ip.metrics.post" || true
 done
 
 metric_from_file() {

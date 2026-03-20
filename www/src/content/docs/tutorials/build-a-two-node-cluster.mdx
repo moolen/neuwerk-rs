@@ -34,7 +34,7 @@ Cluster mode adds two network surfaces:
 Start the first node without a `--join` flag:
 
 ```text
-firewall \
+neuwerk \
   --management-interface mgmt0 \
   --data-plane-interface data0 \
   --dns-target-ip 10.0.0.53 \
@@ -52,7 +52,7 @@ This node becomes the initial seed because clustering is enabled and no join tar
 Start the second node with the seed node's join address:
 
 ```text
-firewall \
+neuwerk \
   --management-interface mgmt0 \
   --data-plane-interface data0 \
   --dns-target-ip 10.0.0.53 \

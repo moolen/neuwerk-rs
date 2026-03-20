@@ -8,11 +8,11 @@ Vagrant.configure("2") do |config|
   preferred_local_box = Dir.glob(File.expand_path("../../artifacts/image-build/vagrant/#{local_box_target}/*.box", __dir__)).sort.last
   fallback_local_box = Dir.glob(File.expand_path("../../artifacts/image-build/vagrant/*/*.box", __dir__)).sort.last
   local_box = preferred_local_box || fallback_local_box
-  default_box_name = ENV.fetch("NEUWERK_BOX", "neuwerk/firewall-demo")
+  default_box_name = ENV.fetch("NEUWERK_BOX", "neuwerk/neuwerk-demo")
   local_box_name =
     if local_box && !local_box.empty?
       local_box_stamp = "#{File.size(local_box)}-#{File.mtime(local_box).to_i}"
-      "neuwerk/firewall-demo-local-#{local_box_stamp}"
+      "neuwerk/neuwerk-demo-local-#{local_box_stamp}"
     end
   explicit_box_url = ENV["NEUWERK_BOX_URL"]
   resolved_box_url =

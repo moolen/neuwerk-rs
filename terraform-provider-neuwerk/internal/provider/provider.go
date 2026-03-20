@@ -48,10 +48,10 @@ func (p *neuwerkProvider) Metadata(_ context.Context, _ provider.MetadataRequest
 
 func (p *neuwerkProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = providerschema.Schema{
-		Description: "Terraform provider for the Neuwerk firewall HTTP API.",
+		Description: "Terraform provider for the Neuwerk HTTP API.",
 		Attributes: map[string]providerschema.Attribute{
 			"endpoints": providerschema.ListAttribute{
-				Description: "HTTPS base URLs for the firewall API. Endpoints are tried in order.",
+				Description: "HTTPS base URLs for the Neuwerk API. Endpoints are tried in order.",
 				ElementType: types.StringType,
 				Required:    true,
 			},
@@ -61,11 +61,11 @@ func (p *neuwerkProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 				Sensitive:   true,
 			},
 			"ca_cert_pem": providerschema.StringAttribute{
-				Description: "PEM-encoded CA certificate used to verify the firewall API server.",
+				Description: "PEM-encoded CA certificate used to verify the Neuwerk API server.",
 				Optional:    true,
 			},
 			"ca_cert_file": providerschema.StringAttribute{
-				Description: "Path to a PEM-encoded CA certificate used to verify the firewall API server.",
+				Description: "Path to a PEM-encoded CA certificate used to verify the Neuwerk API server.",
 				Optional:    true,
 			},
 			"request_timeout": providerschema.StringAttribute{

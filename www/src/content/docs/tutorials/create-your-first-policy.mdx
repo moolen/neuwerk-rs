@@ -1,6 +1,6 @@
 ---
 title: Create Your First Policy
-description: Upload a simple policy, activate it, and verify that the firewall is enforcing the result you intended.
+description: Upload a simple policy, activate it, and verify that the Neuwerk is enforcing the result you intended.
 order: 2
 ---
 
@@ -8,7 +8,7 @@ This tutorial shows a safe first policy workflow:
 
 1. create a named policy through the management API
 2. activate it immediately by writing it in `enforce` mode
-3. verify that the firewall accepted and replayed it
+3. verify that the Neuwerk accepted and replayed it
 
 This tutorial assumes:
 
@@ -69,7 +69,7 @@ curl -sk \
   -H "Authorization: Bearer $NEUWERK_TOKEN" \
   -H "Content-Type: application/json" \
   -X PUT \
-  https://firewall.example/api/v1/policies/by-name/office-egress \
+  https://neuwerk.example/api/v1/policies/by-name/office-egress \
   --data @policy.json
 ```
 
@@ -104,7 +104,7 @@ Use a test host inside `10.10.0.0/16` and confirm:
 - traffic to `203.0.113.10:443` is allowed
 - other unmatched traffic is denied
 
-If the firewall denies more than you expected, inspect:
+If the Neuwerk denies more than you expected, inspect:
 
 - `GET /api/v1/audit/findings`
 - `GET /api/v1/dns-cache` when hostname policy is involved

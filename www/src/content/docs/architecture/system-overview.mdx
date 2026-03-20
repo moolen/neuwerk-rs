@@ -1,6 +1,6 @@
 ---
 title: System Overview
-description: The firewall is split into a dataplane for enforcement and a control plane for policy, DNS, management, and replication.
+description: The Neuwerk is split into a dataplane for enforcement and a control plane for policy, DNS, management, and replication.
 order: 1
 ---
 
@@ -16,15 +16,15 @@ dataplane.
 
 ## The Four Main Runtime Pieces
 
-A running firewall is made up of four major pieces:
+A running Neuwerk is made up of four major pieces:
 
 1. cluster services, when clustering is enabled
 2. the management HTTP runtime
 3. the service runtime for DNS proxying and TLS interception
 4. the dataplane runtime
 
-Those parts cooperate, but they do not collapse into one request path. That is why the firewall can
-serve a management API, answer DNS queries aimed at the firewall itself, and enforce client
+Those parts cooperate, but they do not collapse into one request path. That is why the Neuwerk can
+serve a management API, answer DNS queries aimed at the Neuwerk itself, and enforce client
 traffic without treating all of it as the same kind of workload.
 
 ## Why The Split Matters

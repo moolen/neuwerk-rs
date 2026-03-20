@@ -2,13 +2,13 @@
 set -euo pipefail
 
 if [ "$#" -lt 3 ]; then
-  echo "usage: $0 <jumpbox-ip> <ssh-key-path> <firewall-mgmt-ip> [sub]" >&2
+  echo "usage: $0 <jumpbox-ip> <ssh-key-path> <neuwerk-mgmt-ip> [sub]" >&2
   exit 2
 fi
 
 JUMPBOX_IP="$1"
 KEY_PATH="$2"
-FIREWALL_IP="$3"
+NEUWERK_IP="$3"
 SUBJECT="${4:-azure-ui-port-forward}"
 SSH_USER="${SSH_USER:-ubuntu}"
 
@@ -24,12 +24,26 @@ for bin in ssh openssl python3; do
   fi
 done
 
-KEYSET_JSON=$(
-  ssh -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY_PATH" \
-    -o ProxyCommand="ssh -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i ${KEY_PATH} -W %h:%p ${SSH_USER}@${JUMPBOX_IP}" \
-    "${SSH_USER}@${FIREWALL_IP}" \
-    "sudo cat /var/lib/neuwerk/http-tls/api-auth.json"
-)
+KEYSET_JSON=""
+for attempt in $(seq 1 45); do
+  KEYSET_JSON="$(
+    ssh -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY_PATH" \
+      -o ProxyCommand="ssh -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i ${KEY_PATH} -W %h:%p ${SSH_USER}@${JUMPBOX_IP}" \
+      "${SSH_USER}@${NEUWERK_IP}" \
+      "sudo cat /var/lib/neuwerk/http-tls/api-auth.json 2>/dev/null || true"
+  )"
+  if [ -n "$KEYSET_JSON" ]; then
+    break
+  fi
+  if [ "$attempt" -eq 1 ] || [ "$attempt" -eq 10 ] || [ "$attempt" -eq 20 ] || [ "$attempt" -eq 30 ] || [ "$attempt" -eq 45 ]; then
+    echo "waiting for api-auth keyset on ${NEUWERK_IP} (${attempt}/45)" >&2
+  fi
+  sleep 2
+done
+if [ -z "$KEYSET_JSON" ]; then
+  echo "failed to read /var/lib/neuwerk/http-tls/api-auth.json on ${NEUWERK_IP}" >&2
+  exit 1
+fi
 
 KEYSET_JSON="$KEYSET_JSON" SUBJECT="$SUBJECT" python3 - <<'PY'
 import base64

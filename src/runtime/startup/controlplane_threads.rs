@@ -1,10 +1,10 @@
-use firewall::controlplane;
-use firewall::controlplane::audit::AuditStore;
-use firewall::controlplane::metrics::Metrics;
-use firewall::controlplane::policy_repository::PolicyDiskStore;
-use firewall::controlplane::ready::ReadinessState;
-use firewall::controlplane::wiretap::{DnsMap, WiretapHub};
-use firewall::controlplane::PolicyStore;
+use neuwerk::controlplane;
+use neuwerk::controlplane::audit::AuditStore;
+use neuwerk::controlplane::metrics::Metrics;
+use neuwerk::controlplane::policy_repository::PolicyDiskStore;
+use neuwerk::controlplane::ready::ReadinessState;
+use neuwerk::controlplane::wiretap::{DnsMap, WiretapHub};
+use neuwerk::controlplane::PolicyStore;
 use tokio::sync::oneshot;
 
 fn runtime_worker_threads(env_name: &str, default_threads: usize) -> usize {

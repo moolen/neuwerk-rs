@@ -6,7 +6,7 @@
 - Reusable across clouds (Azure/AWS/GCP) with provider‑specific orchestration in `cloud-tests/<provider>/Makefile`.
 
 ## Non‑Goals
-- No internet egress tests for now (keep consumer → firewall → upstream path only).
+- No internet egress tests for now (keep consumer → Neuwerk → upstream path only).
 - No cluster or control‑plane API feature tests beyond policy manipulation needed for dataplane validation.
 - No implementation in this phase; this is the high‑level plan.
 
@@ -17,12 +17,12 @@
   1. Terraform apply
   2. Building the runner
   3. Copying runner to the consumer
-  4. Generating a **policy API token** via SSH into a firewall mgmt node
+  4. Generating a **policy API token** via SSH into a Neuwerk mgmt node
   5. Running the runner with env/config inputs
 
 **Common inputs (env vars passed to the runner)**
 - `NEUWERK_POLICY_API_BASE` → `https://<mgmt-lb-ip>:8443`
-- `NEUWERK_POLICY_API_TOKEN` → bearer token minted on a firewall node
+- `NEUWERK_POLICY_API_TOKEN` → bearer token minted on a Neuwerk node
 - `NEUWERK_POLICY_API_INSECURE` → `1` to skip TLS verification (acceptable for now)
 - `NEUWERK_UPSTREAM_VIP` → upstream VIP (e.g. `10.20.4.10`)
 - `NEUWERK_DNS_SERVER` → mgmt DNS LB IP (e.g. `10.20.1.10`) (intentional: DNS is control-plane and updates dataplane allowlist)
@@ -132,7 +132,7 @@ These are **policy‑driven dataplane validations** that can run on any cloud wi
   - Build runner binary
   - Resolve consumer IP
   - Resolve mgmt LB IP
-  - SSH into firewall mgmt node to mint API token
+  - SSH into Neuwerk mgmt node to mint API token
   - SCP runner to consumer
   - Run runner with env vars
 
@@ -165,5 +165,5 @@ These are **policy‑driven dataplane validations** that can run on any cloud wi
 - Run tests **from consumer** and modify policy via API.
 - Use **Rust** runner.
 - Include TLS SNI tests for **both TLS1.2 and TLS1.3 uninspectable**.
-- Only test **consumer → firewall → upstream** (ignore internet path).
+- Only test **consumer → Neuwerk → upstream** (ignore internet path).
 - Common entrypoint and provider‑specific orchestration.

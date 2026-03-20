@@ -205,7 +205,7 @@ async fn cluster_backup_copy_preserves_termination_events() {
 
     let backup_path = backup_dir.path().join("cluster-backup");
     copy_dir_all(seed_dir.path(), &backup_path).expect("backup copy");
-    let backup_store = firewall::controlplane::cluster::store::ClusterStore::open_read_only(
+    let backup_store = neuwerk::controlplane::cluster::store::ClusterStore::open_read_only(
         backup_path.join("raft"),
     )
     .expect("open backup store read-only");

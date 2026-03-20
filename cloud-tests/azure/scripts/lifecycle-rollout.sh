@@ -6,7 +6,7 @@ ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/azure_e2e}"
 POLICY_FILE="${POLICY_FILE:-${ROOT_DIR}/policies/allow-upstream.json}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 CONSUMER_SCRIPT_LOCAL="${SCRIPT_DIR}/lifecycle-consumer-http.sh"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${ROOT_DIR}/artifacts/lifecycle-$(date -u +%Y%m%dT%H%M%SZ)}"
 ROLLING_TIMEOUT_SECS="${ROLLING_TIMEOUT_SECS:-2400}"
@@ -49,11 +49,11 @@ JUMPBOX_IP="$(terraform output -raw jumpbox_public_ip)"
 UPSTREAM_IP="$(terraform output -raw upstream_private_ip)"
 UPSTREAM_VIP="$(terraform output -raw upstream_vip)"
 CONSUMERS="$(terraform output -json consumer_private_ips | jq -r '.[]')"
-FW_VMSS="$(terraform output -json firewall_vmss | jq -r '.name')"
+FW_VMSS="$(terraform output -json neuwerk_vmss | jq -r '.name')"
 popd >/dev/null
 
 if [ -z "$RG" ] || [ -z "$JUMPBOX_IP" ] || [ -z "$UPSTREAM_IP" ] || [ -z "$UPSTREAM_VIP" ] || [ -z "$FW_VMSS" ]; then
-  echo "missing terraform outputs (resource_group/jumpbox/upstream/upstream_vip/firewall_vmss)" >&2
+  echo "missing terraform outputs (resource_group/jumpbox/upstream/upstream_vip/neuwerk_vmss)" >&2
   exit 1
 fi
 DNS_TARGET="${DNS_TARGET:-$UPSTREAM_VIP}"
@@ -83,11 +83,11 @@ wait_ready() {
   return 1
 }
 
-wait_all_firewalls_ready() {
+wait_all_neuwerk_nodes_ready() {
   local ips
   ips="$(TF_DIR="$TF_DIR" "$RESOLVE_FW_IPS")"
   if [ -z "$ips" ]; then
-    echo "no firewall management IPs resolved" >&2
+    echo "no neuwerk management IPs resolved" >&2
     return 1
   fi
   for ip in $ips; do
@@ -108,7 +108,7 @@ collect_metrics_snapshot() {
   for ip in $ips; do
     {
       echo "### instance=${ip} label=${label} ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      metrics="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" || true)"
+      metrics="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" || true)"
       if [ -z "$metrics" ]; then
         echo "metrics_unavailable=1"
       else
@@ -323,7 +323,7 @@ trigger_rolling_update() {
       --new-capacity "$((capacity + 1))" \
       >/dev/null
     wait_for_vmss_capacity "$((capacity + 1))" "$deadline"
-    wait_all_firewalls_ready
+    wait_all_neuwerk_nodes_ready
 
     echo "deleting VMSS instance ${name} (instance_id=${instance_id}, capacity should settle back to ${capacity})"
     az vmss delete-instances \
@@ -333,7 +333,7 @@ trigger_rolling_update() {
       >/dev/null
     wait_for_instance_absent "$name" "$deadline"
     wait_for_vmss_capacity "$capacity" "$deadline"
-    wait_all_firewalls_ready
+    wait_all_neuwerk_nodes_ready
   done <<<"$instance_pairs"
 
   echo "rolling replacement completed"
@@ -362,7 +362,7 @@ configure_policy_with_retry() {
     if [ "$i" -lt "$attempts" ]; then
       echo "policy push failed (attempt ${i}/${attempts}); retrying in ${delay_secs}s"
       sleep "$delay_secs"
-      wait_all_firewalls_ready || true
+      wait_all_neuwerk_nodes_ready || true
     fi
   done
   echo "policy push failed after ${attempts} attempts" >&2
@@ -371,7 +371,7 @@ configure_policy_with_retry() {
 
 trap 'cleanup $?' EXIT
 
-wait_all_firewalls_ready
+wait_all_neuwerk_nodes_ready
 if [ "${SKIP_POLICY:-}" != "1" ]; then
   echo "configuring policy from ${POLICY_FILE}"
   configure_policy_with_retry
@@ -382,7 +382,7 @@ setup_upstream_delay_http
 start_consumer_traffic
 sleep 5
 trigger_rolling_update
-wait_all_firewalls_ready
+wait_all_neuwerk_nodes_ready
 echo "collecting post-rollout traffic for ${POST_ROLLOUT_SECS}s"
 sleep "$POST_ROLLOUT_SECS"
 collect_metrics_snapshot "post"

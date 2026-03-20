@@ -51,7 +51,7 @@ async fn http_api_cluster_sysdump_proxies_and_reports_partial_failures() {
     let seed_metrics = Metrics::new().unwrap();
     let join_metrics = Metrics::new().unwrap();
 
-    let seed_runtime = firewall::controlplane::cluster::run_cluster_tasks(
+    let seed_runtime = neuwerk::controlplane::cluster::run_cluster_tasks(
         seed_cfg,
         None,
         Some(seed_metrics.clone()),
@@ -59,7 +59,7 @@ async fn http_api_cluster_sysdump_proxies_and_reports_partial_failures() {
     .await
     .unwrap()
     .unwrap();
-    let join_runtime = firewall::controlplane::cluster::run_cluster_tasks(
+    let join_runtime = neuwerk::controlplane::cluster::run_cluster_tasks(
         join_cfg,
         None,
         Some(join_metrics.clone()),

@@ -2,14 +2,14 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use firewall::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
-use firewall::controlplane::cloud::types::IntegrationMode;
-use firewall::controlplane::cluster::migration;
-use firewall::controlplane::cluster::ClusterRuntime;
-use firewall::controlplane::metrics::Metrics;
-use firewall::controlplane::policy_repository::PolicyDiskStore;
-use firewall::controlplane::wiretap::WiretapHub;
-use firewall::dataplane::{EncapMode, OverlayConfig, SnatMode};
+use neuwerk::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
+use neuwerk::controlplane::cloud::types::IntegrationMode;
+use neuwerk::controlplane::cluster::migration;
+use neuwerk::controlplane::cluster::ClusterRuntime;
+use neuwerk::controlplane::metrics::Metrics;
+use neuwerk::controlplane::policy_repository::PolicyDiskStore;
+use neuwerk::controlplane::wiretap::WiretapHub;
+use neuwerk::dataplane::{EncapMode, OverlayConfig, SnatMode};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -100,7 +100,7 @@ pub fn log_startup_summary(cfg: &CliConfig) {
         dns_targets = ?cfg.dns_target_ips,
         dns_upstreams = ?cfg.dns_upstreams,
         cloud_provider = ?cfg.cloud_provider,
-        "firewall startup configuration"
+        "neuwerk startup configuration"
     );
     if cfg.cluster.enabled {
         info!(
@@ -174,7 +174,7 @@ pub async fn start_cluster_runtime(
     wiretap_hub: Option<WiretapHub>,
     metrics: Metrics,
 ) -> Result<Option<ClusterRuntime>, String> {
-    firewall::controlplane::cluster::run_cluster_tasks(
+    neuwerk::controlplane::cluster::run_cluster_tasks(
         cfg.cluster.clone(),
         wiretap_hub,
         Some(metrics),

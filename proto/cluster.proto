@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package firewall.cluster;
+package neuwerk.cluster;
 
 message RaftRequest {
   bytes payload = 1;

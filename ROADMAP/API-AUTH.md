@@ -37,8 +37,8 @@ Validation:
 - Only **one** active signing key used for minting at a time, while old keys remain valid
   until their tokens expire.
 - Explicit rotation via CLI:
-  - `firewall auth key rotate` -> add new active signing key, keep old keys active.
-  - `firewall auth key retire <kid>` -> mark old key as inactive (stop verifying).
+  - `neuwerk auth key rotate` -> add new active signing key, keep old keys active.
+  - `neuwerk auth key retire <kid>` -> mark old key as inactive (stop verifying).
 
 Bootstrap:
 - On first cluster seed, generate initial keyset and store it in replicated storage.
@@ -53,7 +53,7 @@ Bootstrap:
   - Keyset missing or cannot be loaded
 
 ## CLI Token Minting
-- Add `firewall auth token mint --sub <id> [--ttl <dur>] [--kid <kid>]`
+- Add `neuwerk auth token mint --sub <id> [--ttl <dur>] [--kid <kid>]`
   - Defaults: TTL = 7d, `iss`/`aud` as above, `kid` = current active key.
 - CLI may run on **any** node (keys are replicated).
 - Printed token is a bearer JWT suitable for API/UI use.

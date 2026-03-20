@@ -1,9 +1,9 @@
-use firewall::controlplane::audit::{
+use neuwerk::controlplane::audit::{
     AuditEvent as ControlplaneAuditEvent, AuditFindingType, AuditStore,
 };
-use firewall::controlplane::wiretap::{DnsMap, WiretapHub};
-use firewall::controlplane::PolicyStore;
-use firewall::dataplane::{AuditEvent, AuditEventType, WiretapEvent as DataplaneWiretapEvent};
+use neuwerk::controlplane::wiretap::{DnsMap, WiretapHub};
+use neuwerk::controlplane::PolicyStore;
+use neuwerk::dataplane::{AuditEvent, AuditEventType, WiretapEvent as DataplaneWiretapEvent};
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -29,7 +29,7 @@ pub fn spawn_event_bridges(
         .spawn(move || {
             while let Some(event) = wiretap_rx.blocking_recv() {
                 let hostname = dns_map_for_wiretap.lookup(event.dst_ip);
-                let enriched = firewall::controlplane::wiretap::WiretapEvent::from_dataplane(
+                let enriched = neuwerk::controlplane::wiretap::WiretapEvent::from_dataplane(
                     event,
                     hostname,
                     &node_id_for_wiretap,

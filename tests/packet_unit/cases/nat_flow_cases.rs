@@ -121,7 +121,7 @@ fn test_flow_end_emits_wiretap() {
 
 #[test]
 fn test_reverse_lookup() {
-    let mut nat = firewall::dataplane::NatTable::new();
+    let mut nat = neuwerk::dataplane::NatTable::new();
     let flow = FlowKey {
         src_ip: Ipv4Addr::new(10, 0, 0, 3),
         dst_ip: Ipv4Addr::new(8, 8, 8, 8),
@@ -130,7 +130,7 @@ fn test_reverse_lookup() {
         proto: 17,
     };
     let external_port = nat.get_or_create(&flow, 0).unwrap();
-    let reverse = firewall::dataplane::ReverseKey {
+    let reverse = neuwerk::dataplane::ReverseKey {
         external_port,
         remote_ip: flow.dst_ip,
         remote_port: flow.dst_port,
@@ -239,7 +239,7 @@ fn established_udp_flow_is_dropped_after_policy_generation_denies_it() {
                 tls: None,
             },
             action: RuleAction::Allow,
-            mode: firewall::dataplane::policy::RuleMode::Enforce,
+            mode: neuwerk::dataplane::policy::RuleMode::Enforce,
         }],
         default_action: None,
     };
@@ -294,7 +294,7 @@ fn established_udp_flow_is_dropped_after_policy_generation_denies_it() {
     assert!(!allowlist.contains(dst_ip));
     assert_eq!(
         updated_snapshot.evaluate(
-            &firewall::dataplane::policy::PacketMeta {
+            &neuwerk::dataplane::policy::PacketMeta {
                 src_ip: flow.src_ip,
                 dst_ip: flow.dst_ip,
                 proto: flow.proto,
@@ -306,7 +306,7 @@ fn established_udp_flow_is_dropped_after_policy_generation_denies_it() {
             None,
             None,
         ),
-        firewall::dataplane::policy::PolicyDecision::Deny
+        neuwerk::dataplane::policy::PolicyDecision::Deny
     );
     assert_eq!(
         state.flows.get_entry(&flow).unwrap().policy_generation,

@@ -44,18 +44,18 @@ wait_ready() {
   return 1
 }
 
-echo "waiting for all firewall instances to become ready"
+echo "waiting for all neuwerk instances to become ready"
 local_any=0
 for ip in $FW_MGMT_IPS; do
   local_any=1
   echo "ready check: ${ip}"
   if ! wait_ready "$ip"; then
-    echo "timeout waiting for firewall readiness on ${ip}" >&2
+    echo "timeout waiting for neuwerk readiness on ${ip}" >&2
     exit 1
   fi
 done
 if [ "$local_any" -eq 0 ]; then
-  echo "no firewall management IPs supplied" >&2
+  echo "no neuwerk management IPs supplied" >&2
   exit 1
 fi
 

@@ -1,4 +1,4 @@
-use firewall::dataplane::Packet;
+use neuwerk::dataplane::Packet;
 use tracing::warn;
 
 pub fn parse_truthy_flag(raw: &str) -> bool {

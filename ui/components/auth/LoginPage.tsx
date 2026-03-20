@@ -56,7 +56,7 @@ export function LoginPage() {
       >
         <div className="mb-6">
           <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--accent)' }}>
-            Neuwerk Firewall
+            Neuwerk
           </p>
           <h2 className="text-2xl font-semibold" style={{ color: 'var(--text)' }}>Sign in</h2>
           <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>

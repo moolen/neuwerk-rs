@@ -1,10 +1,10 @@
 ---
 title: Deploy A Single Node
-description: Bring up one firewall node, verify it is reachable, and confirm the management surfaces are live.
+description: Bring up one Neuwerk node, verify it is reachable, and confirm the management surfaces are live.
 order: 1
 ---
 
-This tutorial gets a single firewall node running with the smallest supported shape: one process,
+This tutorial gets a single Neuwerk node running with the smallest supported shape: one process,
 no cluster replication, one management interface, and one data-plane interface.
 
 If you are unsure whether you should be thinking in terms of image requirements or binary
@@ -12,7 +12,7 @@ requirements, read [Requirements](/docs/deployment/requirements) first.
 
 You will finish with:
 
-- the firewall process running
+- the Neuwerk process running
 - the management HTTPS endpoint answering
 - the metrics endpoint answering
 - enough context to add your first policy safely
@@ -29,15 +29,15 @@ Have these values ready:
 Important constraints:
 
 - the management and data-plane interfaces must be different
-- DNS policy depends on the firewall receiving client DNS traffic
+- DNS policy depends on the Neuwerk receiving client DNS traffic
 - the smallest deployment shape still runs both the control plane and the dataplane
 
-## Start The Firewall
+## Start The Neuwerk
 
 The smallest accepted command shape is:
 
 ```text
-firewall \
+neuwerk \
   --management-interface mgmt0 \
   --data-plane-interface data0 \
   --dns-target-ip 10.0.0.53 \

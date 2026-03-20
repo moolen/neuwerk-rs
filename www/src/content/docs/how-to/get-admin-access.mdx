@@ -37,15 +37,15 @@ If you want to use the web UI, exchange the token for a session cookie:
 curl -sk \
   -H 'Content-Type: application/json' \
   -X POST \
-  https://firewall.example/api/v1/auth/token-login \
+  https://neuwerk.example/api/v1/auth/token-login \
   --data '{"token":"Bearer '"$NEUWERK_TOKEN"'"}'
 ```
 
-On success, the firewall sets the `neuwerk_auth` cookie and returns the decoded identity.
+On success, the Neuwerk sets the `neuwerk_auth` cookie and returns the decoded identity.
 
 ## Use SSO When It Is Already Configured
 
-If the firewall already has an SSO provider configured, use the normal UI login flow.
+If the Neuwerk already has an SSO provider configured, use the normal UI login flow.
 
 Admin access through SSO depends on the provider mapping rules. Your identity must match the
 configured admin subjects, groups, or email-domain rules for that provider.
@@ -64,7 +64,7 @@ RPC layer.
 Example:
 
 ```text
-firewall auth token mint \
+neuwerk auth token mint \
   --sub operator@example.com \
   --roles admin \
   --cluster-addr 10.0.0.11:9600

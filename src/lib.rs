@@ -1,4 +1,4 @@
-extern crate self as firewall;
+extern crate self as neuwerk;
 
 pub mod controlplane;
 pub mod dataplane;

@@ -48,7 +48,7 @@ impl RaftTlsConfig {
 }
 
 pub mod proto {
-    tonic::include_proto!("firewall.cluster");
+    tonic::include_proto!("neuwerk.cluster");
 }
 
 pub type WiretapStream =

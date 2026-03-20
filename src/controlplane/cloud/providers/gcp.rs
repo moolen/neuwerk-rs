@@ -141,7 +141,7 @@ impl GcpProvider {
         _filter: &DiscoveryFilter,
     ) -> Result<Vec<SubnetRef>, CloudError> {
         // GCP MIG integration is lifecycle-only in ILB steering mode.
-        // Route ownership stays external to the firewall integration.
+        // Route ownership stays external to the Neuwerk integration.
         Ok(Vec::new())
     }
 

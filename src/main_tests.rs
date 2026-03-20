@@ -77,7 +77,7 @@ fn parse_args_accepts_repeated_dns_flags() {
         "--dns-upstream".to_string(),
         "8.8.8.8:53".to_string(),
     ]);
-    let cfg = parse_args("firewall", args).expect("parse args");
+    let cfg = parse_args("neuwerk", args).expect("parse args");
     assert_eq!(cfg.dns_target_ips.len(), 2);
     assert_eq!(cfg.dns_upstreams.len(), 2);
 }
@@ -91,7 +91,7 @@ fn parse_args_accepts_csv_dns_flags() {
         "--dns-upstreams".to_string(),
         "1.1.1.1:53,8.8.8.8:53".to_string(),
     ]);
-    let cfg = parse_args("firewall", args).expect("parse args");
+    let cfg = parse_args("neuwerk", args).expect("parse args");
     assert_eq!(cfg.dns_target_ips.len(), 2);
     assert_eq!(cfg.dns_upstreams.len(), 2);
 }
@@ -107,7 +107,7 @@ fn parse_args_rejects_mixed_dns_target_forms() {
         "--dns-upstream".to_string(),
         "1.1.1.1:53".to_string(),
     ]);
-    let err = parse_args("firewall", args).expect_err("expected parse failure");
+    let err = parse_args("neuwerk", args).expect_err("expected parse failure");
     assert!(err.contains("cannot combine repeated --dns-target-ip"));
 }
 
@@ -122,7 +122,7 @@ fn parse_args_rejects_mixed_dns_upstream_forms() {
         "--dns-upstreams".to_string(),
         "8.8.8.8:53".to_string(),
     ]);
-    let err = parse_args("firewall", args).expect_err("expected parse failure");
+    let err = parse_args("neuwerk", args).expect_err("expected parse failure");
     assert!(err.contains("cannot combine repeated --dns-upstream"));
 }
 
@@ -137,7 +137,7 @@ fn parse_args_rejects_removed_dns_listen_flag() {
         "--dns-listen".to_string(),
         "10.0.0.1:53".to_string(),
     ]);
-    let err = parse_args("firewall", args).expect_err("expected parse failure");
+    let err = parse_args("neuwerk", args).expect_err("expected parse failure");
     assert!(err.contains("--dns-listen has been removed"));
 }
 
@@ -386,7 +386,7 @@ fn dpdk_shared_demux_observability_metrics_render() {
 
 #[test]
 fn dataplane_runtime_network_config_uses_safe_defaults() {
-    let cfg = parse_args("firewall", required_runtime_args()).expect("parse args");
+    let cfg = parse_args("neuwerk", required_runtime_args()).expect("parse args");
 
     let network = runtime::bootstrap::startup::build_dataplane_runtime_network_config(&cfg);
 
@@ -394,7 +394,7 @@ fn dataplane_runtime_network_config_uses_safe_defaults() {
     assert_eq!(network.internal_prefix, 32);
     assert_eq!(network.public_ip, Ipv4Addr::UNSPECIFIED);
     assert_eq!(network.data_port, 0);
-    assert_eq!(network.overlay.mode, firewall::dataplane::EncapMode::None);
+    assert_eq!(network.overlay.mode, neuwerk::dataplane::EncapMode::None);
     assert_eq!(network.overlay.udp_port, 0);
     assert_eq!(network.overlay.vni, None);
 }
@@ -412,7 +412,7 @@ fn dataplane_runtime_network_config_preserves_cli_overrides() {
         "--encap-vni".to_string(),
         "4242".to_string(),
     ]);
-    let cfg = parse_args("firewall", args).expect("parse args");
+    let cfg = parse_args("neuwerk", args).expect("parse args");
 
     let network = runtime::bootstrap::startup::build_dataplane_runtime_network_config(&cfg);
 
@@ -420,7 +420,7 @@ fn dataplane_runtime_network_config_preserves_cli_overrides() {
     assert_eq!(network.internal_prefix, 16);
     assert_eq!(network.public_ip, Ipv4Addr::new(203, 0, 113, 10));
     assert_eq!(network.data_port, 0);
-    assert_eq!(network.overlay.mode, firewall::dataplane::EncapMode::Vxlan);
+    assert_eq!(network.overlay.mode, neuwerk::dataplane::EncapMode::Vxlan);
     assert_eq!(network.overlay.udp_port, 10800);
     assert_eq!(network.overlay.vni, Some(4242));
 }

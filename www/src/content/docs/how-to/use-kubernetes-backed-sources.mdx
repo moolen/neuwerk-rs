@@ -29,7 +29,7 @@ POST /api/v1/integrations
 }
 ```
 
-The service-account token and CA certificate must allow the firewall to list and watch the objects
+The service-account token and CA certificate must allow the Neuwerk to list and watch the objects
 you plan to select.
 
 ## Step 2: Add A Kubernetes Selector To A Source Group
@@ -104,7 +104,7 @@ curl -sk \
   -H "Authorization: Bearer $NEUWERK_TOKEN" \
   -H "Content-Type: application/json" \
   -X PUT \
-  https://firewall.example/api/v1/policies/by-name/payments-egress \
+  https://neuwerk.example/api/v1/policies/by-name/payments-egress \
   --data @policy.json
 ```
 
@@ -141,7 +141,7 @@ dataplane errors.
 
 ## Warning
 
-This feature solves dynamic source resolution. It does not define how to deploy the firewall itself
+This feature solves dynamic source resolution. It does not define how to deploy the Neuwerk itself
 inside Kubernetes.
 
 ## Related Pages

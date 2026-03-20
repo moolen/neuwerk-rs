@@ -51,7 +51,7 @@ build {
       "NEUWERK_TARGET=${var.target}",
       "NEUWERK_USE_PREBUILT_ARTIFACTS=${var.use_prebuilt_artifacts}"
     ]
-    script = "${path.root}/scripts/build-firewall.sh"
+    script = "${path.root}/scripts/build-neuwerk.sh"
   }
 
   provisioner "shell" {

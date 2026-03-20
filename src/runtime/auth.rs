@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use firewall::controlplane::api_auth::DEFAULT_TTL_SECS;
-use firewall::controlplane::cluster::rpc::{AuthClient, RaftTlsConfig};
+use neuwerk::controlplane::api_auth::DEFAULT_TTL_SECS;
+use neuwerk::controlplane::cluster::rpc::{AuthClient, RaftTlsConfig};
 
 use crate::runtime::cli::{parse_socket, take_flag_value};
 

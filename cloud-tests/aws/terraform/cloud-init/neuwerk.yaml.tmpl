@@ -1,0 +1,436 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - dpdk
+  - dpdk-dev
+  - librte-net-ena24
+  - librte-meta-allpmds
+  - pciutils
+  - driverctl
+  - ethtool
+  - iproute2
+  - jq
+  - unzip
+  - curl
+  - ca-certificates
+  - python3
+
+write_files:
+  - path: /usr/local/bin/neuwerk-bootstrap.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      STATE_DIR="/var/lib/neuwerk"
+      BOOTSTRAP_MARKER="$STATE_DIR/bootstrap.complete"
+      ENV_FILE="/etc/neuwerk/neuwerk.env"
+
+      mkdir -p "$STATE_DIR"
+      mkdir -p "$(dirname "$ENV_FILE")"
+
+      log() { echo "[neuwerk-bootstrap] $*"; }
+
+      metadata_token() {
+        curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+          -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"
+      }
+
+      metadata_get() {
+        local token="$1"
+        local path="$2"
+        curl -fsS -H "X-aws-ec2-metadata-token: $token" "http://169.254.169.254/latest/meta-data/$path"
+      }
+
+      map_interfaces() {
+        local token="$1"
+        local macs mac mac_clean devnum
+        local mgmt_mac=""
+        local data_mac=""
+
+        macs=$(metadata_get "$token" "network/interfaces/macs/" | tr -d '\r')
+        for mac in $macs; do
+          mac_clean="$${mac%/}"
+          devnum=$(metadata_get "$token" "network/interfaces/macs/$mac/device-number" || true)
+          if [ "$devnum" = "0" ]; then
+            mgmt_mac="$mac_clean"
+          elif [ "$devnum" = "1" ]; then
+            data_mac="$mac_clean"
+          fi
+        done
+
+        if [ -z "$mgmt_mac" ] || [ -z "$data_mac" ]; then
+          log "failed to map ENIs from metadata: mgmt=$mgmt_mac data=$data_mac"
+          exit 1
+        fi
+
+        cat > /etc/netplan/50-neuwerk.yaml <<EOF_NETPLAN
+      network:
+        version: 2
+        ethernets:
+          mgmt0:
+            match:
+              macaddress: "$mgmt_mac"
+            set-name: "mgmt0"
+            dhcp4: true
+            dhcp6: false
+            dhcp4-overrides:
+              route-metric: 100
+          data0:
+            match:
+              macaddress: "$data_mac"
+            set-name: "data0"
+            dhcp4: true
+            dhcp6: false
+            dhcp4-overrides:
+              route-metric: 200
+              use-dns: false
+            optional: true
+      EOF_NETPLAN
+        chmod 600 /etc/netplan/50-neuwerk.yaml
+        netplan apply || true
+      }
+
+      tag_network_interfaces() {
+        local token="$1"
+        local macs mac mac_clean devnum eni_id
+        if [ -z "${aws_region}" ] || ! command -v aws >/dev/null 2>&1; then
+          return 0
+        fi
+        macs=$(metadata_get "$token" "network/interfaces/macs/" | tr -d '\r')
+        for mac in $macs; do
+          mac_clean="$${mac%/}"
+          devnum=$(metadata_get "$token" "network/interfaces/macs/$mac/interface-id" || true)
+          eni_id="$devnum"
+          devnum=$(metadata_get "$token" "network/interfaces/macs/$mac/device-number" || true)
+          if [ -z "$eni_id" ] || [ -z "$devnum" ]; then
+            continue
+          fi
+          if [ "$devnum" = "0" ]; then
+            aws --region ${aws_region} ec2 create-tags --resources "$eni_id" --tags \
+              Key=neuwerk.io/management,Value=true \
+              Key=neuwerk.io/dataplane,Value=false >/dev/null 2>&1 || true
+          elif [ "$devnum" = "1" ]; then
+            aws --region ${aws_region} ec2 create-tags --resources "$eni_id" --tags \
+              Key=neuwerk.io/management,Value=false \
+              Key=neuwerk.io/dataplane,Value=true >/dev/null 2>&1 || true
+            aws --region ${aws_region} ec2 modify-network-interface-attribute \
+              --network-interface-id "$eni_id" \
+              --source-dest-check "{\"Value\":false}" >/dev/null 2>&1 || true
+          fi
+        done
+      }
+
+      dataplane_ip_from_metadata() {
+        local token="$1"
+        local macs mac devnum ip
+        macs=$(metadata_get "$token" "network/interfaces/macs/" | tr -d '\r')
+        for mac in $macs; do
+          devnum=$(metadata_get "$token" "network/interfaces/macs/$mac/device-number" || true)
+          if [ "$devnum" = "1" ]; then
+            ip=$(metadata_get "$token" "network/interfaces/macs/$mac/local-ipv4s" | head -n1 || true)
+            if [ -n "$ip" ]; then
+              echo "$ip"
+              return 0
+            fi
+          fi
+        done
+        return 1
+      }
+
+      register_gwlb_target() {
+        local dataplane_ip="$1"
+        local attempt=0
+        if [ -z "${asg_target_group_arn}" ] || [ -z "$dataplane_ip" ]; then
+          return 0
+        fi
+        for attempt in $(seq 1 10); do
+          if aws --region ${aws_region} elbv2 register-targets \
+            --target-group-arn "${asg_target_group_arn}" \
+            --targets "Id=$dataplane_ip,Port=6081" >/dev/null 2>&1; then
+            return 0
+          fi
+          sleep 2
+        done
+        log "failed to register dataplane target ip=$dataplane_ip into GWLB target group"
+        return 1
+      }
+
+      bind_data_nic() {
+        local pci=""
+        local selector=""
+        local devbind=""
+        for _ in $(seq 1 15); do
+          ip link show data0 >/dev/null 2>&1 && break
+          sleep 1
+        done
+        if ! ip link show data0 >/dev/null 2>&1; then
+          log "data0 did not appear after netplan apply"
+          exit 1
+        fi
+
+        pci=$(readlink -f /sys/class/net/data0/device 2>/dev/null | awk -F/ '{print $NF}')
+        if [ -x /usr/bin/dpdk-devbind.py ]; then
+          devbind="/usr/bin/dpdk-devbind.py"
+        elif [ -x /usr/share/dpdk/usertools/dpdk-devbind.py ]; then
+          devbind="/usr/share/dpdk/usertools/dpdk-devbind.py"
+        fi
+
+        if [ -n "$pci" ] && [ -n "$devbind" ]; then
+          # On some AWS kernels there is no IOMMU group, so vfio needs no-IOMMU mode.
+          modprobe -r vfio_pci vfio_iommu_type1 vfio >/dev/null 2>&1 || true
+          modprobe vfio enable_unsafe_noiommu_mode=1 >/dev/null 2>&1 || true
+          modprobe vfio-pci >/dev/null 2>&1 || true
+          ip link set data0 down || true
+          if ! python3 "$devbind" -b vfio-pci "$pci"; then
+            log "failed to bind dataplane NIC $pci to vfio-pci"
+            exit 1
+          fi
+          if ! python3 "$devbind" --status | grep -q "$pci.*drv=vfio-pci"; then
+            log "dataplane NIC $pci is not bound to vfio-pci after devbind"
+            exit 1
+          fi
+          # Keep a stable logical selector after VFIO bind. The netdev disappears once bound,
+          # and dataplane runtime can safely fall back to single-port mapping in this topology.
+          selector="data0"
+        else
+          # Fallback path for environments without devbind tooling.
+          selector="data0"
+        fi
+
+        echo "$selector"
+      }
+
+      ensure_runtime_packages() {
+        local required=(
+          dpdk
+          dpdk-dev
+          librte-net-ena24
+          librte-meta-allpmds
+          pciutils
+          driverctl
+          ethtool
+          iproute2
+          jq
+          unzip
+          curl
+          ca-certificates
+          python3
+        )
+        local missing=()
+        local pkg=""
+        local attempt=0
+
+        for pkg in "$${required[@]}"; do
+          if ! dpkg-query -W -f='$${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+            missing+=("$pkg")
+          fi
+        done
+        if [ "$${#missing[@]}" -eq 0 ]; then
+          return 0
+        fi
+
+        export DEBIAN_FRONTEND=noninteractive
+        for attempt in 1 2 3; do
+          log "installing missing packages (attempt $${attempt}): $${missing[*]}"
+          apt-get update -y || true
+          if apt-get install -y "$${missing[@]}"; then
+            break
+          fi
+          sleep $((attempt * 2))
+        done
+
+        missing=()
+        for pkg in "$${required[@]}"; do
+          if ! dpkg-query -W -f='$${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+            missing+=("$pkg")
+          fi
+        done
+        if [ "$${#missing[@]}" -ne 0 ]; then
+          log "required packages still missing after retries: $${missing[*]}"
+          exit 1
+        fi
+      }
+
+      download_artifacts() {
+        if ! command -v aws >/dev/null 2>&1; then
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -y || true
+          apt-get install -y awscli || true
+        fi
+        if ! command -v aws >/dev/null 2>&1; then
+          local tmpdir
+          tmpdir=$(mktemp -d)
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "$tmpdir/awscliv2.zip"
+          unzip -q "$tmpdir/awscliv2.zip" -d "$tmpdir"
+          "$tmpdir/aws/install" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
+          rm -rf "$tmpdir"
+        fi
+        if ! command -v aws >/dev/null 2>&1; then
+          log "aws CLI installation failed"
+          exit 1
+        fi
+        aws --region ${aws_region} s3 cp "s3://${s3_bucket}/${s3_object}" /usr/local/bin/neuwerk
+        chmod +x /usr/local/bin/neuwerk
+%{ if runtime_enabled ~}
+        mkdir -p /opt/neuwerk/runtime
+        aws --region ${aws_region} s3 cp "s3://${s3_bucket}/${s3_runtime_object}" /tmp/dpdk-runtime.tar.gz
+        tar -xzf /tmp/dpdk-runtime.tar.gz -C /opt/neuwerk/runtime || true
+        # Some runtime bundles only ship versioned PMD sonames (e.g. *.so.26).
+        # DPDK PMD scanning expects bare *.so names in the PMD directory.
+        PMD_DIR="/opt/neuwerk/runtime/usr/lib/dpdk/pmds-26.0"
+        if [ -d "$PMD_DIR" ]; then
+          for sover in "$PMD_DIR"/*.so.*; do
+            [ -e "$sover" ] || continue
+            base="$${sover%%.so.*}.so"
+            if [ ! -e "$base" ]; then
+              ln -sf "$(basename "$sover")" "$base"
+            fi
+          done
+        fi
+%{ endif ~}
+      }
+
+      write_env() {
+        local data_selector="$1"
+        local mgmt_ip
+
+        mgmt_ip=$(ip -4 -o addr show dev mgmt0 | awk '{print $4}' | cut -d/ -f1 | head -n1)
+        if [ -z "$mgmt_ip" ]; then
+          log "failed to resolve management IP on mgmt0"
+          exit 1
+        fi
+
+        cat > "$ENV_FILE" <<EOF_ENV
+      MGMT_IFACE=mgmt0
+      MGMT_IP=$mgmt_ip
+      DATA_IFACE=$data_selector
+      CLOUD_PROVIDER=${cloud_provider}
+      INTERNAL_CIDR=${internal_cidr}
+      SNAT_MODE=${snat_mode}
+      NEUWERK_DPDK_WORKERS=${dpdk_workers}
+      NEUWERK_DPDK_FORCE_SHARED_RX_DEMUX=0
+      NEUWERK_DPDK_SINGLE_QUEUE_MODE=single
+      NEUWERK_DPDK_MBUF_DATA_ROOM=${dpdk_mbuf_data_room}
+%{ if dpdk_state_shards > 0 ~}
+      NEUWERK_DPDK_STATE_SHARDS=${dpdk_state_shards}
+%{ endif ~}
+%{ if dpdk_port_mtu > 0 ~}
+      NEUWERK_DPDK_PORT_MTU=${dpdk_port_mtu}
+%{ endif ~}
+%{ if dpdk_queue_override > 0 ~}
+      NEUWERK_DPDK_QUEUE_OVERRIDE=${dpdk_queue_override}
+%{ endif ~}
+%{ if use_gwlb ~}
+      NEUWERK_GWLB_TUNNEL_SRC_PORT=0
+      NEUWERK_GWLB_SWAP_TUNNELS=0
+%{ endif ~}
+      NEUWERK_DPDK_OVERLAY_DEBUG=%{ if dpdk_overlay_debug }1%{ else }0%{ endif }
+      EOF_ENV
+%{ if runtime_enabled ~}
+        if ldd /usr/local/bin/neuwerk | grep -Fq 'librte_eal.so.26'; then
+          cat >> "$ENV_FILE" <<'EOF_RUNTIME'
+      LD_LIBRARY_PATH=/opt/neuwerk/runtime/usr/lib:/opt/neuwerk/runtime/usr/lib/dpdk/pmds-26.0
+      RTE_EAL_PMD_PATH=/opt/neuwerk/runtime/usr/lib/dpdk/pmds-26.0
+      LD_PRELOAD="/opt/neuwerk/runtime/usr/lib/dpdk/pmds-26.0/librte_net_ena.so.26 /opt/neuwerk/runtime/usr/lib/librte_mempool_ring.so.26"
+      NEUWERK_DPDK_DISABLE_IN_MEMORY=1
+      NEUWERK_DPDK_SKIP_BUS_PCI_PRELOAD=1
+      EOF_RUNTIME
+        else
+          log "runtime bundle detected but neuwerk links non-.26 DPDK ABI; skipping runtime preload env"
+        fi
+%{ endif ~}
+      }
+
+      if [ -f "$BOOTSTRAP_MARKER" ]; then
+        exit 0
+      fi
+
+      sysctl -w vm.nr_hugepages=1024 || true
+      token=$(metadata_token)
+      map_interfaces "$token"
+      ensure_runtime_packages
+      download_artifacts
+      tag_network_interfaces "$token"
+%{ if use_gwlb ~}
+      dataplane_ip=$(dataplane_ip_from_metadata "$token" || true)
+      register_gwlb_target "$dataplane_ip"
+%{ endif ~}
+      data_selector=$(bind_data_nic)
+      write_env "$data_selector"
+      touch "$BOOTSTRAP_MARKER"
+
+      ethtool -K mgmt0 rx off tx off gro off gso off tso off lro off || true
+      ethtool -K data0 rx off tx off gro off gso off tso off lro off || true
+      systemctl daemon-reload
+      systemctl reset-failed neuwerk.service || true
+      systemctl restart neuwerk.service --no-block
+
+  - path: /etc/systemd/system/neuwerk-bootstrap.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Neuwerk bootstrap
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/neuwerk-bootstrap.sh
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/neuwerk.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Neuwerk
+      After=network-online.target neuwerk-bootstrap.service
+      Wants=network-online.target
+      Requires=neuwerk-bootstrap.service
+
+      [Service]
+      Type=simple
+      EnvironmentFile=/etc/neuwerk/neuwerk.env
+      ExecStart=/usr/local/bin/neuwerk \
+        --management-interface $${MGMT_IFACE} \
+        --data-plane-interface $${DATA_IFACE} \
+        --data-plane-mode dpdk \
+        --encap ${encap_mode} \
+%{ if use_gwlb ~}
+        --encap-udp-port 6081 \
+        --encap-mtu ${encap_mtu} \
+%{ endif ~}
+        --internal-cidr $${INTERNAL_CIDR} \
+%{ for dns_target in dns_target_ips ~}
+        --dns-target-ip ${dns_target} \
+%{ endfor ~}
+%{ for dns_upstream in dns_upstreams ~}
+        --dns-upstream ${dns_upstream} \
+%{ endfor ~}
+        --http-bind $${MGMT_IP}:8443 \
+        --metrics-bind 0.0.0.0:8080 \
+        --default-policy allow \
+        --snat $${SNAT_MODE} \
+        --cloud-provider $${CLOUD_PROVIDER} \
+        --integration ${integration_mode}%{ if integration_mode == "aws-asg" } \
+        --aws-region ${aws_region} \
+        --aws-vpc-id ${aws_vpc_id} \
+        --aws-asg-name ${aws_asg_name} \
+        --integration-drain-timeout-secs ${integration_drain_timeout_secs} \
+        --integration-reconcile-interval-secs ${integration_reconcile_interval_secs}%{ endif }
+      Restart=on-failure
+      RestartSec=2
+      LimitMEMLOCK=infinity
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable neuwerk-bootstrap.service
+  - systemctl enable neuwerk.service
+  - systemctl start neuwerk-bootstrap.service

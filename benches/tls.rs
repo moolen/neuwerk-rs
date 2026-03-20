@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use firewall::dataplane::tls::{TlsDirection, TlsFlowState};
+use neuwerk::dataplane::tls::{TlsDirection, TlsFlowState};
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyUsagePurpose};
 
 fn tls_record(content_type: u8, payload: &[u8]) -> Vec<u8> {

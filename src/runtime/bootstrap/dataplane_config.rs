@@ -121,7 +121,7 @@ pub async fn imds_dataplane_from_mgmt_ip(
     dataplane.ok_or_else(|| "imds dataplane nic not found".to_string())
 }
 
-pub fn dpdk_static_config_from_env() -> Result<Option<firewall::dataplane::DataplaneConfig>, String>
+pub fn dpdk_static_config_from_env() -> Result<Option<neuwerk::dataplane::DataplaneConfig>, String>
 {
     let ip_raw = match env::var("NEUWERK_DPDK_STATIC_IP") {
         Ok(value) => value,
@@ -155,7 +155,7 @@ pub fn dpdk_static_config_from_env() -> Result<Option<firewall::dataplane::Datap
     let mac = crate::runtime::cli::parse_mac(mac_raw.trim())
         .ok_or_else(|| format!("invalid NEUWERK_DPDK_STATIC_MAC={mac_raw}"))?;
 
-    Ok(Some(firewall::dataplane::DataplaneConfig {
+    Ok(Some(neuwerk::dataplane::DataplaneConfig {
         ip,
         prefix,
         gateway,

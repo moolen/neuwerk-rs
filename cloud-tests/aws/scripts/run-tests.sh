@@ -7,9 +7,9 @@ TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/aws_e2e}"
 DNS_ZONE="${DNS_ZONE:-upstream.test}"
 POLICY_FILE="${POLICY_FILE:-${ROOT_DIR}/policies/allow-upstream.json}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 RUN_THROUGHPUT="${RUN_THROUGHPUT:-1}"
-DEFAULT_RUNNER_TESTS="cidr_port_allow,cidr_port_deny,tls_sni_allow,tls_sni_deny,tls13_uninspectable_deny,policy_recheck_existing_flow,metrics_allow_deny_counters,udp_allow_5201,udp_deny_5201,tcp_allow_udp_deny_same_port,udp_policy_swap_allow_to_deny,icmp_echo_allow,icmp_echo_deny,policy_consistency_all_firewalls,metrics_protocol_specific_validation,dns_allowlist_allow,dns_allowlist_allow_tcp,dns_allowlist_deny,dns_allowlist_reset_on_rebuild"
+DEFAULT_RUNNER_TESTS="cidr_port_allow,cidr_port_deny,tls_sni_allow,tls_sni_deny,tls13_uninspectable_deny,policy_recheck_existing_flow,metrics_allow_deny_counters,udp_allow_5201,udp_deny_5201,tcp_allow_udp_deny_same_port,udp_policy_swap_allow_to_deny,icmp_echo_allow,icmp_echo_deny,policy_consistency_all_neuwerk_nodes,metrics_protocol_specific_validation,dns_allowlist_allow,dns_allowlist_allow_tcp,dns_allowlist_deny,dns_allowlist_reset_on_rebuild"
 
 if [ -z "${RUNNER_ARGS:-}" ]; then
   RUNNER_ARGS="--tests ${AWS_RUNNER_TESTS:-$DEFAULT_RUNNER_TESTS}"

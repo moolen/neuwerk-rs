@@ -1,20 +1,20 @@
 ---
 title: Traffic Flows
-description: The firewall handles DNS, cluster, and client traffic through different paths on purpose.
+description: The Neuwerk handles DNS, cluster, and client traffic through different paths on purpose.
 order: 4
 ---
 
 Not all traffic goes through the same path. Neuwerk treats four traffic classes differently because
 they have different security and operational requirements.
 
-## 1. DNS Queries Targeted At The Firewall
+## 1. DNS Queries Targeted At The Neuwerk
 
 Shape:
 
-- client -> firewall management IP:53
+- client -> Neuwerk management IP:53
 - UDP or TCP
 
-This is the hostname-policy path. The firewall parses the query, decides whether the source is
+This is the hostname-policy path. The Neuwerk parses the query, decides whether the source is
 allowed to resolve the requested hostname, and either:
 
 - returns `NXDOMAIN` locally, or
@@ -22,14 +22,14 @@ allowed to resolve the requested hostname, and either:
 
 This traffic is handled by the control-plane DNS proxy, not by the generic packet fast path.
 
-## 2. Firewall-Originated Upstream DNS Traffic
+## 2. Neuwerk-Originated Upstream DNS Traffic
 
 Shape:
 
-- firewall -> configured upstream resolver
+- Neuwerk -> configured upstream resolver
 - usually port `53`
 
-Once a client query is allowed, the firewall becomes the DNS client. It validates the upstream
+Once a client query is allowed, the Neuwerk becomes the DNS client. It validates the upstream
 response and uses successful IPv4 answers to populate the dynamic allowlist used by later packet
 decisions.
 
@@ -37,7 +37,7 @@ decisions.
 
 Shape:
 
-- firewall node -> firewall node
+- Neuwerk node -> Neuwerk node
 - main RPC path plus separate join path
 
 This traffic exists only when clustering is enabled. It carries replicated control-plane state and

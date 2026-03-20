@@ -45,7 +45,7 @@ async fn http_api_cluster_proxy_lifecycle() {
     let seed_metrics = Metrics::new().unwrap();
     let join_metrics = Metrics::new().unwrap();
 
-    let seed_runtime = firewall::controlplane::cluster::run_cluster_tasks(
+    let seed_runtime = neuwerk::controlplane::cluster::run_cluster_tasks(
         seed_cfg,
         None,
         Some(seed_metrics.clone()),
@@ -53,7 +53,7 @@ async fn http_api_cluster_proxy_lifecycle() {
     .await
     .unwrap()
     .unwrap();
-    let join_runtime = firewall::controlplane::cluster::run_cluster_tasks(
+    let join_runtime = neuwerk::controlplane::cluster::run_cluster_tasks(
         join_cfg,
         None,
         Some(join_metrics.clone()),
@@ -370,7 +370,7 @@ async fn http_api_wiretap_stream_aggregates_cluster() {
     let seed_metrics_registry = Metrics::new().unwrap();
     let join_metrics_registry = Metrics::new().unwrap();
 
-    let seed_runtime = firewall::controlplane::cluster::run_cluster_tasks(
+    let seed_runtime = neuwerk::controlplane::cluster::run_cluster_tasks(
         seed_cfg,
         Some(seed_wiretap.clone()),
         Some(seed_metrics_registry.clone()),
@@ -378,7 +378,7 @@ async fn http_api_wiretap_stream_aggregates_cluster() {
     .await
     .unwrap()
     .unwrap();
-    let join_runtime = firewall::controlplane::cluster::run_cluster_tasks(
+    let join_runtime = neuwerk::controlplane::cluster::run_cluster_tasks(
         join_cfg,
         Some(join_wiretap.clone()),
         Some(join_metrics_registry.clone()),

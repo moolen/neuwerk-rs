@@ -1,10 +1,10 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
-use firewall::controlplane;
-use firewall::controlplane::cloud::types::IntegrationMode;
-use firewall::dataplane::policy::DefaultPolicy;
-use firewall::dataplane::{EncapMode, SnatMode, SoftMode};
+use neuwerk::controlplane;
+use neuwerk::controlplane::cloud::types::IntegrationMode;
+use neuwerk::dataplane::policy::DefaultPolicy;
+use neuwerk::dataplane::{EncapMode, SnatMode, SoftMode};
 
 #[derive(Debug)]
 pub struct CliConfig {

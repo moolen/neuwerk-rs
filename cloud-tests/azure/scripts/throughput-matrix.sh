@@ -5,7 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/azure_e2e}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 COMMON_MATRIX_RUNNER="${ROOT_DIR}/../common/run-throughput-matrix.sh"
 CONFIGURE_POLICY_SCRIPT="${ROOT_DIR}/scripts/configure-policy.sh"
 POLICY_FILE="${POLICY_FILE:-${ROOT_DIR}/policies/allow-upstream.json}"
@@ -15,7 +15,7 @@ FW_VCPU="${FW_VCPU:-4}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${ROOT_DIR}/artifacts/throughput-matrix-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 # Azure-first baseline sizes (can be overridden by env)
-FIREWALL_INSTANCE_TYPE="${FIREWALL_INSTANCE_TYPE:-Standard_D4as_v5}"
+NEUWERK_INSTANCE_TYPE="${NEUWERK_INSTANCE_TYPE:-Standard_D4as_v5}"
 CONSUMER_INSTANCE_TYPE="${CONSUMER_INSTANCE_TYPE:-Standard_D16as_v5}"
 UPSTREAM_INSTANCE_TYPE="${UPSTREAM_INSTANCE_TYPE:-Standard_D16as_v5}"
 
@@ -44,10 +44,13 @@ az account show >/dev/null 2>&1 || {
 pushd "$TF_DIR" >/dev/null
 RESOURCE_GROUP="$(terraform output -raw resource_group)"
 JUMPBOX_IP="$(terraform output -raw jumpbox_public_ip)"
-UPSTREAM_IP="$(terraform output -raw upstream_private_ip)"
-UPSTREAM_VIP="$(terraform output -raw upstream_vip)"
+UPSTREAM_IP_DEFAULT="$(terraform output -raw upstream_private_ip)"
+UPSTREAM_VIP_DEFAULT="$(terraform output -raw upstream_vip)"
 mapfile -t CONSUMERS < <(terraform output -json consumer_private_ips | jq -r '.[]')
 popd >/dev/null
+
+UPSTREAM_IP="${UPSTREAM_IP_OVERRIDE:-$UPSTREAM_IP_DEFAULT}"
+UPSTREAM_VIP="${UPSTREAM_VIP_OVERRIDE:-$UPSTREAM_VIP_DEFAULT}"
 
 if [ -z "$RESOURCE_GROUP" ] || [ -z "$JUMPBOX_IP" ] || [ -z "$UPSTREAM_IP" ] || [ "${#CONSUMERS[@]}" -eq 0 ]; then
   echo "missing required terraform outputs for throughput matrix" >&2
@@ -57,7 +60,7 @@ fi
 FIRST_CONSUMER="${CONSUMERS[0]}"
 FW_MGMT_IPS="$(TF_DIR="$TF_DIR" "$RESOLVE_FW_IPS" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ //; s/ $//')"
 if [ -z "$FW_MGMT_IPS" ]; then
-  echo "no firewall management IPs resolved" >&2
+  echo "no neuwerk management IPs resolved" >&2
   exit 1
 fi
 
@@ -82,9 +85,10 @@ FW_MGMT_IPS="$FW_MGMT_IPS" \
 KEY_PATH="$KEY_PATH" \
 SSH_USER="${SSH_USER:-ubuntu}" \
 RESOURCE_GROUP="$RESOURCE_GROUP" \
-FIREWALL_INSTANCE_TYPE="$FIREWALL_INSTANCE_TYPE" \
+NEUWERK_INSTANCE_TYPE="$NEUWERK_INSTANCE_TYPE" \
 CONSUMER_INSTANCE_TYPE="$CONSUMER_INSTANCE_TYPE" \
 UPSTREAM_INSTANCE_TYPE="$UPSTREAM_INSTANCE_TYPE" \
+CLIENT_BIND_IP="${CLIENT_BIND_IP:-}" \
 "$COMMON_MATRIX_RUNNER"
 
 echo "azure throughput matrix artifacts: ${ARTIFACT_DIR}"

@@ -1,6 +1,6 @@
 #![no_main]
 
-use firewall::dataplane::overlay::{decap, encap, EncapMode, OverlayConfig};
+use neuwerk::dataplane::overlay::{decap, encap, EncapMode, OverlayConfig};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

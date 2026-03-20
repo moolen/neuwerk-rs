@@ -5,20 +5,20 @@ resource "random_string" "suffix" {
 }
 
 locals {
-  name_suffix               = random_string.suffix.result
-  name_prefix               = "${var.name_prefix}-${local.name_suffix}"
-  firewall_igm              = "${local.name_prefix}-fw-mig"
-  bucket_name               = substr(replace(replace(lower("${var.name_prefix}-${local.name_suffix}"), "_", "-"), ".", "-"), 0, 63)
-  ssh_public_key            = file(var.ssh_public_key_path)
-  ssh_metadata              = "${var.admin_username}:${local.ssh_public_key}"
-  dns_target_ips            = length(var.dns_target_ips) > 0 ? var.dns_target_ips : ["$${MGMT_IP}"]
-  dns_upstreams             = length(var.dns_upstreams) > 0 ? var.dns_upstreams : ["${var.upstream_vm_ip}:53"]
-  firewall_mgmt_queue_count = max(1, var.firewall_mgmt_queue_count)
-  firewall_dataplane_queue_count = max(
+  name_suffix              = random_string.suffix.result
+  name_prefix              = "${var.name_prefix}-${local.name_suffix}"
+  neuwerk_igm              = "${local.name_prefix}-fw-mig"
+  bucket_name              = substr(replace(replace(lower("${var.name_prefix}-${local.name_suffix}"), "_", "-"), ".", "-"), 0, 63)
+  ssh_public_key           = file(var.ssh_public_key_path)
+  ssh_metadata             = "${var.admin_username}:${local.ssh_public_key}"
+  dns_target_ips           = length(var.dns_target_ips) > 0 ? var.dns_target_ips : ["$${MGMT_IP}"]
+  dns_upstreams            = length(var.dns_upstreams) > 0 ? var.dns_upstreams : ["${var.upstream_vm_ip}:53"]
+  neuwerk_mgmt_queue_count = max(1, var.neuwerk_mgmt_queue_count)
+  neuwerk_dataplane_queue_count = max(
     1,
-    var.firewall_total_nic_queue_count - local.firewall_mgmt_queue_count
+    var.neuwerk_total_nic_queue_count - local.neuwerk_mgmt_queue_count
   )
-  firewall_source_image = trimspace(var.firewall_source_image) != "" ? trimspace(var.firewall_source_image) : "projects/${var.image_project}/global/images/family/${var.image_family}"
+  neuwerk_source_image = trimspace(var.neuwerk_source_image) != "" ? trimspace(var.neuwerk_source_image) : "projects/${var.image_project}/global/images/family/${var.image_family}"
 }
 
 resource "google_compute_network" "main" {
@@ -75,40 +75,40 @@ resource "google_compute_router_nat" "nat" {
   source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
 }
 
-resource "google_service_account" "firewall" {
+resource "google_service_account" "neuwerk" {
   account_id   = substr(replace("${local.name_prefix}-fw", "_", "-"), 0, 30)
-  display_name = "Neuwerk GCP firewall"
+  display_name = "Neuwerk GCP service account"
 }
 
-resource "google_storage_bucket" "firewall" {
+resource "google_storage_bucket" "neuwerk" {
   name                        = local.bucket_name
   location                    = var.region
   uniform_bucket_level_access = true
   force_destroy               = true
 }
 
-resource "google_storage_bucket_object" "firewall" {
-  bucket = google_storage_bucket.firewall.name
-  name   = var.firewall_blob_name
-  source = var.firewall_binary_path
+resource "google_storage_bucket_object" "neuwerk" {
+  bucket = google_storage_bucket.neuwerk.name
+  name   = var.neuwerk_blob_name
+  source = var.neuwerk_binary_path
 }
 
-resource "google_storage_bucket_object" "firewall_dpdk_runtime" {
-  bucket = google_storage_bucket.firewall.name
-  name   = var.firewall_dpdk_runtime_blob_name
-  source = var.firewall_dpdk_runtime_bundle_path
+resource "google_storage_bucket_object" "neuwerk_dpdk_runtime" {
+  bucket = google_storage_bucket.neuwerk.name
+  name   = var.neuwerk_dpdk_runtime_blob_name
+  source = var.neuwerk_dpdk_runtime_bundle_path
 }
 
-resource "google_storage_bucket_iam_member" "firewall_reader" {
-  bucket = google_storage_bucket.firewall.name
+resource "google_storage_bucket_iam_member" "neuwerk_reader" {
+  bucket = google_storage_bucket.neuwerk.name
   role   = "roles/storage.objectViewer"
-  member = "serviceAccount:${google_service_account.firewall.email}"
+  member = "serviceAccount:${google_service_account.neuwerk.email}"
 }
 
-resource "google_project_iam_member" "firewall_compute_viewer" {
+resource "google_project_iam_member" "neuwerk_compute_viewer" {
   project = var.project_id
   role    = "roles/compute.viewer"
-  member  = "serviceAccount:${google_service_account.firewall.email}"
+  member  = "serviceAccount:${google_service_account.neuwerk.email}"
 }
 
 resource "google_compute_firewall" "allow_internal" {
@@ -145,7 +145,7 @@ resource "google_compute_firewall" "allow_ssh_from_jumpbox" {
   }
 
   source_ranges = [var.jumpbox_subnet_cidr]
-  target_tags   = ["neuwerk-firewall", "neuwerk-consumer", "neuwerk-upstream"]
+  target_tags   = ["neuwerk-node", "neuwerk-consumer", "neuwerk-upstream"]
 }
 
 resource "google_compute_firewall" "allow_health_checks" {
@@ -158,10 +158,10 @@ resource "google_compute_firewall" "allow_health_checks" {
   }
 
   source_ranges = ["35.191.0.0/16", "130.211.0.0/22"]
-  target_tags   = ["neuwerk-firewall", "neuwerk-upstream"]
+  target_tags   = ["neuwerk-node", "neuwerk-upstream"]
 }
 
-resource "google_compute_health_check" "firewall" {
+resource "google_compute_health_check" "neuwerk" {
   name = "${local.name_prefix}-fw-hc"
 
   tcp_health_check {
@@ -169,9 +169,9 @@ resource "google_compute_health_check" "firewall" {
   }
 }
 
-resource "google_compute_instance_template" "firewall" {
+resource "google_compute_instance_template" "neuwerk" {
   name_prefix    = "${local.name_prefix}-fw-tpl-"
-  machine_type   = var.firewall_machine_type
+  machine_type   = var.neuwerk_machine_type
   can_ip_forward = true
 
   lifecycle {
@@ -179,7 +179,7 @@ resource "google_compute_instance_template" "firewall" {
   }
 
   disk {
-    source_image = local.firewall_source_image
+    source_image = local.neuwerk_source_image
     auto_delete  = true
     boot         = true
     disk_size_gb = var.boot_disk_size_gb
@@ -189,56 +189,56 @@ resource "google_compute_instance_template" "firewall" {
   network_interface {
     subnetwork  = google_compute_subnetwork.dataplane.id
     nic_type    = "GVNIC"
-    queue_count = local.firewall_dataplane_queue_count
+    queue_count = local.neuwerk_dataplane_queue_count
   }
 
   network_interface {
     subnetwork  = google_compute_subnetwork.mgmt.id
     nic_type    = "GVNIC"
-    queue_count = local.firewall_mgmt_queue_count
+    queue_count = local.neuwerk_mgmt_queue_count
   }
 
   metadata = {
-    user-data = templatefile("${path.module}/cloud-init/firewall.yaml.tmpl", {
-      gcs_bucket            = google_storage_bucket.firewall.name
-      gcs_object            = google_storage_bucket_object.firewall.name
-      gcs_dpdk_object       = google_storage_bucket_object.firewall_dpdk_runtime.name
+    user-data = templatefile("${path.module}/cloud-init/neuwerk.yaml.tmpl", {
+      gcs_bucket            = google_storage_bucket.neuwerk.name
+      gcs_object            = google_storage_bucket_object.neuwerk.name
+      gcs_dpdk_object       = google_storage_bucket_object.neuwerk_dpdk_runtime.name
       dns_zone_name         = var.dns_zone_name
       dns_target_ips        = local.dns_target_ips
       dns_upstreams         = local.dns_upstreams
       internal_cidr         = var.consumer_subnet_cidr
-      snat_mode             = var.firewall_snat_mode
-      dpdk_workers          = var.firewall_dpdk_workers
+      snat_mode             = var.neuwerk_snat_mode
+      dpdk_workers          = var.neuwerk_dpdk_workers
       cloud_provider        = var.cloud_provider
       mgmt_subnet_cidr      = var.mgmt_subnet_cidr
       dataplane_subnet_cidr = var.dataplane_subnet_cidr
       vpc_cidr              = var.vpc_cidr
       gcp_project           = var.project_id
       gcp_region            = var.region
-      gcp_ig_name           = local.firewall_igm
+      gcp_ig_name           = local.neuwerk_igm
     })
     ssh-keys       = local.ssh_metadata
     enable-oslogin = "FALSE"
   }
 
   service_account {
-    email  = google_service_account.firewall.email
+    email  = google_service_account.neuwerk.email
     scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
 
   labels = var.tags
-  tags   = ["neuwerk-firewall", "neuwerk-dataplane"]
+  tags   = ["neuwerk-node", "neuwerk-dataplane"]
 }
 
-resource "google_compute_instance_group_manager" "firewall" {
-  name               = local.firewall_igm
+resource "google_compute_instance_group_manager" "neuwerk" {
+  name               = local.neuwerk_igm
   zone               = var.zone
   base_instance_name = "${local.name_prefix}-fw"
-  target_size        = var.firewall_instance_count
+  target_size        = var.neuwerk_instance_count
   wait_for_instances = false
 
   version {
-    instance_template = google_compute_instance_template.firewall.id
+    instance_template = google_compute_instance_template.neuwerk.id
   }
 
   update_policy {
@@ -249,7 +249,7 @@ resource "google_compute_instance_group_manager" "firewall" {
   }
 
   auto_healing_policies {
-    health_check      = google_compute_health_check.firewall.id
+    health_check      = google_compute_health_check.neuwerk.id
     initial_delay_sec = 120
   }
 }
@@ -259,11 +259,11 @@ resource "google_compute_region_backend_service" "dataplane" {
   region                = var.region
   load_balancing_scheme = "INTERNAL"
   protocol              = "UNSPECIFIED"
-  health_checks         = [google_compute_health_check.firewall.id]
+  health_checks         = [google_compute_health_check.neuwerk.id]
   network               = google_compute_network.main.id
 
   backend {
-    group = google_compute_instance_group_manager.firewall.instance_group
+    group = google_compute_instance_group_manager.neuwerk.instance_group
   }
 }
 

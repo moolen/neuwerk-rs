@@ -46,7 +46,9 @@ resource "azurerm_linux_virtual_machine" "consumer" {
   admin_username      = var.admin_username
   tags                = var.tags
 
-  network_interface_ids = [azurerm_network_interface.consumer[count.index].id]
+  network_interface_ids = [
+    azurerm_network_interface.consumer[count.index].id
+  ]
 
   admin_ssh_key {
     username   = var.admin_username

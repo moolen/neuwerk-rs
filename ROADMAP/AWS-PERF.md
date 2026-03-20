@@ -6,10 +6,10 @@ Scope: DPDK dataplane + AWS GWLB/GENEVE path (single AZ, desired=1, no ASG lifec
 
 ## Environment used
 
-- Firewall / consumer / upstream instances: `c6in.xlarge` (Intel, 4 vCPU)
+- Neuwerk / consumer / upstream instances: `c6in.xlarge` (Intel, 4 vCPU)
 - Jumpbox: `t3.small`
-- Traffic path: consumer -> GWLB endpoint -> firewall (DPDK) -> upstream
-- Firewall dataplane mode: `dpdk`
+- Traffic path: consumer -> GWLB endpoint -> Neuwerk (DPDK) -> upstream
+- Neuwerk dataplane mode: `dpdk`
 - Encapsulation: `geneve` (UDP/6081)
 - Runtime knobs (final):
   - `NEUWERK_DPDK_WORKERS=0` (auto -> 4 workers)
@@ -34,7 +34,7 @@ Code/runtime changes:
   - `NEUWERK_DPDK_PIN_STATE_SHARD_GUARD` now defaults to `false` when unset.
 
 Bench setup:
-- Same deployed AWS bench (`c6in.xlarge` firewall/consumer/upstream, single AZ).
+- Same deployed AWS bench (`c6in.xlarge` Neuwerk/consumer/upstream, single AZ).
 - Same matrix for both modes: `iperf3 -t 20`, `P=1/4/16`, `5` runs per `P`.
 - Artifacts:
   - Off: `cloud-tests/aws/artifacts/iperf-matrix-pinning-off-20260303T191552Z.csv`
@@ -89,8 +89,8 @@ Validation:
 - `cargo build --release --features dpdk`: pass
 
 Deployment note (important):
-- `terraform apply` updated S3 objects, but the running firewall VM did not automatically pull the new binary.
-- New binary was copied to the firewall VM (`/usr/local/bin/firewall`) and `firewall.service` was restarted before final benchmarking.
+- `terraform apply` updated S3 objects, but the running Neuwerk VM did not automatically pull the new binary.
+- New binary was copied to the Neuwerk VM (`/usr/local/bin/neuwerk`) and `neuwerk.service` was restarted before final benchmarking.
 
 Runtime log deltas after new binary restart:
 - Now logged:
@@ -129,7 +129,7 @@ Changes:
 
 Validation:
 - `cargo check --features dpdk`: pass
-- AWS Terraform deploy in `eu-central-1a`: pass (`c6in.xlarge` for firewall/consumer/upstream)
+- AWS Terraform deploy in `eu-central-1a`: pass (`c6in.xlarge` for Neuwerk/consumer/upstream)
 - `make health`: pass
 - `make policy-smoke`: pass
 - `make run-tests`: pass
@@ -215,7 +215,7 @@ Takeaway:
 Takeaway:
 - Multi-core scaling is real in current implementation; 4 workers materially outperform 2 workers.
 
-## Observations from firewall logs/metrics
+## Observations from Neuwerk logs/metrics
 
 - ENA PMD is in use (`librte_net_ena.so.26` preloaded).
 - RSS-related log signals:
@@ -231,7 +231,7 @@ Interpretation:
 ## Why throughput is still low vs "up to 25 Gbps"
 
 - Instance "up to" bandwidth is a theoretical ceiling under ideal traffic profiles and with an optimized dataplane.
-- Current path includes GWLB/GENEVE encap/decap overhead and full firewall processing.
+- Current path includes GWLB/GENEVE encap/decap overhead and full Neuwerk processing.
 - Packet path still alloc/copy heavy in places (not fully mbuf-native end-to-end).
 - Shared state synchronization still contributes measurable contention.
 - ENA RSS/offload capability behavior limits some tuning options.
@@ -266,7 +266,7 @@ Current status:
 - Separate "immediately after policy-smoke" vs "clean-start throughput-only" to remove run-order bias.
 
 5. Profile for top CPU consumers.
-- Capture `perf`/flamegraphs on firewall under `P=4` and `P=16`.
+- Capture `perf`/flamegraphs on Neuwerk under `P=4` and `P=16`.
 - Rank by CPU% and remove top 2-3 hotspots per iteration.
 
 6. Evaluate larger instance class after software-path wins.
@@ -277,7 +277,7 @@ Current status:
 - Health: `cd cloud-tests/aws && make health`
 - Full validation + throughput: `cd cloud-tests/aws && make run-tests`
 - Direct throughput: `iperf3 -J -c <upstream-ip> -p 5201 -t 20 -P <n>` (run from consumer via jumpbox)
-- Firewall metrics:
+- Neuwerk metrics:
   - `curl -s http://127.0.0.1:8080/metrics | egrep 'dp_state_lock|dpdk_rx_bytes_queue_total|dpdk_tx_bytes_queue_total|dpdk_xstat{name="(bw_in_allowance_exceeded|bw_out_allowance_exceeded|pps_allowance_exceeded)"}'`
 - Teardown:
-  - `cd cloud-tests/aws/terraform && terraform destroy -auto-approve -var 'firewall_binary_path=../../../target/release/firewall'`
+  - `cd cloud-tests/aws/terraform && terraform destroy -auto-approve -var 'neuwerk_binary_path=../../../target/release/neuwerk'`

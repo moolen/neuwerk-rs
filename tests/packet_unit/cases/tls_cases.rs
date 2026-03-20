@@ -34,7 +34,7 @@ fn test_tls_sni_allows_flow() {
             tls: Some(tls),
         },
         action: RuleAction::Allow,
-        mode: firewall::dataplane::policy::RuleMode::Enforce,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
     };
 
     let group = SourceGroup {
@@ -106,7 +106,7 @@ fn test_tls_application_data_before_handshake_denies() {
             tls: Some(tls),
         },
         action: RuleAction::Allow,
-        mode: firewall::dataplane::policy::RuleMode::Enforce,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
     };
 
     let group = SourceGroup {

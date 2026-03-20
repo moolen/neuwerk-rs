@@ -6,7 +6,7 @@ ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 POLICY_FILE="${1:-${ROOT_DIR}/policies/allow-upstream.json}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/azure_e2e}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 
 source "${ROOT_DIR}/../common/lib.sh"
 
@@ -26,7 +26,7 @@ fi
 pushd "$TF_DIR" >/dev/null
 RG=$(terraform output -raw resource_group)
 JUMPBOX_IP=$(terraform output -raw jumpbox_public_ip)
-FW_VMSS=$(terraform output -json firewall_vmss | jq -r '.name')
+FW_VMSS=$(terraform output -json neuwerk_vmss | jq -r '.name')
 CONSUMER_PUBLIC_IPS=$(terraform output -json consumer_public_ips 2>/dev/null | jq -r '.[]?' || true)
 popd >/dev/null
 
@@ -78,9 +78,13 @@ fi
 
 for ip in $FW_MGMT_IPS; do
   echo "pushing policy to ${ip}"
-  KEYSET_JSON=$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
-    "sudo cat /var/lib/neuwerk/http-tls/api-auth.json")
-  TOKEN=$(KEYSET_JSON="$KEYSET_JSON" python3 - <<'PY'
+  success=0
+  for attempt in $(seq 1 45); do
+    KEYSET_JSON="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
+      "sudo cat /var/lib/neuwerk/http-tls/api-auth.json 2>/dev/null || true" || true)"
+    TOKEN=""
+    if [ -n "$KEYSET_JSON" ]; then
+      TOKEN="$(KEYSET_JSON="$KEYSET_JSON" python3 - <<'PY'
 import base64
 import json
 import os
@@ -138,14 +142,40 @@ with tempfile.TemporaryDirectory() as td:
 token = f"{signing_input}.{sig_b64}"
 print(token)
 PY
-)
-  ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY_PATH" \
-    "${SSH_USER:-ubuntu}@${JUMPBOX_IP}" \
-    "curl -skf --connect-timeout 5 --max-time 15 --retry 5 --retry-delay 2 \
-      -X POST https://${ip}:8443/api/v1/policies \
-      -H 'Content-Type: application/json' \
-      -H 'Authorization: Bearer ${TOKEN}' \
-      --data-binary @-" < "$POLICY_PAYLOAD" >/dev/null
+)" || TOKEN=""
+    fi
+    AUTH_HEADER=""
+    if [ -n "$TOKEN" ]; then
+      AUTH_HEADER="-H 'Authorization: Bearer ${TOKEN}'"
+    fi
+    status="$(
+      ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY_PATH" \
+        "${SSH_USER:-ubuntu}@${JUMPBOX_IP}" \
+        "curl -sk -o /tmp/neuwerk-policy.response -w '%{http_code}' \
+          --connect-timeout 5 --max-time 15 --retry 2 --retry-delay 1 \
+          -X POST https://${ip}:8443/api/v1/policies \
+          -H 'Content-Type: application/json' \
+          ${AUTH_HEADER} \
+          --data-binary @-" < "$POLICY_PAYLOAD" || true
+    )"
+    status="$(echo "$status" | tail -n1 | tr -d '\r')"
+    if [[ "$status" =~ ^2[0-9][0-9]$ ]]; then
+      success=1
+      break
+    fi
+    if [ "$attempt" -eq 1 ] || [ "$attempt" -eq 10 ] || [ "$attempt" -eq 20 ] || [ "$attempt" -eq 30 ] || [ "$attempt" -eq 45 ]; then
+      token_state="absent"
+      if [ -n "$TOKEN" ]; then
+        token_state="present"
+      fi
+      echo "policy push retry ${attempt}/45 for ${ip} (http_status=${status:-none}, token=${token_state})"
+    fi
+    sleep 2
+  done
+  if [ "$success" -ne 1 ]; then
+    echo "failed to push policy to ${ip} after retries" >&2
+    exit 1
+  fi
  done
 
 if [ -n "$TEMP_POLICY" ]; then

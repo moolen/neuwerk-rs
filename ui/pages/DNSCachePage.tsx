@@ -19,7 +19,7 @@ export const DNSCachePage: React.FC = () => {
       <div>
         <h1 className="text-2xl font-bold" style={{ color: 'var(--text)' }}>DNS Cache</h1>
         <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
-          Hostname to IP mappings observed by the firewall
+          Hostname to IP mappings observed by Neuwerk
         </p>
       </div>
 

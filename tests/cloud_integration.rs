@@ -5,14 +5,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use firewall::controlplane::cloud::provider::{CloudError, CloudProvider};
-use firewall::controlplane::cloud::types::{
+use neuwerk::controlplane::cloud::provider::{CloudError, CloudProvider};
+use neuwerk::controlplane::cloud::types::{
     CapabilityResult, DiscoveryFilter, InstanceRef, IntegrationCapabilities, IntegrationConfig,
     RouteChange, RouteRef, SubnetRef, TerminationEvent,
 };
-use firewall::controlplane::cloud::{IntegrationManager, ReadyChecker};
-use firewall::controlplane::metrics::Metrics;
-use firewall::dataplane::DrainControl;
+use neuwerk::controlplane::cloud::{IntegrationManager, ReadyChecker};
+use neuwerk::controlplane::metrics::Metrics;
+use neuwerk::dataplane::DrainControl;
 
 #[derive(Clone)]
 struct MutableReady {
@@ -363,7 +363,7 @@ async fn reconcile_sets_drain_for_unassigned_local() {
     let instance_b = instance("i-b", Ipv4Addr::new(10, 0, 0, 2));
     let subnet = subnet("subnet-1");
 
-    let assignments = firewall::controlplane::cloud::compute_assignments(
+    let assignments = neuwerk::controlplane::cloud::compute_assignments(
         std::slice::from_ref(&subnet),
         &[instance_a.clone(), instance_b.clone()],
     );
@@ -414,7 +414,7 @@ async fn termination_event_routes_away_drains_and_emits_metrics() {
     let instance_a = instance("i-a", Ipv4Addr::new(10, 0, 0, 1));
     let instance_b = instance("i-b", Ipv4Addr::new(10, 0, 0, 2));
     let subnet = subnet("subnet-1");
-    let initial_assignments = firewall::controlplane::cloud::compute_assignments(
+    let initial_assignments = neuwerk::controlplane::cloud::compute_assignments(
         std::slice::from_ref(&subnet),
         &[instance_a.clone(), instance_b.clone()],
     );
@@ -536,7 +536,7 @@ async fn termination_completion_error_increments_error_metric() {
     let instance_a = instance("i-a", Ipv4Addr::new(10, 0, 0, 1));
     let instance_b = instance("i-b", Ipv4Addr::new(10, 0, 0, 2));
     let subnet = subnet("subnet-1");
-    let initial_assignments = firewall::controlplane::cloud::compute_assignments(
+    let initial_assignments = neuwerk::controlplane::cloud::compute_assignments(
         std::slice::from_ref(&subnet),
         &[instance_a.clone(), instance_b.clone()],
     );

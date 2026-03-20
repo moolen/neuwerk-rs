@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use firewall::controlplane::cluster::types::ClusterTypeConfig;
+use neuwerk::controlplane::cluster::types::ClusterTypeConfig;
 use openraft::RaftMetrics;
 
 pub async fn wait_for_voter(

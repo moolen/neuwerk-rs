@@ -22,15 +22,17 @@ DNS_ZONE="${DNS_ZONE:-upstream.test}"
 CLOUD_PROVIDER="${CLOUD_PROVIDER:-unknown}"
 SCENARIO="${SCENARIO:-l34_allow_webhooks}"
 RPS="${RPS:-500}"
-RAMP_SECONDS="${RAMP_SECONDS:-30}"
-STEADY_SECONDS="${STEADY_SECONDS:-45}"
+RAMP_SECONDS="${RAMP_SECONDS:-5}"
+STEADY_SECONDS="${STEADY_SECONDS:-10}"
 PAYLOAD_BYTES="${PAYLOAD_BYTES:-32768}"
 PRE_ALLOCATED_VUS="${PRE_ALLOCATED_VUS:-0}"
 MAX_VUS="${MAX_VUS:-0}"
 K6_NOFILE="${K6_NOFILE:-1048576}"
 CONNECTION_MODE="${CONNECTION_MODE:-keep_alive}"
 CONSUMER_LOCAL_IPS_JSON="${CONSUMER_LOCAL_IPS_JSON:-}"
-FIREWALL_THREAD_CPU_MONITOR="${FIREWALL_THREAD_CPU_MONITOR:-1}"
+NEUWERK_THREAD_CPU_MONITOR="${NEUWERK_THREAD_CPU_MONITOR:-1}"
+COLLECT_NEUWERK_METRICS="${COLLECT_NEUWERK_METRICS:-1}"
+COLLECT_CONSUMER_SOCKET_DIAG="${COLLECT_CONSUMER_SOCKET_DIAG:-1}"
 THREAD_MONITOR_INTERVAL_SECS="${THREAD_MONITOR_INTERVAL_SECS:-1}"
 SKIP_SETUP="${SKIP_SETUP:-0}"
 SETUP_SCRIPT="${SETUP_SCRIPT:-${SCRIPT_DIR}/http-perf-setup.sh}"
@@ -48,6 +50,11 @@ CONSUMER_INSTANCE_TYPE="${CONSUMER_INSTANCE_TYPE:-unknown}"
 UPSTREAM_INSTANCE_TYPE="${UPSTREAM_INSTANCE_TYPE:-unknown}"
 TLS_INTERCEPT_IO_TIMEOUT_SECS="${TLS_INTERCEPT_IO_TIMEOUT_SECS:-10}"
 TLS_INTERCEPT_H2_BODY_TIMEOUT_SECS="${TLS_INTERCEPT_H2_BODY_TIMEOUT_SECS:-30}"
+TLS_H2_MAX_CONCURRENT_STREAMS="${TLS_H2_MAX_CONCURRENT_STREAMS:-}"
+TLS_H2_MAX_REQUESTS_PER_CONNECTION="${TLS_H2_MAX_REQUESTS_PER_CONNECTION:-}"
+TLS_H2_POOL_SHARDS="${TLS_H2_POOL_SHARDS:-}"
+TLS_H2_DETAILED_METRICS="${TLS_H2_DETAILED_METRICS:-}"
+TLS_H2_SELECTION_INFLIGHT_WEIGHT="${TLS_H2_SELECTION_INFLIGHT_WEIGHT:-}"
 TLS_INTERCEPT_LISTEN_BACKLOG="${TLS_INTERCEPT_LISTEN_BACKLOG:-4096}"
 CONTROLPLANE_WORKER_THREADS="${CONTROLPLANE_WORKER_THREADS:-4}"
 DPDK_WORKERS="${DPDK_WORKERS:-}"
@@ -56,7 +63,7 @@ DPDK_SINGLE_QUEUE_MODE="${DPDK_SINGLE_QUEUE_MODE:-}"
 DPDK_FORCE_SHARED_RX_DEMUX="${DPDK_FORCE_SHARED_RX_DEMUX:-}"
 DPDK_HOUSEKEEPING_INTERVAL_PACKETS="${DPDK_HOUSEKEEPING_INTERVAL_PACKETS:-}"
 DPDK_HOUSEKEEPING_INTERVAL_US="${DPDK_HOUSEKEEPING_INTERVAL_US:-}"
-DPDK_PERF_MODE="${DPDK_PERF_MODE:-}"
+DPDK_PERF_MODE="${DPDK_PERF_MODE:-aggressive}"
 DPDK_PIN_HTTPS_OWNER="${DPDK_PIN_HTTPS_OWNER:-}"
 DPDK_SHARED_RX_OWNER_ONLY="${DPDK_SHARED_RX_OWNER_ONLY:-}"
 
@@ -266,12 +273,12 @@ ensure_tls_intercept_upstream_insecure() {
   for ip in $FW_MGMT_IPS; do
     echo "ensuring TLS intercept upstream verification mode is insecure on ${ip}"
     ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
-      "set -e; current=\$(sudo systemctl show firewall.service --property=Environment --value || true); if echo \"\$current\" | grep -q 'NEUWERK_TLS_INTERCEPT_UPSTREAM_VERIFY=insecure'; then exit 0; fi; sudo mkdir -p /etc/systemd/system/firewall.service.d; cat <<'EOC' | sudo tee /etc/systemd/system/firewall.service.d/10-tls-intercept-upstream-verify.conf >/dev/null
+      "set -e; current=\$(sudo systemctl show neuwerk.service --property=Environment --value || true); if echo \"\$current\" | grep -q 'NEUWERK_TLS_INTERCEPT_UPSTREAM_VERIFY=insecure'; then exit 0; fi; sudo mkdir -p /etc/systemd/system/neuwerk.service.d; cat <<'EOC' | sudo tee /etc/systemd/system/neuwerk.service.d/10-tls-intercept-upstream-verify.conf >/dev/null
 [Service]
 Environment=NEUWERK_TLS_INTERCEPT_UPSTREAM_VERIFY=insecure
 EOC
 sudo systemctl daemon-reload
-sudo systemctl restart firewall.service"
+sudo systemctl restart neuwerk.service"
   done
 }
 
@@ -280,12 +287,12 @@ ensure_tls_intercept_runtime_tuning() {
   for ip in $FW_MGMT_IPS; do
     echo "ensuring TLS intercept runtime tuning on ${ip}"
     ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
-      "env CONTROLPLANE_WORKER_THREADS='${CONTROLPLANE_WORKER_THREADS}' TLS_INTERCEPT_IO_TIMEOUT_SECS='${TLS_INTERCEPT_IO_TIMEOUT_SECS}' TLS_INTERCEPT_H2_BODY_TIMEOUT_SECS='${TLS_INTERCEPT_H2_BODY_TIMEOUT_SECS}' TLS_INTERCEPT_LISTEN_BACKLOG='${TLS_INTERCEPT_LISTEN_BACKLOG}' DPDK_WORKERS='${DPDK_WORKERS}' DPDK_ALLOW_AZURE_MULTIWORKER='${DPDK_ALLOW_AZURE_MULTIWORKER}' DPDK_SINGLE_QUEUE_MODE='${DPDK_SINGLE_QUEUE_MODE}' DPDK_FORCE_SHARED_RX_DEMUX='${DPDK_FORCE_SHARED_RX_DEMUX}' DPDK_HOUSEKEEPING_INTERVAL_PACKETS='${DPDK_HOUSEKEEPING_INTERVAL_PACKETS}' DPDK_HOUSEKEEPING_INTERVAL_US='${DPDK_HOUSEKEEPING_INTERVAL_US}' DPDK_PERF_MODE='${DPDK_PERF_MODE}' DPDK_PIN_HTTPS_OWNER='${DPDK_PIN_HTTPS_OWNER}' DPDK_SHARED_RX_OWNER_ONLY='${DPDK_SHARED_RX_OWNER_ONLY}' bash -s" <<'EOS'
+      "env CONTROLPLANE_WORKER_THREADS='${CONTROLPLANE_WORKER_THREADS}' TLS_INTERCEPT_IO_TIMEOUT_SECS='${TLS_INTERCEPT_IO_TIMEOUT_SECS}' TLS_INTERCEPT_H2_BODY_TIMEOUT_SECS='${TLS_INTERCEPT_H2_BODY_TIMEOUT_SECS}' TLS_H2_MAX_CONCURRENT_STREAMS='${TLS_H2_MAX_CONCURRENT_STREAMS}' TLS_H2_MAX_REQUESTS_PER_CONNECTION='${TLS_H2_MAX_REQUESTS_PER_CONNECTION}' TLS_H2_POOL_SHARDS='${TLS_H2_POOL_SHARDS}' TLS_H2_DETAILED_METRICS='${TLS_H2_DETAILED_METRICS}' TLS_H2_SELECTION_INFLIGHT_WEIGHT='${TLS_H2_SELECTION_INFLIGHT_WEIGHT}' TLS_INTERCEPT_LISTEN_BACKLOG='${TLS_INTERCEPT_LISTEN_BACKLOG}' DPDK_WORKERS='${DPDK_WORKERS}' DPDK_ALLOW_AZURE_MULTIWORKER='${DPDK_ALLOW_AZURE_MULTIWORKER}' DPDK_SINGLE_QUEUE_MODE='${DPDK_SINGLE_QUEUE_MODE}' DPDK_FORCE_SHARED_RX_DEMUX='${DPDK_FORCE_SHARED_RX_DEMUX}' DPDK_HOUSEKEEPING_INTERVAL_PACKETS='${DPDK_HOUSEKEEPING_INTERVAL_PACKETS}' DPDK_HOUSEKEEPING_INTERVAL_US='${DPDK_HOUSEKEEPING_INTERVAL_US}' DPDK_PERF_MODE='${DPDK_PERF_MODE}' DPDK_PIN_HTTPS_OWNER='${DPDK_PIN_HTTPS_OWNER}' DPDK_SHARED_RX_OWNER_ONLY='${DPDK_SHARED_RX_OWNER_ONLY}' bash -s" <<'EOS'
 set -euo pipefail
-path="/etc/systemd/system/firewall.service.d/11-tls-intercept-runtime-tuning.conf"
-env_file="/etc/neuwerk/firewall.env"
+path="/etc/systemd/system/neuwerk.service.d/11-tls-intercept-runtime-tuning.conf"
+env_file="/etc/neuwerk/neuwerk.env"
 dpdk_env_regex='^(NEUWERK_DPDK_WORKERS|NEUWERK_DPDK_ALLOW_AZURE_MULTIWORKER|NEUWERK_DPDK_SINGLE_QUEUE_MODE|NEUWERK_DPDK_FORCE_SHARED_RX_DEMUX|NEUWERK_DPDK_HOUSEKEEPING_INTERVAL_PACKETS|NEUWERK_DPDK_HOUSEKEEPING_INTERVAL_US|NEUWERK_DPDK_PERF_MODE|NEUWERK_DPDK_PIN_HTTPS_OWNER|NEUWERK_DPDK_SHARED_RX_OWNER_ONLY)='
-sudo mkdir -p /etc/systemd/system/firewall.service.d
+sudo mkdir -p /etc/systemd/system/neuwerk.service.d
 desired="$(cat <<EOC
 [Service]
 Environment=NEUWERK_CONTROLPLANE_WORKER_THREADS=${CONTROLPLANE_WORKER_THREADS}
@@ -294,6 +301,21 @@ Environment=NEUWERK_TLS_H2_BODY_TIMEOUT_SECS=${TLS_INTERCEPT_H2_BODY_TIMEOUT_SEC
 Environment=NEUWERK_TLS_INTERCEPT_LISTEN_BACKLOG=${TLS_INTERCEPT_LISTEN_BACKLOG}
 EOC
 )"
+if [ -n "${TLS_H2_MAX_REQUESTS_PER_CONNECTION}" ]; then
+  desired="${desired}"$'\n'"Environment=NEUWERK_TLS_H2_MAX_REQUESTS_PER_CONNECTION=${TLS_H2_MAX_REQUESTS_PER_CONNECTION}"
+fi
+if [ -n "${TLS_H2_MAX_CONCURRENT_STREAMS}" ]; then
+  desired="${desired}"$'\n'"Environment=NEUWERK_TLS_H2_MAX_CONCURRENT_STREAMS=${TLS_H2_MAX_CONCURRENT_STREAMS}"
+fi
+if [ -n "${TLS_H2_POOL_SHARDS}" ]; then
+  desired="${desired}"$'\n'"Environment=NEUWERK_TLS_H2_POOL_SHARDS=${TLS_H2_POOL_SHARDS}"
+fi
+if [ -n "${TLS_H2_DETAILED_METRICS}" ]; then
+  desired="${desired}"$'\n'"Environment=NEUWERK_TLS_H2_DETAILED_METRICS=${TLS_H2_DETAILED_METRICS}"
+fi
+if [ -n "${TLS_H2_SELECTION_INFLIGHT_WEIGHT}" ]; then
+  desired="${desired}"$'\n'"Environment=NEUWERK_TLS_H2_SELECTION_INFLIGHT_WEIGHT=${TLS_H2_SELECTION_INFLIGHT_WEIGHT}"
+fi
 if [ -n "${DPDK_WORKERS}" ]; then
   desired="${desired}"$'\n'"Environment=NEUWERK_DPDK_WORKERS=${DPDK_WORKERS}"
 fi
@@ -395,19 +417,19 @@ fi
 
 if [ "$changed" = "1" ]; then
   sudo systemctl daemon-reload
-  sudo systemctl restart firewall.service
+  sudo systemctl restart neuwerk.service
 fi
 
 pid=""
 for _ in $(seq 1 30); do
-  pid="$(pgrep -xo firewall || true)"
+  pid="$(pgrep -xo neuwerk || true)"
   if [ -n "$pid" ]; then
     break
   fi
   sleep 1
 done
 if [ -z "$pid" ]; then
-  echo "firewall process not found after runtime tuning update" >&2
+  echo "neuwerk process not found after runtime tuning update" >&2
   exit 1
 fi
 
@@ -417,7 +439,7 @@ verify_runtime_var() {
   local actual
   actual="$(sudo cat "/proc/${pid}/environ" | tr '\0' '\n' | awk -F= -v key="$key" '$1 == key {print substr($0, length(key) + 2)}' | tail -n1)"
   if [ "$actual" != "$expected" ]; then
-    echo "firewall runtime env mismatch for ${key}: expected '${expected}', got '${actual}'" >&2
+    echo "neuwerk runtime env mismatch for ${key}: expected '${expected}', got '${actual}'" >&2
     exit 1
   fi
 }
@@ -442,6 +464,21 @@ if [ -n "${DPDK_PIN_HTTPS_OWNER}" ]; then
 fi
 if [ -n "${DPDK_SHARED_RX_OWNER_ONLY}" ]; then
   verify_runtime_var "NEUWERK_DPDK_SHARED_RX_OWNER_ONLY" "${DPDK_SHARED_RX_OWNER_ONLY}"
+fi
+if [ -n "${TLS_H2_MAX_REQUESTS_PER_CONNECTION}" ]; then
+  verify_runtime_var "NEUWERK_TLS_H2_MAX_REQUESTS_PER_CONNECTION" "${TLS_H2_MAX_REQUESTS_PER_CONNECTION}"
+fi
+if [ -n "${TLS_H2_MAX_CONCURRENT_STREAMS}" ]; then
+  verify_runtime_var "NEUWERK_TLS_H2_MAX_CONCURRENT_STREAMS" "${TLS_H2_MAX_CONCURRENT_STREAMS}"
+fi
+if [ -n "${TLS_H2_POOL_SHARDS}" ]; then
+  verify_runtime_var "NEUWERK_TLS_H2_POOL_SHARDS" "${TLS_H2_POOL_SHARDS}"
+fi
+if [ -n "${TLS_H2_DETAILED_METRICS}" ]; then
+  verify_runtime_var "NEUWERK_TLS_H2_DETAILED_METRICS" "${TLS_H2_DETAILED_METRICS}"
+fi
+if [ -n "${TLS_H2_SELECTION_INFLIGHT_WEIGHT}" ]; then
+  verify_runtime_var "NEUWERK_TLS_H2_SELECTION_INFLIGHT_WEIGHT" "${TLS_H2_SELECTION_INFLIGHT_WEIGHT}"
 fi
 EOS
   done
@@ -513,11 +550,11 @@ if [ "$NEEDS_TLS_INTERCEPT_CA" = "1" ]; then
   ensure_tls_intercept_upstream_insecure
 fi
 
-echo "waiting for firewall readiness"
+echo "waiting for neuwerk readiness"
 for ip in $FW_MGMT_IPS; do
   echo "ready check: ${ip}"
   if ! wait_ready "$ip"; then
-    echo "firewall not ready: ${ip}" >&2
+    echo "neuwerk not ready: ${ip}" >&2
     exit 1
   fi
 done
@@ -542,9 +579,11 @@ if [ "$DENY_CHECK_EXPECT_FAIL" = "1" ] && [ -n "$DENY_CHECK_URL" ]; then
     "set -e; for _ in 1 2 3 4 5 6; do if curl -skf --max-time 20 -X POST -H 'Content-Type: application/json' --data '{\"probe\":true}' '${DENY_CHECK_URL}' >/dev/null; then sleep 2; continue; fi; exit 0; done; echo 'deny probe unexpectedly succeeded' >&2; exit 1"
 fi
 
-echo "collecting pre-run metrics"
-JUMPBOX_IP="$JUMPBOX_IP" KEY_PATH="$KEY_PATH" FW_MGMT_IPS="$FW_MGMT_IPS" SSH_USER="${SSH_USER:-ubuntu}" \
-  "$COLLECT_SCRIPT" pre "$ARTIFACT_DIR"
+if [ "$COLLECT_NEUWERK_METRICS" = "1" ]; then
+  echo "collecting pre-run metrics"
+  JUMPBOX_IP="$JUMPBOX_IP" KEY_PATH="$KEY_PATH" FW_MGMT_IPS="$FW_MGMT_IPS" SSH_USER="${SSH_USER:-ubuntu}" \
+    "$COLLECT_SCRIPT" pre "$ARTIFACT_DIR"
+fi
 
 run_id="${SCENARIO}-${CONNECTION_MODE}-p${PAYLOAD_BYTES}-rps${RPS}-$(date -u +%Y%m%dT%H%M%SZ)"
 cpu_monitor_seconds=$((RAMP_SECONDS + STEADY_SECONDS + 10))
@@ -562,19 +601,19 @@ start_cpu_monitor() {
   cpu_pids+=("$!")
 }
 
-start_firewall_thread_cpu_monitor() {
+start_neuwerk_thread_cpu_monitor() {
   local ip="$1"
   local safe_ip="${ip//./_}"
-  if [ "${FIREWALL_THREAD_CPU_MONITOR}" != "1" ]; then
+  if [ "${NEUWERK_THREAD_CPU_MONITOR}" != "1" ]; then
     return 0
   fi
   (
     ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
       "env MONITOR_SECS='${cpu_monitor_seconds}' MONITOR_INTERVAL_SECS='${THREAD_MONITOR_INTERVAL_SECS}' bash -s" <<'EOS'
 set -euo pipefail
-pid="$(sudo systemctl show firewall.service --property MainPID --value 2>/dev/null || true)"
+pid="$(sudo systemctl show neuwerk.service --property MainPID --value 2>/dev/null || true)"
 if [ -z "$pid" ] || [ "$pid" = "0" ]; then
-  pid="$(pgrep -xo firewall || true)"
+  pid="$(pgrep -xo neuwerk || true)"
 fi
 if [ -z "$pid" ] || [ "$pid" = "0" ]; then
   exit 0
@@ -588,14 +627,14 @@ while [ "$SECONDS" -lt "$end" ]; do
   sleep "$MONITOR_INTERVAL_SECS"
 done
 EOS
-  ) > "${ARTIFACT_DIR}/raw/thread-cpu-during.firewall.${safe_ip}.tsv" \
-    2> "${ARTIFACT_DIR}/raw/thread-cpu-during.firewall.${safe_ip}.err" &
+  ) > "${ARTIFACT_DIR}/raw/thread-cpu-during.neuwerk.${safe_ip}.tsv" \
+    2> "${ARTIFACT_DIR}/raw/thread-cpu-during.neuwerk.${safe_ip}.err" &
   cpu_pids+=("$!")
 }
 
 for ip in $FW_MGMT_IPS; do
-  start_cpu_monitor "firewall" "$ip"
-  start_firewall_thread_cpu_monitor "$ip"
+  start_cpu_monitor "neuwerk" "$ip"
+  start_neuwerk_thread_cpu_monitor "$ip"
 done
 for ip in "${CONSUMERS[@]}"; do
   start_cpu_monitor "consumer" "$ip"
@@ -663,8 +702,10 @@ EOS
   done
 }
 
-echo "collecting pre-run consumer socket diagnostics"
-collect_consumer_socket_diag pre
+if [ "$COLLECT_CONSUMER_SOCKET_DIAG" = "1" ]; then
+  echo "collecting pre-run consumer socket diagnostics"
+  collect_consumer_socket_diag pre
+fi
 
 consumer_count="${#CONSUMERS[@]}"
 base_rps=$((RPS / consumer_count))
@@ -781,12 +822,16 @@ for pid in "${cpu_pids[@]}"; do
   wait "$pid" || true
 done
 
-echo "collecting post-run consumer socket diagnostics"
-collect_consumer_socket_diag post
+if [ "$COLLECT_CONSUMER_SOCKET_DIAG" = "1" ]; then
+  echo "collecting post-run consumer socket diagnostics"
+  collect_consumer_socket_diag post
+fi
 
-echo "collecting post-run metrics"
-JUMPBOX_IP="$JUMPBOX_IP" KEY_PATH="$KEY_PATH" FW_MGMT_IPS="$FW_MGMT_IPS" SSH_USER="${SSH_USER:-ubuntu}" \
-  "$COLLECT_SCRIPT" post "$ARTIFACT_DIR"
+if [ "$COLLECT_NEUWERK_METRICS" = "1" ]; then
+  echo "collecting post-run metrics"
+  JUMPBOX_IP="$JUMPBOX_IP" KEY_PATH="$KEY_PATH" FW_MGMT_IPS="$FW_MGMT_IPS" SSH_USER="${SSH_USER:-ubuntu}" \
+    "$COLLECT_SCRIPT" post "$ARTIFACT_DIR"
+fi
 
 python3 - "${ARTIFACT_DIR}" <<'PY'
 import glob
@@ -796,8 +841,51 @@ import statistics
 import sys
 
 artifact_dir = sys.argv[1]
-pre_prom = os.path.join(artifact_dir, "firewall-metrics-pre.prom")
-post_prom = os.path.join(artifact_dir, "firewall-metrics-post.prom")
+pre_prom = os.path.join(artifact_dir, "neuwerk-metrics-pre.prom")
+post_prom = os.path.join(artifact_dir, "neuwerk-metrics-post.prom")
+
+FOCUS_METRIC_PREFIXES = (
+    "svc_http_requests_total",
+    "svc_fail_closed_total",
+    "svc_tls_intercept_errors_total",
+    "svc_tls_intercept_flows_total",
+    "svc_tls_intercept_inflight",
+    "svc_tls_intercept_phase_seconds_count",
+    "svc_tls_intercept_phase_seconds_sum",
+    "svc_tls_intercept_upstream_h2_pool_total",
+    "dp_flow_opens_total",
+    "dp_flow_closes_total",
+    "dp_active_flows",
+    "dpdk_rx_packets_total",
+    "dpdk_tx_packets_total",
+    "dpdk_rx_dropped_total",
+    "dpdk_tx_dropped_total",
+    "dpdk_service_lane_forward_packets_total",
+    "dpdk_service_lane_forward_queue_wait_seconds_count",
+    "dpdk_service_lane_forward_queue_wait_seconds_sum",
+    "dpdk_flow_steer_queue_wait_seconds_count",
+    "dpdk_flow_steer_queue_wait_seconds_sum",
+    "dp_state_lock_contended_total",
+    "dpdk_shared_io_lock_contended_total",
+)
+
+NSTAT_FOCUS_KEYS = (
+    "TcpExtListenDrops",
+    "TcpExtListenOverflows",
+    "TcpExtTCPBacklogDrop",
+    "TcpExtTCPReqQFullDrop",
+    "TcpExtTCPAbortOnMemory",
+    "TcpExtTCPSynRetrans",
+    "TcpExtTCPTimeouts",
+    "TcpExtTCPRcvQDrop",
+    "IpExtInDiscards",
+    "IpExtOutDiscards",
+)
+
+
+def metric_name_from_series(series_key):
+    return series_key.split("{", 1)[0]
+
 
 def read_prom_totals(path):
     totals = {}
@@ -819,19 +907,289 @@ def read_prom_totals(path):
             totals[metric] = totals.get(metric, 0.0) + value
     return totals
 
+
+def read_prom_series(path):
+    series = {}
+    if not os.path.exists(path):
+        return series
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if " " not in line:
+                continue
+            left, right = line.rsplit(" ", 1)
+            try:
+                value = float(right)
+            except ValueError:
+                continue
+            series[left] = value
+    return series
+
+
+def parse_neuwerk_ip_from_path(path, stage):
+    base = os.path.basename(path)
+    prefix = f"{stage}."
+    suffix = ".metrics.prom"
+    if not (base.startswith(prefix) and base.endswith(suffix)):
+        return None
+    ip_raw = base[len(prefix):-len(suffix)]
+    return ip_raw.replace("_", ".")
+
+
+def read_nstat(path):
+    counters = {}
+    if not os.path.exists(path):
+        return counters
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            key = parts[0]
+            try:
+                value = float(parts[1])
+            except ValueError:
+                continue
+            counters[key] = value
+    return counters
+
+
+def read_softnet(path):
+    totals = {"processed": 0, "dropped": 0, "time_squeezed": 0}
+    if not os.path.exists(path):
+        return totals
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            cols = line.split()
+            if len(cols) < 3:
+                continue
+            try:
+                totals["processed"] += int(cols[0], 16)
+                totals["dropped"] += int(cols[1], 16)
+                totals["time_squeezed"] += int(cols[2], 16)
+            except ValueError:
+                continue
+    return totals
+
+
+def read_ip_link(path):
+    interfaces = {}
+    if not os.path.exists(path):
+        return interfaces
+    current = None
+    expect_dir = None
+    headers = {"RX": [], "TX": []}
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            line = raw.rstrip("\n")
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped and stripped[0].isdigit() and ": " in stripped:
+                first = stripped.split(": ", 1)[1]
+                iface = first.split(":", 1)[0]
+                current = iface
+                interfaces.setdefault(current, {"RX": {}, "TX": {}})
+                expect_dir = None
+                continue
+            if current is None:
+                continue
+            if stripped.startswith("RX:"):
+                headers["RX"] = stripped.replace("RX:", "", 1).split()
+                expect_dir = "RX"
+                continue
+            if stripped.startswith("TX:"):
+                headers["TX"] = stripped.replace("TX:", "", 1).split()
+                expect_dir = "TX"
+                continue
+            if expect_dir in ("RX", "TX"):
+                values = stripped.split()
+                metric_names = headers.get(expect_dir, [])
+                for idx, name in enumerate(metric_names):
+                    if idx >= len(values):
+                        break
+                    try:
+                        interfaces[current][expect_dir][name] = float(values[idx])
+                    except ValueError:
+                        continue
+                expect_dir = None
+    return interfaces
+
+
+def summarize_ip_link(interfaces):
+    rx_packets = 0.0
+    rx_dropped = 0.0
+    tx_packets = 0.0
+    tx_dropped = 0.0
+    for name, stats in interfaces.items():
+        if name == "lo":
+            continue
+        rx = stats.get("RX", {})
+        tx = stats.get("TX", {})
+        rx_packets += float(rx.get("packets", 0.0))
+        rx_dropped += float(rx.get("dropped", 0.0))
+        tx_packets += float(tx.get("packets", 0.0))
+        tx_dropped += float(tx.get("dropped", 0.0))
+    return {
+        "rx_packets": rx_packets,
+        "rx_dropped": rx_dropped,
+        "tx_packets": tx_packets,
+        "tx_dropped": tx_dropped,
+    }
+
+
 pre = read_prom_totals(pre_prom)
 post = read_prom_totals(post_prom)
 keys = sorted(set(pre) | set(post))
 delta = {k: post.get(k, 0.0) - pre.get(k, 0.0) for k in keys}
 selected = {k: v for k, v in delta.items() if k.startswith(("dp_", "dpdk_", "dns_"))}
 
-with open(os.path.join(artifact_dir, "firewall-metrics-delta.json"), "w", encoding="utf-8") as out:
+with open(os.path.join(artifact_dir, "neuwerk-metrics-delta.json"), "w", encoding="utf-8") as out:
     json.dump({
         "pre_totals": pre,
         "post_totals": post,
         "delta_totals": delta,
         "selected_delta_totals": selected,
     }, out, indent=2, sort_keys=True)
+    out.write("\n")
+
+pre_instance_series = {}
+post_instance_series = {}
+for path in sorted(glob.glob(os.path.join(artifact_dir, "raw", "pre.*.metrics.prom"))):
+    ip = parse_neuwerk_ip_from_path(path, "pre")
+    if ip:
+        pre_instance_series[ip] = read_prom_series(path)
+for path in sorted(glob.glob(os.path.join(artifact_dir, "raw", "post.*.metrics.prom"))):
+    ip = parse_neuwerk_ip_from_path(path, "post")
+    if ip:
+        post_instance_series[ip] = read_prom_series(path)
+
+focus_series_by_instance = {}
+instance_metric_debug = []
+for ip in sorted(set(pre_instance_series) | set(post_instance_series)):
+    pre_series = pre_instance_series.get(ip, {})
+    post_series = post_instance_series.get(ip, {})
+    all_series = set(pre_series) | set(post_series)
+    delta_series = {}
+    for key in all_series:
+        delta_value = post_series.get(key, 0.0) - pre_series.get(key, 0.0)
+        if delta_value != 0:
+            delta_series[key] = delta_value
+        metric_name = metric_name_from_series(key)
+        if any(metric_name.startswith(prefix) for prefix in FOCUS_METRIC_PREFIXES):
+            focus_series_by_instance.setdefault(key, {})
+            focus_series_by_instance[key][ip] = delta_value
+    top_series = sorted(
+        [{"series": key, "delta": value} for key, value in delta_series.items()],
+        key=lambda item: abs(item["delta"]),
+        reverse=True,
+    )[:120]
+    instance_metric_debug.append(
+        {
+            "instance": ip,
+            "series_changed_count": len(delta_series),
+            "top_series_by_abs_delta": top_series,
+        }
+    )
+
+focus_series_imbalance = []
+for series_key, values_by_ip in sorted(focus_series_by_instance.items()):
+    if not values_by_ip:
+        continue
+    non_zero_abs = [abs(v) for v in values_by_ip.values() if abs(v) > 0]
+    if not non_zero_abs:
+        continue
+    max_ip, max_value = max(values_by_ip.items(), key=lambda item: abs(item[1]))
+    mean_abs = statistics.fmean(non_zero_abs)
+    imbalance_ratio = (abs(max_value) / mean_abs) if mean_abs > 0 else None
+    focus_series_imbalance.append(
+        {
+            "series": series_key,
+            "metric": metric_name_from_series(series_key),
+            "per_instance_delta": values_by_ip,
+            "max_instance": max_ip,
+            "max_abs_delta": abs(max_value),
+            "sum_delta": sum(values_by_ip.values()),
+            "sum_abs_delta": sum(abs(v) for v in values_by_ip.values()),
+            "non_zero_instances": len(non_zero_abs),
+            "imbalance_ratio_max_over_mean_abs": imbalance_ratio,
+        }
+    )
+focus_series_imbalance.sort(
+    key=lambda item: (
+        -(item.get("imbalance_ratio_max_over_mean_abs") or 0.0),
+        -abs(item.get("sum_abs_delta", 0.0)),
+    )
+)
+
+with open(os.path.join(artifact_dir, "neuwerk-metrics-per-instance-delta.json"), "w", encoding="utf-8") as out:
+    json.dump(
+        {
+            "instances": instance_metric_debug,
+            "focus_series_imbalance": focus_series_imbalance[:200],
+        },
+        out,
+        indent=2,
+        sort_keys=True,
+    )
+    out.write("\n")
+
+network_diag_instances = []
+for ip in sorted(set(pre_instance_series) | set(post_instance_series)):
+    safe_ip = ip.replace(".", "_")
+    pre_softnet = read_softnet(os.path.join(artifact_dir, "raw", f"pre.{safe_ip}.softnet_stat.txt"))
+    post_softnet = read_softnet(os.path.join(artifact_dir, "raw", f"post.{safe_ip}.softnet_stat.txt"))
+    pre_link = summarize_ip_link(read_ip_link(os.path.join(artifact_dir, "raw", f"pre.{safe_ip}.ip-link-s.txt")))
+    post_link = summarize_ip_link(read_ip_link(os.path.join(artifact_dir, "raw", f"post.{safe_ip}.ip-link-s.txt")))
+    pre_nstat = read_nstat(os.path.join(artifact_dir, "raw", f"pre.{safe_ip}.nstat.txt"))
+    post_nstat = read_nstat(os.path.join(artifact_dir, "raw", f"post.{safe_ip}.nstat.txt"))
+    nstat_focus = {}
+    for key in NSTAT_FOCUS_KEYS:
+        pre_value = pre_nstat.get(key, 0.0)
+        post_value = post_nstat.get(key, 0.0)
+        delta_value = post_value - pre_value
+        if pre_value != 0.0 or post_value != 0.0 or delta_value != 0.0:
+            nstat_focus[key] = {
+                "pre": pre_value,
+                "post": post_value,
+                "delta": delta_value,
+            }
+    network_diag_instances.append(
+        {
+            "instance": ip,
+            "softnet": {
+                "pre": pre_softnet,
+                "post": post_softnet,
+                "delta": {
+                    "processed": post_softnet["processed"] - pre_softnet["processed"],
+                    "dropped": post_softnet["dropped"] - pre_softnet["dropped"],
+                    "time_squeezed": post_softnet["time_squeezed"] - pre_softnet["time_squeezed"],
+                },
+            },
+            "ip_link_totals": {
+                "pre": pre_link,
+                "post": post_link,
+                "delta": {
+                    "rx_packets": post_link["rx_packets"] - pre_link["rx_packets"],
+                    "rx_dropped": post_link["rx_dropped"] - pre_link["rx_dropped"],
+                    "tx_packets": post_link["tx_packets"] - pre_link["tx_packets"],
+                    "tx_dropped": post_link["tx_dropped"] - pre_link["tx_dropped"],
+                },
+            },
+            "nstat_focus": nstat_focus,
+        }
+    )
+
+with open(os.path.join(artifact_dir, "neuwerk-network-diag-summary.json"), "w", encoding="utf-8") as out:
+    json.dump({"instances": network_diag_instances}, out, indent=2, sort_keys=True)
     out.write("\n")
 
 cpu_samples = []
@@ -884,7 +1242,7 @@ with open(os.path.join(artifact_dir, "cpu-all-during.json"), "w", encoding="utf-
     json.dump(cpu_samples, out, indent=2, sort_keys=True)
     out.write("\n")
 
-cpu_firewall_samples = [item for item in cpu_samples if item.get("role") == "firewall"]
+cpu_neuwerk_samples = [item for item in cpu_samples if item.get("role") == "neuwerk"]
 role_summary = {}
 for item in cpu_samples:
     role = item.get("role", "unknown")
@@ -899,8 +1257,8 @@ for role, summary in role_summary.items():
     if peaks:
         summary["cpu_used_pct_max_max"] = round(max(peaks), 3)
 
-with open(os.path.join(artifact_dir, "cpu-firewall-during.json"), "w", encoding="utf-8") as out:
-    json.dump(cpu_firewall_samples, out, indent=2, sort_keys=True)
+with open(os.path.join(artifact_dir, "cpu-neuwerk-during.json"), "w", encoding="utf-8") as out:
+    json.dump(cpu_neuwerk_samples, out, indent=2, sort_keys=True)
     out.write("\n")
 
 with open(os.path.join(artifact_dir, "cpu-role-summary.json"), "w", encoding="utf-8") as out:
@@ -908,9 +1266,9 @@ with open(os.path.join(artifact_dir, "cpu-role-summary.json"), "w", encoding="ut
     out.write("\n")
 
 thread_summaries = []
-thread_summary_file = os.path.join(artifact_dir, "firewall-thread-cpu-during.json")
-for path in sorted(glob.glob(os.path.join(artifact_dir, "raw", "thread-cpu-during.firewall.*.tsv"))):
-    ip = os.path.basename(path).replace("thread-cpu-during.firewall.", "").replace(".tsv", "").replace("_", ".")
+thread_summary_file = os.path.join(artifact_dir, "neuwerk-thread-cpu-during.json")
+for path in sorted(glob.glob(os.path.join(artifact_dir, "raw", "thread-cpu-during.neuwerk.*.tsv"))):
+    ip = os.path.basename(path).replace("thread-cpu-during.neuwerk.", "").replace(".tsv", "").replace("_", ".")
     threads = {}
     timestamps = set()
     snapshot_sizes = {}
@@ -998,7 +1356,7 @@ if top_thread_peaks:
 if top_thread_avgs:
     thread_role_summary["top_thread_cpu_pct_avg_max"] = round(max(top_thread_avgs), 3)
 
-with open(os.path.join(artifact_dir, "firewall-thread-cpu-summary.json"), "w", encoding="utf-8") as out:
+with open(os.path.join(artifact_dir, "neuwerk-thread-cpu-summary.json"), "w", encoding="utf-8") as out:
     json.dump(thread_role_summary, out, indent=2, sort_keys=True)
     out.write("\n")
 
@@ -1051,7 +1409,7 @@ with open(os.path.join(artifact_dir, "consumer-socket-summary.json"), "w", encod
     out.write("\n")
 PY
 
-python3 - "${ARTIFACT_DIR}" "${SCENARIO}" "${RPS}" "${RAMP_SECONDS}" "${STEADY_SECONDS}" "${UPSTREAM_VIP}" "${UPSTREAM_IP}" "${DNS_ZONE}" "${PAYLOAD_BYTES}" "${CONNECTION_MODE}" <<'PY'
+PER_CONSUMER_RPS_JSON="${per_consumer_rps_json}" python3 - "${ARTIFACT_DIR}" "${SCENARIO}" "${RPS}" "${RAMP_SECONDS}" "${STEADY_SECONDS}" "${UPSTREAM_VIP}" "${UPSTREAM_IP}" "${DNS_ZONE}" "${PAYLOAD_BYTES}" "${CONNECTION_MODE}" <<'PY'
 import glob
 import json
 import os
@@ -1067,6 +1425,8 @@ payload_i = int(payload_bytes)
 summary_files = sorted(glob.glob(os.path.join(artifact_dir, "load-summary.*.json")))
 req_count_total = 0.0
 req_rate_total = 0.0
+steady_req_count_total = 0.0
+steady_fail_count_total = 0.0
 error_fails = 0.0
 error_passes = 0.0
 error_rate_values = []
@@ -1078,6 +1438,22 @@ limit_needles = {
     "insufficient_vus": "Insufficient VUs",
     "nofile_limit": "too many open files",
 }
+
+offered_rps_by_consumer = {}
+offered_rps_raw = os.environ.get("PER_CONSUMER_RPS_JSON", "")
+if offered_rps_raw:
+    try:
+        offered_payload = json.loads(offered_rps_raw)
+        if isinstance(offered_payload, list):
+            for item in offered_payload:
+                if not isinstance(item, dict):
+                    continue
+                consumer_ip = item.get("ip")
+                rps_target = item.get("rps_target")
+                if isinstance(consumer_ip, str) and isinstance(rps_target, (int, float)):
+                    offered_rps_by_consumer[consumer_ip] = float(rps_target)
+    except json.JSONDecodeError:
+        pass
 
 
 def metric_values(metrics, name):
@@ -1097,6 +1473,10 @@ for path in summary_files:
     http_reqs = metric_values(metrics, "http_reqs")
     req_count_total += float(http_reqs.get("count", 0.0))
     req_rate_total += float(http_reqs.get("rate", 0.0))
+    steady_reqs = metric_values(metrics, "steady_requests")
+    steady_req_count_total += float(steady_reqs.get("count", 0.0))
+    steady_fails = metric_values(metrics, "steady_failures")
+    steady_fail_count_total += float(steady_fails.get("count", 0.0))
 
     failed = metric_values(metrics, "http_req_failed")
     if "value" in failed:
@@ -1117,6 +1497,7 @@ for path in summary_files:
 generator_limit_counts = {}
 worker_limit_counts = []
 worker_limit_index = {}
+per_consumer_stats = {}
 for path in sorted(glob.glob(os.path.join(artifact_dir, "raw", "*.k6.err")) + glob.glob(os.path.join(artifact_dir, "raw", "*.k6.out"))):
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
@@ -1154,7 +1535,7 @@ for path in sorted(glob.glob(os.path.join(artifact_dir, "raw", "*.k6.rc"))):
         )
 
 cpu_peak = None
-cpu_file = os.path.join(artifact_dir, "cpu-firewall-during.json")
+cpu_file = os.path.join(artifact_dir, "cpu-neuwerk-during.json")
 if os.path.exists(cpu_file):
     with open(cpu_file, "r", encoding="utf-8") as f:
         cpu_payload = json.load(f)
@@ -1167,6 +1548,149 @@ if error_rate_values:
 else:
     error_total = error_fails + error_passes
     error_rate = (error_fails / error_total) if error_total > 0 else 0.0
+
+steady_effective_rps = None
+if steady_i > 0 and steady_req_count_total > 0:
+    steady_effective_rps = steady_req_count_total / steady_i
+
+steady_error_rate = None
+if steady_req_count_total > 0:
+    steady_error_rate = steady_fail_count_total / steady_req_count_total
+
+for path in summary_files:
+    host = os.path.basename(path).replace("load-summary.", "").replace(".json", "")
+    with open(path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    metrics = payload.get("metrics", {})
+    http_reqs = metric_values(metrics, "http_reqs")
+    steady_reqs = metric_values(metrics, "steady_requests")
+    steady_fails = metric_values(metrics, "steady_failures")
+    failed = metric_values(metrics, "http_req_failed")
+
+    item = per_consumer_stats.setdefault(
+        host,
+        {
+            "consumer": host,
+            "offered_rps_target": offered_rps_by_consumer.get(host),
+            "requests_total": 0.0,
+            "requests_rate_total": 0.0,
+            "steady_requests_total": 0.0,
+            "steady_failures_total": 0.0,
+            "error_fails_total": 0.0,
+            "error_passes_total": 0.0,
+            "error_rate_values": [],
+        },
+    )
+    item["requests_total"] += float(http_reqs.get("count", 0.0))
+    item["requests_rate_total"] += float(http_reqs.get("rate", 0.0))
+    item["steady_requests_total"] += float(steady_reqs.get("count", 0.0))
+    item["steady_failures_total"] += float(steady_fails.get("count", 0.0))
+    if "value" in failed:
+        try:
+            item["error_rate_values"].append(float(failed.get("value", 0.0)))
+        except (TypeError, ValueError):
+            pass
+    else:
+        item["error_fails_total"] += float(failed.get("fails", 0.0))
+        item["error_passes_total"] += float(failed.get("passes", 0.0))
+
+per_consumer = []
+for host, item in sorted(per_consumer_stats.items()):
+    steady_effective = None
+    if steady_i > 0 and item["steady_requests_total"] > 0:
+        steady_effective = item["steady_requests_total"] / steady_i
+    if item["error_rate_values"]:
+        consumer_error_rate = statistics.fmean(item["error_rate_values"])
+    else:
+        error_total = item["error_fails_total"] + item["error_passes_total"]
+        consumer_error_rate = (item["error_fails_total"] / error_total) if error_total > 0 else 0.0
+    per_consumer.append(
+        {
+            "consumer": host,
+            "offered_rps_target": item["offered_rps_target"],
+            "effective_rps_overall": item["requests_rate_total"],
+            "effective_rps_steady": steady_effective,
+            "error_rate": consumer_error_rate,
+            "requests_total": item["requests_total"],
+            "steady_requests_total": item["steady_requests_total"],
+            "steady_failures_total": item["steady_failures_total"],
+        }
+    )
+
+thread_hotspot = {
+    "instances": 0,
+    "max_top_thread_cpu_pct_max": None,
+    "max_dpdk_worker_cpu_imbalance_ratio": None,
+    "per_instance": {},
+}
+thread_file = os.path.join(artifact_dir, "neuwerk-thread-cpu-during.json")
+if os.path.exists(thread_file):
+    try:
+        with open(thread_file, "r", encoding="utf-8") as f:
+            thread_payload = json.load(f)
+        if isinstance(thread_payload, list):
+            ratios = []
+            peaks = []
+            for inst in thread_payload:
+                if not isinstance(inst, dict):
+                    continue
+                instance_ip = inst.get("instance")
+                top_threads = inst.get("top_threads")
+                if not isinstance(instance_ip, str) or not isinstance(top_threads, list):
+                    continue
+                thread_hotspot["instances"] += 1
+                top_peak = None
+                if top_threads:
+                    top_peak = top_threads[0].get("cpu_pct_max")
+                    if isinstance(top_peak, (int, float)):
+                        peaks.append(float(top_peak))
+                dpdk_avgs = []
+                for t in top_threads:
+                    if not isinstance(t, dict):
+                        continue
+                    comm = t.get("comm")
+                    avg = t.get("cpu_pct_avg")
+                    if isinstance(comm, str) and comm.startswith("dpdk-worker") and isinstance(avg, (int, float)):
+                        dpdk_avgs.append(float(avg))
+                ratio = None
+                if dpdk_avgs:
+                    median_avg = statistics.median(dpdk_avgs)
+                    if median_avg > 0:
+                        ratio = max(dpdk_avgs) / median_avg
+                        ratios.append(ratio)
+                thread_hotspot["per_instance"][instance_ip] = {
+                    "top_thread_cpu_pct_max": top_peak,
+                    "dpdk_worker_cpu_imbalance_ratio": ratio,
+                }
+            if peaks:
+                thread_hotspot["max_top_thread_cpu_pct_max"] = max(peaks)
+            if ratios:
+                thread_hotspot["max_dpdk_worker_cpu_imbalance_ratio"] = max(ratios)
+    except (json.JSONDecodeError, OSError):
+        pass
+
+tls_client_accept_by_neuwerk_instance = {}
+tls_diag_file = os.path.join(artifact_dir, "neuwerk-metrics-per-instance-delta.json")
+if os.path.exists(tls_diag_file):
+    try:
+        with open(tls_diag_file, "r", encoding="utf-8") as f:
+            per_instance_diag = json.load(f)
+        focus = per_instance_diag.get("focus_series_imbalance", [])
+        if isinstance(focus, list):
+            for item in focus:
+                if not isinstance(item, dict):
+                    continue
+                series = item.get("series")
+                if not (isinstance(series, str) and "svc_tls_intercept_phase_seconds_count{phase=\"client_tls_accept\"}" in series):
+                    continue
+                deltas = item.get("per_instance_delta")
+                if not isinstance(deltas, dict):
+                    continue
+                for ip, value in deltas.items():
+                    if isinstance(ip, str) and isinstance(value, (int, float)):
+                        tls_client_accept_by_neuwerk_instance[ip] = float(value)
+    except (json.JSONDecodeError, OSError):
+        pass
 
 status = "pass"
 status_reason = "ok"
@@ -1211,13 +1735,21 @@ result = {
     },
     "results": {
         "requests_total": req_count_total,
-        "effective_rps": req_rate_total,
+        "requests_steady_total": steady_req_count_total if steady_req_count_total > 0 else None,
+        "effective_rps": steady_effective_rps if steady_effective_rps is not None else req_rate_total,
+        "effective_rps_overall": req_rate_total,
         "latency_p95_ms_max": max(p95_values) if p95_values else None,
         "latency_p99_ms_max": max(p99_values) if p99_values else None,
         "error_rate": error_rate,
-        "firewall_cpu_peak_pct": cpu_peak,
+        "steady_error_rate": steady_error_rate,
+        "neuwerk_cpu_peak_pct": cpu_peak,
+        "per_consumer": per_consumer,
     },
     "load_generator": load_generator,
+    "diagnostics": {
+        "thread_hotspot": thread_hotspot,
+        "tls_client_accept_by_neuwerk_instance": tls_client_accept_by_neuwerk_instance,
+    },
     "status": status,
     "status_reason": status_reason,
 }
@@ -1264,7 +1796,7 @@ jq -n \
   --argjson per_consumer_source_ips "$per_consumer_source_ips_json" \
   --arg connection_mode "$CONNECTION_MODE" \
   --argjson consumers "$(printf '%s\n' "${CONSUMERS[@]}" | jq -R . | jq -s .)" \
-  --argjson firewalls "$(printf '%s\n' $FW_MGMT_IPS | jq -R . | jq -s .)" \
+  --argjson neuwerk_nodes "$(printf '%s\n' $FW_MGMT_IPS | jq -R . | jq -s .)" \
   --argjson rps "$RPS" \
   --argjson ramp "$RAMP_SECONDS" \
   --argjson steady "$STEADY_SECONDS" \
@@ -1274,7 +1806,11 @@ jq -n \
   --argjson controlplane_worker_threads "$CONTROLPLANE_WORKER_THREADS" \
   --argjson tls_intercept_io_timeout_secs "$TLS_INTERCEPT_IO_TIMEOUT_SECS" \
   --argjson tls_intercept_h2_body_timeout_secs "$TLS_INTERCEPT_H2_BODY_TIMEOUT_SECS" \
+  --arg tls_h2_max_concurrent_streams "$TLS_H2_MAX_CONCURRENT_STREAMS" \
   --argjson tls_intercept_listen_backlog "$TLS_INTERCEPT_LISTEN_BACKLOG" \
+  --arg tls_h2_pool_shards "$TLS_H2_POOL_SHARDS" \
+  --arg tls_h2_detailed_metrics "$TLS_H2_DETAILED_METRICS" \
+  --arg tls_h2_selection_inflight_weight "$TLS_H2_SELECTION_INFLIGHT_WEIGHT" \
   --arg dpdk_workers "$DPDK_WORKERS" \
   --arg dpdk_allow_azure_multiworker "$DPDK_ALLOW_AZURE_MULTIWORKER" \
   --arg dpdk_single_queue_mode "$DPDK_SINGLE_QUEUE_MODE" \
@@ -1301,7 +1837,7 @@ jq -n \
     consumers: $consumers,
     per_consumer_rps_targets: $per_consumer_rps,
     per_consumer_source_ips: $per_consumer_source_ips,
-    firewalls: $firewalls,
+    neuwerk_nodes: $neuwerk_nodes,
     connection_mode: $connection_mode,
     rps_target: $rps,
     ramp_seconds: $ramp,
@@ -1313,7 +1849,11 @@ jq -n \
       controlplane_worker_threads: $controlplane_worker_threads,
       tls_intercept_io_timeout_secs: $tls_intercept_io_timeout_secs,
       tls_intercept_h2_body_timeout_secs: $tls_intercept_h2_body_timeout_secs,
+      tls_h2_max_concurrent_streams: ($tls_h2_max_concurrent_streams | if . == "" then null else tonumber end),
       tls_intercept_listen_backlog: $tls_intercept_listen_backlog,
+      tls_h2_pool_shards: ($tls_h2_pool_shards | if . == "" then null else tonumber end),
+      tls_h2_detailed_metrics: ($tls_h2_detailed_metrics | if . == "" then null else . end),
+      tls_h2_selection_inflight_weight: ($tls_h2_selection_inflight_weight | if . == "" then null else tonumber end),
       dpdk_workers: ($dpdk_workers | if . == "" then null else tonumber end),
       dpdk_allow_azure_multiworker: ($dpdk_allow_azure_multiworker | if . == "" then null else . end),
       dpdk_single_queue_mode: ($dpdk_single_queue_mode | if . == "" then null else . end),
@@ -1325,7 +1865,7 @@ jq -n \
       dpdk_shared_rx_owner_only: ($dpdk_shared_rx_owner_only | if . == "" then null else . end)
     },
     instance_types: {
-      firewall: $fw_instance_type,
+      neuwerk: $fw_instance_type,
       consumer: $consumer_instance_type,
       upstream: $upstream_instance_type
     }

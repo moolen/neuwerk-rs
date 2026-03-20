@@ -8,17 +8,17 @@ resource "azurerm_storage_account" "main" {
   tags                     = var.tags
 }
 
-resource "azurerm_storage_container" "firewall" {
+resource "azurerm_storage_container" "neuwerk" {
   name                  = var.container_name
   storage_account_id    = azurerm_storage_account.main.id
   container_access_type = "private"
 }
 
-resource "azurerm_storage_blob" "firewall" {
-  name                   = var.firewall_blob_name
+resource "azurerm_storage_blob" "neuwerk" {
+  name                   = var.neuwerk_blob_name
   storage_account_name   = azurerm_storage_account.main.name
-  storage_container_name = azurerm_storage_container.firewall.name
+  storage_container_name = azurerm_storage_container.neuwerk.name
   type                   = "Block"
-  source                 = var.firewall_binary_path
-  content_md5            = filemd5(var.firewall_binary_path)
+  source                 = var.neuwerk_binary_path
+  content_md5            = filemd5(var.neuwerk_binary_path)
 }

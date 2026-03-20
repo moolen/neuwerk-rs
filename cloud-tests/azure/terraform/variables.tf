@@ -34,16 +34,16 @@ variable "ssh_public_key_path" {
   description = "Path to SSH public key used by all VMs."
 }
 
-variable "firewall_binary_path" {
+variable "neuwerk_binary_path" {
   type        = string
-  default     = "./assets/firewall"
-  description = "Path to the firewall binary to upload to blob storage."
+  default     = "./assets/neuwerk-dpdk24"
+  description = "Path to the Neuwerk binary to upload to blob storage."
 }
 
-variable "firewall_blob_name" {
+variable "neuwerk_blob_name" {
   type        = string
-  default     = "firewall"
-  description = "Blob name for the firewall binary."
+  default     = "neuwerk"
+  description = "Blob name for the Neuwerk binary."
 }
 
 variable "vnet_cidr" {
@@ -84,26 +84,31 @@ variable "admin_cidr" {
   description = "CIDR allowed to SSH to the jumpbox."
 }
 
-variable "firewall_vmss_size" {
+variable "neuwerk_vmss_size" {
   type    = string
   default = "Standard_D2as_v5"
 }
 
-variable "firewall_snat_mode" {
+variable "neuwerk_snat_mode" {
   type        = string
   default     = "none"
-  description = "SNAT mode for firewall dataplane (none|auto|<ipv4>). Use none for internal UDR tests, auto when egressing to public networks."
+  description = "SNAT mode for neuwerk dataplane (none|auto|<ipv4>). Use none for internal UDR tests, auto when egressing to public networks."
 }
 
-variable "firewall_dpdk_workers" {
+variable "neuwerk_dpdk_workers" {
   type        = number
   default     = 0
-  description = "Override DPDK worker count (0 = auto via nproc)."
+  description = "Override DPDK worker count (0 = auto via neuwerk runtime worker selection)."
 }
 
 variable "upstream_vm_size" {
   type    = string
   default = "Standard_D2as_v5"
+}
+
+variable "upstream_count" {
+  type    = number
+  default = 1
 }
 
 variable "consumer_vm_size" {
@@ -158,13 +163,13 @@ variable "image_version" {
   description = "Marketplace image version."
 }
 
-variable "firewall_image_id" {
+variable "neuwerk_image_id" {
   type        = string
   default     = ""
-  description = "Optional custom managed image or shared gallery image version ID for the firewall VMSS only. When set, the firewall VMSS ignores the marketplace image_* variables and other VMs continue using them."
+  description = "Optional custom managed image or shared gallery image version ID for the Neuwerk VMSS only. When set, the Neuwerk VMSS ignores the marketplace image_* variables and other VMs continue using them."
 }
 
-variable "firewall_instance_count" {
+variable "neuwerk_instance_count" {
   type    = number
   default = 3
 }
@@ -176,8 +181,8 @@ variable "consumer_count" {
 
 variable "consumer_secondary_private_ip_count" {
   type        = number
-  default     = 7
-  description = "Additional Azure private IP configurations to allocate per consumer NIC."
+  default     = 31
+  description = "Additional Azure private IP configurations to allocate per consumer NIC for connection-heavy load generation."
 
   validation {
     condition     = var.consumer_secondary_private_ip_count >= 0 && floor(var.consumer_secondary_private_ip_count) == var.consumer_secondary_private_ip_count
@@ -193,7 +198,7 @@ variable "dns_zone_name" {
 variable "dns_target_ips" {
   type        = list(string)
   default     = []
-  description = "DNS target IPs passed to repeated --dns-target-ip flags. Empty defaults to firewall management IP."
+  description = "DNS target IPs passed to repeated --dns-target-ip flags. Empty defaults to neuwerk management IP."
 }
 
 variable "dns_upstreams" {

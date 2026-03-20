@@ -40,31 +40,31 @@ variable "admin_cidr" {
   description = "CIDR allowed to SSH into the jumpbox."
 }
 
-variable "firewall_binary_path" {
+variable "neuwerk_binary_path" {
   type        = string
-  default     = "../../../target/release/firewall"
-  description = "Path to the firewall binary uploaded to GCS."
+  default     = "../../../target/release/neuwerk"
+  description = "Path to the neuwerk binary uploaded to GCS."
 }
 
-variable "firewall_source_image" {
+variable "neuwerk_source_image" {
   type        = string
   default     = ""
-  description = "Optional custom source image for firewall nodes only. Empty uses the default Ubuntu image family."
+  description = "Optional custom source image for neuwerk nodes only. Empty uses the default Ubuntu image family."
 }
 
-variable "firewall_blob_name" {
+variable "neuwerk_blob_name" {
   type        = string
-  default     = "firewall"
-  description = "Object name for the uploaded firewall binary."
+  default     = "neuwerk"
+  description = "Object name for the uploaded neuwerk binary."
 }
 
-variable "firewall_dpdk_runtime_bundle_path" {
+variable "neuwerk_dpdk_runtime_bundle_path" {
   type        = string
   default     = "../assets/dpdk-runtime-26.tar.gz"
-  description = "Path to tar.gz containing DPDK runtime libs/PMDs required by the firewall binary."
+  description = "Path to tar.gz containing DPDK runtime libs/PMDs required by the neuwerk binary."
 }
 
-variable "firewall_dpdk_runtime_blob_name" {
+variable "neuwerk_dpdk_runtime_blob_name" {
   type        = string
   default     = "dpdk-runtime-26.tar.gz"
   description = "Object name for uploaded DPDK runtime bundle."
@@ -100,7 +100,7 @@ variable "jumpbox_subnet_cidr" {
   default = "10.30.5.0/24"
 }
 
-variable "firewall_machine_type" {
+variable "neuwerk_machine_type" {
   type    = string
   default = "n2-standard-4"
 }
@@ -120,7 +120,7 @@ variable "jumpbox_machine_type" {
   default = "e2-small"
 }
 
-variable "firewall_instance_count" {
+variable "neuwerk_instance_count" {
   type    = number
   default = 1
 }
@@ -162,34 +162,34 @@ variable "dns_upstreams" {
   description = "DNS upstream resolvers for repeated --dns-upstream flags. Empty defaults to upstream VM :53."
 }
 
-variable "firewall_snat_mode" {
+variable "neuwerk_snat_mode" {
   type        = string
   default     = "none"
-  description = "SNAT mode for firewall dataplane (none|auto|<ipv4>)."
+  description = "SNAT mode for neuwerk dataplane (none|auto|<ipv4>)."
 }
 
-variable "firewall_dpdk_workers" {
+variable "neuwerk_dpdk_workers" {
   type        = number
   default     = 0
-  description = "Override DPDK worker count (0 = auto via nproc)."
+  description = "Override DPDK worker count (0 = auto via neuwerk runtime worker selection)."
 }
 
-variable "firewall_total_nic_queue_count" {
+variable "neuwerk_total_nic_queue_count" {
   type        = number
   default     = 8
-  description = "Total gVNIC queue budget on firewall VMs; dataplane uses total minus management queues."
+  description = "Total gVNIC queue budget on neuwerk VMs; dataplane uses total minus management queues."
 }
 
-variable "firewall_mgmt_queue_count" {
+variable "neuwerk_mgmt_queue_count" {
   type        = number
   default     = 1
-  description = "Queue count reserved for the management NIC on firewall VMs."
+  description = "Queue count reserved for the management NIC on neuwerk VMs."
 }
 
 variable "cloud_provider" {
   type        = string
   default     = "gcp"
-  description = "Cloud provider identifier passed to the firewall process."
+  description = "Cloud provider identifier passed to the neuwerk process."
 }
 
 variable "dataplane_lb_ip" {

@@ -6,7 +6,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use firewall::controlplane::cluster::config::ClusterConfig;
+use neuwerk::controlplane::cluster::config::ClusterConfig;
 use tempfile::TempDir;
 
 pub fn next_addr(ip: Ipv4Addr) -> SocketAddr {

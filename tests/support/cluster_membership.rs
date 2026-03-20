@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use firewall::controlplane::cluster::types::ClusterTypeConfig;
+use neuwerk::controlplane::cluster::types::ClusterTypeConfig;
 use openraft::error::{ChangeMembershipError, ClientWriteError, RaftError};
 
 pub async fn change_membership_with_retry(

@@ -3,7 +3,7 @@ use super::*;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use firewall::controlplane::sso::{SsoDiskStore, SsoProvider, SsoProviderKind, SsoRole};
+use neuwerk::controlplane::sso::{SsoDiskStore, SsoProvider, SsoProviderKind, SsoRole};
 use uuid::Uuid;
 
 struct DexProcess {
@@ -44,8 +44,8 @@ async fn http_api_sso_oidc_dex_full_flow() {
         dir.path().join("dex-config.yaml"),
         dex_addr,
         &dex_issuer,
-        "firewall-client",
-        "firewall-secret",
+        "neuwerk-client",
+        "neuwerk-secret",
         &redirect_uri,
     )
     .await
@@ -54,8 +54,8 @@ async fn http_api_sso_oidc_dex_full_flow() {
     let mut provider = SsoProvider::new(
         "Google via Dex".to_string(),
         SsoProviderKind::Google,
-        "firewall-client".to_string(),
-        "firewall-secret".to_string(),
+        "neuwerk-client".to_string(),
+        "neuwerk-secret".to_string(),
     )
     .unwrap();
     provider.id = provider_id;
@@ -335,7 +335,7 @@ staticClients:
 - id: "{client_id}"
   redirectURIs:
   - "{redirect_uri}"
-  name: "firewall"
+  name: "neuwerk"
   secret: "{client_secret}"
 "#
     );

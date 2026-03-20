@@ -23,7 +23,7 @@ export const SidebarFooter: React.FC<SidebarFooterProps> = ({ collapsed }) => (
           }}
         />
         <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-          DNS-aware egress firewall
+          Neuwerk
         </span>
       </div>
     )}

@@ -4,13 +4,13 @@ import { docsNavigation } from '../../data/docsNavigation';
 ---
 
 <DocsLayout
-  title="Neuwerk Firewall Documentation"
-  description="Operator-focused documentation for deploying, configuring, running, and integrating the firewall."
+  title="Neuwerk Documentation"
+  description="Operator-focused documentation for deploying, configuring, running, and integrating Neuwerk."
 >
   <p>
     These docs are organized by what you are trying to do. Start with a tutorial if you are new to
     the product, use a how-to guide when you need a specific outcome, read the explanations to
-    understand the model behind the firewall, and use the reference section for exact API and
+    understand the model behind Neuwerk, and use the reference section for exact API and
     schema details.
   </p>
 
@@ -27,7 +27,7 @@ import { docsNavigation } from '../../data/docsNavigation';
   <p>
     The concepts pages describe the control-plane and dataplane split, policy behavior, DNS
     enforcement, TLS inspection, cluster replication, and observability. Those pages are where to
-    go when you need to understand why the firewall behaves a certain way before making a change.
+    go when you need to understand why the Neuwerk behaves a certain way before making a change.
   </p>
 
   <div class="not-prose mt-10 grid gap-4 md:grid-cols-2">
@@ -37,7 +37,7 @@ import { docsNavigation } from '../../data/docsNavigation';
         <p class="mt-2 text-sm text-slate-400">
           {section.title === 'Tutorials' && 'Guided paths for a local demo box, a first deployment, a first policy, and a first cluster.'}
           {section.title === 'How-To Guides' && 'Task-focused instructions for access, policy authoring, safer rollout, upgrades, integrations, and recovery work.'}
-          {section.title === 'Concepts' && 'Conceptual pages that explain firewall behavior, boundaries, tradeoffs, and operational switches.'}
+          {section.title === 'Concepts' && 'Conceptual pages that explain Neuwerk behavior, boundaries, tradeoffs, and operational switches.'}
           {section.title === 'Reference' && 'Precise schemas, endpoints, interfaces, and fixed protocol details.'}
         </p>
         <ul class="mt-4 space-y-2 text-sm text-slate-300">

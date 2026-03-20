@@ -1,5 +1,5 @@
 [package]
-name = "firewall-fuzz"
+name = "neuwerk-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-firewall = { path = ".." }
+neuwerk = { path = ".." }
 
 [[bin]]
 name = "packet_parse"

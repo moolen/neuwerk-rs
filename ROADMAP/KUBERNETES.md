@@ -173,7 +173,7 @@ Behavior:
 ### E2E Test (required)
 Deterministic harness case (required in CI):
 - Add e2e case in existing netns harness:
-  1. start firewall
+  1. start Neuwerk
   2. create Kubernetes integration pointing to in-process mock Kubernetes API
   3. apply policy with pod/node selector source group
   4. drive traffic from IP not in selector set -> denied

@@ -1,6 +1,6 @@
 #![no_main]
 
-use firewall::dataplane::packet::Packet;
+use neuwerk::dataplane::packet::Packet;
 use libfuzzer_sys::fuzz_target;
 use std::net::Ipv4Addr;
 

@@ -5,7 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/gcp_e2e}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 COMMON_MATRIX="${ROOT_DIR}/../common/http-perf-matrix.sh"
 COMMON_RUN="${ROOT_DIR}/../common/http-perf-run.sh"
 COMMON_SETUP="${ROOT_DIR}/../common/http-perf-setup.sh"
@@ -40,11 +40,15 @@ PROJECT_ID="$(terraform output -raw project_id 2>/dev/null || echo unknown)"
 REGION="$(terraform output -raw region 2>/dev/null || echo unknown)"
 ZONE="$(terraform output -raw zone 2>/dev/null || echo unknown)"
 JUMPBOX_IP="$(terraform output -raw jumpbox_public_ip)"
-UPSTREAM_VIP="$(terraform output -raw upstream_vip)"
-UPSTREAM_IP="$(terraform output -raw upstream_private_ip)"
+UPSTREAM_VIP_DEFAULT="$(terraform output -raw upstream_vip)"
+UPSTREAM_IP_DEFAULT="$(terraform output -raw upstream_private_ip)"
 mapfile -t CONSUMERS < <(terraform output -json consumer_private_ips | jq -r '.[]')
 INSTANCE_SIZES_JSON="$(terraform output -json instance_sizes 2>/dev/null || echo '{}')"
 popd >/dev/null
+
+UPSTREAM_VIP="${UPSTREAM_VIP_OVERRIDE:-$UPSTREAM_VIP_DEFAULT}"
+UPSTREAM_IP="${UPSTREAM_IP_OVERRIDE:-$UPSTREAM_IP_DEFAULT}"
+CONSUMER_LOCAL_IPS_JSON="${CONSUMER_LOCAL_IPS_JSON_OVERRIDE:-$(printf '%s\n' "${CONSUMERS[@]}" | jq -R 'select(length > 0) | [.]' | jq -s '.')}"
 
 if [ -z "$JUMPBOX_IP" ] || [ -z "$UPSTREAM_VIP" ] || [ -z "$UPSTREAM_IP" ] || [ "${#CONSUMERS[@]}" -eq 0 ]; then
   echo "missing terraform outputs for matrix context" >&2
@@ -54,7 +58,7 @@ fi
 FW_MGMT_IPS="$(TF_DIR="$TF_DIR" "$RESOLVE_FW_IPS" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ //; s/ $//')"
 CONSUMER_IPS="$(printf '%s ' "${CONSUMERS[@]}")"
 
-FW_INSTANCE_TYPE="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.firewall // "unknown"')"
+FW_INSTANCE_TYPE="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.neuwerk // "unknown"')"
 CONSUMER_INSTANCE_TYPE="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.consumer // "unknown"')"
 UPSTREAM_INSTANCE_TYPE="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.upstream // "unknown"')"
 RESOURCE_GROUP="gcp:${PROJECT_ID}:${REGION}:${ZONE}"
@@ -63,6 +67,7 @@ JUMPBOX_IP="$JUMPBOX_IP" \
 UPSTREAM_VIP="$UPSTREAM_VIP" \
 UPSTREAM_IP="$UPSTREAM_IP" \
 CONSUMER_IPS="$CONSUMER_IPS" \
+CONSUMER_LOCAL_IPS_JSON="$CONSUMER_LOCAL_IPS_JSON" \
 FW_MGMT_IPS="$FW_MGMT_IPS" \
 KEY_PATH="$KEY_PATH" \
 DNS_ZONE="${DNS_ZONE:-upstream.test}" \
@@ -85,5 +90,7 @@ RPS_TIERS="${RPS_TIERS:-500,1500,3000}" \
 PAYLOAD_TIERS="${PAYLOAD_TIERS:-1024,32768}" \
 CONNECTION_MODES="${CONNECTION_MODES:-keep_alive,new_connection_heavy}" \
 HTTP_REPEATS="${HTTP_REPEATS:-3}" \
-MATRIX_ARTIFACT_DIR="${MATRIX_ARTIFACT_DIR:-${ROOT_DIR}/artifacts/http-perf-matrix-$(date -u +%Y%m%dT%H%M%SZ)}" \
+TARGET_URLS_OVERRIDE="${TARGET_URLS_OVERRIDE:-}" \
+REQUEST_PATH_OVERRIDE="${REQUEST_PATH_OVERRIDE:-}" \
+MATRIX_ARTIFACT_DIR="${MATRIX_ARTIFACT_DIR:-${ARTIFACT_DIR:-${ROOT_DIR}/artifacts/http-perf-matrix-$(date -u +%Y%m%dT%H%M%SZ)}}" \
 "$COMMON_MATRIX"

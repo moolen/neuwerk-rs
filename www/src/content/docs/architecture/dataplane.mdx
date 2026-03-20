@@ -4,7 +4,7 @@ description: The dataplane classifies packets, applies compiled policy, maintain
 order: 2
 ---
 
-The dataplane is the part of the firewall that handles packet-by-packet enforcement.
+The dataplane is the part of the Neuwerk that handles packet-by-packet enforcement.
 
 Its job is to:
 
@@ -26,7 +26,7 @@ For each packet, the dataplane reduces the decision to one of three outcomes:
 `Drop` and `Forward` are the normal enforcement outcomes.
 
 `ToHost` is used when traffic needs a control-plane service instead of pure packet forwarding. The
-important examples are DNS traffic aimed at the firewall and traffic that has been selected for
+important examples are DNS traffic aimed at the Neuwerk and traffic that has been selected for
 active TLS interception.
 
 ## What Inputs It Uses

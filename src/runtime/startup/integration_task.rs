@@ -2,12 +2,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use firewall::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
-use firewall::controlplane::cloud::types::{IntegrationConfig, IntegrationMode};
-use firewall::controlplane::cloud::{IntegrationManager, ReadyChecker, ReadyClient};
-use firewall::controlplane::cluster::ClusterRuntime;
-use firewall::controlplane::metrics::Metrics;
-use firewall::dataplane::DrainControl;
+use neuwerk::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
+use neuwerk::controlplane::cloud::types::{IntegrationConfig, IntegrationMode};
+use neuwerk::controlplane::cloud::{IntegrationManager, ReadyChecker, ReadyClient};
+use neuwerk::controlplane::cluster::ClusterRuntime;
+use neuwerk::controlplane::metrics::Metrics;
+use neuwerk::dataplane::DrainControl;
 use tracing::{error, warn};
 
 use crate::runtime::bootstrap::integration::integration_tag_filter;

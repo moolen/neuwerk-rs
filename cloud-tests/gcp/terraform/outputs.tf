@@ -50,16 +50,16 @@ output "upstream_dataplane_lb_ip" {
   value = google_compute_address.dataplane_upstream_ilb.address
 }
 
-output "firewall_igm" {
+output "neuwerk_igm" {
   value = {
-    name = google_compute_instance_group_manager.firewall.name
-    zone = google_compute_instance_group_manager.firewall.zone
+    name = google_compute_instance_group_manager.neuwerk.name
+    zone = google_compute_instance_group_manager.neuwerk.zone
   }
 }
 
 output "instance_sizes" {
   value = {
-    firewall = var.firewall_machine_type
+    neuwerk  = var.neuwerk_machine_type
     upstream = var.upstream_machine_type
     consumer = var.consumer_machine_type
     jumpbox  = var.jumpbox_machine_type

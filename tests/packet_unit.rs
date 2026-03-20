@@ -2,18 +2,18 @@ use std::net::Ipv4Addr;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 
-use firewall::controlplane::metrics::Metrics;
-use firewall::dataplane::config::DataplaneConfig;
-use firewall::dataplane::policy::{
+use neuwerk::controlplane::metrics::Metrics;
+use neuwerk::dataplane::config::DataplaneConfig;
+use neuwerk::dataplane::policy::{
     new_shared_exact_source_group_index, CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4,
     PolicySnapshot, PortRange, Proto, Rule, RuleAction, RuleMatch, SourceGroup, Tls13Uninspectable,
     TlsMatch, TlsMode, TlsNameMatch,
 };
-use firewall::dataplane::{
+use neuwerk::dataplane::{
     handle_packet, Action, EngineState, FlowKey, FlowTable, NatTable, Packet, WiretapEmitter,
     WiretapEventType,
 };
-use firewall::dataplane::{EncapMode, OverlayConfig, SnatMode};
+use neuwerk::dataplane::{EncapMode, OverlayConfig, SnatMode};
 
 fn build_ipv4_udp(
     src_ip: Ipv4Addr,
@@ -269,7 +269,7 @@ fn overlay_vxlan_policy_applies_to_inner() {
     );
 
     let overlay =
-        firewall::dataplane::overlay::decap(outer.buffer(), &state.overlay, None).expect("decap");
+        neuwerk::dataplane::overlay::decap(outer.buffer(), &state.overlay, None).expect("decap");
     let mut pkt = overlay.inner;
     let action = handle_packet(&mut pkt, &mut state);
     assert!(matches!(action, Action::Forward { .. }));
@@ -297,7 +297,7 @@ fn policy_with_allowlist(
             tls: None,
         },
         action: RuleAction::Allow,
-        mode: firewall::dataplane::policy::RuleMode::Enforce,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
     };
 
     let group = SourceGroup {
@@ -347,7 +347,7 @@ fn policy_with_tls_intercept(
             }),
         },
         action: RuleAction::Allow,
-        mode: firewall::dataplane::policy::RuleMode::Enforce,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
     };
 
     let group = SourceGroup {
@@ -460,7 +460,7 @@ fn dataplane_metrics_track_allow_and_deny() {
             tls: None,
         },
         action: RuleAction::Allow,
-        mode: firewall::dataplane::policy::RuleMode::Enforce,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
     };
     let group = SourceGroup {
         id: "internal".to_string(),

@@ -1,7 +1,7 @@
 # Production Checklist
 
 Last updated: 2026-03-10
-Owner: firewall team
+Owner: Neuwerk team
 Scope: remaining production-hardening, compatibility, operational, and coverage work after feature completion
 
 ## Release Hardening

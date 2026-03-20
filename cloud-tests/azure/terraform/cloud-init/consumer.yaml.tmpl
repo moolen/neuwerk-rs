@@ -24,58 +24,46 @@ write_files:
       set -euo pipefail
 
       metadata_url="http://169.254.169.254/metadata/instance/network/interface?api-version=2021-02-01"
-      primary_iface="$(ip route show default | awk '/default/ {print $5; exit}')"
-      if [ -z "$primary_iface" ]; then
-        echo "failed to detect primary interface" >&2
-        exit 1
-      fi
+      metadata_json="$(curl -fsS -H Metadata:true "$metadata_url")"
+      configured_secondary_count=0
 
-      mac_addr="$(cat "/sys/class/net/$primary_iface/address" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
-      if [ -z "$mac_addr" ]; then
-        echo "failed to detect MAC address on $primary_iface" >&2
-        exit 1
-      fi
+      while IFS= read -r iface; do
+        [ -n "$iface" ] || continue
+        mac_addr="$(cat "/sys/class/net/$iface/address" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+        [ -n "$mac_addr" ] || continue
 
-      prefix_len="$(ip -4 -o addr show dev "$primary_iface" scope global primary | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[2]}')"
-      if [ -z "$prefix_len" ]; then
-        prefix_len="$(ip -4 -o addr show dev "$primary_iface" scope global | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[2]}')"
-      fi
-      if [ -z "$prefix_len" ]; then
-        echo "failed to detect IPv4 prefix length on $primary_iface" >&2
-        exit 1
-      fi
-
-      primary_ip="$(ip -4 -o addr show dev "$primary_iface" scope global primary | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[1]}')"
-      if [ -z "$primary_ip" ]; then
-        primary_ip="$(ip -4 -o addr show dev "$primary_iface" scope global | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[1]}')"
-      fi
-      if [ -z "$primary_ip" ]; then
-        echo "failed to detect primary IPv4 address on $primary_iface" >&2
-        exit 1
-      fi
-
-      expected_secondary_count=${secondary_private_ip_count}
-      secondary_seen=0
-      while IFS= read -r private_ip; do
-        [ -n "$private_ip" ] || continue
-        if [ "$private_ip" = "$primary_ip" ]; then
-          continue
+        prefix_len="$(ip -4 -o addr show dev "$iface" scope global primary | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[2]}')"
+        if [ -z "$prefix_len" ]; then
+          prefix_len="$(ip -4 -o addr show dev "$iface" scope global | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[2]}')"
         fi
-        secondary_seen=$((secondary_seen + 1))
-        if ip -4 -o addr show dev "$primary_iface" to "$private_ip" | grep -Fq "$private_ip/"; then
-          continue
-        fi
-        ip addr replace "$private_ip/$prefix_len" dev "$primary_iface"
-      done < <(
-        curl -fsS -H Metadata:true "$metadata_url" \
-          | jq -r --arg mac "$mac_addr" '
-              map(select((.macAddress // "" | ascii_downcase) == $mac))
-              | .[0].ipv4.ipAddress[]?.privateIpAddress // empty
-            '
-      )
+        [ -n "$prefix_len" ] || continue
 
-      if [ "$secondary_seen" -lt "$expected_secondary_count" ]; then
-        echo "expected at least $expected_secondary_count secondary private IPs on $primary_iface, found $secondary_seen" >&2
+        primary_ip="$(ip -4 -o addr show dev "$iface" scope global primary | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[1]}')"
+        if [ -z "$primary_ip" ]; then
+          primary_ip="$(ip -4 -o addr show dev "$iface" scope global | awk 'NR==1 {split($4, cidr, \"/\"); print cidr[1]}')"
+        fi
+        [ -n "$primary_ip" ] || continue
+
+        while IFS= read -r private_ip; do
+          [ -n "$private_ip" ] || continue
+          if [ "$private_ip" = "$primary_ip" ]; then
+            continue
+          fi
+          configured_secondary_count=$((configured_secondary_count + 1))
+          if ip -4 -o addr show dev "$iface" to "$private_ip" | grep -Fq "$private_ip/"; then
+            continue
+          fi
+          ip addr replace "$private_ip/$prefix_len" dev "$iface"
+        done < <(
+          jq -r --arg mac "$mac_addr" '
+            map(select((.macAddress // "" | ascii_downcase) == $mac))
+            | .[0].ipv4.ipAddress[]?.privateIpAddress // empty
+          ' <<<"$metadata_json"
+        )
+      done < <(ip -o link show | awk -F': ' '$2 != "lo" {print $2}')
+
+      if [ "$configured_secondary_count" -lt ${secondary_private_ip_count} ]; then
+        echo "expected at least ${secondary_private_ip_count} secondary private IPs across consumer interfaces, found $configured_secondary_count" >&2
         exit 1
       fi
   - path: /etc/systemd/system/azure-consumer-secondary-ips.service

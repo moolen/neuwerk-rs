@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use firewall::controlplane::policy_repository::PolicyDiskStore;
-use firewall::controlplane::PolicyStore;
+use neuwerk::controlplane::policy_repository::PolicyDiskStore;
+use neuwerk::controlplane::PolicyStore;
 
 use crate::runtime::cli::CliConfig;
 
@@ -70,12 +70,12 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, SocketAddr};
 
-    use firewall::controlplane::cloud::types::IntegrationMode;
-    use firewall::controlplane::cluster::config::ClusterConfig;
-    use firewall::controlplane::policy_config::{PolicyConfig, PolicyMode};
-    use firewall::controlplane::policy_repository::PolicyRecord;
-    use firewall::dataplane::policy::DefaultPolicy;
-    use firewall::dataplane::{EncapMode, SnatMode, SoftMode};
+    use neuwerk::controlplane::cloud::types::IntegrationMode;
+    use neuwerk::controlplane::cluster::config::ClusterConfig;
+    use neuwerk::controlplane::policy_config::{PolicyConfig, PolicyMode};
+    use neuwerk::controlplane::policy_repository::PolicyRecord;
+    use neuwerk::dataplane::policy::DefaultPolicy;
+    use neuwerk::dataplane::{EncapMode, SnatMode, SoftMode};
     use tempfile::TempDir;
     use uuid::Uuid;
 

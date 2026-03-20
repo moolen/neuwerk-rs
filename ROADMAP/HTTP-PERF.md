@@ -7,9 +7,9 @@ Status: Proposed (manual workflow, non-CI)
 
 - Traffic model: webhook-style `POST` requests with JSON payloads.
 - Payload size: fixed `32 KiB`.
-- SLO dimensions to track: max sustainable RPS tier, `p95/p99` latency, error/drop rate, firewall CPU ceiling.
+- SLO dimensions to track: max sustainable RPS tier, `p95/p99` latency, error/drop rate, Neuwerk CPU ceiling.
 - Cloud: Azure, single region, use the currently configured bench (`Germany West Central` by default in current Terraform).
-- Topology: existing Azure cloud-test topology (`consumer -> firewall VMSS DPDK dataplane -> upstream`).
+- Topology: existing Azure cloud-test topology (`consumer -> Neuwerk VMSS DPDK dataplane -> upstream`).
 - Policy classes in v1:
   - L3/L4 policy behavior
   - TLS metadata policy (SNI matching only)
@@ -24,7 +24,7 @@ Status: Proposed (manual workflow, non-CI)
 ## SaaS Webhook Bench Model
 
 - `consumer` VM(s): webhook sender workers (the SaaS platform).
-- `firewall` VMSS: enforcement path under test (DPDK dataplane).
+- `neuwerk` VMSS: enforcement path under test (DPDK dataplane).
 - `upstream` VM: customer endpoint service.
 - Requests emulate high-volume event delivery to customer webhooks:
   - `Content-Type: application/json`
@@ -71,7 +71,7 @@ Status: Proposed (manual workflow, non-CI)
 
 - Use `k6` as the HTTP load generator (manual install/pinned version in scripts).
 - Reason: fixed arrival-rate support, ramp profile support, HTTPS support, and JSON output (`--summary-export` and optional event output).
-- Continue using existing Azure scripts for infra discovery, policy push, jumpbox SSH, and firewall metrics collection.
+- Continue using existing Azure scripts for infra discovery, policy push, jumpbox SSH, and Neuwerk metrics collection.
 
 ## JSON Artifact Contract
 
@@ -80,9 +80,9 @@ Each run writes a timestamped artifact directory:
 - `cloud-tests/azure/artifacts/http-perf-<timestamp>/`
   - `context.json` (region, vm sizes, instance counts, commit hash, scenario, tier config)
   - `load-summary.json` (k6 summary with throughput/latency/errors)
-  - `firewall-metrics-pre.prom` / `firewall-metrics-post.prom`
-  - `firewall-metrics-delta.json` (selected counters)
-  - `cpu-firewall-*.json` (normalized CPU snapshots)
+  - `Neuwerk-metrics-pre.prom` / `Neuwerk-metrics-post.prom`
+  - `Neuwerk-metrics-delta.json` (selected counters)
+  - `cpu-Neuwerk-*.json` (normalized CPU snapshots)
   - `result.json` (single normalized record per scenario+tier)
   - `matrix-summary.json` (aggregate across all scenarios/tiers)
 
@@ -91,8 +91,8 @@ Each run writes a timestamped artifact directory:
 - effective RPS
 - `p50/p95/p99` latency
 - success/error percentages
-- firewall CPU max/avg
-- allow/deny/drop deltas from firewall metrics
+- Neuwerk CPU max/avg
+- allow/deny/drop deltas from Neuwerk metrics
 - highest tier reached per scenario
 
 ## Implementation Plan
@@ -113,8 +113,8 @@ Deliverables:
 
 Details:
 
-- Resolve jumpbox/consumer/upstream/firewall IPs from existing Terraform outputs and helper scripts.
-- Verify readiness on all firewall instances (`/ready`) before starting each scenario.
+- Resolve jumpbox/consumer/upstream/Neuwerk IPs from existing Terraform outputs and helper scripts.
+- Verify readiness on all Neuwerk instances (`/ready`) before starting each scenario.
 - Validate upstream listeners and TLS cert paths needed for tests.
 
 ### Phase 2: Upstream Webhook Endpoint Profile
@@ -145,7 +145,7 @@ Deliverables:
 Details:
 
 - Reuse existing policy push flow (`configure-policy.sh`) for all scenarios.
-- Add post-push consistency check across all firewall mgmt endpoints before running load.
+- Add post-push consistency check across all Neuwerk mgmt endpoints before running load.
 
 ### Phase 4: Load Profiles and Matrix Runner
 
@@ -174,11 +174,11 @@ Deliverables:
 
 Details:
 
-- Collect firewall metrics before/after each run and derive deltas for:
+- Collect Neuwerk metrics before/after each run and derive deltas for:
   - policy allow/deny counters
   - DPDK RX/TX packet+byte counters
   - drop/reject/reset counters where available
-- Collect CPU samples on firewall instances during each run.
+- Collect CPU samples on Neuwerk instances during each run.
 - Emit one JSON summary file per run and one aggregate matrix JSON.
 
 ## Success Criteria (v1)
@@ -189,15 +189,15 @@ Details:
   - throughput by tier/scenario
   - `p95/p99` latency
   - error/drop behavior
-  - firewall CPU envelope
+  - Neuwerk CPU envelope
 - TLS SNI scenario and TLS intercept-path scenario are both enforced and measurable under load.
 
 ## Risks and Mitigations
 
-- Consumer saturation before firewall saturation:
+- Consumer saturation before Neuwerk saturation:
   - Mitigation: support `consumer_count > 1` and RPS split.
 - Policy propagation race across VMSS instances:
-  - Mitigation: verify policy consistency on all firewall mgmt IPs before each run.
+  - Mitigation: verify policy consistency on all Neuwerk mgmt IPs before each run.
 - TLS intercept CA not present:
   - Mitigation: seed/check CA via existing API flow before intercept scenarios.
 - Artifact size growth:

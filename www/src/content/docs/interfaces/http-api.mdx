@@ -8,7 +8,7 @@ This page is the reference for the control-plane HTTP API.
 
 The authoritative machine-readable description is the generated OpenAPI document:
 
-- static docs artifact: `/openapi/firewall-v1.json`
+- static docs artifact: `/openapi/neuwerk-v1.json`
 - runtime endpoint: `GET /api/v1/openapi.json`
 
 Use the OpenAPI document for exact request and response shapes. Use this page for the transport and
@@ -158,7 +158,7 @@ Create and update requests use this envelope:
 }
 ```
 
-The `policy` object is the full firewall policy model. That schema is large enough to deserve its
+The `policy` object is the full Neuwerk policy model. That schema is large enough to deserve its
 own dedicated reference page.
 
 ### Integrations
@@ -438,7 +438,7 @@ Stats response top-level shape:
 }
 ```
 
-The `cluster` section includes node catch-up information when the firewall is running in cluster
+The `cluster` section includes node catch-up information when the Neuwerk is running in cluster
 mode.
 
 ## Current Gaps

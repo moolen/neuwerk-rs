@@ -1,4 +1,4 @@
-use firewall::dataplane::tls::{TlsDirection, TlsFlowState, TlsVerifier};
+use neuwerk::dataplane::tls::{TlsDirection, TlsFlowState, TlsVerifier};
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyUsagePurpose};
 
 fn tls_record(content_type: u8, payload: &[u8]) -> Vec<u8> {

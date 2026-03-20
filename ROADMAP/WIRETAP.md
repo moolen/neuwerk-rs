@@ -38,8 +38,8 @@ Event Format
   - Same fields as `flow`, with final counters
 
 Direction Semantics
-- `packets_out`: internal -> public (egress from firewall to internet).
-- `packets_in`: public -> internal (ingress from internet to firewall).
+- `packets_out`: internal -> public (egress from Neuwerk to internet).
+- `packets_in`: public -> internal (ingress from internet to Neuwerk).
 
 Design Overview
 1. Dataplane records per-flow counters and emits periodic flow updates.

@@ -4,7 +4,7 @@ description: The shipped artifact is an image that already carries the matching 
 order: 0
 ---
 
-Start here if you want to know what the firewall expects from its runtime environment.
+Start here if you want to know what the Neuwerk expects from its runtime environment.
 
 The most important point is this:
 
@@ -21,11 +21,11 @@ Today, the intended deployment artifact is the appliance image built for the cur
 
 The image build stages:
 
-- a release firewall binary built with the DPDK feature enabled
+- a release Neuwerk binary built with the DPDK feature enabled
 - the UI
 - a vendored DPDK runtime under `/opt/neuwerk/runtime`
 - launch and bootstrap scripts
-- the systemd unit used to start the firewall correctly
+- the systemd unit used to start the Neuwerk correctly
 
 Operationally, that means most operators should think in terms of "run the image" rather than
 "install a binary and find matching DPDK libraries yourself."
@@ -49,7 +49,7 @@ The bootstrap and launch flow also sets:
 - `NEUWERK_DATA_PLANE_MODE=dpdk` by default
 
 So for the image case, you do **not** separately install system DPDK packages just to satisfy the
-firewall binary.
+Neuwerk binary.
 
 ## What The Image Still Expects From The Host
 
@@ -71,7 +71,7 @@ If those names are not present, it falls back to the routing view and local inte
 
 The packaged systemd service is part of the supported runtime contract.
 
-If you use the image as intended, the service already grants what the firewall expects, including:
+If you use the image as intended, the service already grants what the Neuwerk expects, including:
 
 - `CAP_NET_ADMIN`
 - `CAP_NET_BIND_SERVICE`

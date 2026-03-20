@@ -1,11 +1,11 @@
 ---
 title: Ports & Protocols
-description: Fixed listener ports and conditional protocol dependencies used by the firewall.
+description: Fixed listener ports and conditional protocol dependencies used by the Neuwerk.
 order: 2
 ---
 
 This page documents the listener ports and fixed protocol dependencies operators should expect from
-the firewall.
+the Neuwerk.
 
 It does not attempt to enumerate policy-controlled application egress, because that surface is
 intentionally defined by operator policy and destination systems rather than a static built-in port
@@ -13,13 +13,13 @@ list.
 
 ## Default Listener Surfaces
 
-These are the primary ports the firewall binds by default.
+These are the primary ports the Neuwerk binds by default.
 
 | Surface | Default Bind | Proto | Direction | Purpose |
 | --- | --- | --- | --- | --- |
-| Management HTTPS | `management-ip:8443` | TCP | Inbound to firewall | Web UI, HTTP API, `/health`, `/ready` |
-| Metrics | `management-ip:8080` | TCP | Inbound to firewall | Plain HTTP `/metrics` endpoint |
-| DNS proxy | `management-ip:53` | UDP, TCP | Inbound to firewall | Policy-aware DNS proxy for hostname-based enforcement |
+| Management HTTPS | `management-ip:8443` | TCP | Inbound to Neuwerk | Web UI, HTTP API, `/health`, `/ready` |
+| Metrics | `management-ip:8080` | TCP | Inbound to Neuwerk | Plain HTTP `/metrics` endpoint |
+| DNS proxy | `management-ip:53` | UDP, TCP | Inbound to Neuwerk | Policy-aware DNS proxy for hostname-based enforcement |
 
 Notes:
 
@@ -66,8 +66,8 @@ runtime.
 
 | Destination | Proto | Direction | When Required | Notes |
 | --- | --- | --- | --- | --- |
-| Configured DNS upstreams | UDP, TCP `53` | Outbound from firewall | Always | Set by `--dns-upstream` |
-| Intercepted HTTPS origins | TCP, usually `443` | Outbound from firewall | Only when `tls.mode: intercept` rules are active | The runtime opens a fresh upstream TLS session to the original destination |
+| Configured DNS upstreams | UDP, TCP `53` | Outbound from Neuwerk | Always | Set by `--dns-upstream` |
+| Intercepted HTTPS origins | TCP, usually `443` | Outbound from Neuwerk | Only when `tls.mode: intercept` rules are active | The runtime opens a fresh upstream TLS session to the original destination |
 | DHCP server | UDP `67` from client port `68` | Outbound and return inbound | When dataplane config is DHCP-derived | Used for dataplane addressing/bootstrap |
 
 ## Conditional Encapsulation Ports
@@ -112,8 +112,8 @@ The metrics listener has an extra guardrail: binding it to a public address requ
   admins and automation only.
 - `8080` serves Prometheus-style metrics over plain HTTP, not HTTPS.
 - `53` is part of the hostname-policy path and should be reachable from managed clients that are
-  expected to use firewall DNS.
-- `9600` and `9601` should only be reachable between firewall nodes participating in cluster
+  expected to use Neuwerk DNS.
+- `9600` and `9601` should only be reachable between Neuwerk nodes participating in cluster
   formation.
 - `15443` and the `169.254.255.0/30` service lane are internal plumbing, not external service
   endpoints.
@@ -122,7 +122,7 @@ The metrics listener has an extra guardrail: binding it to a public address requ
 
 These traffic classes are intentionally not listed as static ports:
 
-- policy-controlled application egress from clients behind the firewall
+- policy-controlled application egress from clients behind the Neuwerk
 - Kubernetes integration API server ports, because they come from each configured `api_server_url`
 - cloud-provider control-plane API traffic, because those destinations are provider-specific and
   not hard-coded here

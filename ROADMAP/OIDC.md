@@ -14,7 +14,7 @@ Status Update (2026-03-07):
   - Strict, non-skipped full-flow validation now passes with `NEUWERK_SSO_REQUIRE_DEX=1 DEX_BIN=.bin/dex make test.integration.sso`.
 
 ## Goals
-- Deliver production-grade SSO for firewall UI/API.
+- Deliver production-grade SSO for Neuwerk UI/API.
 - Support Google and GitHub as initial providers.
 - Preserve existing token login as break-glass access.
 - Work in both local mode and cluster mode.
@@ -40,9 +40,9 @@ Status Update (2026-03-07):
 
 ## High-Level Architecture
 1. External SSO provider authenticates user.
-2. Firewall validates provider response (state/nonce/pkce/code/token/user identity).
-3. Firewall maps external identity to internal roles.
-4. Firewall mints existing internal JWT and sets `neuwerk_auth` cookie.
+2. Neuwerk validates provider response (state/nonce/pkce/code/token/user identity).
+3. Neuwerk maps external identity to internal roles.
+4. Neuwerk mints existing internal JWT and sets `neuwerk_auth` cookie.
 5. Existing auth middleware continues to gate all protected routes.
 
 This keeps one internal auth model while adding external identity bootstrap.
@@ -173,7 +173,7 @@ Acceptance:
 ### Phase 5: E2E with Dex (Full Flow)
 - Add e2e suite that runs Dex and exercises full browser-like auth flow end-to-end.
 - Required scenario:
-  - Configure firewall SSO provider(s) against Dex issuer.
+  - Configure Neuwerk SSO provider(s) against Dex issuer.
   - Start from login endpoint.
   - Complete authorize -> callback -> internal cookie issuance.
   - Verify `whoami` and protected API access with the new cookie session.
@@ -191,12 +191,12 @@ Acceptance:
 ## Dex-Based E2E Design
 
 ### Test Topology
-- Firewall under test.
+- Neuwerk under test.
 - Dex as local IdP for deterministic OIDC behavior.
 - Optional headless browser driver (or deterministic redirect/form driver) for full-flow traversal.
 
 ### Dex Config for Tests
-- Static client(s) for firewall callback URLs.
+- Static client(s) for Neuwerk callback URLs.
 - Static user/password entries for deterministic test identities.
 - Deterministic claims for group/email mapping tests.
 
@@ -422,16 +422,16 @@ Definition of done:
 ## Runbook: Google and GitHub Setup
 
 ### Prerequisites
-- Firewall control-plane started with a stable HTTPS external URL:
-  - `--http-external-url https://<firewall-host-or-lb>`
+- Neuwerk control-plane started with a stable HTTPS external URL:
+  - `--http-external-url https://<neuwerk-host-or-lb>`
 - UI/API reachable over TLS at that host.
 - Admin API token available for initial provider configuration.
 
 ### Google Provider
 1. In Google Cloud Console, create an OAuth client (`Web application`).
 2. Set the redirect URI to:
-   - `https://<firewall-host-or-lb>/api/v1/auth/sso/<provider-id>/callback`
-3. In firewall Settings -> SSO Providers:
+   - `https://<neuwerk-host-or-lb>/api/v1/auth/sso/<provider-id>/callback`
+3. In Neuwerk Settings -> SSO Providers:
    - `kind`: `google`
    - `client_id` / `client_secret`: from Google OAuth app
    - `issuer_url`: optional (defaults to Google issuer)
@@ -446,8 +446,8 @@ Definition of done:
 ### GitHub Provider
 1. In GitHub Developer Settings, create an OAuth App.
 2. Set callback URL to:
-   - `https://<firewall-host-or-lb>/api/v1/auth/sso/<provider-id>/callback`
-3. In firewall Settings -> SSO Providers:
+   - `https://<neuwerk-host-or-lb>/api/v1/auth/sso/<provider-id>/callback`
+3. In Neuwerk Settings -> SSO Providers:
    - `kind`: `github`
    - `client_id` / `client_secret`: from GitHub OAuth app
    - optional endpoint overrides for enterprise GitHub deployments

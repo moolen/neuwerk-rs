@@ -1,8 +1,8 @@
 # Terraform Provider Plan
 
 ## Goals
-- Provide a first-class Terraform provider for the firewall HTTP API.
-- Make Terraform authoring center on firewall intent, not raw HTTP endpoints.
+- Provide a first-class Terraform provider for the Neuwerk HTTP API.
+- Make Terraform authoring center on Neuwerk intent, not raw HTTP endpoints.
 - Optimize the v1 UX around policies and rules, with good support for many URLs sharing the same behavior.
 - Preserve the current control-plane architecture: the provider talks only to the HTTP API.
 - Keep the provider safe for cluster deployments where any node may proxy writes to the leader.
@@ -392,7 +392,7 @@ Known limitation:
 ### Phase 6: Testing And Dev Harness
 - Unit tests for schema normalization and compilation.
 - Client tests with mocked HTTP responses.
-- Acceptance tests against a real local firewall node:
+- Acceptance tests against a real local Neuwerk node:
   - integration lifecycle
   - TLS intercept CA lifecycle
   - policy create/update/delete
@@ -454,7 +454,7 @@ Known limitation:
   - `terraform-provider-neuwerk/examples/*`
   - `terraform-provider-neuwerk/docs/*`
 
-### Likely Firewall API Changes
+### Likely Neuwerk API Changes
 - admin-capable machine auth additions
 - possible policy upsert or singleton policy endpoint
 - optional policy validate endpoint

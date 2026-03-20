@@ -1,5 +1,6 @@
 resource "azurerm_network_interface" "upstream" {
-  name                           = "${var.name_prefix}-upstream-nic"
+  count                          = var.instance_count
+  name                           = "${var.name_prefix}-upstream-${count.index}-nic"
   resource_group_name            = var.resource_group_name
   location                       = var.location
   tags                           = var.tags
@@ -13,20 +14,22 @@ resource "azurerm_network_interface" "upstream" {
 }
 
 resource "azurerm_network_interface_backend_address_pool_association" "upstream" {
-  network_interface_id    = azurerm_network_interface.upstream.id
-  ip_configuration_name   = azurerm_network_interface.upstream.ip_configuration[0].name
+  count                   = var.instance_count
+  network_interface_id    = azurerm_network_interface.upstream[count.index].id
+  ip_configuration_name   = azurerm_network_interface.upstream[count.index].ip_configuration[0].name
   backend_address_pool_id = var.upstream_backend_pool_id
 }
 
 resource "azurerm_linux_virtual_machine" "upstream" {
-  name                = "${var.name_prefix}-upstream"
+  count               = var.instance_count
+  name                = "${var.name_prefix}-upstream-${count.index}"
   resource_group_name = var.resource_group_name
   location            = var.location
   size                = var.vm_size
   admin_username      = var.admin_username
   tags                = var.tags
 
-  network_interface_ids = [azurerm_network_interface.upstream.id]
+  network_interface_ids = [azurerm_network_interface.upstream[count.index].id]
 
   admin_ssh_key {
     username   = var.admin_username

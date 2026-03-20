@@ -1,7 +1,5 @@
 use super::*;
-use firewall::controlplane::service_accounts::{
-    ServiceAccountRole, ServiceAccountStore, TokenMeta,
-};
+use neuwerk::controlplane::service_accounts::{ServiceAccountRole, ServiceAccountStore, TokenMeta};
 use time::format_description::well_known::Rfc3339;
 
 #[tokio::test]

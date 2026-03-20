@@ -1,7 +1,7 @@
 # Production Readiness Plan
 
 Last updated: 2026-03-02
-Owner: firewall team
+Owner: Neuwerk team
 Scope: operational hardening (state durability, upgrade safety, failover/drain correctness, SLO/alert signal reliability)
 
 ## Goals

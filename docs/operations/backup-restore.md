@@ -21,13 +21,13 @@ If `NEUWERK_LOCAL_DATA_DIR` is set, treat that directory as the root for local m
 ## Backup Procedure
 
 1. Quiesce writes.
-   - Prefer draining the instance and stopping `firewall.service`.
+   - Prefer draining the instance and stopping `neuwerk.service`.
    - In cluster mode, back up one node at a time and ensure another node remains healthy before stopping it.
 2. Capture the mutable-state directories as a single backup set.
    - Local mode: archive the local data root plus `/var/lib/neuwerk/http-tls`.
    - Cluster mode: archive the cluster data dir, node-id file, token file, and any service manager unit/env files needed to reproduce startup flags.
 3. Record the build/runtime tuple with the backup.
-   - firewall binary version or commit
+   - Neuwerk binary version or commit
    - Rust build target
    - DPDK ABI/runtime source
    - OS image or container base image
@@ -37,7 +37,7 @@ If `NEUWERK_LOCAL_DATA_DIR` is set, treat that directory as the root for local m
 
 Run these checks against a restored copy before calling the backup usable:
 
-1. Start the firewall on an isolated host or VM with the restored data.
+1. Start Neuwerk on an isolated host or VM with the restored data.
 2. Verify `/health` returns `200`.
 3. Verify `/ready` reports the expected state for the restored mode.
    - Local mode without dataplane traffic may remain not-ready until DHCP/bootstrap conditions are satisfied.
@@ -52,10 +52,10 @@ Run these checks against a restored copy before calling the backup usable:
 
 ## Restore Procedure
 
-1. Stop the firewall process on the target host.
+1. Stop the Neuwerk process on the target host.
 2. Restore files with original ownership and permissions.
    - Keep token/key material at `0600`.
-3. Start the firewall with the same storage paths used when the backup was taken.
+3. Start Neuwerk with the same storage paths used when the backup was taken.
 4. Confirm:
    - `/health` is `200`
    - `/ready` reaches green once dataplane/control-plane prerequisites are satisfied

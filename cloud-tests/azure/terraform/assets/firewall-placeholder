@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-echo "placeholder firewall binary: replace via -var firewall_binary_path=..." >&2
-exit 1

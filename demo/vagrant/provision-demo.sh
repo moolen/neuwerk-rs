@@ -41,7 +41,7 @@ chown -R ubuntu:ubuntu /home/ubuntu/.ssh
 python3 <<'PY'
 from pathlib import Path
 
-bootstrap_path = Path("/opt/neuwerk/bin/firewall-bootstrap")
+bootstrap_path = Path("/opt/neuwerk/bin/neuwerk-bootstrap")
 if bootstrap_path.exists():
     old_iface_check = """  if [[ -z \"$data_iface\" || ! -d \"/sys/class/net/$data_iface\" ]]; then\n    echo \"unable to resolve dataplane interface\" >&2\n    exit 1\n  fi\n"""
     new_iface_check = """  if [[ -z \"$data_iface\" ]]; then\n    echo \"unable to resolve dataplane interface\" >&2\n    exit 1\n  fi\n"""
@@ -58,7 +58,7 @@ if bootstrap_path.exists():
     if updated != text:
         bootstrap_path.write_text(updated, encoding="utf-8")
 
-launch_path = Path("/opt/neuwerk/bin/firewall-launch")
+launch_path = Path("/opt/neuwerk/bin/neuwerk-launch")
 if not launch_path.exists():
     raise SystemExit(0)
 
@@ -429,7 +429,7 @@ cat >/usr/local/bin/neuwerk-demo-mint-token <<'EOF'
 set -euo pipefail
 
 RUNTIME_ENV="/etc/neuwerk-demo/runtime.env"
-FIREWALL_ENV="/etc/neuwerk/firewall.env"
+FIREWALL_ENV="/etc/neuwerk/neuwerk.env"
 
 if [[ -f "${RUNTIME_ENV}" ]]; then
   # shellcheck disable=SC1090
@@ -455,7 +455,7 @@ install -d -m 0755 "$(dirname "${TOKEN_PATH}")"
 
 for _ in $(seq 1 90); do
   if curl -skf "${HEALTH_URL}" >/dev/null 2>&1; then
-    if firewall auth token mint \
+    if neuwerk auth token mint \
       --sub demo-admin \
       --roles admin \
       --cluster-addr "${CLUSTER_ADDR}" \
@@ -476,7 +476,7 @@ chmod 0755 /usr/local/bin/neuwerk-demo-mint-token
 cat >/etc/systemd/system/neuwerk-demo-configure.service <<'EOF'
 [Unit]
 Description=Neuwerk Demo Runtime Configuration
-Before=firewall.service
+Before=neuwerk.service
 After=network-online.target
 Wants=network-online.target
 
@@ -492,8 +492,8 @@ EOF
 cat >/etc/systemd/system/neuwerk-demo-topology.service <<'EOF'
 [Unit]
 Description=Neuwerk Demo Gateway Topology
-After=firewall.service
-Requires=firewall.service
+After=neuwerk.service
+Requires=neuwerk.service
 
 [Service]
 Type=oneshot
@@ -508,8 +508,8 @@ EOF
 cat >/etc/systemd/system/neuwerk-demo-token.service <<'EOF'
 [Unit]
 Description=Neuwerk Demo Admin Token
-After=firewall.service
-Wants=firewall.service
+After=neuwerk.service
+Wants=neuwerk.service
 
 [Service]
 Type=oneshot
@@ -562,7 +562,7 @@ wait_for_health() {
     if curl -skf "${url}" >/dev/null 2>&1; then
       return 0
     fi
-    if systemctl is-failed --quiet firewall.service; then
+    if systemctl is-failed --quiet neuwerk.service; then
       return 1
     fi
     sleep "${delay_secs}"
@@ -571,8 +571,8 @@ wait_for_health() {
 }
 
 print_firewall_failure() {
-  systemctl status firewall.service --no-pager || true
-  journalctl -u firewall.service --no-pager -n 200 || true
+  systemctl status neuwerk.service --no-pager || true
+  journalctl -u neuwerk.service --no-pager -n 200 || true
 }
 
 write_bootstrap_token() {
@@ -596,14 +596,14 @@ start_demo_runtime() {
     /var/lib/neuwerk-demo/admin.token
   write_bootstrap_token
   systemctl restart neuwerk-demo-configure.service
-  systemctl reset-failed firewall.service >/dev/null 2>&1 || true
-  systemctl start firewall.service
+  systemctl reset-failed neuwerk.service >/dev/null 2>&1 || true
+  systemctl start neuwerk.service
   wait_for_file /var/lib/neuwerk/cluster/tls/ca.crt 90 1 || return 1
   wait_for_health "https://${MGMT_IP}:8443/health" 90 1 || return 1
 }
 
-systemctl stop neuwerk-demo-token.service neuwerk-demo-topology.service firewall.service 2>/dev/null || true
-systemctl enable neuwerk-demo-configure.service firewall.service neuwerk-demo-topology.service neuwerk-demo-token.service
+systemctl stop neuwerk-demo-token.service neuwerk-demo-topology.service neuwerk.service 2>/dev/null || true
+systemctl enable neuwerk-demo-configure.service neuwerk.service neuwerk-demo-topology.service neuwerk-demo-token.service
 rm -f /var/lib/neuwerk-demo/admin.token
 
 if ! start_demo_runtime; then

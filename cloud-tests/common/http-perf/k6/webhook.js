@@ -1,5 +1,7 @@
 import http from "k6/http";
 import { check } from "k6";
+import exec from "k6/execution";
+import { Counter } from "k6/metrics";
 
 const targetUrls = (__ENV.TARGET_URLS || "")
   .split(",")
@@ -24,6 +26,8 @@ const tlsInsecure = (__ENV.TLS_INSECURE || "1") === "1";
 const scenarioLabel = __ENV.SCENARIO_LABEL || "http-perf";
 const enforceThresholds = (__ENV.ENFORCE_THRESHOLDS || "0") === "1";
 const connectionMode = (__ENV.CONNECTION_MODE || "keep_alive").trim();
+const steadyRequests = new Counter("steady_requests");
+const steadyFailures = new Counter("steady_failures");
 
 if (targetUrls.length === 0) {
   throw new Error("TARGET_URLS must contain at least one target URL");
@@ -90,4 +94,11 @@ export default function () {
   check(res, {
     "status is 2xx": (r) => r.status >= 200 && r.status < 300,
   });
+
+  if (exec.instance.currentTestRunDuration >= rampSeconds * 1000) {
+    steadyRequests.add(1);
+    if (res.status < 200 || res.status >= 300) {
+      steadyFailures.add(1);
+    }
+  }
 }

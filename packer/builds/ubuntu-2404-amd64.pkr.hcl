@@ -50,7 +50,7 @@ build {
       "NEUWERK_REPO_DIR=${local.guest_repo_dir}",
       "NEUWERK_TARGET=${var.target}"
     ]
-    script = "${path.root}/scripts/build-firewall.sh"
+    script = "${path.root}/scripts/build-neuwerk.sh"
   }
 
   provisioner "shell" {

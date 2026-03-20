@@ -14,11 +14,11 @@ variable "container_name" {
   type = string
 }
 
-variable "firewall_binary_path" {
+variable "neuwerk_binary_path" {
   type = string
 }
 
-variable "firewall_blob_name" {
+variable "neuwerk_blob_name" {
   type = string
 }
 

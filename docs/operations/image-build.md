@@ -82,14 +82,14 @@ This validates:
 The Ubuntu 24.04 targets build:
 
 - a vendored DPDK `23.11.2` runtime under `/opt/neuwerk/runtime`
-- a release-mode firewall binary compiled against that vendored DPDK
+- a release-mode Neuwerk binary compiled against that vendored DPDK
 - the built UI under `/opt/neuwerk/ui`
 - a generated runtime bootstrap flow:
-  - `/opt/neuwerk/bin/firewall-bootstrap`
-  - `/opt/neuwerk/bin/firewall-launch`
+  - `/opt/neuwerk/bin/neuwerk-bootstrap`
+  - `/opt/neuwerk/bin/neuwerk-launch`
   - `/etc/neuwerk/appliance.env`
-  - `/etc/neuwerk/firewall.env`
-- a systemd service at `/etc/systemd/system/firewall.service`
+  - `/etc/neuwerk/neuwerk.env`
+- a systemd service at `/etc/systemd/system/neuwerk.service`
 - release-side metadata artifacts downloaded from the guest into `artifacts/image-build/release/<target>/`
 
 The build also preserves a staged `rootfs/` copy in the release artifact directory for linkage inspection and rootfs SBOM generation.
@@ -184,12 +184,12 @@ The baked image is not tied to fixed interface names or DNS values at image-buil
 
 At service start:
 
-- `firewall-bootstrap` detects the cloud provider from metadata when possible
+- `neuwerk-bootstrap` detects the cloud provider from metadata when possible
 - management and dataplane interfaces are derived from `mgmt0`/`data0` when present, otherwise from the system routing view
 - Azure dataplane selection prefers `mac:<addr>` selectors so the runtime can map MANA/NetVSC correctly
 - DNS target IPs default to the management IPv4 address
 - DNS upstreams default to non-loopback resolvers from `/etc/resolv.conf`
-- `/etc/neuwerk/firewall.env` is regenerated from `/etc/neuwerk/appliance.env`
+- `/etc/neuwerk/neuwerk.env` is regenerated from `/etc/neuwerk/appliance.env`
 
 Operator overrides belong in `/etc/neuwerk/appliance.env`. Use `NEUWERK_BOOTSTRAP_*` keys for derived runtime settings and plain `NEUWERK_*` keys for advanced passthrough runtime variables.
 
@@ -223,5 +223,5 @@ These are downloaded back to `artifacts/image-build/release/<target>/` by the Pa
 ## Notes
 
 - The image target pins vendored DPDK `23.11.2` and expects ABI `.so.24`.
-- Existing cloud test stacks can now accept firewall-specific custom image IDs while the old binary-upload bootstrap path remains available during migration.
+- Existing cloud test stacks can now accept Neuwerk-specific custom image IDs while the old binary-upload bootstrap path remains available during migration.
 - The release workflow currently publishes the `qcow2` as a compressed multi-part archive so the artifact can stay inside GitHub Release per-file limits.

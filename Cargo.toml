@@ -1,5 +1,5 @@
 [package]
-name = "firewall"
+name = "neuwerk"
 version = "0.1.0"
 edition = "2021"
 
@@ -77,4 +77,8 @@ dpdk-sys = { path = "third_party/dpdk-sys" }
 
 [[bench]]
 name = "tls"
+harness = false
+
+[[bench]]
+name = "dataplane"
 harness = false

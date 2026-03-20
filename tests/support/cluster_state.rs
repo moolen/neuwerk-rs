@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use firewall::controlplane::cluster::store::ClusterStore;
-use firewall::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
+use neuwerk::controlplane::cluster::store::ClusterStore;
+use neuwerk::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
 
 pub async fn wait_for_envelope(
     store: &ClusterStore,

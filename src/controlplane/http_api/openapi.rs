@@ -58,8 +58,8 @@ impl Modify for SecurityAddon {
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "Neuwerk Firewall HTTP API",
-        description = "OpenAPI document for the Neuwerk Firewall control-plane management API.",
+        title = "Neuwerk HTTP API",
+        description = "OpenAPI document for the Neuwerk control-plane management API.",
         version = "0.1.0"
     ),
     paths(

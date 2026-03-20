@@ -3,8 +3,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use crate::runtime::bootstrap::cluster::build_cluster_config;
-use firewall::controlplane::cloud::types::IntegrationMode;
-use firewall::dataplane::{EncapMode, OverlayConfig, SnatMode, DEFAULT_IDLE_TIMEOUT_SECS};
+use neuwerk::controlplane::cloud::types::IntegrationMode;
+use neuwerk::dataplane::{EncapMode, OverlayConfig, SnatMode, DEFAULT_IDLE_TIMEOUT_SECS};
 
 use super::{
     parse_cidr, parse_csv_ipv4_list, parse_csv_socket_list, parse_default_policy,
@@ -22,11 +22,11 @@ pub fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     let mut dns_target_ips_csv: Option<Vec<Ipv4Addr>> = None;
     let mut dns_upstreams: Vec<SocketAddr> = Vec::new();
     let mut dns_upstreams_csv: Option<Vec<SocketAddr>> = None;
-    let mut data_plane_mode = DataPlaneMode::Soft(firewall::dataplane::SoftMode::Tun);
+    let mut data_plane_mode = DataPlaneMode::Soft(neuwerk::dataplane::SoftMode::Tun);
     let mut idle_timeout_secs = DEFAULT_IDLE_TIMEOUT_SECS;
     let mut dns_allowlist_idle_secs = None;
     let mut dns_allowlist_gc_interval_secs = None;
-    let mut default_policy = firewall::dataplane::policy::DefaultPolicy::Deny;
+    let mut default_policy = neuwerk::dataplane::policy::DefaultPolicy::Deny;
     let mut dhcp_timeout_secs = DHCP_TIMEOUT_SECS;
     let mut dhcp_retry_max = DHCP_RETRY_MAX;
     let mut dhcp_lease_min_secs = DHCP_LEASE_MIN_SECS;
@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn parse_args_accepts_mac_selector_for_dpdk_mode() {
-        let cfg = parse_args("firewall", required_args("dpdk", "mac:02:00:00:00:00:42"))
+        let cfg = parse_args("neuwerk", required_args("dpdk", "mac:02:00:00:00:00:42"))
             .expect("cli config");
 
         assert_eq!(cfg.data_plane_mode, DataPlaneMode::Dpdk);
@@ -699,7 +699,7 @@ mod tests {
 
     #[test]
     fn parse_args_rejects_mac_selector_for_soft_modes() {
-        let err = parse_args("firewall", required_args("tun", "mac:02:00:00:00:00:42"))
+        let err = parse_args("neuwerk", required_args("tun", "mac:02:00:00:00:00:42"))
             .expect_err("soft dataplane must reject mac selector");
 
         assert_eq!(

@@ -103,6 +103,76 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 
+  - path: /usr/local/bin/tcp-accept-close.py
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env python3
+      import os
+      import selectors
+      import signal
+      import socket
+      import threading
+
+      HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
+      PORT = int(os.getenv("LISTEN_PORT", "9000"))
+      BACKLOG = int(os.getenv("LISTEN_BACKLOG", "65535"))
+      workers_env = os.getenv("LISTEN_WORKERS", "0")
+      worker_count = int(workers_env) if workers_env.isdigit() else 0
+      if worker_count <= 0:
+          worker_count = max(1, (os.cpu_count() or 1))
+      if not hasattr(socket, "SO_REUSEPORT"):
+          worker_count = 1
+
+      stop_event = threading.Event()
+
+      def _signal_handler(_signum, _frame):
+          stop_event.set()
+
+      signal.signal(signal.SIGTERM, _signal_handler)
+      signal.signal(signal.SIGINT, _signal_handler)
+
+      def serve(worker_idx: int):
+          srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          if worker_count > 1 and hasattr(socket, "SO_REUSEPORT"):
+              srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+          srv.bind((HOST, PORT))
+          srv.listen(BACKLOG)
+          srv.setblocking(False)
+
+          sel = selectors.DefaultSelector()
+          sel.register(srv, selectors.EVENT_READ)
+          try:
+              while not stop_event.is_set():
+                  events = sel.select(timeout=1.0)
+                  for key, _ in events:
+                      while True:
+                          try:
+                              conn, _addr = key.fileobj.accept()
+                          except BlockingIOError:
+                              break
+                          except OSError:
+                              break
+                          try:
+                              conn.close()
+                          except OSError:
+                              pass
+          finally:
+              sel.close()
+              try:
+                  srv.close()
+              except OSError:
+                  pass
+
+      threads = []
+      for idx in range(worker_count):
+          t = threading.Thread(target=serve, args=(idx,), daemon=True)
+          t.start()
+          threads.append(t)
+
+      for t in threads:
+          t.join()
+
   - path: /etc/systemd/system/longtcp.service
     permissions: "0644"
     content: |
@@ -112,7 +182,22 @@ write_files:
       Wants=network-online.target
 
       [Service]
-      ExecStart=/usr/bin/socat -u TCP-LISTEN:9000,reuseaddr,fork OPEN:/dev/null
+      ExecStart=/usr/bin/env LISTEN_HOST=0.0.0.0 LISTEN_PORT=9000 LISTEN_WORKERS=0 /usr/local/bin/tcp-accept-close.py
+      Restart=always
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/longtcp@.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=long-lived TCP service on port %i
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      ExecStart=/usr/bin/env LISTEN_HOST=0.0.0.0 LISTEN_PORT=%i LISTEN_WORKERS=0 /usr/local/bin/tcp-accept-close.py
       Restart=always
 
       [Install]
@@ -136,3 +221,5 @@ runcmd:
   - systemctl restart nginx
   - systemctl enable --now iperf3
   - systemctl enable --now longtcp
+  - systemctl daemon-reload
+  - for port in $(seq 9001 9015); do systemctl enable --now "longtcp@$${port}.service"; done

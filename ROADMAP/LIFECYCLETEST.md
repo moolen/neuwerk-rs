@@ -24,19 +24,19 @@
 4. Rollout orchestrator:
    - Add an Azure lifecycle script that:
      - Configures allow policy.
-     - Pre-captures per-firewall metrics.
+     - Pre-captures per-Neuwerk metrics.
      - Starts sustained mixed traffic on consumer.
      - Starts VMSS rollout using a Flexible-compatible rolling replacement: surge scale-out by +1, delete one old instance, wait for capacity/readiness to settle, repeat.
-     - Waits for update completion and firewall readiness.
+     - Waits for update completion and Neuwerk readiness.
      - Keeps post-rollout traffic running to cover drain timeout.
      - Captures post metrics and enforces zero traffic failures.
 
 ## Test Data + Metrics
 - Traffic paths:
-  - Consumer VM -> firewall dataplane -> upstream VIP on UDP/TCP 53 (`upstream.test` lookup).
-  - Consumer VM -> firewall dataplane -> upstream VIP on TCP 80/443.
-  - Consumer VM -> firewall dataplane -> upstream private IP on TCP/9000 (`/delay/5` with server-side 5 second delay).
-- Metrics snapshots (per firewall instance):
+  - Consumer VM -> Neuwerk dataplane -> upstream VIP on UDP/TCP 53 (`upstream.test` lookup).
+  - Consumer VM -> Neuwerk dataplane -> upstream VIP on TCP 80/443.
+  - Consumer VM -> Neuwerk dataplane -> upstream private IP on TCP/9000 (`/delay/5` with server-side 5 second delay).
+- Metrics snapshots (per Neuwerk instance):
   - `integration_termination_events_total`
   - `integration_termination_complete_total`
   - `integration_termination_poll_errors_total`
@@ -49,7 +49,7 @@
   - Store snapshots and consumer traffic log under `cloud-tests/azure/artifacts/lifecycle-<timestamp>/`.
 
 ## Execution Steps
-1. Build firewall binary with DPDK support.
+1. Build Neuwerk binary with DPDK support.
 2. Deploy Azure stack with Terraform apply (using updated cloud-init with 30s drain timeout).
 3. Run lifecycle rollout test (`make lifecycle-rollout`).
 4. Run termination drain-path test (`make lifecycle-termination-drain`).
@@ -57,7 +57,7 @@
 5. Assert:
    - Consumer log reports `fail=0`.
    - Rolling update completed.
-   - Firewall nodes remained ready.
+   - Neuwerk nodes remained ready.
    - Metrics snapshots were captured.
    - Termination drain-path test observed target-instance streamed max increases in `integration_termination_events_total` and `integration_termination_drain_start_seconds_count`.
 
@@ -69,4 +69,4 @@
 - Upstream delayed endpoint conflicts:
   - Temporarily replace `longtcp` service with dedicated delayed HTTP service on port 9000 for the test, then restore.
 - Instance IP churn during rollout:
-  - Resolve firewall management IPs dynamically before each metrics snapshot.
+  - Resolve Neuwerk management IPs dynamically before each metrics snapshot.

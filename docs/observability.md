@@ -125,7 +125,7 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
-  - job_name: "neuwerk-firewall"
+  - job_name: "neuwerk"
     metrics_path: /metrics
     static_configs:
       - targets:
@@ -143,5 +143,5 @@ receivers:
 
 ## Notes
 - Throughput (MiB/s, PPS) should be computed in PromQL from counters.
-- A Grafana dashboard is available at `docs/grafana/firewall-operations-dashboard.json`.
+- A Grafana dashboard is available at `docs/grafana/neuwerk-operations-dashboard.json`.
 - Import it via Grafana: Dashboards -> New -> Import -> Upload JSON file.

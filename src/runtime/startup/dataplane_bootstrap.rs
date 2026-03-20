@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
-use firewall::controlplane::dhcp::{DhcpClient, DhcpClientConfig};
-use firewall::controlplane::metrics::Metrics;
-use firewall::controlplane::ready::ReadinessState;
-use firewall::controlplane::PolicyStore;
-use firewall::dataplane::{DataplaneConfigStore, DhcpRx, DhcpTx};
+use neuwerk::controlplane::dhcp::{DhcpClient, DhcpClientConfig};
+use neuwerk::controlplane::metrics::Metrics;
+use neuwerk::controlplane::ready::ReadinessState;
+use neuwerk::controlplane::PolicyStore;
+use neuwerk::dataplane::{DataplaneConfigStore, DhcpRx, DhcpTx};
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
@@ -54,7 +54,7 @@ async fn run_imds_fallback<F, Fut>(
     }
     match imds_lookup(mac).await {
         Ok((ip, prefix, gateway)) => {
-            dataplane_config.set(firewall::dataplane::DataplaneConfig {
+            dataplane_config.set(neuwerk::dataplane::DataplaneConfig {
                 ip,
                 prefix,
                 gateway,
@@ -173,10 +173,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    use firewall::controlplane::cloud::types::IntegrationMode;
-    use firewall::controlplane::cluster::config::ClusterConfig;
-    use firewall::dataplane::policy::DefaultPolicy;
-    use firewall::dataplane::{DataplaneConfig, EncapMode, SnatMode};
+    use neuwerk::controlplane::cloud::types::IntegrationMode;
+    use neuwerk::controlplane::cluster::config::ClusterConfig;
+    use neuwerk::dataplane::policy::DefaultPolicy;
+    use neuwerk::dataplane::{DataplaneConfig, EncapMode, SnatMode};
 
     fn test_cli_config() -> CliConfig {
         CliConfig {

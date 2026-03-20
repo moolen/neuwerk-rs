@@ -1,11 +1,11 @@
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex, RwLock};
 
-use firewall::dataplane::policy::{
+use neuwerk::dataplane::policy::{
     CidrV4, DefaultPolicy, IpSetV4, PolicySnapshot, PortRange, Proto, Rule, RuleAction, RuleMatch,
     RuleMode, SourceGroup, Tls13Uninspectable, TlsMatch, TlsMode,
 };
-use firewall::dataplane::{DataplaneConfig, DpdkAdapter, EngineState};
+use neuwerk::dataplane::{DataplaneConfig, DpdkAdapter, EngineState};
 
 const ETH_HDR_LEN: usize = 14;
 const ETH_TYPE_IPV4: u16 = 0x0800;
@@ -92,7 +92,7 @@ fn build_tcp_ipv4_frame(
     buf[tcp_off + 18..tcp_off + 20].copy_from_slice(&0u16.to_be_bytes());
     buf[tcp_off + 20..tcp_off + 20 + payload.len()].copy_from_slice(payload);
 
-    let mut pkt = firewall::dataplane::packet::Packet::new(buf);
+    let mut pkt = neuwerk::dataplane::packet::Packet::new(buf);
     assert!(pkt.recalc_checksums());
     pkt.buffer().to_vec()
 }
@@ -422,7 +422,7 @@ fn integration_dpdk_intercept_steers_to_service_lane_queue() {
         buf[tcp_off + 2..tcp_off + 4].copy_from_slice(&443u16.to_be_bytes());
         buf[tcp_off + 12] = 0x50;
         buf[tcp_off + 13] = 0x02;
-        let mut pkt = firewall::dataplane::packet::Packet::new(buf);
+        let mut pkt = neuwerk::dataplane::packet::Packet::new(buf);
         assert!(pkt.recalc_checksums());
         pkt.buffer().to_vec()
     };
@@ -485,7 +485,7 @@ fn integration_dpdk_service_lane_return_path_emits_arp_on_miss() {
         buf[tcp_off + 2..tcp_off + 4].copy_from_slice(&40000u16.to_be_bytes());
         buf[tcp_off + 12] = 0x50;
         buf[tcp_off + 13] = 0x10;
-        let mut pkt = firewall::dataplane::packet::Packet::new(buf);
+        let mut pkt = neuwerk::dataplane::packet::Packet::new(buf);
         assert!(pkt.recalc_checksums());
         pkt.buffer().to_vec()
     };

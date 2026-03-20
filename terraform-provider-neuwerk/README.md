@@ -1,6 +1,6 @@
 # Terraform Provider Neuwerk
 
-This module contains the initial Terraform provider implementation for the Neuwerk firewall HTTP API.
+This module contains the initial Terraform provider implementation for the Neuwerk HTTP API.
 
 Implemented resources:
 

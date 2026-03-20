@@ -4,16 +4,16 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crossbeam_queue::ArrayQueue;
-use firewall::controlplane;
-use firewall::controlplane::metrics::{
+use neuwerk::controlplane;
+use neuwerk::controlplane::metrics::{
     current_dpdk_worker_id, set_current_dpdk_worker_id, DpdkFlowSteerMetricHandles,
 };
-use firewall::dataplane::policy::{
+use neuwerk::dataplane::policy::{
     DynamicIpSetV4, PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
 };
 #[cfg(feature = "dpdk")]
-use firewall::dataplane::DpdkTransferredRxPacket;
-use firewall::dataplane::{
+use neuwerk::dataplane::DpdkTransferredRxPacket;
+use neuwerk::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo, DrainControl,
     EngineState, FrameIo, FrameOut, OverlayConfig, Packet, SharedArpState,
     SharedInterceptDemuxState, SnatMode, SoftAdapter, WiretapEmitter,

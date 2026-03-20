@@ -1,10 +1,10 @@
 use std::net::Ipv4Addr;
 
-use firewall::dataplane::policy::{
+use neuwerk::dataplane::policy::{
     CidrV4, DefaultPolicy, IpSetV4, PolicyDecision, PolicySnapshot, PortRange, Proto, Rule,
     RuleAction, RuleMatch, SourceGroup, Tls13Uninspectable, TlsMatch, TlsMode, TlsNameMatch,
 };
-use firewall::dataplane::tls::{TlsCertChain, TlsObservation, TlsVerifier};
+use neuwerk::dataplane::tls::{TlsCertChain, TlsObservation, TlsVerifier};
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyUsagePurpose};
 
 fn build_chain(san: &str, cn: &str) -> (Vec<u8>, TlsCertChain) {
@@ -48,7 +48,7 @@ fn policy_with_tls_match(tls: TlsMatch) -> PolicySnapshot {
             tls: Some(tls),
         },
         action: RuleAction::Allow,
-        mode: firewall::dataplane::policy::RuleMode::Enforce,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
     };
     let group = SourceGroup {
         id: "internal".to_string(),
@@ -73,8 +73,8 @@ fn base_tls_match() -> TlsMatch {
     }
 }
 
-fn meta() -> firewall::dataplane::policy::PacketMeta {
-    firewall::dataplane::policy::PacketMeta {
+fn meta() -> neuwerk::dataplane::policy::PacketMeta {
+    neuwerk::dataplane::policy::PacketMeta {
         src_ip: Ipv4Addr::new(10, 0, 0, 2),
         dst_ip: Ipv4Addr::new(198, 51, 100, 10),
         proto: 6,
@@ -187,9 +187,9 @@ fn tls_policy_trust_anchor_mismatch_denies() {
 fn tls_intercept_mode_requires_service_lane() {
     let tls = TlsMatch {
         mode: TlsMode::Intercept,
-        intercept_http: Some(firewall::dataplane::policy::TlsInterceptHttpPolicy {
-            request: Some(firewall::dataplane::policy::HttpRequestPolicy {
-                host: Some(firewall::dataplane::policy::HttpStringMatcher {
+        intercept_http: Some(neuwerk::dataplane::policy::TlsInterceptHttpPolicy {
+            request: Some(neuwerk::dataplane::policy::HttpRequestPolicy {
+                host: Some(neuwerk::dataplane::policy::HttpStringMatcher {
                     exact: vec!["foo.allowed".to_string()],
                     regex: None,
                 }),

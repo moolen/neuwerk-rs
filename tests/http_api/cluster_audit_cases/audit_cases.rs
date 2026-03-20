@@ -137,7 +137,7 @@ async fn http_api_audit_findings_cluster_aggregates_and_returns_partial() {
     join_cfg.node_id_path = join_dir.path().join("node_id");
     join_cfg.token_path = join_token.clone();
 
-    let seed_runtime = firewall::controlplane::cluster::run_cluster_tasks(
+    let seed_runtime = neuwerk::controlplane::cluster::run_cluster_tasks(
         seed_cfg,
         None,
         Some(Metrics::new().unwrap()),
@@ -145,7 +145,7 @@ async fn http_api_audit_findings_cluster_aggregates_and_returns_partial() {
     .await
     .unwrap()
     .unwrap();
-    let join_runtime = firewall::controlplane::cluster::run_cluster_tasks(
+    let join_runtime = neuwerk::controlplane::cluster::run_cluster_tasks(
         join_cfg,
         None,
         Some(Metrics::new().unwrap()),

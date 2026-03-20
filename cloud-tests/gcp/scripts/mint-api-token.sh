@@ -2,13 +2,13 @@
 set -euo pipefail
 
 if [ "$#" -lt 3 ]; then
-  echo "usage: $0 <jumpbox-ip> <ssh-key-path> <firewall-mgmt-ip> [sub]" >&2
+  echo "usage: $0 <jumpbox-ip> <ssh-key-path> <neuwerk-mgmt-ip> [sub]" >&2
   exit 2
 fi
 
 JUMPBOX_IP="$1"
 KEY_PATH="$2"
-FIREWALL_IP="$3"
+NEUWERK_IP="$3"
 SUBJECT="${4:-gcp-ui-port-forward}"
 SSH_USER="${SSH_USER:-ubuntu}"
 
@@ -27,7 +27,7 @@ for bin in ssh openssl python3; do
 KEYSET_JSON=$(
   ssh -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY_PATH" \
     -o ProxyCommand="ssh -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i ${KEY_PATH} -W %h:%p ${SSH_USER}@${JUMPBOX_IP}" \
-    "${SSH_USER}@${FIREWALL_IP}" \
+    "${SSH_USER}@${NEUWERK_IP}" \
     "sudo cat /var/lib/neuwerk/http-tls/api-auth.json"
 )
 

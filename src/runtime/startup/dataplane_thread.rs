@@ -2,11 +2,11 @@ use std::net::Ipv4Addr;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 
-use firewall::controlplane::metrics::Metrics;
-use firewall::dataplane::policy::{
+use neuwerk::controlplane::metrics::Metrics;
+use neuwerk::dataplane::policy::{
     DynamicIpSetV4, PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
 };
-use firewall::dataplane::{
+use neuwerk::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DrainControl, OverlayConfig,
     SharedInterceptDemuxState, SnatMode, WiretapEmitter,
 };

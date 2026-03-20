@@ -30,7 +30,7 @@ pub(super) fn init_eal(iface: &str) -> Result<(), String> {
             };
             tracing::info!("dpdk: eal lcore list={}", core_list);
             let mut args = vec![
-                "firewall".to_string(),
+                "neuwerk".to_string(),
                 "-l".to_string(),
                 core_list,
                 "-n".to_string(),

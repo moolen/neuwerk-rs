@@ -776,7 +776,7 @@ async fn exchange_code(
         SsoProviderKind::Github => http
             .post(token_url)
             .header("accept", "application/json")
-            .header("user-agent", "neuwerk-firewall")
+            .header("user-agent", "neuwerk")
             .form(&[
                 ("client_id", provider.client_id.as_str()),
                 ("client_secret", provider.client_secret.as_str()),
@@ -1179,7 +1179,7 @@ async fn load_github_identity(
         .get("https://api.github.com/user")
         .bearer_auth(access_token)
         .header("accept", "application/json")
-        .header("user-agent", "neuwerk-firewall")
+        .header("user-agent", "neuwerk")
         .send()
         .await
         .map_err(|err| format!("github user request failed: {err}"))?;
@@ -1208,7 +1208,7 @@ async fn load_github_identity(
             .get("https://api.github.com/user/emails")
             .bearer_auth(access_token)
             .header("accept", "application/json")
-            .header("user-agent", "neuwerk-firewall")
+            .header("user-agent", "neuwerk")
             .send()
             .await
             .map_err(|err| format!("github emails request failed: {err}"))?;

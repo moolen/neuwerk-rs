@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use firewall::controlplane::api_auth;
+use neuwerk::controlplane::api_auth;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa};
@@ -73,7 +73,7 @@ async fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<(),
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    Err("timed out waiting for firewall exit".to_string())
+    Err("timed out waiting for neuwerk exit".to_string())
 }
 
 fn cleanup_interface(name: &str) {
@@ -151,14 +151,14 @@ impl Drop for NetworkCleanup {
     }
 }
 
-fn spawn_firewall(
+fn spawn_neuwerk(
     tls_dir: &Path,
     local_root: &Path,
     http_bind: SocketAddr,
     metrics_bind: SocketAddr,
     dataplane_iface: &str,
 ) -> Result<Child, String> {
-    Command::new(env!("CARGO_BIN_EXE_firewall"))
+    Command::new(env!("CARGO_BIN_EXE_neuwerk"))
         .args([
             "--management-interface",
             "lo",
@@ -192,10 +192,10 @@ fn spawn_firewall(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|err| format!("spawn firewall failed: {err}"))
+        .map_err(|err| format!("spawn neuwerk failed: {err}"))
 }
 
-struct FirewallHarness {
+struct NeuwerkHarness {
     _dir: TempDir,
     _network_cleanup: NetworkCleanup,
     child: Child,
@@ -205,7 +205,7 @@ struct FirewallHarness {
     token: String,
 }
 
-impl FirewallHarness {
+impl NeuwerkHarness {
     async fn start(label: &str) -> Result<Self, String> {
         let dir = TempDir::new().map_err(|err| err.to_string())?;
         let tls_dir = dir.path().join("http-tls");
@@ -220,7 +220,7 @@ impl FirewallHarness {
         cleanup_service_lane_state();
         create_tun_interface(&dataplane_iface, "10.19.0.2/24")?;
 
-        let child = spawn_firewall(
+        let child = spawn_neuwerk(
             &tls_dir,
             &local_root,
             http_bind,
@@ -291,7 +291,7 @@ impl FirewallHarness {
     }
 }
 
-impl Drop for FirewallHarness {
+impl Drop for NeuwerkHarness {
     fn drop(&mut self) {
         let _ = self.child.kill();
     }
@@ -516,7 +516,7 @@ fn read_expected_json(fixture: &str, file: &str) -> Value {
 }
 
 fn fixture_replacements(
-    harness: &FirewallHarness,
+    harness: &NeuwerkHarness,
     extra: BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut replacements = BTreeMap::new();
@@ -551,7 +551,7 @@ fn generate_uploaded_ca_pair() -> (String, String) {
 }
 
 async fn verify_policy_exact(
-    harness: &FirewallHarness,
+    harness: &NeuwerkHarness,
     name: &str,
     expected_policy: Value,
 ) -> Result<(), String> {
@@ -572,7 +572,7 @@ async fn verify_policy_exact(
     Ok(())
 }
 
-async fn verify_integration_exists(harness: &FirewallHarness, name: &str) -> Result<(), String> {
+async fn verify_integration_exists(harness: &NeuwerkHarness, name: &str) -> Result<(), String> {
     let integration = harness
         .get_json(&format!("/api/v1/integrations/{name}"))
         .await?;
@@ -582,7 +582,7 @@ async fn verify_integration_exists(harness: &FirewallHarness, name: &str) -> Res
     Ok(())
 }
 
-async fn verify_policy_missing(harness: &FirewallHarness, name: &str) -> Result<(), String> {
+async fn verify_policy_missing(harness: &NeuwerkHarness, name: &str) -> Result<(), String> {
     let status = harness
         .get_status(&format!("/api/v1/policies/by-name/{name}"))
         .await?;
@@ -594,7 +594,7 @@ async fn verify_policy_missing(harness: &FirewallHarness, name: &str) -> Result<
     Ok(())
 }
 
-async fn verify_integration_missing(harness: &FirewallHarness, name: &str) -> Result<(), String> {
+async fn verify_integration_missing(harness: &NeuwerkHarness, name: &str) -> Result<(), String> {
     let status = harness
         .get_status(&format!("/api/v1/integrations/{name}"))
         .await?;
@@ -606,7 +606,7 @@ async fn verify_integration_missing(harness: &FirewallHarness, name: &str) -> Re
     Ok(())
 }
 
-async fn verify_tls_ca_configured(harness: &FirewallHarness) -> Result<Value, String> {
+async fn verify_tls_ca_configured(harness: &NeuwerkHarness) -> Result<Value, String> {
     let status = harness
         .get_json("/api/v1/settings/tls-intercept-ca")
         .await?;
@@ -618,7 +618,7 @@ async fn verify_tls_ca_configured(harness: &FirewallHarness) -> Result<Value, St
     Ok(status)
 }
 
-async fn verify_tls_ca_missing(harness: &FirewallHarness) -> Result<(), String> {
+async fn verify_tls_ca_missing(harness: &NeuwerkHarness) -> Result<(), String> {
     let status = harness
         .get_json("/api/v1/settings/tls-intercept-ca")
         .await?;
@@ -629,7 +629,7 @@ async fn verify_tls_ca_missing(harness: &FirewallHarness) -> Result<(), String> 
 }
 
 async fn run_foundation_import_case(
-    harness: &FirewallHarness,
+    harness: &NeuwerkHarness,
     provider: &ProviderInstall,
 ) -> Result<(), String> {
     let workspace = TerraformWorkspace::new(
@@ -666,7 +666,7 @@ async fn run_foundation_import_case(
 }
 
 async fn run_uploaded_ca_import_case(
-    harness: &FirewallHarness,
+    harness: &NeuwerkHarness,
     provider: &ProviderInstall,
 ) -> Result<(), String> {
     let (cert_pem, key_pem) = generate_uploaded_ca_pair();
@@ -723,7 +723,7 @@ async fn run_uploaded_ca_import_case(
 }
 
 async fn run_generated_ca_case(
-    harness: &FirewallHarness,
+    harness: &NeuwerkHarness,
     provider: &ProviderInstall,
 ) -> Result<(), String> {
     let workspace = TerraformWorkspace::new(
@@ -741,7 +741,7 @@ async fn run_generated_ca_case(
 }
 
 async fn run_policy_dns_sugar_case(
-    harness: &FirewallHarness,
+    harness: &NeuwerkHarness,
     provider: &ProviderInstall,
 ) -> Result<(), String> {
     let workspace = TerraformWorkspace::new(
@@ -764,7 +764,7 @@ async fn run_policy_dns_sugar_case(
 }
 
 async fn run_policy_kubernetes_sugar_import_case(
-    harness: &FirewallHarness,
+    harness: &NeuwerkHarness,
     provider: &ProviderInstall,
 ) -> Result<(), String> {
     let workspace = TerraformWorkspace::new(
@@ -807,7 +807,7 @@ async fn run_policy_kubernetes_sugar_import_case(
 }
 
 async fn run_policy_tls_targets_case(
-    harness: &FirewallHarness,
+    harness: &NeuwerkHarness,
     provider: &ProviderInstall,
 ) -> Result<(), String> {
     let workspace = TerraformWorkspace::new(
@@ -850,7 +850,7 @@ async fn terraform_provider_golden_contract_suite() {
 
     let provider = ProviderInstall::build().expect("build provider");
 
-    let mut harness = match FirewallHarness::start("tfe2e").await {
+    let mut harness = match NeuwerkHarness::start("tfe2e").await {
         Ok(harness) => harness,
         Err(err) => {
             eprintln!("skipping terraform provider contract suite: {err}");
@@ -877,5 +877,5 @@ async fn terraform_provider_golden_contract_suite() {
         .await
         .expect("policy tls targets case");
 
-    harness.shutdown().await.expect("shutdown firewall");
+    harness.shutdown().await.expect("shutdown neuwerk");
 }

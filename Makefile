@@ -19,7 +19,7 @@ QEMU_ACCELERATOR ?=
 USE_PREBUILT_ARTIFACTS ?=
 RELEASE_VERSION ?= dev
 GIT_REVISION ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf "unknown")
-VAGRANT_BOX_NAME ?= neuwerk/firewall-demo
+VAGRANT_BOX_NAME ?= neuwerk/neuwerk-demo
 VAGRANT_BOX_VERSION ?= $(RELEASE_VERSION)
 VAGRANT_PROVIDER ?= virtualbox
 VAGRANT_BOX_OUTPUT ?= $(VAGRANT_ARTIFACT_DIR)/neuwerk-$(TARGET)-$(RELEASE_VERSION)-$(VAGRANT_PROVIDER).box

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use firewall::controlplane::http_api::HttpApiShutdown;
-use firewall::controlplane::ready::ReadinessState;
-use firewall::dataplane::DrainControl;
+use neuwerk::controlplane::http_api::HttpApiShutdown;
+use neuwerk::controlplane::ready::ReadinessState;
+use neuwerk::dataplane::DrainControl;
 use tokio::sync::oneshot;
 
 const HTTP_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
@@ -63,9 +63,9 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
-    use firewall::controlplane::PolicyStore;
-    use firewall::dataplane::config::{DataplaneConfig, DataplaneConfigStore};
-    use firewall::dataplane::policy::DefaultPolicy;
+    use neuwerk::controlplane::PolicyStore;
+    use neuwerk::dataplane::config::{DataplaneConfig, DataplaneConfigStore};
+    use neuwerk::dataplane::policy::DefaultPolicy;
 
     #[test]
     fn apply_runtime_shutdown_sets_drain_and_readiness_false() {

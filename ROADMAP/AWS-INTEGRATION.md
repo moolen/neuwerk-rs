@@ -4,12 +4,12 @@ Build an AWS verification bench with **DPDK dataplane** and **GWLB/GENEVE** from
 **Decisions Locked In**
 - Dataplane mode: `dpdk` (mandatory in Phase 1).
 - Traffic steering: **AWS Gateway Load Balancer (GWLB) + GENEVE**, not route-table steering to instance ENIs.
-- Initial scale: `desired=1` firewall instance.
+- Initial scale: `desired=1` Neuwerk instance.
 - Region: `eu-central-1`.
 - CPU/instance preference: Intel, 2 vCPU class, target up to 12.5 Gbps (start with `c6in.large`, fallback to equivalent if unavailable).
 
 **Scope (Phase 1)**
-- Provision AWS infra for `consumer -> GWLB/GWLBE -> firewall -> upstream` with symmetric return path.
+- Provision AWS infra for `consumer -> GWLB/GWLBE -> Neuwerk -> upstream` with symmetric return path.
 - Keep strict NIC split:
 - `mgmt0` for control plane only.
 - `data0` for dataplane only.
@@ -26,9 +26,9 @@ Build an AWS verification bench with **DPDK dataplane** and **GWLB/GENEVE** from
 **Architecture (Phase 1)**
 1. VPC/Subnets
 - `mgmt`, `dataplane`, `consumer`, `upstream`, `jumpbox` subnets in `eu-central-1`.
-2. Firewall Compute
+2. Neuwerk Compute
 - ASG/Launch Template with desired capacity `1`.
-- Two ENIs per firewall instance:
+- Two ENIs per Neuwerk instance:
 - mgmt ENI in `mgmt` subnet.
 - dataplane ENI in `dataplane` subnet (DPDK NIC).
 3. GWLB Path
@@ -41,7 +41,7 @@ Build an AWS verification bench with **DPDK dataplane** and **GWLB/GENEVE** from
 - Consumer VM for verification workload.
 - Upstream VM (HTTP/HTTPS/DNS/iperf services).
 
-**Firewall Runtime Requirements (Phase 1)**
+**Neuwerk Runtime Requirements (Phase 1)**
 1. Runtime flags
 - `--management-interface <mgmt iface>`
 - `--data-plane-interface <data iface or selector>`
@@ -65,34 +65,34 @@ Build an AWS verification bench with **DPDK dataplane** and **GWLB/GENEVE** from
 - `providers.tf`, `versions.tf`, `variables.tf`, `outputs.tf`, `main.tf`.
 2. Networking:
 - VPC, subnets, IGW/NAT where needed.
-- Security groups for jumpbox, consumer, upstream, firewall.
+- Security groups for jumpbox, consumer, upstream, Neuwerk.
 3. GWLB/GWLBE:
 - GWLB, GENEVE target group (`6081`), listeners.
 - Endpoint/service attachments and route integration for consumer/upstream traffic through GWLBE.
 4. Compute:
-- Firewall LT + ASG (`desired=1`).
+- Neuwerk LT + ASG (`desired=1`).
 - Consumer, upstream, jumpbox instances.
 5. Artifact distribution:
-- S3 object for firewall binary and optional DPDK runtime bundle.
+- S3 object for Neuwerk binary and optional DPDK runtime bundle.
 - IAM instance profile with S3 read.
 6. Outputs:
-- jumpbox public IP, consumer private IPs, upstream VIP/IP, firewall mgmt IP(s), firewall dataplane target IP(s), GWLB endpoint IDs.
+- jumpbox public IP, consumer private IPs, upstream VIP/IP, Neuwerk mgmt IP(s), Neuwerk dataplane target IP(s), GWLB endpoint IDs.
 
 **2) AWS Bootstrap + Systemd**
 1. Add AWS cloud-init/user-data template:
 - install required runtime tooling.
-- fetch firewall binary/runtime from S3.
+- fetch Neuwerk binary/runtime from S3.
 - setup hugepages / DPDK prerequisites.
 2. Resolve ENIs and map interfaces:
 - bind dataplane NIC for DPDK path as required by selected PMD path.
-3. Install/start firewall service with required flags above.
+3. Install/start Neuwerk service with required flags above.
 4. Expose `/health` and `/ready` on mgmt plane only.
 
 **3) AWS Scripts + Make Targets**
 1. Add `cloud-tests/aws/Makefile` with:
-- `ssh.jumpbox`, `ssh.consumer`, `ssh.upstream`, `ssh.firewall`, `health`, `policy-smoke`, `run-tests`.
+- `ssh.jumpbox`, `ssh.consumer`, `ssh.upstream`, `ssh.neuwerk`, `health`, `policy-smoke`, `run-tests`.
 2. Add scripts:
-- `scripts/resolve-firewall-mgmt-ips.sh`
+- `scripts/resolve-neuwerk-mgmt-ips.sh`
 - `scripts/configure-policy.sh`
 - `scripts/mint-api-token.sh`
 - `scripts/health.sh`
@@ -102,7 +102,7 @@ Build an AWS verification bench with **DPDK dataplane** and **GWLB/GENEVE** from
 
 **4) Verification Tests**
 1. Health/readiness checks
-- verify all firewall nodes (currently one) pass `/health` and `/ready`.
+- verify all Neuwerk nodes (currently one) pass `/health` and `/ready`.
 2. Policy smoke
 - run shared cloud-policy-smoke suite end-to-end from consumer.
 3. GWLB/GENEVE validation checks (must-pass)
@@ -111,21 +111,21 @@ Build an AWS verification bench with **DPDK dataplane** and **GWLB/GENEVE** from
 - verify deny-path behavior still enforced under GENEVE encapsulation.
 - verify no fallback route-table direct steering is used.
 4. Throughput sanity
-- short `iperf3` run from consumer to upstream through GWLB/firewall datapath.
+- short `iperf3` run from consumer to upstream through GWLB/Neuwerk datapath.
 5. Artifacts
 - persist logs/metrics/results under `cloud-tests/aws/artifacts/<timestamp>/`.
 
 **Acceptance Criteria**
 - `terraform apply` brings up full AWS bench in `eu-central-1`.
-- Firewall runs in DPDK mode with `encap geneve` and healthy readiness.
+- Neuwerk runs in DPDK mode with `encap geneve` and healthy readiness.
 - `make aws.policy-smoke` passes using shared harness.
 - `make aws.run-tests` passes baseline DNS/HTTP/HTTPS + throughput sanity over GWLB path.
 - `terraform destroy` fully tears down resources.
 
 **Milestones**
-1. Scaffold AWS Terraform with GWLB + GWLBE + single firewall ASG.
+1. Scaffold AWS Terraform with GWLB + GWLBE + single Neuwerk ASG.
 2. Bring up nodes and validate basic reachability + GWLB path steering.
-3. Add firewall bootstrap for DPDK + GENEVE runtime.
+3. Add Neuwerk bootstrap for DPDK + GENEVE runtime.
 4. Integrate AWS scripts and Make targets with shared smoke runner.
 5. Stabilize and capture reproducible artifacts in CI-like local runs.
 
@@ -141,5 +141,5 @@ Build an AWS verification bench with **DPDK dataplane** and **GWLB/GENEVE** from
 
 **Resolved Defaults**
 1. Default instance type: `c6in.large` (overrideable via Terraform vars).
-2. Parity sizing: firewall/consumer/upstream all default to `c6in.large`.
+2. Parity sizing: Neuwerk/consumer/upstream all default to `c6in.large`.
 3. Topology scope: single-AZ for Phase 1 (`eu-central-1a` by default).

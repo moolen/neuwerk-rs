@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use firewall::dataplane::{DataplaneConfigStore, SnatMode};
+use neuwerk::dataplane::{DataplaneConfigStore, SnatMode};
 use tracing::warn;
 
 use crate::runtime::bootstrap::network::dataplane_ipv4_config;
@@ -19,7 +19,7 @@ pub fn maybe_spawn_soft_dataplane_autoconfig_task(
             loop {
                 match dataplane_ipv4_config(&iface).await {
                     Ok((ip, prefix, mac)) => {
-                        dataplane_config.set(firewall::dataplane::DataplaneConfig {
+                        dataplane_config.set(neuwerk::dataplane::DataplaneConfig {
                             ip,
                             prefix,
                             gateway: std::net::Ipv4Addr::UNSPECIFIED,

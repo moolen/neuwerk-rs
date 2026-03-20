@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use firewall::controlplane::api_auth;
+use neuwerk::controlplane::api_auth;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use tempfile::TempDir;
@@ -70,7 +70,7 @@ async fn wait_for_ready_false_before_exit(
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait().map_err(|err| err.to_string())? {
             return Err(format!(
-                "firewall exited before readiness turned false: {status}"
+                "Neuwerk exited before readiness turned false: {status}"
             ));
         }
         if let Ok(resp) = client.get(format!("https://{addr}/ready")).send().await {
@@ -93,7 +93,7 @@ async fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<(),
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    Err("timed out waiting for firewall exit".to_string())
+    Err("timed out waiting for neuwerk exit".to_string())
 }
 
 async fn wait_for_tcp_closed(addr: SocketAddr, timeout: Duration) -> Result<(), String> {
@@ -193,14 +193,14 @@ impl Drop for NetworkCleanup {
     }
 }
 
-fn spawn_firewall(
+fn spawn_neuwerk(
     tls_dir: &Path,
     local_root: &Path,
     http_bind: SocketAddr,
     metrics_bind: SocketAddr,
     dataplane_iface: &str,
 ) -> Result<Child, String> {
-    Command::new(env!("CARGO_BIN_EXE_firewall"))
+    Command::new(env!("CARGO_BIN_EXE_neuwerk"))
         .args([
             "--management-interface",
             "lo",
@@ -234,11 +234,11 @@ fn spawn_firewall(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|err| format!("spawn firewall failed: {err}"))
+        .map_err(|err| format!("spawn neuwerk failed: {err}"))
 }
 
 #[tokio::test]
-async fn firewall_binary_sigterm_flips_readiness_false_before_exit_and_restarts() {
+async fn neuwerk_binary_sigterm_flips_readiness_false_before_exit_and_restarts() {
     let dir = TempDir::new().unwrap();
     let tls_dir = dir.path().join("http-tls");
     let local_root = dir.path().join("var-lib");
@@ -255,7 +255,7 @@ async fn firewall_binary_sigterm_flips_readiness_false_before_exit_and_restarts(
         return;
     }
 
-    let mut child = spawn_firewall(
+    let mut child = spawn_neuwerk(
         &tls_dir,
         &local_root,
         http_bind,
@@ -326,7 +326,7 @@ async fn firewall_binary_sigterm_flips_readiness_false_before_exit_and_restarts(
         .await
         .unwrap();
 
-    let mut restarted = spawn_firewall(
+    let mut restarted = spawn_neuwerk(
         &tls_dir,
         &local_root,
         http_bind,
@@ -356,7 +356,7 @@ async fn firewall_binary_sigterm_flips_readiness_false_before_exit_and_restarts(
 }
 
 #[tokio::test]
-async fn firewall_binary_policy_upsert_by_name_preserves_stable_id_across_restart() {
+async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart() {
     let dir = TempDir::new().unwrap();
     let tls_dir = dir.path().join("http-tls");
     let local_root = dir.path().join("var-lib");
@@ -373,7 +373,7 @@ async fn firewall_binary_policy_upsert_by_name_preserves_stable_id_across_restar
         return;
     }
 
-    let mut child = spawn_firewall(
+    let mut child = spawn_neuwerk(
         &tls_dir,
         &local_root,
         http_bind,
@@ -470,7 +470,7 @@ async fn firewall_binary_policy_upsert_by_name_preserves_stable_id_across_restar
         .await
         .unwrap();
 
-    let mut restarted = spawn_firewall(
+    let mut restarted = spawn_neuwerk(
         &tls_dir,
         &local_root,
         http_bind,

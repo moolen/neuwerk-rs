@@ -14,6 +14,10 @@ variable "vm_size" {
   type = string
 }
 
+variable "instance_count" {
+  type = number
+}
+
 variable "admin_username" {
   type = string
 }

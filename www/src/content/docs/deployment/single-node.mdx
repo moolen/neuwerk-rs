@@ -1,6 +1,6 @@
 ---
 title: Single Node
-description: Run one firewall node with local control-plane state and no cluster replication.
+description: Run one Neuwerk node with local control-plane state and no cluster replication.
 order: 1
 ---
 
@@ -11,7 +11,7 @@ the image, DPDK linkage, capabilities, or custom binary deployment.
 
 Single-node mode means:
 
-- one firewall process
+- one Neuwerk process
 - no cluster replication
 - local control-plane state on disk
 - the normal split between control plane and dataplane
@@ -46,7 +46,7 @@ Cluster listeners are not started in this mode.
 ## Example Startup Shape
 
 ```text
-firewall \
+neuwerk \
   --management-interface mgmt0 \
   --data-plane-interface data0 \
   --dns-target-ip 10.0.0.53 \

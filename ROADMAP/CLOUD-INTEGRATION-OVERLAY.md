@@ -1,5 +1,5 @@
 **Goal**
-Add a configurable overlay dataplane so the firewall can operate in:
+Add a configurable overlay dataplane so the Neuwerk can operate in:
 1. `encap none` + `snat on` for GCP-style deployments.
 2. `encap vxlan` (Azure GWLB) with re-encapsulation and no SNAT by default.
 3. `encap geneve` (AWS GWLB) with re-encapsulation and no SNAT by default.
@@ -88,7 +88,7 @@ Policies must always be evaluated on the **inner** L3/L4 headers. Overlay header
    2. VXLAN VNI parsing and re‑encapsulation.
    3. Inner policy evaluation for encapsulated traffic.
 2. Integration tests:
-   1. Local overlay injector -> firewall -> re‑encap path.
+   1. Local overlay injector -> Neuwerk -> re‑encap path.
    2. MTU/MSS clamping behavior with overlay overhead.
 3. Azure E2E:
    1. GWLB egress path with VXLAN.

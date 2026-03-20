@@ -6,23 +6,23 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use firewall::controlplane::api_auth;
-use firewall::controlplane::audit::{AuditEvent, AuditFindingType, AuditQueryResponse, AuditStore};
-use firewall::controlplane::cluster::config::ClusterConfig;
-use firewall::controlplane::http_api::{HttpApiCluster, HttpApiConfig};
-use firewall::controlplane::intercept_tls::local_intercept_ca_paths;
-use firewall::controlplane::metrics::Metrics;
-use firewall::controlplane::policy_config::PolicyMode;
-use firewall::controlplane::policy_repository::{
+use futures::StreamExt;
+use neuwerk::controlplane::api_auth;
+use neuwerk::controlplane::audit::{AuditEvent, AuditFindingType, AuditQueryResponse, AuditStore};
+use neuwerk::controlplane::cluster::config::ClusterConfig;
+use neuwerk::controlplane::http_api::{HttpApiCluster, HttpApiConfig};
+use neuwerk::controlplane::intercept_tls::local_intercept_ca_paths;
+use neuwerk::controlplane::metrics::Metrics;
+use neuwerk::controlplane::policy_config::PolicyMode;
+use neuwerk::controlplane::policy_repository::{
     PolicyActive, PolicyDiskStore, PolicyRecord, POLICY_ACTIVE_KEY,
 };
-use firewall::controlplane::ready::ReadinessState;
-use firewall::controlplane::wiretap::{WiretapEvent, WiretapHub};
-use firewall::controlplane::{http_api, policy_replication, PolicyStore};
-use firewall::dataplane::config::{DataplaneConfig, DataplaneConfigStore};
-use firewall::dataplane::policy::DefaultPolicy;
-use firewall::dataplane::WiretapEventType;
-use futures::StreamExt;
+use neuwerk::controlplane::ready::ReadinessState;
+use neuwerk::controlplane::wiretap::{WiretapEvent, WiretapHub};
+use neuwerk::controlplane::{http_api, policy_replication, PolicyStore};
+use neuwerk::dataplane::config::{DataplaneConfig, DataplaneConfigStore};
+use neuwerk::dataplane::policy::DefaultPolicy;
+use neuwerk::dataplane::WiretapEventType;
 use rcgen::{BasicConstraints, Certificate, CertificateParams, IsCa};
 use support::cluster_fixture::{ensure_rustls_provider, next_addr, write_token_file};
 use support::cluster_wait::{wait_for_leader, wait_for_stable_membership, wait_for_voter};
@@ -113,7 +113,7 @@ fn http_api_client(tls_dir: &Path) -> Result<reqwest::Client, String> {
 }
 
 async fn wait_for_state_value(
-    store: &firewall::controlplane::cluster::store::ClusterStore,
+    store: &neuwerk::controlplane::cluster::store::ClusterStore,
     key: &[u8],
     timeout: Duration,
 ) -> Result<Vec<u8>, String> {
@@ -130,7 +130,7 @@ async fn wait_for_state_value(
 }
 
 async fn wait_for_state_absent(
-    store: &firewall::controlplane::cluster::store::ClusterStore,
+    store: &neuwerk::controlplane::cluster::store::ClusterStore,
     key: &[u8],
     timeout: Duration,
 ) -> Result<(), String> {
@@ -147,7 +147,7 @@ async fn wait_for_state_absent(
 }
 
 fn api_auth_token_from_store(
-    store: &firewall::controlplane::cluster::store::ClusterStore,
+    store: &neuwerk::controlplane::cluster::store::ClusterStore,
 ) -> Result<String, String> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

@@ -5,17 +5,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use firewall::controlplane::api_auth::{list_summaries, load_keyset_from_file, ApiKeySet};
-use firewall::controlplane::audit::AuditFinding;
-use firewall::controlplane::cluster::store::{ClusterStore, ClusterStoreMetadata};
-use firewall::controlplane::integrations::IntegrationKind;
-use firewall::controlplane::policy_config::PolicyMode;
-use firewall::controlplane::policy_repository::{PolicyActive, PolicyIndex, PolicyMeta};
-use firewall::controlplane::service_accounts::{
-    ServiceAccount, ServiceAccountDiskStore, ServiceAccountStatus, TokenMeta, TokenStatus,
-};
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use neuwerk::controlplane::api_auth::{list_summaries, load_keyset_from_file, ApiKeySet};
+use neuwerk::controlplane::audit::AuditFinding;
+use neuwerk::controlplane::cluster::store::{ClusterStore, ClusterStoreMetadata};
+use neuwerk::controlplane::integrations::IntegrationKind;
+use neuwerk::controlplane::policy_config::PolicyMode;
+use neuwerk::controlplane::policy_repository::{PolicyActive, PolicyIndex, PolicyMeta};
+use neuwerk::controlplane::service_accounts::{
+    ServiceAccount, ServiceAccountDiskStore, ServiceAccountStatus, TokenMeta, TokenStatus,
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tar::{Builder, Header};
@@ -171,7 +171,7 @@ struct ApiAuthSummary {
 struct ApiKeySummaryView {
     kid: String,
     created_at: String,
-    status: firewall::controlplane::api_auth::ApiKeyStatus,
+    status: neuwerk::controlplane::api_auth::ApiKeyStatus,
     signing: bool,
 }
 
@@ -577,14 +577,14 @@ fn collect_selected_etc<W: Write>(
         ("os-release", "etc/os-release"),
         ("machine-id", "etc/machine-id"),
         (
-            "systemd/system/firewall.service",
-            "etc/systemd/system/firewall.service",
+            "systemd/system/neuwerk.service",
+            "etc/systemd/system/neuwerk.service",
         ),
         (
-            "systemd/system/firewall.service.d",
-            "etc/systemd/system/firewall.service.d",
+            "systemd/system/neuwerk.service.d",
+            "etc/systemd/system/neuwerk.service.d",
         ),
-        ("default/firewall", "etc/default/firewall"),
+        ("default/neuwerk", "etc/default/neuwerk"),
     ];
     for (source, archive) in files {
         collect_path_recursive(
@@ -599,12 +599,12 @@ fn collect_selected_etc<W: Write>(
 
     for (source, archive) in [
         (
-            PathBuf::from("/lib/systemd/system/firewall.service"),
-            PathBuf::from("lib/systemd/system/firewall.service"),
+            PathBuf::from("/lib/systemd/system/neuwerk.service"),
+            PathBuf::from("lib/systemd/system/neuwerk.service"),
         ),
         (
-            PathBuf::from("/usr/lib/systemd/system/firewall.service"),
-            PathBuf::from("usr/lib/systemd/system/firewall.service"),
+            PathBuf::from("/usr/lib/systemd/system/neuwerk.service"),
+            PathBuf::from("usr/lib/systemd/system/neuwerk.service"),
         ),
     ] {
         collect_path_recursive(&source, &archive, builder, manifest, now, None)?;
@@ -747,18 +747,18 @@ fn collect_command_snapshots<W: Write>(
     let commands: [(&str, &[&str], &str); 7] = [
         (
             "systemctl",
-            &["status", "firewall.service", "--no-pager"],
-            "system/commands/systemctl-status-firewall.txt",
+            &["status", "neuwerk.service", "--no-pager"],
+            "system/commands/systemctl-status-neuwerk.txt",
         ),
         (
             "systemctl",
-            &["show", "firewall.service"],
-            "system/commands/systemctl-show-firewall.txt",
+            &["show", "neuwerk.service"],
+            "system/commands/systemctl-show-neuwerk.txt",
         ),
         (
             "journalctl",
-            &["-u", "firewall.service", "--no-pager", "-n", "2000"],
-            "system/journal/firewall-service.log",
+            &["-u", "neuwerk.service", "--no-pager", "-n", "2000"],
+            "system/journal/neuwerk-service.log",
         ),
         (
             "ip",
@@ -1679,7 +1679,7 @@ fn format_rfc3339(value: OffsetDateTime) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    use firewall::controlplane::cluster::types::ClusterCommand;
+    use neuwerk::controlplane::cluster::types::ClusterCommand;
     use openraft::entry::EntryPayload;
     use openraft::storage::{RaftLogStorage, RaftStateMachine};
     use openraft::{BasicNode, CommittedLeaderId, Entry, LogId, Membership, Vote};

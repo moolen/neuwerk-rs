@@ -1,12 +1,12 @@
 use std::net::Ipv4Addr;
 use std::sync::{Arc, RwLock};
 
-use firewall::dataplane::config::DataplaneConfig;
-use firewall::dataplane::policy::{
+use neuwerk::dataplane::config::DataplaneConfig;
+use neuwerk::dataplane::policy::{
     CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction,
     RuleMatch, SourceGroup,
 };
-use firewall::dataplane::{handle_packet, Action, EngineState, Packet};
+use neuwerk::dataplane::{handle_packet, Action, EngineState, Packet};
 
 fn build_ipv4_udp(
     src_ip: Ipv4Addr,
@@ -73,7 +73,7 @@ fn policy_with_allowlist(
             tls: None,
         },
         action: RuleAction::Allow,
-        mode: firewall::dataplane::policy::RuleMode::Enforce,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
     };
 
     let group = SourceGroup {

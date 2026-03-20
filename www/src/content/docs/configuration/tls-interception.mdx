@@ -47,7 +47,7 @@ the extra visibility.
 Interception becomes usable only when both of these are true:
 
 - the active policy contains at least one `tls.mode: intercept` rule
-- the firewall has TLS intercept CA material available
+- the Neuwerk has TLS intercept CA material available
 
 The intercept CA is separate from the management HTTPS CA.
 
@@ -59,7 +59,7 @@ API endpoints exist to:
 
 ## What Clients Must Trust
 
-When interception is enabled, the firewall mints leaf certificates on demand from the intercept CA.
+When interception is enabled, the Neuwerk mints leaf certificates on demand from the intercept CA.
 
 That means clients must trust the intercept CA. If they do not, TLS sessions will fail even if the
 policy itself is correct.
@@ -75,7 +75,7 @@ Intercept mode behaves differently:
 - HTTP request and response policy is evaluated inside the intercepted stream
 
 In enforce mode, intercepted denials fail closed. In audit mode, the policy still evaluates but the
-firewall does not actively block the request or response.
+Neuwerk does not actively block the request or response.
 
 ## Current Limits
 

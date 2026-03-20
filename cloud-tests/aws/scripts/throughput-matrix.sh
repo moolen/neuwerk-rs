@@ -5,7 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/aws_e2e}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 COMMON_MATRIX_RUNNER="${ROOT_DIR}/../common/run-throughput-matrix.sh"
 CONFIGURE_POLICY_SCRIPT="${ROOT_DIR}/scripts/configure-policy.sh"
 POLICY_FILE="${POLICY_FILE:-${ROOT_DIR}/policies/allow-upstream.json}"
@@ -15,7 +15,7 @@ FW_VCPU="${FW_VCPU:-4}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${ROOT_DIR}/artifacts/throughput-matrix-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 # AWS baseline sizes (overridable)
-FIREWALL_INSTANCE_TYPE="${FIREWALL_INSTANCE_TYPE:-c6in.xlarge}"
+NEUWERK_INSTANCE_TYPE="${NEUWERK_INSTANCE_TYPE:-c6in.xlarge}"
 CONSUMER_INSTANCE_TYPE="${CONSUMER_INSTANCE_TYPE:-c6in.4xlarge}"
 UPSTREAM_INSTANCE_TYPE="${UPSTREAM_INSTANCE_TYPE:-c6in.4xlarge}"
 
@@ -45,11 +45,14 @@ pushd "$TF_DIR" >/dev/null
 REGION="$(terraform output -raw region 2>/dev/null || true)"
 TRAFFIC_ARCHITECTURE="$(terraform output -raw traffic_architecture 2>/dev/null || true)"
 JUMPBOX_IP="$(terraform output -raw jumpbox_public_ip)"
-UPSTREAM_IP="$(terraform output -raw upstream_private_ip)"
-UPSTREAM_VIP="$(terraform output -raw upstream_vip)"
+UPSTREAM_IP_DEFAULT="$(terraform output -raw upstream_private_ip)"
+UPSTREAM_VIP_DEFAULT="$(terraform output -raw upstream_vip)"
 mapfile -t CONSUMERS < <(terraform output -json consumer_private_ips | jq -r '.[]')
 INSTANCE_SIZES_JSON="$(terraform output -json instance_sizes 2>/dev/null || echo '{}')"
 popd >/dev/null
+
+UPSTREAM_IP="${UPSTREAM_IP_OVERRIDE:-$UPSTREAM_IP_DEFAULT}"
+UPSTREAM_VIP="${UPSTREAM_VIP_OVERRIDE:-$UPSTREAM_VIP_DEFAULT}"
 
 if [ -z "$JUMPBOX_IP" ] || [ -z "$UPSTREAM_IP" ] || [ "${#CONSUMERS[@]}" -eq 0 ]; then
   echo "missing required terraform outputs for throughput matrix" >&2
@@ -59,16 +62,16 @@ fi
 FIRST_CONSUMER="${CONSUMERS[0]}"
 FW_MGMT_IPS="$(TF_DIR="$TF_DIR" "$RESOLVE_FW_IPS" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ //; s/ $//')"
 if [ -z "$FW_MGMT_IPS" ]; then
-  echo "no firewall management IPs resolved" >&2
+  echo "no neuwerk management IPs resolved" >&2
   exit 1
 fi
 
 # Prefer actual deployed sizes from terraform output when present.
 if [ -n "$INSTANCE_SIZES_JSON" ] && [ "$INSTANCE_SIZES_JSON" != "null" ]; then
-  tf_fw="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.firewall // empty' 2>/dev/null || true)"
+  tf_fw="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.neuwerk // empty' 2>/dev/null || true)"
   tf_consumer="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.consumer // empty' 2>/dev/null || true)"
   tf_upstream="$(echo "$INSTANCE_SIZES_JSON" | jq -r '.upstream // empty' 2>/dev/null || true)"
-  [ -n "$tf_fw" ] && FIREWALL_INSTANCE_TYPE="$tf_fw"
+  [ -n "$tf_fw" ] && NEUWERK_INSTANCE_TYPE="$tf_fw"
   [ -n "$tf_consumer" ] && CONSUMER_INSTANCE_TYPE="$tf_consumer"
   [ -n "$tf_upstream" ] && UPSTREAM_INSTANCE_TYPE="$tf_upstream"
 fi
@@ -96,9 +99,10 @@ FW_MGMT_IPS="$FW_MGMT_IPS" \
 KEY_PATH="$KEY_PATH" \
 SSH_USER="${SSH_USER:-ubuntu}" \
 RESOURCE_GROUP="$RESOURCE_GROUP" \
-FIREWALL_INSTANCE_TYPE="$FIREWALL_INSTANCE_TYPE" \
+NEUWERK_INSTANCE_TYPE="$NEUWERK_INSTANCE_TYPE" \
 CONSUMER_INSTANCE_TYPE="$CONSUMER_INSTANCE_TYPE" \
 UPSTREAM_INSTANCE_TYPE="$UPSTREAM_INSTANCE_TYPE" \
+CLIENT_BIND_IP="${CLIENT_BIND_IP:-}" \
 "$COMMON_MATRIX_RUNNER"
 
 echo "aws throughput matrix artifacts: ${ARTIFACT_DIR}"

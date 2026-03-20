@@ -12,6 +12,9 @@ require_bin ssh-keygen
 : "${JUMPBOX_IP:?missing JUMPBOX_IP}"
 : "${UPSTREAM_IP:?missing UPSTREAM_IP}"
 : "${KEY_PATH:?missing KEY_PATH}"
+UPSTREAM_KEEPALIVE_TIMEOUT="${UPSTREAM_KEEPALIVE_TIMEOUT:-120s}"
+UPSTREAM_KEEPALIVE_REQUESTS="${UPSTREAM_KEEPALIVE_REQUESTS:-100000}"
+UPSTREAM_HTTP2_MAX_CONCURRENT_STREAMS="${UPSTREAM_HTTP2_MAX_CONCURRENT_STREAMS:-1024}"
 
 if [ ! -f "${KEY_PATH}" ]; then
   echo "missing SSH key at ${KEY_PATH}" >&2
@@ -20,9 +23,10 @@ fi
 
 echo "configuring upstream webhook listeners on ${UPSTREAM_IP}"
 
-ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$UPSTREAM_IP" "bash -s" <<'EOS'
+ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$UPSTREAM_IP" \
+  "env UPSTREAM_KEEPALIVE_TIMEOUT='${UPSTREAM_KEEPALIVE_TIMEOUT}' UPSTREAM_KEEPALIVE_REQUESTS='${UPSTREAM_KEEPALIVE_REQUESTS}' UPSTREAM_HTTP2_MAX_CONCURRENT_STREAMS='${UPSTREAM_HTTP2_MAX_CONCURRENT_STREAMS}' bash -s" <<'EOS'
 set -euo pipefail
-sudo tee /etc/nginx/sites-available/default >/dev/null <<'NGINX'
+sudo tee /etc/nginx/sites-available/default >/dev/null <<NGINX
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
@@ -53,6 +57,10 @@ server {
 
     ssl_certificate /etc/nginx/ssl.crt;
     ssl_certificate_key /etc/nginx/ssl.key;
+    # Favor long-lived upstream HTTP/2 sessions during DPI load tests.
+    keepalive_timeout ${UPSTREAM_KEEPALIVE_TIMEOUT};
+    keepalive_requests ${UPSTREAM_KEEPALIVE_REQUESTS};
+    http2_max_concurrent_streams ${UPSTREAM_HTTP2_MAX_CONCURRENT_STREAMS};
 
     location = /healthz {
         return 200 "ok\n";

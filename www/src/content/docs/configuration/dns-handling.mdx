@@ -1,6 +1,6 @@
 ---
 title: DNS Handling
-description: Hostname-based policy works by proxying DNS on the firewall and turning approved answers into a dynamic allowlist.
+description: Hostname-based policy works by proxying DNS on the Neuwerk and turning approved answers into a dynamic allowlist.
 order: 2
 ---
 
@@ -8,8 +8,8 @@ Use this guide when you want to enforce policy by hostname rather than by fixed 
 
 The important model is:
 
-1. clients send DNS to the firewall
-2. the firewall evaluates the query against DNS policy
+1. clients send DNS to the Neuwerk
+2. the Neuwerk evaluates the query against DNS policy
 3. allowed answers are forwarded upstream
 4. successful IPv4 answers are added to a dynamic allowlist
 5. later packet traffic to those resolved IPs can pass the dataplane policy
@@ -28,8 +28,8 @@ Client DNS traffic is only treated as managed DNS traffic when:
 - the source IP is internal
 - the destination IP matches one of the configured DNS target IPs
 
-In practice, point clients at the firewall for DNS or route DNS traffic to the configured target
-IPs that the firewall will intercept.
+In practice, point clients at the Neuwerk for DNS or route DNS traffic to the configured target
+IPs that the Neuwerk will intercept.
 
 ## How DNS Decisions Work
 
@@ -41,7 +41,7 @@ The DNS proxy listens on the management IP at port `53` and evaluates:
 
 If the DNS rule is denied, the client receives `NXDOMAIN`.
 
-If the DNS rule is allowed, the firewall forwards the query to an upstream resolver and validates
+If the DNS rule is allowed, the Neuwerk forwards the query to an upstream resolver and validates
 the reply before accepting it.
 
 ## Important Difference From Packet Policy
@@ -64,7 +64,7 @@ Successful IPv4 answers are inserted into:
 - the diagnostic DNS cache
 
 The allowlist is what makes later packet flows to the resolved IPs pass policy. The DNS cache is a
-diagnostic surface that helps explain what the firewall most recently resolved.
+diagnostic surface that helps explain what the Neuwerk most recently resolved.
 
 ## What To Check After A Change
 
@@ -76,17 +76,17 @@ After updating DNS policy, verify:
 - `GET /api/v1/audit/findings`
 
 Use the DNS cache to confirm that allowed names are resolving and feeding the allowlist. Use audit
-findings to confirm whether the firewall is denying the query or the later traffic.
+findings to confirm whether the Neuwerk is denying the query or the later traffic.
 
 ## Current Limits
 
 - IPv4 answers populate the allowlist; `AAAA` answers do not currently create allowlist entries.
 - Non-IPv4 client DNS queries are denied.
-- The firewall accepts DNS over TCP from clients, but upstream forwarding currently uses UDP.
+- The Neuwerk accepts DNS over TCP from clients, but upstream forwarding currently uses UDP.
 - The DNS cache is a diagnostic map, not a full recursive cache.
 
 ## Warning
 
-If clients continue using a resolver that is outside the firewall's managed DNS path, hostname
-policy will not behave the way you expect. The firewall must see the DNS query so it can build the
+If clients continue using a resolver that is outside the Neuwerk's managed DNS path, hostname
+policy will not behave the way you expect. The Neuwerk must see the DNS query so it can build the
 allowlist that the dataplane later relies on.

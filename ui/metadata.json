@@ -1,5 +1,5 @@
 {
-  "name": "nftables Egress Firewall",
-  "description": "A modern, high-performance nftables-based egress firewall dashboard featuring rule management, network tapping, and control plane integrations.",
+  "name": "Neuwerk",
+  "description": "The Neuwerk dashboard for policy management, observability, wiretap analysis, and control-plane integrations.",
   "requestFramePermissions": []
 }

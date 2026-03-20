@@ -698,7 +698,7 @@ source_groups:
     readiness.set_policy_ready(true);
     readiness.set_dns_ready(true);
     readiness.set_service_plane_ready(true);
-    let drain_control = firewall::dataplane::DrainControl::new();
+    let drain_control = neuwerk::dataplane::DrainControl::new();
     readiness.set_drain_control(drain_control.clone());
     let shutdown = http_api::HttpApiShutdown::new();
 

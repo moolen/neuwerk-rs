@@ -1,6 +1,6 @@
 #![no_main]
 
-use firewall::dataplane::tls::{TlsDirection, TlsFlowState};
+use neuwerk::dataplane::tls::{TlsDirection, TlsFlowState};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

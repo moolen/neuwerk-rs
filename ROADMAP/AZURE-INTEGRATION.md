@@ -99,7 +99,7 @@ Implement cloud integrations for Azure VMSS, AWS ASG, and GCP MIG with a shared 
 - Azure VMSS supports instance protection and termination notifications via Scheduled Events; use both where available to delay scale-in and allow drain.
 - AWS ASG supports lifecycle hooks and instance protection; use lifecycle hooks to pause termination and complete after drain.
 - GCP MIG does not allow VM deletion protection on managed instances; use best-effort drain with fast route reassignment and no termination delay. Deletion protection is only supported for unmanaged instance groups or standalone VMs, so the “protect on create, remove on drain” workflow is not available on MIG.
-- GCP mitigations: use MIG rolling update policy with `maxSurge > 0`, `maxUnavailable = 0`, and a `minReadySec` long enough for firewall readiness to reduce churn; add a VM `shutdown-script` to trigger last-ditch drain signals (best-effort, limited time). These do not provide a lifecycle hook equivalent to ASG/VMSS.
+- GCP mitigations: use MIG rolling update policy with `maxSurge > 0`, `maxUnavailable = 0`, and a `minReadySec` long enough for Neuwerk readiness to reduce churn; add a VM `shutdown-script` to trigger last-ditch drain signals (best-effort, limited time). These do not provide a lifecycle hook equivalent to ASG/VMSS.
 
 **Azure VMSS Requirements (Phase 1)**
 - VMSS terminate notifications must be enabled: `virtualMachineProfile.scheduledEventsProfile.terminateNotificationProfile.enable: true`. The control plane fails fast if this is disabled or missing.

@@ -7,13 +7,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
-use firewall::controlplane::integrations::IntegrationStore;
-use firewall::controlplane::kubernetes::run_kubernetes_resolver;
-use firewall::controlplane::policy_config::PolicyConfig;
-use firewall::controlplane::PolicyStore;
-use firewall::dataplane::config::DataplaneConfig;
-use firewall::dataplane::policy::{DefaultPolicy, PolicySnapshot};
-use firewall::dataplane::{handle_packet, Action, EngineState, Packet};
+use neuwerk::controlplane::integrations::IntegrationStore;
+use neuwerk::controlplane::kubernetes::run_kubernetes_resolver;
+use neuwerk::controlplane::policy_config::PolicyConfig;
+use neuwerk::controlplane::PolicyStore;
+use neuwerk::dataplane::config::DataplaneConfig;
+use neuwerk::dataplane::policy::{DefaultPolicy, PolicySnapshot};
+use neuwerk::dataplane::{handle_packet, Action, EngineState, Packet};
 
 const TEST_NAMESPACE: &str = "neuwerk-e2e";
 const TEST_SERVICE_ACCOUNT: &str = "resolver";

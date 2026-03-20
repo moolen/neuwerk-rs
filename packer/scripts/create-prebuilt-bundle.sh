@@ -27,7 +27,7 @@ esac
 target_json="$(python3 "$repo_root/packaging/scripts/resolve_target.py" --target "$target_id")"
 dpdk_version="$(printf '%s\n' "$target_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["dpdk"]["version"])')"
 
-binary_path="$repo_root/target/release/firewall"
+binary_path="$repo_root/target/release/neuwerk"
 ui_dist_path="$repo_root/ui/dist"
 dpdk_install_path="$repo_root/third_party/dpdk/install/$dpdk_version"
 
@@ -41,6 +41,6 @@ done
 tar \
   -czf "$bundle_output" \
   -C "$repo_root" \
-  target/release/firewall \
+  target/release/neuwerk \
   ui/dist \
   "third_party/dpdk/install/$dpdk_version"

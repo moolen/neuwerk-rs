@@ -13,7 +13,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/azure_e2e}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 
 source "${ROOT_DIR}/../common/lib.sh"
 
@@ -40,11 +40,11 @@ fi
 
 FW_MGMT_IPS="$(TF_DIR="$TF_DIR" "$RESOLVE_FW_IPS")"
 if [ -z "$FW_MGMT_IPS" ]; then
-  echo "no firewall management IPs found" >&2
+  echo "no neuwerk management IPs found" >&2
   exit 1
 fi
 
-combined_prom="${ARTIFACT_DIR}/firewall-metrics-${STAGE}.prom"
+combined_prom="${ARTIFACT_DIR}/neuwerk-metrics-${STAGE}.prom"
 cpu_tsv="${ARTIFACT_DIR}/raw/cpu-${STAGE}.tsv"
 : > "$combined_prom"
 : > "$cpu_tsv"
@@ -55,7 +55,7 @@ for ip in $FW_MGMT_IPS; do
   cpu_log="${ARTIFACT_DIR}/raw/${STAGE}.${safe_ip}.cpu.log"
 
   metrics="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
-    "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/firewall.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" || true)"
+    "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" || true)"
   printf "%s\n" "$metrics" > "$metrics_file"
 
   {
@@ -69,7 +69,7 @@ for ip in $FW_MGMT_IPS; do
   printf "%s\t%s\n" "$ip" "$cpu_log" >> "$cpu_tsv"
 done
 
-python3 - "$cpu_tsv" "${ARTIFACT_DIR}/cpu-firewall-${STAGE}.json" <<'PY'
+python3 - "$cpu_tsv" "${ARTIFACT_DIR}/cpu-neuwerk-${STAGE}.json" <<'PY'
 import json
 import re
 import statistics

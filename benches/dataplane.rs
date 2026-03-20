@@ -1,19 +1,22 @@
 use std::net::Ipv4Addr;
+use std::ptr::NonNull;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
+use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
-use firewall::controlplane::metrics::Metrics;
-use firewall::dataplane::config::DataplaneConfig;
-use firewall::dataplane::policy::{
+use crossbeam_queue::ArrayQueue;
+use neuwerk::controlplane::metrics::Metrics;
+use neuwerk::dataplane::config::DataplaneConfig;
+use neuwerk::dataplane::policy::{
     CidrV4, DefaultPolicy, DynamicIpSetV4, ExactSourceGroupIndex, IpSetV4, PacketMeta,
     PolicySnapshot, Proto, Rule, RuleAction, RuleMatch, RuleMode, SourceGroup,
 };
-use firewall::dataplane::tls::TlsVerifier;
-use firewall::dataplane::{
+use neuwerk::dataplane::tls::TlsVerifier;
+use neuwerk::dataplane::{
     handle_packet, Action, AuditEmitter, DpdkAdapter, EngineState, FlowEntry, FlowKey, FlowTable,
-    FrameOut, NatTable, Packet, ReverseKey, SnatMode, WiretapEmitter,
+    FrameIo, FrameOut, NatTable, Packet, ReverseKey, SnatMode, WiretapEmitter,
 };
 use tokio::sync::mpsc;
 
@@ -73,6 +76,36 @@ fn reset_eth_ipv4_tcp_packet_tuple(
     assert!(packet.recalc_checksums());
 }
 
+fn build_dpdk_sized_transfer_packet(packet_len: usize) -> Packet {
+    let mut packet = Packet::new(vec![0u8; 65_536]);
+    packet.truncate(packet_len);
+    packet
+}
+
+fn legacy_flow_steer_payload(pkt: &mut Packet) -> Vec<u8> {
+    if pkt.is_borrowed() {
+        pkt.buffer().to_vec()
+    } else {
+        std::mem::replace(pkt, Packet::new(Vec::new())).into_vec()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BorrowedFlowSteerPayload {
+    ptr: NonNull<u8>,
+    len: usize,
+}
+
+// Safety: benchmark payloads are only transferred within the same thread while the
+// backing storage remains alive for the duration of each iteration.
+unsafe impl Send for BorrowedFlowSteerPayload {}
+
+fn borrowed_flow_steer_payload(pkt: &mut Packet) -> BorrowedFlowSteerPayload {
+    let len = pkt.len();
+    let ptr = NonNull::new(pkt.buffer_mut().as_mut_ptr()).expect("packet ptr");
+    BorrowedFlowSteerPayload { ptr, len }
+}
+
 fn make_colliding_flows(preferred_port: u16, count: usize) -> Vec<FlowKey> {
     let target_offset = (preferred_port - BENCH_NAT_PORT_MIN) as u32;
     let remote_ip = Ipv4Addr::new(198, 51, 100, 10);
@@ -104,6 +137,17 @@ fn build_ipv4_tcp(
     dst_port: u16,
     payload: &[u8],
 ) -> Packet {
+    build_ipv4_tcp_flags(src_ip, dst_ip, src_port, dst_port, payload, 0x10)
+}
+
+fn build_ipv4_tcp_flags(
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    payload: &[u8],
+    flags: u8,
+) -> Packet {
     let total_len = 20 + 20 + payload.len();
     let mut buf = vec![0u8; total_len];
     buf[0] = 0x45;
@@ -121,7 +165,7 @@ fn build_ipv4_tcp(
     buf[l4_off..l4_off + 2].copy_from_slice(&src_port.to_be_bytes());
     buf[l4_off + 2..l4_off + 4].copy_from_slice(&dst_port.to_be_bytes());
     buf[l4_off + 12] = 0x50;
-    buf[l4_off + 13] = 0x10;
+    buf[l4_off + 13] = flags;
     buf[l4_off + 16..l4_off + 18].copy_from_slice(&1024u16.to_be_bytes());
     buf[l4_off + 18..l4_off + 20].copy_from_slice(&0u16.to_be_bytes());
     buf[l4_off + 20..].copy_from_slice(payload);
@@ -977,6 +1021,21 @@ fn bench_is_internal_large_unique_source_policy(c: &mut Criterion) {
     );
 }
 
+fn bench_dynamic_ip_set_contains(c: &mut Criterion) {
+    let set = DynamicIpSetV4::new();
+    let hit_ip = Ipv4Addr::new(198, 51, 100, 10);
+    let miss_ip = Ipv4Addr::new(198, 51, 100, 11);
+    set.insert(hit_ip);
+
+    c.bench_function("dataplane_dynamic_ip_set_contains_hit", |b| {
+        b.iter(|| black_box(set.contains(black_box(hit_ip))))
+    });
+
+    c.bench_function("dataplane_dynamic_ip_set_contains_miss", |b| {
+        b.iter(|| black_box(set.contains(black_box(miss_ip))))
+    });
+}
+
 fn bench_flow_table_insert(c: &mut Criterion) {
     c.bench_function("dataplane_flow_table_insert_empty", |b| {
         b.iter_batched(
@@ -1444,6 +1503,55 @@ fn bench_new_tcp_flow_snat_persistent_state(c: &mut Criterion) {
     );
 }
 
+fn bench_new_tcp_flow_snat_short_lived_churn(c: &mut Criterion) {
+    let template_state = new_engine_state(SnatMode::Auto);
+    let mut state = clone_bench_state(&template_state);
+    let payload = b"hello";
+    let mut index = 0u32;
+
+    c.bench_function(
+        "dataplane_handle_packet_new_tcp_snat_short_lived_churn",
+        |b| {
+            b.iter(|| {
+                let flow = make_flow(index);
+                index += 1;
+                state.set_time_override(Some(BENCH_NOW_SECS + (index / 128) as u64));
+
+                let mut open = build_ipv4_tcp(
+                    flow.src_ip,
+                    flow.dst_ip,
+                    flow.src_port,
+                    flow.dst_port,
+                    payload,
+                );
+                let open_result = handle_packet(black_box(&mut open), black_box(&mut state));
+
+                let mut rst = build_ipv4_tcp_flags(
+                    flow.src_ip,
+                    flow.dst_ip,
+                    flow.src_port,
+                    flow.dst_port,
+                    &[],
+                    0x04,
+                );
+                let close_result = handle_packet(black_box(&mut rst), black_box(&mut state));
+
+                let result = black_box((
+                    open_result,
+                    close_result,
+                    black_box(state.flows.len()),
+                    black_box(state.nat.len()),
+                ));
+                if index == 8192 {
+                    state = clone_bench_state(&template_state);
+                    index = 0;
+                }
+                result
+            })
+        },
+    );
+}
+
 fn bench_new_tcp_flow_snat_persistent_state_metrics(c: &mut Criterion) {
     let mut template_state = new_engine_state(SnatMode::Auto);
     attach_metrics(&mut template_state);
@@ -1519,6 +1627,204 @@ fn bench_new_tcp_flow_snat_persistent_state_metrics_reuse_packet(c: &mut Criteri
             })
         },
     );
+}
+
+fn bench_flow_steer_payload_dpdk_buffer(c: &mut Criterion) {
+    const RX_BUFFER_LEN: usize = 65_536;
+    const PACKET_LEN: usize = 64;
+
+    c.bench_function("dataplane_flow_steer_payload_dpdk_buffer_legacy", |b| {
+        b.iter_batched(
+            || build_dpdk_sized_transfer_packet(PACKET_LEN),
+            |mut packet| {
+                let payload = legacy_flow_steer_payload(&mut packet);
+                packet.prepare_for_rx(RX_BUFFER_LEN);
+                black_box((payload.len(), packet.len()))
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    c.bench_function("dataplane_flow_steer_payload_dpdk_buffer_compact", |b| {
+        b.iter_batched(
+            || build_dpdk_sized_transfer_packet(PACKET_LEN),
+            |mut packet| {
+                let payload = packet.take_transfer_bytes();
+                packet.prepare_for_rx(RX_BUFFER_LEN);
+                black_box((payload.len(), packet.len()))
+            },
+            BatchSize::SmallInput,
+        )
+    });
+}
+
+fn bench_flow_steer_dispatch_queue(c: &mut Criterion) {
+    const QUEUE_CAPACITY: usize = 1024;
+    let payload = vec![0u8; 64];
+
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(QUEUE_CAPACITY);
+    c.bench_function("dataplane_flow_steer_dispatch_sync_channel", |b| {
+        b.iter(|| {
+            tx.send(payload.clone()).expect("send");
+            let received = rx.try_recv().expect("recv");
+            black_box(received.len())
+        })
+    });
+
+    let queue = ArrayQueue::new(QUEUE_CAPACITY);
+    c.bench_function("dataplane_flow_steer_dispatch_array_queue", |b| {
+        b.iter(|| {
+            queue.push(payload.clone()).expect("push");
+            let received = queue.pop().expect("pop");
+            black_box(received.len())
+        })
+    });
+}
+
+fn bench_flow_steer_borrowed_handoff(c: &mut Criterion) {
+    const QUEUE_CAPACITY: usize = 1024;
+    let packet_template = build_ipv4_tcp(
+        Ipv4Addr::new(10, 0, 0, 1),
+        Ipv4Addr::new(198, 51, 100, 10),
+        40_000,
+        443,
+        b"hello",
+    );
+
+    let copy_queue = ArrayQueue::new(QUEUE_CAPACITY);
+    c.bench_function("dataplane_flow_steer_borrowed_handoff_copy", |b| {
+        b.iter_batched(
+            || {
+                let mut backing = packet_template.buffer().to_vec();
+                let pkt = unsafe {
+                    Packet::from_borrowed_mut(backing.as_mut_ptr(), backing.len())
+                        .expect("borrowed packet")
+                };
+                (backing, pkt)
+            },
+            |(_backing, mut pkt)| {
+                let payload = pkt.take_transfer_bytes();
+                copy_queue.push(payload).expect("push");
+                let frame = copy_queue.pop().expect("pop");
+                let rebuilt = Packet::new(frame);
+                black_box((rebuilt.protocol(), rebuilt.ports()))
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    let zero_copy_queue = ArrayQueue::new(QUEUE_CAPACITY);
+    c.bench_function(
+        "dataplane_flow_steer_borrowed_handoff_zero_copy_simulated",
+        |b| {
+            b.iter_batched(
+                || {
+                    let mut backing = packet_template.buffer().to_vec();
+                    let pkt = unsafe {
+                        Packet::from_borrowed_mut(backing.as_mut_ptr(), backing.len())
+                            .expect("borrowed packet")
+                    };
+                    (backing, pkt)
+                },
+                |(_backing, mut pkt)| {
+                    let payload = borrowed_flow_steer_payload(&mut pkt);
+                    zero_copy_queue.push(payload).expect("push");
+                    let payload = zero_copy_queue.pop().expect("pop");
+                    let rebuilt =
+                        unsafe { Packet::from_borrowed_mut(payload.ptr.as_ptr(), payload.len) }
+                            .expect("rebuild borrowed packet");
+                    black_box((rebuilt.protocol(), rebuilt.ports()))
+                },
+                BatchSize::SmallInput,
+            )
+        },
+    );
+}
+
+fn bench_flow_steer_metrics_handles(c: &mut Criterion) {
+    let metrics = Metrics::new().expect("metrics");
+    let flow_steer_metrics = metrics.bind_dpdk_flow_steer_metrics(4);
+    let wait = Duration::from_nanos(32);
+
+    c.bench_function("dataplane_flow_steer_metrics_label_lookup", |b| {
+        b.iter(|| {
+            metrics.observe_dpdk_flow_steer_queue_wait(1, wait);
+            metrics.inc_dpdk_flow_steer_dispatch(0, 1);
+            metrics.add_dpdk_flow_steer_bytes(0, 1, 64);
+            metrics.set_dpdk_flow_steer_queue_depth(1, 3);
+            black_box(())
+        })
+    });
+
+    c.bench_function("dataplane_flow_steer_metrics_bound_handles", |b| {
+        b.iter(|| {
+            flow_steer_metrics.observe_dispatch(0, 1, 64, wait);
+            flow_steer_metrics.set_queue_depth(1, 3);
+            black_box(())
+        })
+    });
+}
+
+#[derive(Default)]
+struct MockTurnIo {
+    rx_packets: usize,
+    tx_bytes: usize,
+}
+
+impl neuwerk::dataplane::FrameIo for MockTurnIo {
+    fn recv_frame(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        let len = buf.len().min(64);
+        buf[..len].fill(0);
+        self.rx_packets += 1;
+        Ok(len)
+    }
+
+    fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+        self.tx_bytes += frame.len();
+        Ok(())
+    }
+
+    fn finish_rx_packet(&mut self) {}
+
+    fn flush(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn bench_shared_io_turn_lock(c: &mut Criterion) {
+    let shared = Mutex::new(MockTurnIo::default());
+    let mut packet = Packet::new(vec![0u8; 256]);
+
+    c.bench_function("dataplane_shared_io_turn_mutex_reacquire", |b| {
+        b.iter(|| {
+            {
+                let mut io = shared.lock().expect("lock");
+                black_box(io.recv_packet(&mut packet).expect("recv"));
+            }
+            {
+                let mut io = shared.lock().expect("lock");
+                io.send_borrowed_frame(packet.buffer()).expect("send");
+            }
+            {
+                let mut io = shared.lock().expect("lock");
+                io.finish_rx_packet();
+            }
+            {
+                let mut io = shared.lock().expect("lock");
+                io.flush().expect("flush");
+            }
+        })
+    });
+
+    c.bench_function("dataplane_shared_io_turn_single_lock", |b| {
+        b.iter(|| {
+            let mut io = shared.lock().expect("lock");
+            black_box(io.recv_packet(&mut packet).expect("recv"));
+            io.send_borrowed_frame(packet.buffer()).expect("send");
+            io.finish_rx_packet();
+            io.flush().expect("flush");
+        })
+    });
 }
 
 fn bench_new_tcp_flow_snat_persistent_state_wiretap(c: &mut Criterion) {
@@ -2168,6 +2474,74 @@ fn bench_dpdk_adapter_process_packet_in_place_udp(c: &mut Criterion) {
     });
 }
 
+fn bench_dpdk_adapter_process_packet_in_place_udp_mutex_state(c: &mut Criterion) {
+    let fw_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+    let host_mac = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15];
+    let gw_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+    let gw_ip = Ipv4Addr::new(10, 0, 0, 254);
+    let fw_ip = Ipv4Addr::new(10, 0, 0, 1);
+
+    let template_state = new_engine_state(SnatMode::None);
+    template_state.dataplane_config.set(DataplaneConfig {
+        ip: fw_ip,
+        prefix: 24,
+        gateway: gw_ip,
+        mac: fw_mac,
+        lease_expiry: None,
+    });
+
+    let state = std::sync::Mutex::new(clone_bench_state(&template_state));
+    let mut adapter = DpdkAdapter::new("bench0".to_string()).expect("adapter");
+    adapter.set_mac(fw_mac);
+    {
+        let mut guard = state.lock().expect("state");
+        let arp = build_arp_request(gw_mac, gw_ip, fw_ip);
+        let _ = adapter.process_frame(&arp, &mut guard);
+    }
+    let payload = b"hello";
+    let mut index = 0u32;
+
+    c.bench_function(
+        "dataplane_dpdk_adapter_process_packet_in_place_udp_mutex_state",
+        |b| {
+            b.iter(|| {
+                let flow = FlowKey {
+                    proto: 17,
+                    ..make_flow(index)
+                };
+                index += 1;
+                let mut packet = build_eth_ipv4_udp(
+                    host_mac,
+                    fw_mac,
+                    flow.src_ip,
+                    flow.dst_ip,
+                    flow.src_port,
+                    53,
+                    payload,
+                );
+                let result = {
+                    let mut guard = state.lock().expect("state");
+                    match adapter.process_packet_in_place(&mut packet, &mut guard) {
+                        Some(FrameOut::Borrowed(frame)) => frame.len(),
+                        Some(FrameOut::Owned(frame)) => frame.len(),
+                        None => 0,
+                    }
+                };
+                if index == 4096 {
+                    let mut guard = state.lock().expect("state");
+                    *guard = clone_bench_state(&template_state);
+                    adapter = DpdkAdapter::new("bench0".to_string()).expect("adapter");
+                    adapter.set_mac(fw_mac);
+                    let arp = build_arp_request(gw_mac, gw_ip, fw_ip);
+                    let _ = adapter.process_frame(&arp, &mut guard);
+                    index = 0;
+                }
+                black_box(result)
+            })
+        },
+    );
+}
+
 criterion_group!(
     dataplane_benches,
     bench_new_tcp_flow_no_snat,
@@ -2181,6 +2555,7 @@ criterion_group!(
     bench_new_tcp_flow_no_snat_persistent_state_large_policy_unique_source_mixed,
     bench_new_tcp_flow_no_snat_persistent_state_large_policy_unique_source_mixed_full_scan,
     bench_new_tcp_flow_snat_persistent_state,
+    bench_new_tcp_flow_snat_short_lived_churn,
     bench_new_tcp_flow_snat_persistent_state_metrics,
     bench_new_tcp_flow_snat_persistent_state_metrics_reuse_packet,
     bench_new_tcp_flow_snat_persistent_state_wiretap,
@@ -2205,6 +2580,7 @@ criterion_group!(
     bench_is_internal,
     bench_is_internal_large_policy,
     bench_is_internal_large_unique_source_policy,
+    bench_dynamic_ip_set_contains,
     bench_flow_table_insert,
     bench_flow_open_bookkeeping_metrics,
     bench_nat_get_or_create,
@@ -2212,7 +2588,13 @@ criterion_group!(
     bench_packet_rewrite_snat,
     bench_packet_reset_eth_ipv4_tcp_tuple,
     bench_packet_from_bytes,
+    bench_shared_io_turn_lock,
+    bench_flow_steer_dispatch_queue,
+    bench_flow_steer_borrowed_handoff,
+    bench_flow_steer_metrics_handles,
+    bench_flow_steer_payload_dpdk_buffer,
     bench_state_clone_for_shard,
-    bench_dpdk_adapter_process_packet_in_place_udp
+    bench_dpdk_adapter_process_packet_in_place_udp,
+    bench_dpdk_adapter_process_packet_in_place_udp_mutex_state
 );
 criterion_main!(dataplane_benches);

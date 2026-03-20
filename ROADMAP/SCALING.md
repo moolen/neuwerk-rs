@@ -81,7 +81,7 @@ Planned changes:
 2. Ensure benchmark artifacts are captured consistently:
    - iperf JSON output
    - `/metrics` snapshot before/after each run
-   - firewall startup log
+   - Neuwerk startup log
 3. Keep behavior identical.
 
 Files likely touched:

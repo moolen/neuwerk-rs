@@ -285,12 +285,12 @@ async fn cluster_ready_degrades_on_quorum_loss_and_recovers() {
     join_cfg.token_path = join_token.clone();
 
     let seed_runtime =
-        firewall::controlplane::cluster::run_cluster_tasks(seed_cfg.clone(), None, None)
+        neuwerk::controlplane::cluster::run_cluster_tasks(seed_cfg.clone(), None, None)
             .await
             .unwrap()
             .unwrap();
     let join_runtime =
-        firewall::controlplane::cluster::run_cluster_tasks(join_cfg.clone(), None, None)
+        neuwerk::controlplane::cluster::run_cluster_tasks(join_cfg.clone(), None, None)
             .await
             .unwrap()
             .unwrap();
@@ -405,7 +405,7 @@ async fn cluster_ready_degrades_on_quorum_loss_and_recovers() {
         .await
         .unwrap();
 
-    let restarted = firewall::controlplane::cluster::run_cluster_tasks(restart_cfg, None, None)
+    let restarted = neuwerk::controlplane::cluster::run_cluster_tasks(restart_cfg, None, None)
         .await
         .unwrap()
         .unwrap();

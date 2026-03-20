@@ -115,7 +115,7 @@
       -w /etc/sudoers -p wa -k scope
       -w /etc/sudoers.d -p wa -k scope
       -w /etc/neuwerk -p wa -k neuwerk-config
-      -w /opt/neuwerk/bin/firewall -p x -k neuwerk-runtime
+      -w /opt/neuwerk/bin/neuwerk -p x -k neuwerk-runtime
 
 - name: Tighten permissions on account databases
   ansible.builtin.file:

@@ -1,5 +1,5 @@
 {
-  "name": "ebpf-egress-firewall",
+  "name": "@neuwerk/ui",
   "private": true,
   "version": "0.0.0",
   "type": "module",

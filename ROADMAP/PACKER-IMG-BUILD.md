@@ -1,16 +1,16 @@
 # Packer Image Build
 
 Last updated: 2026-03-11
-Owner: firewall team
-Scope: build and release immutable Ubuntu 24.04 LTS firewall images for cloud platforms and `qcow2`, with deterministic DPDK linkage, CIS Level 2 hardening, and attachable SBOMs.
+Owner: Neuwerk team
+Scope: build and release immutable Ubuntu 24.04 LTS Neuwerk images for cloud platforms and `qcow2`, with deterministic DPDK linkage, CIS Level 2 hardening, and attachable SBOMs.
 
 ## Current Implementation Status
 
 The initial implementation is now in-tree:
 
 - target manifests and DPDK profile catalog scaffolding exist under `packaging/`
-- the Packer build chain builds vendored DPDK and the firewall inside Ubuntu 24.04
-- staged runtime now includes `firewall-bootstrap`, `firewall-launch`, `appliance.env`, and `firewall.service`
+- the Packer build chain builds vendored DPDK and the Neuwerk inside Ubuntu 24.04
+- staged runtime now includes `neuwerk-bootstrap`, `neuwerk-launch`, `appliance.env`, and `neuwerk.service`
 - release artifacts are produced inside the guest under `/tmp/neuwerk-release/<target>` and downloaded back to the host
 - a local Ansible hardening pass applies the current open/custom CIS-oriented baseline
 - rootfs and image SBOM generation paths exist when `syft` is available during the build
@@ -71,7 +71,7 @@ That drift is acceptable for short-lived e2e bootstrapping, but not for a user-f
 - Base image lineage.
 - Kernel expectations.
 - DPDK version and enabled PMDs.
-- Firewall binary build environment.
+- Neuwerk binary build environment.
 - Runtime library layout.
 - Hardening profile and waivers.
 - SBOM and release metadata.
@@ -82,9 +82,9 @@ Use a target-manifest-driven image factory:
 
 1. Packer HCL2 is the top-level image orchestrator.
 2. Each supported target is declared by a small manifest, for example `ubuntu-24.04-amd64`.
-3. The firewall binary is built inside the target OS family, not on the developer or generic CI host.
+3. The Neuwerk binary is built inside the target OS family, not on the developer or generic CI host.
 4. DPDK is vendored from source and built per target manifest into a private runtime prefix.
-5. The image bakes the firewall binary, DPDK runtime, systemd units, hardening, and metadata.
+5. The image bakes the Neuwerk binary, DPDK runtime, systemd units, hardening, and metadata.
 6. Cloud-native images are published by provider-specific Packer builders; `qcow2` is produced by the `qemu` builder from the same provisioning chain.
 7. SBOMs are generated from the staged root filesystem and attached to releases together with image manifests, checksums, and provenance metadata.
 
@@ -105,7 +105,7 @@ Do not use these as the primary phase-1 strategy:
    - Verdict:
      - Keep package-based DPDK only for temporary e2e bootstrap paths until the image pipeline replaces them.
 
-2. Build one firewall binary on a generic CI host and reuse it everywhere.
+2. Build one Neuwerk binary on a generic CI host and reuse it everywhere.
    - Pros:
      - Fast and simple.
    - Cons:
@@ -115,7 +115,7 @@ Do not use these as the primary phase-1 strategy:
    - Verdict:
      - Not acceptable for a regulated appliance image.
 
-3. Statically link all DPDK content into the firewall binary.
+3. Statically link all DPDK content into the Neuwerk binary.
    - Pros:
      - Fewer runtime files.
    - Cons:
@@ -172,7 +172,7 @@ That means:
 
 1. The new image pipeline uses vendored DPDK source.
 2. Existing e2e cloud bootstraps may continue using package/runtime-bundle flows until image-based deployment replaces them.
-3. The cloud test stacks should later consume published image IDs instead of uploading the raw firewall binary at boot.
+3. The cloud test stacks should later consume published image IDs instead of uploading the raw Neuwerk binary at boot.
 
 ### Recommended DPDK Ownership Model
 
@@ -244,7 +244,7 @@ sbom:
 1. Build DPDK from vendored source inside the target OS builder.
 2. Install to a private prefix, for example:
    - `/opt/neuwerk/runtime/dpdk/23.11.2`
-3. Compile the firewall against that prefix.
+3. Compile the Neuwerk against that prefix.
 4. Do not depend on `/usr/lib` or distro `ldconfig` state for DPDK lookup.
 5. Prefer an embedded `RUNPATH` or a tightly scoped systemd `Environment=LD_LIBRARY_PATH=...` over global linker configuration.
 6. Fail the build if:
@@ -292,7 +292,7 @@ packer/
   scripts/
     install-build-deps.sh
     build-dpdk.sh
-    build-firewall.sh
+    build-neuwerk.sh
     stage-runtime.sh
     verify-linkage.sh
     cleanup-image.sh
@@ -318,7 +318,7 @@ packer/
 3. Launch builder instance or VM with Packer.
 4. Install build prerequisites.
 5. Build vendored DPDK into private prefix.
-6. Build UI and Rust firewall binary inside the target OS.
+6. Build UI and Rust Neuwerk binary inside the target OS.
 7. Stage runtime files into final prefix.
 8. Install systemd units, tmpfiles, sysctl, netplan templates, and image metadata.
 9. Apply CIS Level 2 hardening.
@@ -364,7 +364,7 @@ Run:
 - `npm --prefix ui test`
 - `npm --prefix ui run build`
 - Rust unit and relevant integration gates
-- target-owned firewall release build
+- target-owned Neuwerk release build
 
 Prefer a dedicated packaging entrypoint, for example:
 
@@ -376,7 +376,7 @@ make package.image.build TARGET=ubuntu-24.04-amd64 PROVIDER=aws
 
 Stage only:
 
-- firewall binary
+- Neuwerk binary
 - UI dist
 - DPDK shared libraries
 - selected PMDs
@@ -445,7 +445,7 @@ Likely waiver categories:
 - cloud-init retention during first boot
 - hugepages and IOMMU kernel args
 - package manager state during image creation only
-- firewall host firewall controls if they conflict with dataplane operation
+- Neuwerk host Neuwerk controls if they conflict with dataplane operation
 - logging and audit retention tuning on small disks
 
 ### Recommended Tooling Direction
@@ -487,7 +487,7 @@ For each built target:
 
 Optional later:
 
-5. `firewall-source.spdx.json`
+5. `Neuwerk-source.spdx.json`
 6. provenance and signature attestations
 
 ### Recommended Generation Flow
@@ -603,7 +603,7 @@ docs/operations/image-release.md
 ### Required Runtime Changes
 
 1. Ensure the service unit does not rely on ambient host library state.
-2. Ensure the firewall can discover runtime assets from a fixed prefix.
+2. Ensure the Neuwerk can discover runtime assets from a fixed prefix.
 3. Keep management-plane and dataplane separation unchanged.
 4. Ensure minimal runtime paths and file permissions comply with hardening decisions.
 
@@ -615,7 +615,7 @@ docs/operations/image-release.md
 - `packer validate`
 - target manifest schema validation
 - DPDK build smoke
-- firewall release build
+- Neuwerk release build
 - linkage verification
 - hardening dry-run
 - SBOM generation dry-run
@@ -625,7 +625,7 @@ docs/operations/image-release.md
 For each built artifact:
 
 - boot successfully
-- `firewall.service` enabled and starts
+- `neuwerk.service` enabled and starts
 - `ldd` matches expected runtime prefix
 - `/health` and `/ready` pass in a lab boot
 - expected DPDK PMDs exist
@@ -651,7 +651,7 @@ For each built artifact:
 ### Phase 2: Deterministic Build and Runtime
 
 - Build DPDK from vendored source inside the image builder.
-- Build firewall release binary inside the target OS.
+- Build Neuwerk release binary inside the target OS.
 - Stage runtime into a private prefix.
 - Add linkage verification and runtime manifest generation.
 
@@ -687,7 +687,7 @@ For each built artifact:
 3. Add packaging scripts:
    - target resolve
    - DPDK build
-   - firewall build
+   - Neuwerk build
    - runtime stage
    - linkage verify
 4. Add a minimal systemd runtime image install path.
@@ -748,11 +748,11 @@ Run:
 Phase 1 is successful when all of the following are true:
 
 1. A single command can build an Ubuntu 24.04 `qemu` image and emit:
-   - firewall image artifact
+   - Neuwerk image artifact
    - SBOMs
    - checksums
    - release manifest
-2. The image boots and starts the firewall service without unresolved DPDK libraries.
+2. The image boots and starts the Neuwerk service without unresolved DPDK libraries.
 3. CIS Level 2 audit results are exported with explicit waivers.
 4. One cloud-native image can be published from the same target manifest and provisioning logic.
 5. Cloud tests can begin migrating from binary upload to image-based deployment.

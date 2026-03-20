@@ -5,7 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 TF_DIR="${TF_DIR:-${ROOT_DIR}/terraform}"
 KEY_PATH="${KEY_PATH:-${ROOT_DIR}/../.secrets/ssh/azure_e2e}"
-RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-firewall-mgmt-ips.sh"
+RESOLVE_FW_IPS="${ROOT_DIR}/scripts/resolve-neuwerk-mgmt-ips.sh"
 COMMON_MATRIX="${ROOT_DIR}/../common/http-perf-matrix.sh"
 COMMON_RUN="${ROOT_DIR}/../common/http-perf-run.sh"
 COMMON_SETUP="${ROOT_DIR}/../common/http-perf-setup.sh"
@@ -38,11 +38,15 @@ az account show >/dev/null 2>&1 || {
 pushd "$TF_DIR" >/dev/null
 RESOURCE_GROUP="$(terraform output -raw resource_group 2>/dev/null || echo unknown)"
 JUMPBOX_IP="$(terraform output -raw jumpbox_public_ip)"
-UPSTREAM_VIP="$(terraform output -raw upstream_vip)"
-UPSTREAM_IP="$(terraform output -raw upstream_private_ip)"
+UPSTREAM_VIP_DEFAULT="$(terraform output -raw upstream_vip)"
+UPSTREAM_IP_DEFAULT="$(terraform output -raw upstream_private_ip)"
 mapfile -t CONSUMERS < <(terraform output -json consumer_private_ips | jq -r '.[]')
-CONSUMER_LOCAL_IPS_JSON="$(terraform output -json consumer_all_private_ips 2>/dev/null | jq -c . 2>/dev/null || true)"
+CONSUMER_LOCAL_IPS_JSON_DEFAULT="$(terraform output -json consumer_all_private_ips 2>/dev/null | jq -c . 2>/dev/null || true)"
 popd >/dev/null
+
+UPSTREAM_VIP="${UPSTREAM_VIP_OVERRIDE:-$UPSTREAM_VIP_DEFAULT}"
+UPSTREAM_IP="${UPSTREAM_IP_OVERRIDE:-$UPSTREAM_IP_DEFAULT}"
+CONSUMER_LOCAL_IPS_JSON="${CONSUMER_LOCAL_IPS_JSON_OVERRIDE:-$CONSUMER_LOCAL_IPS_JSON_DEFAULT}"
 
 if [ -z "$JUMPBOX_IP" ] || [ -z "$UPSTREAM_VIP" ] || [ -z "$UPSTREAM_IP" ] || [ "${#CONSUMERS[@]}" -eq 0 ]; then
   echo "missing terraform outputs for matrix context" >&2
@@ -83,5 +87,7 @@ RPS_TIERS="${RPS_TIERS:-500,1500,3000}" \
 PAYLOAD_TIERS="${PAYLOAD_TIERS:-1024,32768}" \
 CONNECTION_MODES="${CONNECTION_MODES:-keep_alive,new_connection_heavy}" \
 HTTP_REPEATS="${HTTP_REPEATS:-3}" \
-MATRIX_ARTIFACT_DIR="${MATRIX_ARTIFACT_DIR:-${ROOT_DIR}/artifacts/http-perf-matrix-$(date -u +%Y%m%dT%H%M%SZ)}" \
+TARGET_URLS_OVERRIDE="${TARGET_URLS_OVERRIDE:-}" \
+REQUEST_PATH_OVERRIDE="${REQUEST_PATH_OVERRIDE:-}" \
+MATRIX_ARTIFACT_DIR="${MATRIX_ARTIFACT_DIR:-${ARTIFACT_DIR:-${ROOT_DIR}/artifacts/http-perf-matrix-$(date -u +%Y%m%dT%H%M%SZ)}}" \
 "$COMMON_MATRIX"

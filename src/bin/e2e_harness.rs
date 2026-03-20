@@ -6,18 +6,18 @@ use std::time::{Duration, Instant};
 use nix::sched::{setns, CloneFlags};
 use std::os::unix::process::CommandExt;
 
-use firewall::controlplane::api_auth;
-use firewall::controlplane::cluster::store::ClusterStore;
-use firewall::controlplane::policy_config::{PolicyConfig, PolicyMode};
-use firewall::controlplane::policy_repository::PolicyActive;
-use firewall::e2e::cluster_tests;
-use firewall::e2e::services::{
+use neuwerk::controlplane::api_auth;
+use neuwerk::controlplane::cluster::store::ClusterStore;
+use neuwerk::controlplane::policy_config::{PolicyConfig, PolicyMode};
+use neuwerk::controlplane::policy_repository::PolicyActive;
+use neuwerk::e2e::cluster_tests;
+use neuwerk::e2e::services::{
     generate_upstream_tls_material, http_set_policy, http_wait_for_health, UpstreamServices,
 };
-use firewall::e2e::tests::{
+use neuwerk::e2e::tests::{
     cases, overlay_cases_geneve, overlay_cases_vxlan, overlay_cases_vxlan_dual_tunnel, TestCase,
 };
-use firewall::e2e::topology::{Topology, TopologyConfig};
+use neuwerk::e2e::topology::{Topology, TopologyConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_root()?;
@@ -61,12 +61,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tls_material,
     )?;
 
-    let mut firewall = FirewallProcess::new(spawn_firewall(&topology, &cfg, &[], &[])?);
+    let mut neuwerk = NeuwerkProcess::new(spawn_neuwerk(&topology, &cfg, &[], &[])?);
     topology.configure_fw_dataplane(&cfg)?;
 
     let mut result = run_cases(&cfg, &topology, &upstream_services, case_filter.as_ref());
 
-    firewall.kill();
+    neuwerk.kill();
 
     if result.is_ok() && !skip_overlay {
         result = run_overlay_suites(&cfg, &topology);
@@ -207,13 +207,12 @@ fn run_overlay_suite(
     extra_args: Vec<String>,
     extra_env: Vec<(String, String)>,
 ) -> Result<(), String> {
-    let mut firewall =
-        FirewallProcess::new(spawn_firewall(topology, cfg, &extra_args, &extra_env)?);
+    let mut neuwerk = NeuwerkProcess::new(spawn_neuwerk(topology, cfg, &extra_args, &extra_env)?);
     topology.configure_fw_dataplane(cfg)?;
     for case in cases {
         run_case(cfg, topology, &case)?;
     }
-    firewall.kill();
+    neuwerk.kill();
     Ok(())
 }
 
@@ -309,13 +308,13 @@ fn auth_token(cfg: &TopologyConfig) -> Result<String, String> {
     }
 }
 
-fn spawn_firewall(
+fn spawn_neuwerk(
     topology: &Topology,
     cfg: &TopologyConfig,
     extra_args: &[String],
     extra_env: &[(String, String)],
 ) -> Result<Child, String> {
-    let bin = firewall_binary_path().map_err(|e| format!("{e}"))?;
+    let bin = neuwerk_binary_path().map_err(|e| format!("{e}"))?;
     let ns_file = topology
         .fw()
         .file()
@@ -384,14 +383,14 @@ fn spawn_firewall(
     }
 
     cmd.spawn()
-        .map_err(|e| format!("failed to spawn firewall: {e}"))
+        .map_err(|e| format!("failed to spawn neuwerk: {e}"))
 }
 
-struct FirewallProcess {
+struct NeuwerkProcess {
     child: Child,
 }
 
-impl FirewallProcess {
+impl NeuwerkProcess {
     fn new(child: Child) -> Self {
         Self { child }
     }
@@ -415,15 +414,15 @@ impl FirewallProcess {
     }
 }
 
-impl Drop for FirewallProcess {
+impl Drop for NeuwerkProcess {
     fn drop(&mut self) {
         let _ = self.child.kill();
     }
 }
 
-fn firewall_binary_path() -> Result<std::path::PathBuf, std::io::Error> {
+fn neuwerk_binary_path() -> Result<std::path::PathBuf, std::io::Error> {
     let mut exe = std::env::current_exe()?;
-    exe.set_file_name("firewall");
+    exe.set_file_name("neuwerk");
     Ok(exe)
 }
 
