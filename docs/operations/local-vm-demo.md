@@ -60,8 +60,8 @@ That provisioner turns a base appliance box into a local demo guest by:
 This keeps the provider box close to the base appliance image while still making `vagrant up`
 usable as a real gateway demo.
 
-The checked-in Vagrant workflow should prefer the `ubuntu-24.04-minimal-amd64` target so the
-demo box starts from Ubuntu Minimal rather than the larger general-purpose server cloud image.
+The checked-in Vagrant workflow uses the `ubuntu-24.04-minimal-amd64` target so the demo box
+starts from Ubuntu Minimal rather than the larger general-purpose server cloud image.
 
 ## Release Pipeline Changes
 

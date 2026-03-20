@@ -29,7 +29,7 @@
 - Reuse the existing local packaging artifacts under `artifacts/image-build/` for release-asset verification. If those artifacts are missing, build them once with:
 
 ```bash
-make package.image.build.qemu TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=dev-plan
+make package.image.build.qemu TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=dev-plan
 ```
 
 ### Task 1: Create the Operator Appliance Usage Guide
@@ -192,7 +192,7 @@ Run:
 tmpdir="$(mktemp -d)"
 printf 'sample\n' > "$tmpdir/sample.bin"
 python3 packaging/scripts/generate_release_manifest.py \
-  --target ubuntu-24.04-amd64 \
+  --target ubuntu-24.04-minimal-amd64 \
   --provider qemu \
   --release-version v0.0.0 \
   --git-revision testrev \
@@ -242,8 +242,8 @@ Do not remove the existing `target`, `provider`, `image_reference`, or `artifact
 Run:
 
 ```bash
-make package.image.release-assets TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=dev-plan GIT_REVISION="$(git rev-parse --short=12 HEAD)"
-rg -n "Ubuntu 24.04|manual import targets|AWS|Azure|GCP|docs/operations/appliance-image-usage.md" artifacts/image-build/github-release/ubuntu-24.04-amd64/release-notes.md
+make package.image.release-assets TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=dev-plan GIT_REVISION="$(git rev-parse --short=12 HEAD)"
+rg -n "Ubuntu 24.04|manual import targets|AWS|Azure|GCP|docs/operations/appliance-image-usage.md" artifacts/image-build/github-release/ubuntu-24.04-minimal-amd64/release-notes.md
 ```
 
 Expected: the `rg` command fails because the current release notes do not yet describe the appliance support model.
@@ -273,7 +273,7 @@ Run:
 tmpdir="$(mktemp -d)"
 printf 'sample\n' > "$tmpdir/sample.bin"
 python3 packaging/scripts/generate_release_manifest.py \
-  --target ubuntu-24.04-amd64 \
+  --target ubuntu-24.04-minimal-amd64 \
   --provider qemu \
   --release-version v0.0.0 \
   --git-revision testrev \
@@ -295,8 +295,8 @@ runtime_contract = distribution["runtime_contract"]
 assert runtime_contract["dpdk_mode"] == "vendored"
 assert runtime_contract["summary"] == "built with the existing vendored Neuwerk runtime contract"
 PY
-make package.image.release-assets TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=dev-plan GIT_REVISION="$(git rev-parse --short=12 HEAD)"
-rg -n "Ubuntu 24.04|GitHub Releases is the canonical distribution channel|AWS, Azure, and GCP are supported as manual import targets|vendored Neuwerk runtime contract|docs/operations/appliance-image-usage.md" artifacts/image-build/github-release/ubuntu-24.04-amd64/release-notes.md
+make package.image.release-assets TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=dev-plan GIT_REVISION="$(git rev-parse --short=12 HEAD)"
+rg -n "Ubuntu 24.04|GitHub Releases is the canonical distribution channel|AWS, Azure, and GCP are supported as manual import targets|vendored Neuwerk runtime contract|docs/operations/appliance-image-usage.md" artifacts/image-build/github-release/ubuntu-24.04-minimal-amd64/release-notes.md
 ```
 
 Expected: the manifest assertions pass and the release-notes `rg` command returns matching lines.
@@ -345,9 +345,9 @@ Keep the current behavior:
 
 ```yaml
 - manual workflow_dispatch trigger
-- Ubuntu 24.04 targets only
+- Ubuntu 24.04 minimal target only
 - qemu build path
-- optional Vagrant asset generation for the minimal target
+- optional Vagrant asset generation
 - GitHub Release publication from generated release-notes.md
 ```
 
@@ -387,8 +387,8 @@ Run:
 ```bash
 python3 -m py_compile packaging/scripts/*.py
 bash -n packaging/scripts/prepare_github_release.sh
-make package.target.validate TARGET=ubuntu-24.04-amd64
-make package.image.validate TARGET=ubuntu-24.04-amd64 PACKER=packer RELEASE_VERSION=dev-plan
+make package.target.validate TARGET=ubuntu-24.04-minimal-amd64
+make package.image.validate TARGET=ubuntu-24.04-minimal-amd64 PACKER=packer RELEASE_VERSION=dev-plan
 ```
 
 Expected: all commands pass.
@@ -398,13 +398,13 @@ Expected: all commands pass.
 Run:
 
 ```bash
-make package.image.release-assets TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=dev-plan GIT_REVISION="$(git rev-parse --short=12 HEAD)"
-rg -n "Ubuntu 24.04|manual import targets|docs/operations/appliance-image-usage.md" artifacts/image-build/github-release/ubuntu-24.04-amd64/release-notes.md
+make package.image.release-assets TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=dev-plan GIT_REVISION="$(git rev-parse --short=12 HEAD)"
+rg -n "Ubuntu 24.04|manual import targets|docs/operations/appliance-image-usage.md" artifacts/image-build/github-release/ubuntu-24.04-minimal-amd64/release-notes.md
 python3 - <<'PY'
 import json
 from pathlib import Path
 
-data = json.loads(Path("artifacts/image-build/github-release/ubuntu-24.04-amd64/manifest.json").read_text())
+data = json.loads(Path("artifacts/image-build/github-release/ubuntu-24.04-minimal-amd64/manifest.json").read_text())
 distribution = data["distribution"]
 assert distribution["channel"] == "github-release"
 assert distribution["artifact_type"] == "appliance-image"

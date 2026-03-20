@@ -42,7 +42,7 @@ This design keeps the current packaging model intact and makes it operator-facin
 
 The repository already has an image-oriented packaging model:
 
-- Ubuntu 24.04 image targets exist for standard and minimal variants.
+- A Ubuntu 24.04 image target exists for the minimal appliance variant.
 - The image build stages a Neuwerk runtime tree under `/opt/neuwerk`, including the
   release binary, UI assets, vendored DPDK runtime, bootstrap scripts, and systemd
   unit.
@@ -118,24 +118,24 @@ Each appliance release must publish a stable, operator-facing artifact set.
 The release workflow already produces a concrete GitHub Release asset layout. This
 design standardizes that existing layout as the operator-facing contract.
 
-For target `ubuntu-24.04-amd64`, the required assets are:
+For target `ubuntu-24.04-minimal-amd64`, the required assets are:
 
-- `neuwerk-ubuntu-24.04-amd64.qcow2.zst.part-000` and additional
-  `neuwerk-ubuntu-24.04-amd64.qcow2.zst.part-*` files as needed
+- `neuwerk-ubuntu-24.04-minimal-amd64.qcow2.zst.part-000` and additional
+  `neuwerk-ubuntu-24.04-minimal-amd64.qcow2.zst.part-*` files as needed
 - `restore-qcow2.sh`
 - `SHA256SUMS`
 - `manifest.json`
 - `packer-manifest.json`
 - `linkage.json`
 - `release-notes.md`
-- `neuwerk-ubuntu-24.04-amd64-rootfs.tar.zst`
-- `neuwerk-ubuntu-24.04-amd64-source.tar.gz` when the source bundle is available
-- `ubuntu-24.04-amd64-image.spdx.json`
-- `ubuntu-24.04-amd64-image.cyclonedx.json`
-- `ubuntu-24.04-amd64-rootfs.spdx.json`
-- `ubuntu-24.04-amd64-rootfs.cyclonedx.json`
+- `neuwerk-ubuntu-24.04-minimal-amd64-rootfs.tar.zst`
+- `neuwerk-ubuntu-24.04-minimal-amd64-source.tar.gz` when the source bundle is available
+- `ubuntu-24.04-minimal-amd64-image.spdx.json`
+- `ubuntu-24.04-minimal-amd64-image.cyclonedx.json`
+- `ubuntu-24.04-minimal-amd64-rootfs.spdx.json`
+- `ubuntu-24.04-minimal-amd64-rootfs.cyclonedx.json`
 
-For other supported Ubuntu 24.04 targets, the same naming pattern applies with the
+For future supported Ubuntu 24.04 targets, the same naming pattern applies with the
 target id substituted into the filename.
 
 ### Artifact semantics
@@ -216,7 +216,7 @@ workflow rather than only an internal image build workflow.
 ### Required changes
 
 - Keep `workflow_dispatch` as the trigger model.
-- Keep the current Ubuntu 24.04 target set.
+- Keep the current Ubuntu 24.04 minimal target.
 - Keep the existing `qemu` build path and optional Vagrant asset generation.
 - Generate release metadata that matches the appliance distribution contract.
 - Ensure release notes clearly state:

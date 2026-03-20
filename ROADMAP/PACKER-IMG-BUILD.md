@@ -21,7 +21,7 @@ Remaining work is mostly validation depth, waiver refinement, and migration of c
 
 ## Current Artifact Size Snapshot
 
-From the latest successful local `ubuntu-24.04-amd64` qemu build:
+From the latest successful local `ubuntu-24.04-minimal-amd64` qemu build:
 
 - raw `qcow2`: `8.6G` (`9169534976` bytes)
 - staged `rootfs/`: `380M`
@@ -81,7 +81,7 @@ That drift is acceptable for short-lived e2e bootstrapping, but not for a user-f
 Use a target-manifest-driven image factory:
 
 1. Packer HCL2 is the top-level image orchestrator.
-2. Each supported target is declared by a small manifest, for example `ubuntu-24.04-amd64`.
+2. Each supported target is declared by a small manifest, for example `ubuntu-24.04-minimal-amd64`.
 3. The Neuwerk binary is built inside the target OS family, not on the developer or generic CI host.
 4. DPDK is vendored from source and built per target manifest into a private runtime prefix.
 5. The image bakes the Neuwerk binary, DPDK runtime, systemd units, hardening, and metadata.
@@ -191,7 +191,7 @@ packaging/
           azure-mana.meson
           gcp-gve.meson
     targets/
-      ubuntu-24.04-amd64.yaml
+      ubuntu-24.04-minimal-amd64.yaml
 ```
 
 The target manifest owns:
@@ -207,7 +207,7 @@ The target manifest owns:
 Example target manifest:
 
 ```yaml
-id: ubuntu-24.04-amd64
+id: ubuntu-24.04-minimal-amd64
 os:
   family: ubuntu
   version: "24.04"
@@ -232,7 +232,7 @@ runtime:
   prefix: /opt/neuwerk/runtime
 hardening:
   profile: cis-l2
-  waiver_file: cis/waivers/ubuntu-24.04-amd64.yaml
+  waiver_file: cis/waivers/ubuntu-24.04-minimal-amd64.yaml
 sbom:
   formats:
     - spdx-json
@@ -252,7 +252,7 @@ sbom:
    - the resolved DPDK ABI does not match the target manifest.
    - a required PMD is missing.
 7. Produce a machine-readable linkage manifest, for example:
-   - `artifacts/linkage/ubuntu-24.04-amd64.json`
+   - `artifacts/linkage/ubuntu-24.04-minimal-amd64.json`
 
 ### Generic and Cloud PMD Set
 
@@ -369,7 +369,7 @@ Run:
 Prefer a dedicated packaging entrypoint, for example:
 
 ```text
-make package.image.build TARGET=ubuntu-24.04-amd64 PROVIDER=aws
+make package.image.build TARGET=ubuntu-24.04-minimal-amd64 PROVIDER=aws
 ```
 
 ### Stage 3: Runtime Staging
@@ -555,13 +555,13 @@ Per release:
 - `restore-qcow2.sh`
 - `packer-manifest.json`
 - `linkage.json`
-- `ubuntu-24.04-amd64-image.spdx.json`
-- `ubuntu-24.04-amd64-image.cyclonedx.json`
-- `ubuntu-24.04-amd64-rootfs.spdx.json`
-- `ubuntu-24.04-amd64-rootfs.cyclonedx.json`
-- `neuwerk-ubuntu-24.04-amd64-rootfs.tar.zst`
-- `neuwerk-ubuntu-24.04-amd64-source.tar.gz`
-- `neuwerk-ubuntu-24.04-amd64.qcow2.zst.part-*`
+- `ubuntu-24.04-minimal-amd64-image.spdx.json`
+- `ubuntu-24.04-minimal-amd64-image.cyclonedx.json`
+- `ubuntu-24.04-minimal-amd64-rootfs.spdx.json`
+- `ubuntu-24.04-minimal-amd64-rootfs.cyclonedx.json`
+- `neuwerk-ubuntu-24.04-minimal-amd64-rootfs.tar.zst`
+- `neuwerk-ubuntu-24.04-minimal-amd64-source.tar.gz`
+- `neuwerk-ubuntu-24.04-minimal-amd64.qcow2.zst.part-*`
 
 ## Repository Changes
 
@@ -644,7 +644,7 @@ For each built artifact:
 ### Phase 1: Design and Skeleton
 
 - Create `packer/` layout and target manifest schema.
-- Add a single `ubuntu-24.04-amd64` target manifest.
+- Add a single `ubuntu-24.04-minimal-amd64` target manifest.
 - Add `qemu` builder first because it is the easiest local validation path.
 - Add a packaging Make target and validation scripts.
 

@@ -132,7 +132,7 @@ make package.vagrant.box TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=dev
 
 ## Architecture Constraint
 
-The recommended demo image target in this repository is `ubuntu-24.04-minimal-amd64`.
+The supported and default demo image target in this repository is `ubuntu-24.04-minimal-amd64`.
 
 That means the first Vagrant demo should be documented as `amd64/x86_64` only.
 

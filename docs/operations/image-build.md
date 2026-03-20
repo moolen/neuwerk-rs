@@ -7,7 +7,6 @@ This document remains build-facing and covers how Neuwerk image artifacts are pr
 
 ## Current Targets
 
-- `ubuntu-24.04-amd64`
 - `ubuntu-24.04-minimal-amd64`
 
 ## Local VM Demo Direction
@@ -82,7 +81,7 @@ This validates:
 
 ## What The Build Produces
 
-The Ubuntu 24.04 targets build:
+The `ubuntu-24.04-minimal-amd64` build produces:
 
 - a vendored DPDK `23.11.2` runtime under `/opt/neuwerk/runtime`
 - a release-mode Neuwerk binary compiled against that vendored DPDK
@@ -112,9 +111,9 @@ On GitHub-hosted runners you should set `QEMU_ACCELERATOR=none`. A KVM-backed se
 ## Build Cloud Images
 
 ```bash
-make package.image.build.aws TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=v0.1.0
-make package.image.build.azure TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=v0.1.0
-make package.image.build.gcp TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=v0.1.0
+make package.image.build.aws TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=v0.1.0
+make package.image.build.azure TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=v0.1.0
+make package.image.build.gcp TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=v0.1.0
 ```
 
 Cloud builds require the usual provider credentials for Packer.
@@ -125,13 +124,13 @@ These provider build targets are manual/optional build workflows and are not the
 Generate a release-manifest skeleton for a built target:
 
 ```bash
-make package.image.release-manifest TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=v0.1.0
+make package.image.release-manifest TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=v0.1.0
 ```
 
 Prepare GitHub-safe release assets from an existing local qemu build:
 
 ```bash
-make package.image.release-assets TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=v0.1.0
+make package.image.release-assets TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=v0.1.0
 ```
 
 Distribution contract for Ubuntu 24.04 appliance images:
@@ -162,7 +161,7 @@ In this phase, it follows the same Ubuntu 24.04 distribution contract documented
 It is intentionally not triggered on push or merge. Use GitHub Actions `workflow_dispatch` with:
 
 - `release_version`, for example `v0.1.0`
-- `target`, currently `ubuntu-24.04-amd64` or `ubuntu-24.04-minimal-amd64`
+- `target`, `ubuntu-24.04-minimal-amd64`
 - `draft` / `prerelease`
 - `runner`, default `ubuntu-latest`
 - `qemu_accelerator`, default `none`
