@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: ["master"]
     paths:
+      - ".github/workflows/image-release.yml"
       - ".github/workflows/image-validation.yml"
       - "AGENTS.md"
       - "Makefile"
@@ -18,6 +19,7 @@ on:
   push:
     branches: ["master"]
     paths:
+      - ".github/workflows/image-release.yml"
       - ".github/workflows/image-validation.yml"
       - "AGENTS.md"
       - "Makefile"

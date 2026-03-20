@@ -131,53 +131,11 @@ jobs:
           PROVIDER_DIR: terraform-provider-neuwerk
           PROVIDER_NAME: terraform-provider-neuwerk
         run: |
-          set -euo pipefail
-          version="${RELEASE_VERSION#v}"
-          asset_dir="$PWD/artifacts/terraform-provider-release"
-          rm -rf "$asset_dir"
-          mkdir -p "$asset_dir"
-
-          targets=(
-            "linux amd64"
-            "linux arm64"
-            "darwin amd64"
-            "darwin arm64"
-            "windows amd64"
-          )
-
-          for target in "${targets[@]}"; do
-            read -r goos goarch <<<"$target"
-            ext=""
-            if [[ "$goos" == "windows" ]]; then
-              ext=".exe"
-            fi
-            bin_name="${PROVIDER_NAME}_v${version}${ext}"
-            stage_dir="$(mktemp -d)"
-            (
-              cd "$PROVIDER_DIR"
-              GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-                go build -trimpath -ldflags="-s -w -X main.version=${RELEASE_VERSION}" \
-                -o "${stage_dir}/${bin_name}" .
-            )
-            archive_name="${PROVIDER_NAME}_${version}_${goos}_${goarch}.zip"
-            STAGE_DIR="$stage_dir" ASSET_DIR="$asset_dir" ARCHIVE_NAME="$archive_name" python3 - <<'PY'
-            import os
-            import pathlib
-            import zipfile
-
-            stage = pathlib.Path(os.environ["STAGE_DIR"])
-            archive = pathlib.Path(os.environ["ASSET_DIR"]) / os.environ["ARCHIVE_NAME"]
-            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                for path in stage.iterdir():
-                    zf.write(path, path.name)
-            PY
-            rm -rf "$stage_dir"
-          done
-
-          (
-            cd "$asset_dir"
-            sha256sum ./*.zip > "${PROVIDER_NAME}_${version}_SHA256SUMS"
-          )
+          bash packaging/scripts/build_terraform_provider_release_assets.sh \
+            --provider-dir "$PROVIDER_DIR" \
+            --provider-name "$PROVIDER_NAME" \
+            --release-version "$RELEASE_VERSION" \
+            --output-dir "$PWD/artifacts/terraform-provider-release"
 
       - name: Resolve qemu accelerator
         id: qemu
