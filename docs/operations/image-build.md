@@ -118,6 +118,7 @@ make package.image.build.gcp TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=v0.1.0
 ```
 
 Cloud builds require the usual provider credentials for Packer.
+These provider build targets are manual/optional build workflows and are not the canonical automated distribution path for published Ubuntu 24.04 appliance releases.
 
 ## Release Metadata
 
@@ -156,11 +157,7 @@ This creates `artifacts/image-build/github-release/<target>/` with:
 
 The repository now includes a manual-only workflow at `.github/workflows/image-release.yml`.
 
-In this phase, it aligns with the same distribution contract:
-
-- GitHub Releases is the canonical distribution channel for Ubuntu 24.04 appliance images.
-- The published release artifacts are intended for manual import into AWS, Azure, and GCP.
-- Provider-native image publication is not automated in this phase.
+In this phase, it follows the same Ubuntu 24.04 distribution contract documented above in [Release Metadata](#release-metadata).
 
 It is intentionally not triggered on push or merge. Use GitHub Actions `workflow_dispatch` with:
 
