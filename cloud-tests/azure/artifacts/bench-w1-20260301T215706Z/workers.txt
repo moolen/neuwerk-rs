@@ -1,2 +1,0 @@
----- firewall workers ----
-10.20.1.4 NEUWERK_DPDK_WORKERS=1

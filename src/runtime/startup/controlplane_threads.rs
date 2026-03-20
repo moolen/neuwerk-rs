@@ -1,10 +1,10 @@
 use neuwerk::controlplane;
 use neuwerk::controlplane::audit::AuditStore;
-use neuwerk::controlplane::metrics::Metrics;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
 use neuwerk::controlplane::ready::ReadinessState;
 use neuwerk::controlplane::wiretap::{DnsMap, WiretapHub};
 use neuwerk::controlplane::PolicyStore;
+use neuwerk::metrics::Metrics;
 use tokio::sync::oneshot;
 
 fn runtime_worker_threads(env_name: &str, default_threads: usize) -> usize {

@@ -1,6 +1,0 @@
-Warning: Permanently added '20.79.249.152' (ED25519) to the list of known hosts.
-Warning: Permanently added '10.20.3.4' (ED25519) to the list of known hosts.
-lifecycle_consumer_class_summary class=delayed_http total=116 ok=115 fail=1
-lifecycle_consumer_summary total=116 ok=115 fail=1
-lifecycle_consumer_first_failure:
-fail class=delayed_http worker=2 latency_ms=25012 rc=28 code=000 err="curl: (28) Operation timed out after 25002 milliseconds with 0 bytes received "

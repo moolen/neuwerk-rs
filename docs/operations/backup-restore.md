@@ -18,6 +18,11 @@ These steps cover the mutable state that must survive restart, host replacement,
 
 If `NEUWERK_LOCAL_DATA_DIR` is set, treat that directory as the root for local mutable state instead of `/var/lib/neuwerk`.
 
+## Auth Model
+
+- Local or single-node mode stores API signing keys in `/var/lib/neuwerk/http-tls/api-auth.json` and CLI auth administration uses `neuwerk auth ... --http-tls-dir /var/lib/neuwerk/http-tls`.
+- Cluster mode stores API signing keys in Raft state and CLI auth administration uses `neuwerk auth ... --cluster-addr <ip:port> [--cluster-tls-dir <path>]`.
+
 ## Backup Procedure
 
 1. Quiesce writes.

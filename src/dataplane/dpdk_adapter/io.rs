@@ -1,5 +1,4 @@
 use super::{FrameIo, Packet};
-use crate::controlplane::metrics::Metrics;
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::os::raw::c_char;
@@ -10,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use crate::metrics::Metrics;
 use dpdk_sys::*;
 
 unsafe extern "C" {

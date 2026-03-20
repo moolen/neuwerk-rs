@@ -6,10 +6,10 @@ use neuwerk::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
 use neuwerk::controlplane::cloud::types::IntegrationMode;
 use neuwerk::controlplane::cluster::migration;
 use neuwerk::controlplane::cluster::ClusterRuntime;
-use neuwerk::controlplane::metrics::Metrics;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
 use neuwerk::controlplane::wiretap::WiretapHub;
 use neuwerk::dataplane::{EncapMode, OverlayConfig, SnatMode};
+use neuwerk::metrics::Metrics;
 use tracing::{info, warn};
 use uuid::Uuid;
 

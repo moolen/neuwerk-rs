@@ -9,18 +9,22 @@ This folder provisions a GCP test bench mirroring the Azure traffic shape:
 ## Requirements
 - Terraform and `gcloud`.
 - ADC auth: `gcloud auth application-default login`.
-- Built neuwerk binary with DPDK feature: `cargo build --release --features dpdk`.
+- Explicit neuwerk binary built with DPDK feature: `cargo build --release --features dpdk`.
+- Explicit tar.gz runtime bundle containing the matching DPDK userspace libs and PMDs required by that binary.
+- GCP bench images assume Ubuntu 24.04 userspace and gVNIC with the Ubuntu APT DPDK `23.11` LTS runtime. Keep that provenance aligned with both the binary and the runtime bundle you upload.
 - SSH keypair at `cloud-tests/.secrets/ssh/gcp_e2e`.
 
 ## Quick Start
 1. `cd cloud-tests/gcp/terraform`
 2. `terraform init`
-3. `terraform apply`
+3. `terraform apply -var 'neuwerk_binary_path=/absolute/path/to/neuwerk' -var 'neuwerk_dpdk_runtime_bundle_path=/absolute/path/to/dpdk-runtime.tar.gz'`
 4. `cd ..`
 5. `make health`
 6. `make policy-smoke`
 7. `make performance.scenario`
 8. `cd terraform && terraform destroy`
+
+The repo no longer ships a default GCP binary or DPDK runtime tarball. Pass the exact artifacts from your build pipeline so the uploaded GCS objects have clear provenance.
 
 ## Performance Scenario
 
@@ -41,6 +45,7 @@ If the deployed GCP topology does not expose enough same-subnet consumer source 
 ## Notes
 - Default project/region/zone are set in `terraform/variables.tf` and can be overridden via `-var`.
 - Neuwerk VMs use gVNIC NIC type and bootstrap DPDK dataplane selection from the dataplane NIC PCI/MAC (targeting GCP gVNIC/net_gve PMD path).
+- `terraform apply` now requires both `neuwerk_binary_path` and `neuwerk_dpdk_runtime_bundle_path`; there is no implicit in-repo artifact fallback.
 - Neuwerk NIC queue counts are explicitly configurable:
   - `neuwerk_mgmt_queue_count` (default `1`) is applied to the management NIC.
   - `neuwerk_total_nic_queue_count` (default `8`) is the queue budget; dataplane NIC gets `total - mgmt` (minimum `1`).

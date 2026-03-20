@@ -1,9 +1,0 @@
-Warning: Permanently added '20.79.249.152' (ED25519) to the list of known hosts.
-Warning: Permanently added '10.20.3.4' (ED25519) to the list of known hosts.
-lifecycle_consumer_class_summary class=dns_udp total=15413 ok=15413 fail=0
-lifecycle_consumer_class_summary class=http total=32023 ok=32022 fail=1
-lifecycle_consumer_class_summary class=https total=21850 ok=21849 fail=1
-lifecycle_consumer_class_summary class=delayed_http total=103 ok=102 fail=1
-lifecycle_consumer_summary total=69389 ok=69386 fail=3
-lifecycle_consumer_first_failure:
-fail class=https worker=1 latency_ms=5016 rc=28 code=000 err="curl: (28) Failed to connect to upstream.test port 443 after 5002 ms: Timeout was reached "

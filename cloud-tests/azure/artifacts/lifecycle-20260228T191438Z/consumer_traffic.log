@@ -1,9 +1,0 @@
-Warning: Permanently added '20.79.249.152' (ED25519) to the list of known hosts.
-Warning: Permanently added '10.20.3.4' (ED25519) to the list of known hosts.
-lifecycle_consumer_class_summary class=dns_udp total=17765 ok=17760 fail=5
-lifecycle_consumer_class_summary class=http total=34343 ok=34343 fail=0
-lifecycle_consumer_class_summary class=https total=24910 ok=24910 fail=0
-lifecycle_consumer_class_summary class=delayed_http total=218 ok=215 fail=3
-lifecycle_consumer_summary total=77236 ok=77228 fail=8
-lifecycle_consumer_first_failure:
-fail class=dns_udp worker=1 latency_ms=2060 rc=9 code=;; communications error to 10.20.4.10#53: timed out ;; no servers could be reached err=";; communications error to 10.20.4.10#53: timed out"

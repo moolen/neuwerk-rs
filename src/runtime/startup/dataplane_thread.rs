@@ -2,7 +2,6 @@ use std::net::Ipv4Addr;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 
-use neuwerk::controlplane::metrics::Metrics;
 use neuwerk::dataplane::policy::{
     DynamicIpSetV4, PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
 };
@@ -10,6 +9,7 @@ use neuwerk::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DrainControl, OverlayConfig,
     SharedInterceptDemuxState, SnatMode, WiretapEmitter,
 };
+use neuwerk::metrics::Metrics;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::runtime::cli::DataPlaneMode;
