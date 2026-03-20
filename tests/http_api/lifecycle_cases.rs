@@ -824,3 +824,20 @@ source_groups:
         .expect("restart join")
         .expect("restart shutdown result");
 }
+
+#[test]
+fn http_api_metrics_exposes_threat_series() {
+    let metrics = Metrics::new().expect("create metrics");
+    metrics.inc_threat_match("domain", "dns", "high", "default", "inline");
+    metrics.inc_threat_alertable_match("domain", "dns", "high", "default");
+    metrics.observe_threat_feed_refresh("default", "success");
+    metrics.set_threat_feed_snapshot_age_seconds("default", 42);
+    metrics.set_threat_findings_active("high", 1);
+
+    let body = metrics.render().expect("render metrics");
+
+    assert!(body.contains("neuwerk_threat_matches_total"));
+    assert!(body.contains("neuwerk_threat_feed_refresh_total"));
+    assert!(body.contains("neuwerk_threat_feed_snapshot_age_seconds"));
+    assert!(body.contains("neuwerk_threat_findings_active"));
+}

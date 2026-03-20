@@ -240,6 +240,49 @@ impl Metrics {
             .set(value as f64);
     }
 
+    pub fn inc_threat_match(
+        &self,
+        indicator_type: &str,
+        layer: &str,
+        severity: &str,
+        feed: &str,
+        source: &str,
+    ) {
+        self.threat_matches
+            .with_label_values(&[indicator_type, layer, severity, feed, source])
+            .inc();
+    }
+
+    pub fn inc_threat_alertable_match(
+        &self,
+        indicator_type: &str,
+        layer: &str,
+        severity: &str,
+        feed: &str,
+    ) {
+        self.threat_alertable_matches
+            .with_label_values(&[indicator_type, layer, severity, feed])
+            .inc();
+    }
+
+    pub fn observe_threat_feed_refresh(&self, feed: &str, outcome: &str) {
+        self.threat_feed_refresh
+            .with_label_values(&[feed, outcome])
+            .inc();
+    }
+
+    pub fn set_threat_feed_snapshot_age_seconds(&self, feed: &str, age: u64) {
+        self.threat_feed_snapshot_age_seconds
+            .with_label_values(&[feed])
+            .set(age as f64);
+    }
+
+    pub fn set_threat_findings_active(&self, severity: &str, count: usize) {
+        self.threat_findings_active
+            .with_label_values(&[severity])
+            .set(count as f64);
+    }
+
     pub fn set_raft_is_leader(&self, is_leader: bool) {
         self.raft_is_leader.set(if is_leader { 1.0 } else { 0.0 });
     }
