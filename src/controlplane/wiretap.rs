@@ -63,6 +63,25 @@ impl DnsMap {
         }
     }
 
+    pub fn remove_hostname(&self, hostname: &str) -> Vec<Ipv4Addr> {
+        let hostname = normalize_hostname(hostname);
+        if hostname.is_empty() {
+            return Vec::new();
+        }
+        let mut removed = Vec::new();
+        if let Ok(mut lock) = self.inner.write() {
+            lock.retain(|ip, entry| {
+                let keep = entry.hostname != hostname;
+                if !keep {
+                    removed.push(*ip);
+                }
+                keep
+            });
+        }
+        removed.sort_unstable();
+        removed
+    }
+
     pub fn evict_idle(&self, now: u64, idle_timeout_secs: u64) -> usize {
         match self.inner.write() {
             Ok(mut lock) => {
@@ -564,6 +583,25 @@ mod tests {
         map.insert_many("Foo.Example.COM.", &ips, 10);
         assert_eq!(map.lookup(ips[0]).unwrap(), "foo.example.com");
         assert_eq!(map.evict_idle(20, 5), 1);
+    }
+
+    #[test]
+    fn dns_map_remove_hostname_revokes_matching_ips() {
+        let map = DnsMap::new();
+        let keep_ip = Ipv4Addr::new(198, 51, 100, 11);
+        let revoke_ips = vec![
+            Ipv4Addr::new(198, 51, 100, 10),
+            Ipv4Addr::new(198, 51, 100, 12),
+        ];
+        map.insert_many("Foo.Example.COM.", &revoke_ips, 10);
+        map.insert_many("bar.allowed", &[keep_ip], 10);
+
+        let removed = map.remove_hostname("foo.example.com.");
+        assert_eq!(removed, revoke_ips);
+        assert_eq!(map.lookup(keep_ip).as_deref(), Some("bar.allowed"));
+        for ip in removed {
+            assert!(map.lookup(ip).is_none());
+        }
     }
 
     #[test]

@@ -239,6 +239,26 @@ fn evaluate_dns_policy_decision_marks_audit_rule_deny_without_blocking() {
     assert_eq!(source_group, "client-primary");
 }
 
+#[test]
+fn revoke_hostname_grants_removes_cached_allowlist_entries() {
+    let allowlist = DynamicIpSetV4::new();
+    let dns_map = DnsMap::new();
+    let foo_ip = Ipv4Addr::new(203, 0, 113, 10);
+    let bar_ip = Ipv4Addr::new(203, 0, 113, 11);
+
+    dns_map.insert_many("foo.allowed", &[foo_ip], 10);
+    dns_map.insert_many("bar.allowed", &[bar_ip], 10);
+    allowlist.insert(foo_ip);
+    allowlist.insert(bar_ip);
+
+    revoke_hostname_grants("Foo.Allowed.", &allowlist, &dns_map);
+
+    assert!(!allowlist.contains(foo_ip));
+    assert!(allowlist.contains(bar_ip));
+    assert!(dns_map.lookup(foo_ip).is_none());
+    assert_eq!(dns_map.lookup(bar_ip).as_deref(), Some("bar.allowed"));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn udp_upstream_failover_recovers_after_mismatch() {
     let request = build_dns_query("spoof.allowed");

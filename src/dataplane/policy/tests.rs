@@ -35,6 +35,21 @@ fn allowlist_insert_preserves_active_flow_count() {
 }
 
 #[test]
+fn allowlist_remove_many_removes_only_matching_entries() {
+    let allowlist = DynamicIpSetV4::new();
+    let keep_ip = Ipv4Addr::new(198, 51, 100, 8);
+    let remove_ip = Ipv4Addr::new(198, 51, 100, 9);
+
+    allowlist.insert(keep_ip);
+    allowlist.insert(remove_ip);
+
+    let removed = allowlist.remove_many([remove_ip, Ipv4Addr::new(198, 51, 100, 10)]);
+    assert_eq!(removed, 1);
+    assert!(allowlist.contains(keep_ip));
+    assert!(!allowlist.contains(remove_ip));
+}
+
+#[test]
 fn policy_snapshot_is_internal_checks_all_groups() {
     let mut group_a = SourceGroup {
         id: "a".to_string(),

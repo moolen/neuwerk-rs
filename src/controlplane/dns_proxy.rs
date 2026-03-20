@@ -153,6 +153,9 @@ pub async fn run_dns_proxy(
         }
 
         if !allowed {
+            if would_deny {
+                revoke_hostname_grants(&question.name, &allowlist, &dns_map);
+            }
             let reason = if matches!(peer.ip(), IpAddr::V4(_)) {
                 if would_deny {
                     "policy_deny"
@@ -415,6 +418,9 @@ async fn handle_dns_tcp_client(
         }
 
         if !allowed {
+            if would_deny {
+                revoke_hostname_grants(&question.name, &allowlist, &dns_map);
+            }
             let reason = if matches!(peer.ip(), IpAddr::V4(_)) {
                 if would_deny {
                     "policy_deny"
@@ -505,6 +511,13 @@ fn evaluate_dns_policy_decision(
     let would_deny = !raw_allowed || audit_rule_denied;
     let allowed = raw_allowed || audit_passthrough;
     (allowed, would_deny, source_group)
+}
+
+fn revoke_hostname_grants(question_name: &str, allowlist: &DynamicIpSetV4, dns_map: &DnsMap) {
+    let removed = dns_map.remove_hostname(question_name);
+    if !removed.is_empty() {
+        allowlist.remove_many(removed);
+    }
 }
 
 async fn write_dns_tcp_response(stream: &mut TcpStream, response: &[u8]) -> Result<(), String> {

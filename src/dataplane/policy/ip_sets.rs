@@ -123,6 +123,24 @@ impl DynamicIpSetV4 {
         }
     }
 
+    pub fn remove_many<I>(&self, ips: I) -> usize
+    where
+        I: IntoIterator<Item = Ipv4Addr>,
+    {
+        match self.inner.write() {
+            Ok(mut lock) => {
+                let mut removed = 0usize;
+                for ip in ips {
+                    if lock.remove(&u32::from(ip)).is_some() {
+                        removed += 1;
+                    }
+                }
+                removed
+            }
+            Err(_) => 0,
+        }
+    }
+
     pub fn flow_open(&self, ip: Ipv4Addr, now: u64) {
         if let Ok(mut lock) = self.inner.write() {
             if let Some(entry) = lock.get_mut(&u32::from(ip)) {
