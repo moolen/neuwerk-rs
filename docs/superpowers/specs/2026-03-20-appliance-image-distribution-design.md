@@ -99,7 +99,7 @@ Each appliance release must publish a stable, operator-facing artifact set.
 
 ### Required artifacts
 
-- appliance image artifact from the existing `qemu` build
+- split compressed appliance image from the existing `qemu` build
 - `restore-qcow2.sh`
 - `SHA256SUMS`
 - release manifest
@@ -112,6 +112,48 @@ Each appliance release must publish a stable, operator-facing artifact set.
 
 - Vagrant `.box`
 - Vagrant metadata for the minimal target
+
+### Existing artifact names and formats
+
+The release workflow already produces a concrete GitHub Release asset layout. This
+design standardizes that existing layout as the operator-facing contract.
+
+For target `ubuntu-24.04-amd64`, the required assets are:
+
+- `neuwerk-ubuntu-24.04-amd64.qcow2.zst.part-000` and additional
+  `neuwerk-ubuntu-24.04-amd64.qcow2.zst.part-*` files as needed
+- `restore-qcow2.sh`
+- `SHA256SUMS`
+- `manifest.json`
+- `packer-manifest.json`
+- `linkage.json`
+- `release-notes.md`
+- `neuwerk-ubuntu-24.04-amd64-rootfs.tar.zst`
+- `neuwerk-ubuntu-24.04-amd64-source.tar.gz` when the source bundle is available
+- `ubuntu-24.04-amd64-image.spdx.json`
+- `ubuntu-24.04-amd64-image.cyclonedx.json`
+- `ubuntu-24.04-amd64-rootfs.spdx.json`
+- `ubuntu-24.04-amd64-rootfs.cyclonedx.json`
+
+For other supported Ubuntu 24.04 targets, the same naming pattern applies with the
+target id substituted into the filename.
+
+### Artifact semantics
+
+- The primary appliance image is distributed as a `qcow2` compressed with `zstd` and
+  split into GitHub-safe parts.
+- `restore-qcow2.sh` reconstructs the compressed archive and restores the raw `qcow2`.
+- `SHA256SUMS` covers all attached release artifacts.
+- `manifest.json` is the generated release manifest from the packaging pipeline and
+  records artifact paths, sizes, hashes, release version, git revision, provider, and
+  image reference.
+- `packer-manifest.json` is the raw Packer build manifest.
+- `linkage.json` is the linkage inspection output for the staged runtime.
+- `neuwerk-<target>-rootfs.tar.zst` is the compressed staged runtime rootfs archive.
+- `neuwerk-<target>-source.tar.gz` is the provenance/source bundle when the build has
+  produced it.
+- The SPDX and CycloneDX files are existing SBOM outputs from the current packaging
+  workflow, covering both the image filesystem and the staged rootfs.
 
 ### Contract wording
 
