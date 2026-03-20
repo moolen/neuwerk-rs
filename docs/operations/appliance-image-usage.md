@@ -11,22 +11,20 @@
 
 Download the full release asset set from the selected GitHub Release before running checksum verification. `SHA256SUMS` covers all published release files, so partial downloads can cause `sha256sum -c SHA256SUMS` to fail with missing-file errors.
 
-At minimum, fetch all currently published asset patterns for your target:
+Do not rely on a partial subset. Download every asset attached to the selected release page for your target before running checksum verification.
 
-- `neuwerk-<target>.qcow2.zst.part-*`
+The release asset set typically includes:
+
+- split appliance image parts such as `neuwerk-<target>.qcow2.zst.part-*`
 - `restore-qcow2.sh`
 - `SHA256SUMS`
 - `manifest.json`
 - `release-notes.md`
 - `linkage.json`
 - `packer-manifest.json`
-- `neuwerk-<target>-rootfs.tar.zst`
-- `neuwerk-<target>-source.tar.gz` (when present)
-- `ubuntu-24.04-amd64-image.spdx.json`
-- `ubuntu-24.04-amd64-image.cyclonedx.json`
-- `ubuntu-24.04-amd64-rootfs.spdx.json`
-- `ubuntu-24.04-amd64-rootfs.cyclonedx.json`
-- Any target-specific extras published for that release (for example, minimal-target Vagrant assets).
+- rootfs and source archives such as `neuwerk-<target>-rootfs.tar.zst` and `neuwerk-<target>-source.tar.gz`
+- image and rootfs SBOM files in `spdx` and `cyclonedx` formats
+- any release-specific extras attached for that target, such as Vagrant box assets or metadata
 
 Run checksum verification in the artifact directory:
 
