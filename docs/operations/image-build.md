@@ -2,6 +2,9 @@
 
 The image factory uses target manifests under `packaging/targets/` and Packer templates under `packer/`.
 
+For operators consuming a published appliance image, see [Appliance Image Usage](./appliance-image-usage.md).
+This document remains build-facing and covers how Neuwerk image artifacts are produced.
+
 ## Current Targets
 
 - `ubuntu-24.04-amd64`
@@ -130,6 +133,12 @@ Prepare GitHub-safe release assets from an existing local qemu build:
 make package.image.release-assets TARGET=ubuntu-24.04-amd64 RELEASE_VERSION=v0.1.0
 ```
 
+Distribution contract for Ubuntu 24.04 appliance images:
+
+- GitHub Releases is the canonical distribution channel for Ubuntu 24.04 appliance images.
+- The published release artifacts are intended for manual import into AWS, Azure, and GCP.
+- Provider-native image publication is not automated in this phase.
+
 This creates `artifacts/image-build/github-release/<target>/` with:
 
 - split compressed `qcow2` parts below the per-file GitHub Release limit
@@ -146,6 +155,12 @@ This creates `artifacts/image-build/github-release/<target>/` with:
 ## Manual GitHub Release Workflow
 
 The repository now includes a manual-only workflow at `.github/workflows/image-release.yml`.
+
+In this phase, it aligns with the same distribution contract:
+
+- GitHub Releases is the canonical distribution channel for Ubuntu 24.04 appliance images.
+- The published release artifacts are intended for manual import into AWS, Azure, and GCP.
+- Provider-native image publication is not automated in this phase.
 
 It is intentionally not triggered on push or merge. Use GitHub Actions `workflow_dispatch` with:
 
