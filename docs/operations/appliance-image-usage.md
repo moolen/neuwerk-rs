@@ -9,13 +9,24 @@
 
 ## Download And Verify Release Assets
 
-Download the full operator artifact set from the selected GitHub Release:
+Download the full release asset set from the selected GitHub Release before running checksum verification. `SHA256SUMS` covers all published release files, so partial downloads can cause `sha256sum -c SHA256SUMS` to fail with missing-file errors.
+
+At minimum, fetch all currently published asset patterns for your target:
 
 - `neuwerk-<target>.qcow2.zst.part-*`
 - `restore-qcow2.sh`
 - `SHA256SUMS`
 - `manifest.json`
 - `release-notes.md`
+- `linkage.json`
+- `packer-manifest.json`
+- `neuwerk-<target>-rootfs.tar.zst`
+- `neuwerk-<target>-source.tar.gz` (when present)
+- `ubuntu-24.04-amd64-image.spdx.json`
+- `ubuntu-24.04-amd64-image.cyclonedx.json`
+- `ubuntu-24.04-amd64-rootfs.spdx.json`
+- `ubuntu-24.04-amd64-rootfs.cyclonedx.json`
+- Any target-specific extras published for that release (for example, minimal-target Vagrant assets).
 
 Run checksum verification in the artifact directory:
 
