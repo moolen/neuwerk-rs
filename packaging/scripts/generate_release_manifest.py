@@ -55,6 +55,20 @@ def main() -> int:
         "git_revision": args.git_revision,
         "provider": args.provider,
         "target": target_data,
+        "distribution": {
+            "channel": "github-release",
+            "artifact_type": "appliance-image",
+            "support_model": "manual-import",
+            "supported_platforms": ["aws", "azure", "gcp"],
+            "supported_os": {
+                "family": target_data["os"]["family"],
+                "version": target_data["os"]["version"],
+            },
+            "runtime_contract": {
+                "dpdk_mode": "vendored",
+                "summary": "built with the existing vendored Neuwerk runtime contract",
+            },
+        },
         "image_reference": args.image_reference,
         "artifacts": artifact_entries,
     }

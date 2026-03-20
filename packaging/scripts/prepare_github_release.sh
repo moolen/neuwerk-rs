@@ -226,6 +226,15 @@ release_notes_path="$output_dir/release-notes.md"
   echo "- GitHub-safe qcow2 archive: \`${qcow2_archive_name}.part-*\` across ${#qcow2_part_paths[@]} part(s), total \`$(human_size "$compressed_parts_size_bytes")\`"
   echo "- Rootfs archive: \`$(basename "$rootfs_archive_path")\` at \`$(human_size "$rootfs_archive_size_bytes")\`"
   echo
+  echo "## Supported Appliance Contract"
+  echo
+  echo "- Ubuntu 24.04 is the supported appliance base for this release."
+  echo "- GitHub Releases is the canonical distribution channel."
+  echo "- AWS, Azure, and GCP are supported as manual import targets."
+  echo "- The image is built with the existing vendored Neuwerk runtime contract."
+  echo "- Provider-native image publication is not automated in this phase."
+  echo "- See \`docs/operations/appliance-image-usage.md\` for the operator guide."
+  echo
   echo "## Attached Assets"
   while IFS= read -r asset_name; do
     asset_path="$output_dir/$asset_name"
