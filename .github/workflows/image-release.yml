@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       target:
-        description: Image target manifest id
+        description: Appliance image target manifest id
         required: true
         default: ubuntu-24.04-amd64
         type: choice
@@ -116,10 +116,10 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
 
-      - name: Validate image configuration
+      - name: Validate appliance image configuration
         run: make package.image.validate TARGET="$TARGET" PACKER=packer RELEASE_VERSION="$RELEASE_VERSION"
 
-      - name: Build host artifacts
+      - name: Build appliance host artifacts
         run: |
           make dpdk.prepare
           bash packaging/scripts/build_neuwerk.sh --target "$TARGET" --profile release
@@ -171,14 +171,14 @@ jobs:
             VAGRANT_BOX_URL="${release_base_url}/${box_name}" \
             VAGRANT_METADATA_OUTPUT="${PACKER_ARTIFACT_DIR}/vagrant/${TARGET}/${metadata_name}"
 
-      - name: Prepare GitHub release assets
+      - name: Prepare appliance distribution assets
         run: |
           make package.image.release-assets \
             TARGET="$TARGET" \
             RELEASE_VERSION="$RELEASE_VERSION" \
             GIT_REVISION="${{ steps.git.outputs.revision }}"
 
-      - name: Publish GitHub release
+      - name: Publish GitHub appliance release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_version }}
