@@ -12,6 +12,7 @@ pub use super::types::ThreatSeverity;
 pub const THREAT_INTEL_SETTINGS_KEY: &[u8] = b"settings/threat_intel/config";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
 pub struct ThreatIntelSettings {
     pub enabled: bool,
     pub alert_threshold: ThreatSeverity,
@@ -20,6 +21,7 @@ pub struct ThreatIntelSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
 pub struct ThreatBaselineFeeds {
     pub threatfox: ThreatFeedToggle,
     pub urlhaus: ThreatFeedToggle,
@@ -27,12 +29,14 @@ pub struct ThreatBaselineFeeds {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
 pub struct ThreatFeedToggle {
     pub enabled: bool,
     pub refresh_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
 pub struct ThreatRemoteEnrichmentSettings {
     pub enabled: bool,
 }
@@ -172,7 +176,7 @@ fn parse_settings_value(raw: &[u8]) -> Result<ThreatIntelSettings, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ThreatIntelSettings, ThreatSeverity};
+    use super::{parse_settings_value, ThreatIntelSettings, ThreatSeverity};
 
     #[test]
     fn threat_settings_default_matches_spec() {
@@ -189,5 +193,16 @@ mod tests {
     fn threat_settings_reject_empty_refresh_interval() {
         let err = ThreatIntelSettings::validate_refresh_interval_secs(0).unwrap_err();
         assert!(err.contains(">= 1"));
+    }
+
+    #[test]
+    fn parse_settings_value_accepts_partial_payload_with_defaults() {
+        let settings = parse_settings_value(br#"{"enabled":false}"#).unwrap();
+        assert!(!settings.enabled);
+        assert_eq!(settings.alert_threshold, ThreatSeverity::High);
+        assert!(settings.baseline_feeds.threatfox.enabled);
+        assert!(settings.baseline_feeds.urlhaus.enabled);
+        assert!(settings.baseline_feeds.spamhaus_drop.enabled);
+        assert!(!settings.remote_enrichment.enabled);
     }
 }
