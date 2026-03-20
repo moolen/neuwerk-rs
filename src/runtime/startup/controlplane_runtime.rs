@@ -9,7 +9,6 @@ use neuwerk::controlplane;
 use neuwerk::controlplane::audit::{AuditStore, DEFAULT_AUDIT_STORE_MAX_BYTES};
 use neuwerk::controlplane::cluster::ClusterRuntime;
 use neuwerk::controlplane::integrations::IntegrationStore;
-use neuwerk::controlplane::metrics::Metrics;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
 use neuwerk::controlplane::ready::ReadinessState;
 use neuwerk::controlplane::wiretap::{DnsMap, WiretapHub};
@@ -18,6 +17,7 @@ use neuwerk::dataplane::{
     AuditEmitter, SharedInterceptDemuxState, WiretapEmitter, DEFAULT_AUDIT_REPORT_INTERVAL_SECS,
     DEFAULT_WIRETAP_REPORT_INTERVAL_SECS,
 };
+use neuwerk::metrics::Metrics;
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 

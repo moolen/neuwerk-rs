@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::controlplane::metrics::{current_dpdk_worker_id, DataplaneShardMetricHandles, Metrics};
 use crate::dataplane::audit::{AuditEmitter, AuditEvent as DataplaneAuditEvent, AuditEventType};
 use crate::dataplane::config::DataplaneConfigStore;
 use crate::dataplane::drain::DrainControl;
@@ -23,6 +22,7 @@ use crate::dataplane::tls::{
     TlsDirection, TlsFlowDecision, TlsFlowState, TlsObservation, TlsVerifier,
 };
 use crate::dataplane::wiretap::{flow_id_from_key, WiretapEmitter, WiretapEvent, WiretapEventType};
+use crate::metrics::{current_dpdk_worker_id, DataplaneShardMetricHandles, Metrics};
 
 static NAT_MISS_LOGS: AtomicUsize = AtomicUsize::new(0);
 const FLOW_RATIO_UPDATE_INTERVAL: u64 = 64;

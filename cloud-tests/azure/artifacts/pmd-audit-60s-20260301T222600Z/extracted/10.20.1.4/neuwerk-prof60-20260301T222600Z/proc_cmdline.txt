@@ -1,1 +1,0 @@
-BOOT_IMAGE=/vmlinuz-6.14.0-1017-azure root=PARTUUID=7a5a3aff-efaf-4ead-97e8-73ce273e5901 ro hugepages=2048 default_hugepagesz=2M intel_iommu=on iommu=pt hugepages=2048 default_hugepagesz=2M intel_iommu=on iommu=pt console=tty1 console=ttyS0 earlyprintk=ttyS0 nvme_core.io_timeout=240 hugepages=2048 default_hugepagesz=2M intel_iommu=on iommu=pt panic=-1

@@ -292,7 +292,7 @@ fn flow_steer_payload_copies_borrowed_packet() {
 
 #[test]
 fn dpdk_shared_demux_observability_metrics_render() {
-    let metrics = controlplane::metrics::Metrics::new().expect("metrics");
+    let metrics = neuwerk::metrics::Metrics::new().expect("metrics");
     metrics.inc_dpdk_shared_io_lock_contended();
     metrics.observe_dpdk_shared_io_lock_wait(std::time::Duration::from_micros(50));
     metrics.inc_dpdk_flow_steer_dispatch(1, 3);

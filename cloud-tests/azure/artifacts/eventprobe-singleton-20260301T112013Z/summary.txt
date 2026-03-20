@@ -1,8 +1,0 @@
-artifact_dir=/home/moritz/dev/neuwerk-rs/firewall/cloud-tests/azure/artifacts/eventprobe-singleton-20260301T112013Z
-rg=neuwerk-azure-e2e
-vmss=neuwerk-e2e-ziqsc3-fw
-jump=20.79.249.152
-capacity_before=3
-scale_to=1 start=2026-03-01T11:20:15Z
-survivor_name=neuwerk-e2e-ziqsc3-fw_49c22ac8
-survivor_ip=10.20.1.4

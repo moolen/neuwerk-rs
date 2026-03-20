@@ -1,1 +1,0 @@
-mode=2cpu consumer=10.20.3.4 upstream=10.20.4.4 duration=60 parallel=16

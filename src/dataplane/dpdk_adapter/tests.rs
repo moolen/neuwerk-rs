@@ -1,10 +1,10 @@
 use super::*;
-use crate::controlplane::metrics::Metrics;
 use crate::dataplane::config::DataplaneConfig;
 use crate::dataplane::policy::{
     CidrV4, DefaultPolicy, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction, RuleMatch,
     SourceGroup, Tls13Uninspectable, TlsMatch, TlsMode,
 };
+use crate::metrics::Metrics;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

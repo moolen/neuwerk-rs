@@ -734,7 +734,7 @@ async fn auth_token_login_rejects_oversized_token_field() {
 }
 
 #[test]
-fn metrics_bind_guardrail_treats_private_and_loopback_as_safe() {
+fn metrics_bind_guardrail_treats_private_loopback_and_link_local_as_safe() {
     assert!(!metrics_bind_requires_guardrail(SocketAddr::new(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         8080
@@ -744,15 +744,35 @@ fn metrics_bind_guardrail_treats_private_and_loopback_as_safe() {
         8080
     )));
     assert!(!metrics_bind_requires_guardrail(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V4(Ipv4Addr::new(169, 254, 10, 20)),
+        8080
+    )));
+    assert!(!metrics_bind_requires_guardrail(SocketAddr::new(
+        IpAddr::V6("fd00::10".parse().unwrap()),
+        8080
+    )));
+    assert!(!metrics_bind_requires_guardrail(SocketAddr::new(
+        IpAddr::V6("fe80::10".parse().unwrap()),
         8080
     )));
 }
 
 #[test]
-fn metrics_bind_guardrail_requires_override_for_public_bind() {
+fn metrics_bind_guardrail_requires_override_for_unspecified_and_public_bind() {
+    assert!(metrics_bind_requires_guardrail(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        8080
+    )));
     assert!(metrics_bind_requires_guardrail(SocketAddr::new(
         IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)),
+        8080
+    )));
+    assert!(metrics_bind_requires_guardrail(SocketAddr::new(
+        IpAddr::V6("::".parse().unwrap()),
+        8080
+    )));
+    assert!(metrics_bind_requires_guardrail(SocketAddr::new(
+        IpAddr::V6("2001:db8::10".parse().unwrap()),
         8080
     )));
     assert!(parse_truthy_env("1"));

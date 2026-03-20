@@ -42,8 +42,13 @@ variable "admin_cidr" {
 
 variable "neuwerk_binary_path" {
   type        = string
-  default     = "../../../target/release/neuwerk"
-  description = "Path to the neuwerk binary uploaded to GCS."
+  default     = ""
+  description = "Explicit path to the DPDK-enabled neuwerk binary uploaded to GCS."
+
+  validation {
+    condition     = trimspace(var.neuwerk_binary_path) != ""
+    error_message = "Set neuwerk_binary_path explicitly. GCP cloud tests no longer use an implicit in-repo binary."
+  }
 }
 
 variable "neuwerk_source_image" {
@@ -60,8 +65,13 @@ variable "neuwerk_blob_name" {
 
 variable "neuwerk_dpdk_runtime_bundle_path" {
   type        = string
-  default     = "../assets/dpdk-runtime-26.tar.gz"
-  description = "Path to tar.gz containing DPDK runtime libs/PMDs required by the neuwerk binary."
+  default     = ""
+  description = "Explicit path to a tar.gz containing the DPDK runtime libs/PMDs required by the neuwerk binary."
+
+  validation {
+    condition     = trimspace(var.neuwerk_dpdk_runtime_bundle_path) != ""
+    error_message = "Set neuwerk_dpdk_runtime_bundle_path explicitly. GCP cloud tests no longer use a checked-in runtime bundle."
+  }
 }
 
 variable "neuwerk_dpdk_runtime_blob_name" {

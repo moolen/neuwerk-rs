@@ -1,4 +1,0 @@
-15:selected target instance: neuwerk-e2e-ziqsc3-fw_a8611c02 (instance_id=neuwerk-e2e-ziqsc3-fw_a8611c02, mgmt_ip=10.20.1.5, trigger=terminate)
-16:target baseline metrics events=0 complete=0 drain_start_count=1
-26:target max metrics events=0 complete=0 drain_start_count=1
-27:termination drain test failed: integration_termination_events_total did not increase for target neuwerk-e2e-ziqsc3-fw_a8611c02

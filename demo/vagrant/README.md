@@ -74,7 +74,7 @@ The checked-in `Vagrantfile` runs `provision-demo.sh` on first boot. That provis
 
 - discovers the bridged uplink, management, and client interfaces
 - switches the firewall service into software `tun` mode
-- enables a local single-node cluster on `127.0.0.1:9600`
+- bootstraps the local file-backed API auth keyset under `/var/lib/neuwerk/http-tls`
 - uses the bridged uplink's primary DHCP address as the dataplane SNAT source
 - installs policy-routing rules that steer client traffic into `dp0`
 - mints an admin token to `/var/lib/neuwerk-demo/admin.token`
