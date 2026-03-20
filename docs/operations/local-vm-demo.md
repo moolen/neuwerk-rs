@@ -76,7 +76,7 @@ The preferred release design is:
 The box publication should be treated as a first-class release artifact, not as a manual
 post-processing step.
 
-The repository now includes
+The repository now includes:
 [generate_vagrant_box_metadata.py](../../packaging/scripts/generate_vagrant_box_metadata.py)
 for generating that `metadata.json`.
 

@@ -190,8 +190,8 @@ packaging/
           aws-ena.meson
           azure-mana.meson
           gcp-gve.meson
-    targets/
-      ubuntu-24.04-minimal-amd64.json
+  targets/
+    ubuntu-24.04-minimal-amd64.json
 ```
 
 The target manifest owns:
@@ -202,11 +202,14 @@ The target manifest owns:
 - disabled PMDs
 - expected soname ABI
 - base image lineage per provider
+- build and runtime package lists
+- detailed runtime layout (paths, filenames, and env file locations)
+- DPDK library glob lists and PMD glob lists for linkage and packaging verification
 - hardening waiver file selection
 
-Example target manifest:
+Example target manifest excerpt (illustrative, not a schema-valid copy/paste snippet). The live, schema-valid manifest is in `packaging/targets/ubuntu-24.04-minimal-amd64.json`.
 
-```json
+```jsonc
 {
   "schema_version": 1,
   "id": "ubuntu-24.04-minimal-amd64",
@@ -236,9 +239,7 @@ Example target manifest:
     "profile": "generic-cloud",
     "abi": "so.24"
   },
-  "runtime": {
-    "prefix": "/opt/neuwerk/runtime"
-  },
+  // packages, detailed runtime layout, and glob lists omitted here; see the live manifest for the full shape.
   "hardening": {
     "profile": "cis-l2",
     "waiver_file": "packer/cis/waivers/ubuntu-24.04-minimal-amd64.txt"
