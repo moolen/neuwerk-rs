@@ -234,7 +234,7 @@ fn service_lane_stays_enabled_in_aggressive_mode_unless_overridden() {
 #[test]
 fn shared_demux_owner_pins_https_to_worker_zero() {
     let pkt = build_test_tcp_packet(40000, 443);
-    let owner = shared_demux_owner_for_packet(&pkt, 4, 2);
+    let owner = shared_demux_owner_for_packet_with_policy(&pkt, 4, 2, true);
     assert_eq!(owner, 0);
 }
 
@@ -265,14 +265,18 @@ fn shared_demux_owner_https_pin_can_be_disabled() {
 }
 
 #[test]
-fn flow_steer_payload_moves_owned_packet_without_copy() {
+fn flow_steer_payload_copies_owned_packet_and_preserves_capacity_for_reuse() {
     let payload = vec![1u8, 2, 3, 4];
+    let capacity = payload.capacity();
     let ptr = payload.as_ptr();
     let mut pkt = Packet::new(payload);
     let steered = flow_steer_payload(&mut pkt);
     assert_eq!(steered, vec![1u8, 2, 3, 4]);
-    assert_eq!(steered.as_ptr(), ptr);
+    assert_ne!(steered.as_ptr(), ptr);
     assert!(pkt.buffer().is_empty());
+    let reusable = pkt.into_vec();
+    assert_eq!(reusable.len(), 0);
+    assert!(reusable.capacity() >= capacity);
 }
 
 #[test]

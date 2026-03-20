@@ -5,8 +5,9 @@ use std::sync::{Arc, RwLock};
 use firewall::controlplane::metrics::Metrics;
 use firewall::dataplane::config::DataplaneConfig;
 use firewall::dataplane::policy::{
-    CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4, PolicySnapshot, PortRange, Proto, Rule,
-    RuleAction, RuleMatch, SourceGroup, Tls13Uninspectable, TlsMatch, TlsMode, TlsNameMatch,
+    new_shared_exact_source_group_index, CidrV4, DefaultPolicy, DynamicIpSetV4, IpSetV4,
+    PolicySnapshot, PortRange, Proto, Rule, RuleAction, RuleMatch, SourceGroup, Tls13Uninspectable,
+    TlsMatch, TlsMode, TlsNameMatch,
 };
 use firewall::dataplane::{
     handle_packet, Action, EngineState, FlowKey, FlowTable, NatTable, Packet, WiretapEmitter,
@@ -79,6 +80,18 @@ fn build_ipv4_tcp(
     let mut pkt = Packet::new(buf);
     pkt.recalc_checksums();
     pkt
+}
+
+fn set_tcp_flags(pkt: &mut Packet, flags: u8) {
+    let l4_off = 20;
+    pkt.buffer_mut()[l4_off + 13] = flags;
+    assert!(pkt.recalc_checksums());
+}
+
+fn refresh_policy_state(state: &mut EngineState) {
+    let snapshot = state.policy.read().expect("policy lock poisoned").clone();
+    state.set_exact_source_policy_index(new_shared_exact_source_group_index(&snapshot));
+    state.set_policy_snapshot(Arc::new(arc_swap::ArcSwap::from_pointee(snapshot)));
 }
 
 fn build_ipv4_icmp_echo(

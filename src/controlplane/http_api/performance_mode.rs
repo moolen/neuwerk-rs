@@ -98,6 +98,7 @@ pub(super) async fn put_performance_mode(
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn performance_mode_enabled(state: &ApiState) -> Result<bool, Response> {
     Ok(load_performance_mode_status(state)?.enabled)
 }
@@ -108,6 +109,7 @@ fn local_performance_mode_path(state: &ApiState) -> std::path::PathBuf {
         .join("performance-mode.json")
 }
 
+#[allow(clippy::result_large_err)]
 fn load_performance_mode_status(state: &ApiState) -> Result<PerformanceModeStatus, Response> {
     if let Some(cluster) = &state.cluster {
         let value = cluster
@@ -243,12 +245,12 @@ mod tests {
 
     #[test]
     fn parse_enabled_value_accepts_bool_forms() {
-        assert_eq!(parse_enabled_value(b"1").unwrap(), true);
-        assert_eq!(parse_enabled_value(b"0").unwrap(), false);
-        assert_eq!(parse_enabled_value(b"true").unwrap(), true);
-        assert_eq!(parse_enabled_value(b"false").unwrap(), false);
-        assert_eq!(parse_enabled_value(br#"{"enabled":true}"#).unwrap(), true);
-        assert_eq!(parse_enabled_value(br#"{"enabled":false}"#).unwrap(), false);
+        assert!(parse_enabled_value(b"1").unwrap());
+        assert!(!parse_enabled_value(b"0").unwrap());
+        assert!(parse_enabled_value(b"true").unwrap());
+        assert!(!parse_enabled_value(b"false").unwrap());
+        assert!(parse_enabled_value(br#"{"enabled":true}"#).unwrap());
+        assert!(!parse_enabled_value(br#"{"enabled":false}"#).unwrap());
     }
 
     #[test]

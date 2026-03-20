@@ -99,9 +99,7 @@ pub(super) async fn create_service_account(
     if name.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "name is required".to_string());
     }
-    let description = create
-        .description
-        .and_then(|desc| sanitize_optional_field(desc));
+    let description = create.description.and_then(sanitize_optional_field);
     let created_by = auth.claims.sub.clone();
     match state
         .service_accounts

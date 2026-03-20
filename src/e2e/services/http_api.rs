@@ -437,6 +437,7 @@ pub async fn http_delete_service_account(
     Ok(resp.status())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn http_create_service_account_token(
     addr: SocketAddr,
     tls_dir: &Path,

@@ -254,16 +254,14 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             current_generation = state.current_policy_generation();
         }
 
-        if is_new {
-            if syn_only_decision.is_none() {
-                state.note_flow_open_with_reason(
-                    flow,
-                    proto,
-                    source_group_label(source_group.as_ref()),
-                    "outbound_miss",
-                    now,
-                );
-            }
+        if is_new && syn_only_decision.is_none() {
+            state.note_flow_open_with_reason(
+                flow,
+                proto,
+                source_group_label(source_group.as_ref()),
+                "outbound_miss",
+                now,
+            );
         }
 
         let policy = &state.policy_snapshot;

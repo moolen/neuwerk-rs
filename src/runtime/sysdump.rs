@@ -1580,6 +1580,7 @@ fn read_state_json<T: for<'de> Deserialize<'de>>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_json<W: Write, T: Serialize>(
     builder: &mut Builder<W>,
     archive_path: &str,
@@ -1603,6 +1604,7 @@ fn append_json<W: Write, T: Serialize>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_text<W: Write>(
     builder: &mut Builder<W>,
     archive_path: &str,

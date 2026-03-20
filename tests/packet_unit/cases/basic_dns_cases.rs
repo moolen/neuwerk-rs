@@ -138,6 +138,7 @@ fn no_snat_plain_inbound_reverse_flow_round_trip() {
     let src_port = 40000u16;
     let dst_port = 5201u16;
     let mut outbound = build_ipv4_tcp(client_ip, server_ip, src_port, dst_port, &[]);
+    set_tcp_flags(&mut outbound, 0x02);
     let action = handle_packet(&mut outbound, &mut state);
     assert_eq!(action, Action::Forward { out_port: 0 });
     assert_eq!(outbound.src_ip(), Some(client_ip));
@@ -145,6 +146,7 @@ fn no_snat_plain_inbound_reverse_flow_round_trip() {
     assert_eq!(outbound.ports(), Some((src_port, dst_port)));
 
     let mut inbound = build_ipv4_tcp(server_ip, client_ip, dst_port, src_port, &[]);
+    set_tcp_flags(&mut inbound, 0x12);
     let action = handle_packet(&mut inbound, &mut state);
     assert_eq!(action, Action::Forward { out_port: 0 });
     assert_eq!(inbound.src_ip(), Some(server_ip));
@@ -178,4 +180,3 @@ fn dns_non_target_still_uses_policy_path() {
     let action = handle_packet(&mut outbound, &mut state);
     assert_eq!(action, Action::Drop);
 }
-

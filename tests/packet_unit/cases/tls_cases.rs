@@ -210,6 +210,7 @@ fn test_tls_intercept_allows_when_service_plane_ready() {
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
     let server_ip = Ipv4Addr::new(93, 184, 216, 34);
     let mut pkt = build_ipv4_tcp(client_ip, server_ip, 40000, 443, &[]);
+    set_tcp_flags(&mut pkt, 0x02);
     let action = handle_packet(&mut pkt, &mut state);
     assert_eq!(action, Action::Forward { out_port: 0 });
     assert_eq!(pkt.src_ip(), Some(Ipv4Addr::new(203, 0, 113, 1)));
@@ -247,6 +248,7 @@ fn test_tls_intercept_steers_to_host_when_enabled() {
     let server_ip = Ipv4Addr::new(93, 184, 216, 34);
     let original_sport = 40000u16;
     let mut pkt = build_ipv4_tcp(client_ip, server_ip, original_sport, 443, &[]);
+    set_tcp_flags(&mut pkt, 0x02);
     let action = handle_packet(&mut pkt, &mut state);
     assert_eq!(action, Action::ToHost);
     assert_eq!(pkt.src_ip(), Some(client_ip));
@@ -293,6 +295,7 @@ fn test_tls_intercept_fail_closed_sends_rst_on_generation_recheck() {
     };
 
     let mut first = build_ipv4_tcp(client_ip, server_ip, 40000, 443, &[]);
+    set_tcp_flags(&mut first, 0x02);
     let first_action = handle_packet(&mut first, &mut state);
     assert_eq!(first_action, Action::Forward { out_port: 0 });
     assert!(state.flows.contains(&flow));
@@ -302,6 +305,7 @@ fn test_tls_intercept_fail_closed_sends_rst_on_generation_recheck() {
     } else {
         panic!("policy lock poisoned");
     }
+    refresh_policy_state(&mut state);
 
     let mut second = build_ipv4_tcp(client_ip, server_ip, 40000, 443, &[]);
     {

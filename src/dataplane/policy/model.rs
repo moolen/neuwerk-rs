@@ -217,6 +217,7 @@ pub struct ExactSourceGroupIndex {
 
 pub type SharedExactSourceGroupIndex = Arc<ArcSwap<ExactSourceGroupIndex>>;
 pub type SharedPolicySnapshot = Arc<ArcSwap<PolicySnapshot>>;
+type CompiledInternalSourceSets = (Box<[u32]>, Box<[CidrV4]>, Box<[DynamicIpSetV4]>);
 
 const EXACT_SOURCE_GROUP_INDEX_MAX_BUCKET_LEN: usize = 4;
 
@@ -539,11 +540,7 @@ impl CompiledRuleBucket {
                 .iter()
                 .filter_map(|(idx, class)| match class {
                     Some(DestinationMatchClass::General) => Some(*idx),
-                    Some(DestinationMatchClass::Exact(ips))
-                        if ips.iter().any(|&candidate| candidate == ip) =>
-                    {
-                        Some(*idx)
-                    }
+                    Some(DestinationMatchClass::Exact(ips)) if ips.contains(&ip) => Some(*idx),
                     _ => None,
                 })
                 .collect::<Vec<_>>();
@@ -612,9 +609,7 @@ fn compile_exact_source_group_candidates(
     })
 }
 
-fn compile_internal_source_sets(
-    groups: &[SourceGroup],
-) -> (Box<[u32]>, Box<[CidrV4]>, Box<[DynamicIpSetV4]>) {
+fn compile_internal_source_sets(groups: &[SourceGroup]) -> CompiledInternalSourceSets {
     let mut static_seen = HashSet::new();
     let mut exact_sources = Vec::new();
     let mut static_sources = Vec::new();

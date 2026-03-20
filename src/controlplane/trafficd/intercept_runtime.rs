@@ -381,7 +381,7 @@ pub async fn run_tls_intercept_runtime(cfg: TlsInterceptRuntimeConfig) -> Result
     };
     let connector_h1 = upstream_tls::build_tls_connector(Vec::new(), verify_mode)?;
     let connector_h2 = upstream_tls::build_tls_connector(vec![b"h2".to_vec()], verify_mode)?;
-    let h2_pool_shards = tls_h2_pool_shards() as usize;
+    let h2_pool_shards = tls_h2_pool_shards();
     let upstream_h2_pool: UpstreamH2Pool = Arc::new(UpstreamH2PoolState::new(h2_pool_shards));
     let upstream_h2_connect_inflight: UpstreamH2ConnectInFlight =
         Arc::new(UpstreamH2ConnectInFlightState::new(h2_pool_shards));
@@ -1020,6 +1020,7 @@ async fn maybe_wait_upstream_h2_reconnect_backoff(pool_key: &str, metrics: &Metr
     tokio::time::sleep(wait).await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_upstream_h2_request_via_pool(
     pool: &UpstreamH2Pool,
     connect_inflight: &UpstreamH2ConnectInFlight,
@@ -1888,6 +1889,7 @@ async fn handle_tls_intercept_h2_stream(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_tls_intercept_h2(
     client_tls: tokio_rustls::server::TlsStream<TcpStream>,
     connector_h2: TlsConnector,

@@ -383,6 +383,7 @@ pub(crate) fn evaluate_with_source_group_detailed_for_mode_full_scan_index(
 }
 
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_with_source_group_detailed_for_mode_exact_group_indices_index(
     snapshot: &PolicySnapshot,
     group_indices: Option<&[usize]>,

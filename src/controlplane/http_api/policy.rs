@@ -437,6 +437,7 @@ async fn parse_policy_upsert_request(
     Ok((request, compiled))
 }
 
+#[allow(clippy::result_large_err)]
 fn ensure_policy_name_available(
     state: &ApiState,
     name: Option<&str>,
@@ -461,6 +462,7 @@ fn ensure_policy_name_available(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn require_policy_name(name: String) -> Result<String, Response> {
     sanitize_policy_name(Some(name)).ok_or_else(|| {
         error_response(
