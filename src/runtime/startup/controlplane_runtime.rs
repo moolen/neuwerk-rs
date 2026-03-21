@@ -11,6 +11,7 @@ use neuwerk::controlplane::cluster::ClusterRuntime;
 use neuwerk::controlplane::integrations::IntegrationStore;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
 use neuwerk::controlplane::ready::ReadinessState;
+use neuwerk::controlplane::threat_intel::store::ThreatStore;
 use neuwerk::controlplane::wiretap::{DnsMap, WiretapHub};
 use neuwerk::controlplane::PolicyStore;
 use neuwerk::dataplane::{
@@ -93,6 +94,7 @@ pub async fn start_controlplane_runtime(
         local_controlplane_data_root().join("audit-store"),
         DEFAULT_AUDIT_STORE_MAX_BYTES,
     );
+    let threat_store = ThreatStore::new(local_controlplane_data_root().join("threat-store"), 1024 * 1024)?;
     let (wiretap_tx, wiretap_rx) = mpsc::channel(1024);
     let (audit_tx, audit_rx) = mpsc::channel(4096);
     let wiretap_emitter = WiretapEmitter::new(wiretap_tx, DEFAULT_WIRETAP_REPORT_INTERVAL_SECS);
@@ -253,6 +255,7 @@ pub async fn start_controlplane_runtime(
         local_store: local_policy_store,
         cluster: http_cluster,
         audit_store: Some(audit_store),
+        threat_store: Some(threat_store),
         wiretap_hub: Some(wiretap_hub),
         dns_map: Some(dns_map_for_http),
         readiness: Some(readiness),
