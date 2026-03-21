@@ -33,7 +33,6 @@ use crate::controlplane::intercept_tls::{
     local_intercept_ca_paths, INTERCEPT_CA_CERT_KEY, INTERCEPT_CA_ENVELOPE_KEY,
 };
 use crate::controlplane::kubernetes::run_kubernetes_resolver;
-use crate::controlplane::metrics::Metrics;
 use crate::controlplane::policy_config::{PolicyConfig, PolicyMode};
 use crate::controlplane::policy_repository::{
     policy_item_key, PolicyCreateRequest, PolicyDiskStore, PolicyRecord, POLICY_ACTIVE_KEY,
@@ -49,6 +48,7 @@ use crate::dataplane::policy::{DefaultPolicy, DynamicIpSetV4};
 use crate::dataplane::{handle_packet, Action, EngineState, Packet};
 use crate::e2e::services::dns_query_response;
 use crate::e2e::topology::Topology;
+use crate::metrics::Metrics;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 

@@ -24,10 +24,7 @@ pub trait FrameIo {
 pub struct UnwiredDpdkIo;
 
 impl UnwiredDpdkIo {
-    pub fn new(
-        _iface: &str,
-        _metrics: Option<crate::controlplane::metrics::Metrics>,
-    ) -> Result<Self, String> {
+    pub fn new(_iface: &str, _metrics: Option<crate::metrics::Metrics>) -> Result<Self, String> {
         Err(
             "dpdk io backend not available (build with --features dpdk and install DPDK)"
                 .to_string(),
@@ -38,7 +35,7 @@ impl UnwiredDpdkIo {
         _iface: &str,
         _queue_id: u16,
         _queue_count: u16,
-        _metrics: Option<crate::controlplane::metrics::Metrics>,
+        _metrics: Option<crate::metrics::Metrics>,
     ) -> Result<Self, String> {
         Err(
             "dpdk io backend not available (build with --features dpdk and install DPDK)"

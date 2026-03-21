@@ -91,6 +91,7 @@ async fn proxy_stream_forwards_auth_header() {
         sso,
         integrations,
         audit_store: None,
+        threat_store: None,
         cluster: None,
         metrics,
         proxy_client: Some(client),
@@ -148,6 +149,7 @@ async fn auth_metrics_record_failures() {
         sso,
         integrations,
         audit_store: None,
+        threat_store: None,
         cluster: None,
         metrics: metrics.clone(),
         proxy_client: None,
@@ -293,6 +295,7 @@ async fn wiretap_query_token_is_rejected_and_cookie_auth_works() {
         sso,
         integrations,
         audit_store: None,
+        threat_store: None,
         cluster: None,
         metrics,
         proxy_client: None,
@@ -452,6 +455,7 @@ async fn auth_token_login_rate_limits_repeated_failures() {
         sso: SsoStore::local(dir.path().join("sso")),
         integrations: IntegrationStore::local(dir.path().join("integrations")),
         audit_store: None,
+        threat_store: None,
         cluster: None,
         metrics: Metrics::new().unwrap(),
         proxy_client: None,
@@ -518,6 +522,7 @@ async fn auth_token_login_rate_limit_is_scoped_by_client_and_token() {
         sso: SsoStore::local(dir.path().join("sso")),
         integrations: IntegrationStore::local(dir.path().join("integrations")),
         audit_store: None,
+        threat_store: None,
         cluster: None,
         metrics: Metrics::new().unwrap(),
         proxy_client: None,
@@ -616,6 +621,7 @@ async fn auth_token_login_prefers_connect_info_over_forwarded_header() {
         sso: SsoStore::local(dir.path().join("sso")),
         integrations: IntegrationStore::local(dir.path().join("integrations")),
         audit_store: None,
+        threat_store: None,
         cluster: None,
         metrics: Metrics::new().unwrap(),
         proxy_client: None,
@@ -696,6 +702,7 @@ async fn auth_token_login_rejects_oversized_token_field() {
         sso: SsoStore::local(dir.path().join("sso")),
         integrations: IntegrationStore::local(dir.path().join("integrations")),
         audit_store: None,
+        threat_store: None,
         cluster: None,
         metrics: Metrics::new().unwrap(),
         proxy_client: None,
@@ -734,7 +741,7 @@ async fn auth_token_login_rejects_oversized_token_field() {
 }
 
 #[test]
-fn metrics_bind_guardrail_treats_private_and_loopback_as_safe() {
+fn metrics_bind_guardrail_treats_private_loopback_and_link_local_as_safe() {
     assert!(!metrics_bind_requires_guardrail(SocketAddr::new(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         8080
@@ -744,15 +751,35 @@ fn metrics_bind_guardrail_treats_private_and_loopback_as_safe() {
         8080
     )));
     assert!(!metrics_bind_requires_guardrail(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V4(Ipv4Addr::new(169, 254, 10, 20)),
+        8080
+    )));
+    assert!(!metrics_bind_requires_guardrail(SocketAddr::new(
+        IpAddr::V6("fd00::10".parse().unwrap()),
+        8080
+    )));
+    assert!(!metrics_bind_requires_guardrail(SocketAddr::new(
+        IpAddr::V6("fe80::10".parse().unwrap()),
         8080
     )));
 }
 
 #[test]
-fn metrics_bind_guardrail_requires_override_for_public_bind() {
+fn metrics_bind_guardrail_requires_override_for_unspecified_and_public_bind() {
+    assert!(metrics_bind_requires_guardrail(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        8080
+    )));
     assert!(metrics_bind_requires_guardrail(SocketAddr::new(
         IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)),
+        8080
+    )));
+    assert!(metrics_bind_requires_guardrail(SocketAddr::new(
+        IpAddr::V6("::".parse().unwrap()),
+        8080
+    )));
+    assert!(metrics_bind_requires_guardrail(SocketAddr::new(
+        IpAddr::V6("2001:db8::10".parse().unwrap()),
         8080
     )));
     assert!(parse_truthy_env("1"));
@@ -785,6 +812,7 @@ fn test_state(dir: &TempDir, keyset_path: std::path::PathBuf, metrics: Metrics) 
         sso: SsoStore::local(dir.path().join("sso")),
         integrations: IntegrationStore::local(dir.path().join("integrations")),
         audit_store: None,
+        threat_store: None,
         cluster: None,
         metrics,
         proxy_client: None,

@@ -217,7 +217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service_policy_applied_generation = policy_store.service_policy_applied_tracker();
     let dns_allowlist_for_dp = policy_store.dns_allowlist();
     let wiretap_hub = WiretapHub::new(1024);
-    let metrics = match controlplane::metrics::Metrics::new() {
+    let metrics = match neuwerk::metrics::Metrics::new() {
         Ok(metrics) => metrics,
         Err(err) => {
             eprintln!("metrics init error: {err}");

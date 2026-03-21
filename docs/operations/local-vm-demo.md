@@ -51,7 +51,7 @@ That provisioner turns a base appliance box into a local demo guest by:
 
 - discovering the uplink, management, and client interfaces
 - forcing the runtime into software `tun` mode
-- enabling a local single-node cluster on loopback for token minting
+- using the file-backed local HTTP auth keyset under `/var/lib/neuwerk/http-tls`
 - assigning a dedicated secondary uplink SNAT IP for Neuwerk-translated traffic
 - installing policy-routing rules that steer client traffic into `dp0` and only steer return
   traffic for the dedicated SNAT IP back through `dp0`

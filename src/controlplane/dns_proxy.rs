@@ -5,12 +5,14 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tracing::{debug, error, info};
+use uuid::Uuid;
 
 use crate::controlplane::audit::{
-    AuditEvent as ControlplaneAuditEvent, AuditFindingType, AuditStore,
+    finding_key_for_dns_deny, AuditEvent as ControlplaneAuditEvent, AuditFindingType, AuditStore,
 };
 use crate::controlplane::metrics::Metrics;
 use crate::controlplane::policy_config::DnsPolicy;
+use crate::controlplane::threat_intel::runtime::{ThreatObservation, ThreatRuntimeSlot};
 use crate::controlplane::wiretap::DnsMap;
 use crate::controlplane::PolicyStore;
 use crate::dataplane::policy::DynamicIpSetV4;
@@ -28,6 +30,7 @@ pub async fn run_dns_proxy(
     metrics: Metrics,
     policy_store: Option<PolicyStore>,
     audit_store: Option<AuditStore>,
+    threat_runtime: Option<ThreatRuntimeSlot>,
     node_id: String,
     mut startup_status_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> io::Result<()> {
@@ -77,6 +80,7 @@ pub async fn run_dns_proxy(
     let tcp_upstreams = upstream_addrs.clone();
     let tcp_policy_store = policy_store.clone();
     let tcp_audit_store = audit_store.clone();
+    let tcp_threat_runtime = threat_runtime.clone();
     let tcp_node_id = node_id.clone();
     tokio::spawn(async move {
         if let Err(err) = run_dns_proxy_tcp(
@@ -88,6 +92,7 @@ pub async fn run_dns_proxy(
             tcp_metrics,
             tcp_policy_store,
             tcp_audit_store,
+            tcp_threat_runtime,
             tcp_node_id,
         )
         .await
@@ -142,13 +147,29 @@ pub async fn run_dns_proxy(
             );
         }
 
+        let policy_id = policy_store
+            .as_ref()
+            .and_then(|store| store.active_policy_id());
+
         if matches!(peer.ip(), IpAddr::V4(_)) && would_deny {
             ingest_dns_deny_audit(
                 audit_store.as_ref(),
-                policy_store.as_ref(),
+                policy_id,
                 &node_id,
                 &source_group,
                 &question,
+            );
+        }
+
+        if matches!(peer.ip(), IpAddr::V4(_)) {
+            let audit_finding_key = would_deny
+                .then(|| finding_key_for_dns_deny(policy_id, &source_group, &question.name));
+            observe_dns_threat(
+                threat_runtime.as_ref(),
+                &question.name,
+                &source_group,
+                &node_id,
+                audit_finding_key,
             );
         }
 
@@ -304,6 +325,7 @@ async fn run_dns_proxy_tcp(
     metrics: Metrics,
     policy_store: Option<PolicyStore>,
     audit_store: Option<AuditStore>,
+    threat_runtime: Option<ThreatRuntimeSlot>,
     node_id: String,
 ) -> io::Result<()> {
     loop {
@@ -315,6 +337,7 @@ async fn run_dns_proxy_tcp(
         let upstream_addrs = upstream_addrs.clone();
         let policy_store = policy_store.clone();
         let audit_store = audit_store.clone();
+        let threat_runtime = threat_runtime.clone();
         let node_id = node_id.clone();
         tokio::spawn(async move {
             if let Err(err) = handle_dns_tcp_client(
@@ -327,6 +350,7 @@ async fn run_dns_proxy_tcp(
                 metrics,
                 policy_store,
                 audit_store,
+                threat_runtime,
                 node_id,
             )
             .await
@@ -348,6 +372,7 @@ async fn handle_dns_tcp_client(
     metrics: Metrics,
     policy_store: Option<PolicyStore>,
     audit_store: Option<AuditStore>,
+    threat_runtime: Option<ThreatRuntimeSlot>,
     node_id: String,
 ) -> Result<(), String> {
     loop {
@@ -407,13 +432,29 @@ async fn handle_dns_tcp_client(
             );
         }
 
+        let policy_id = policy_store
+            .as_ref()
+            .and_then(|store| store.active_policy_id());
+
         if matches!(peer.ip(), IpAddr::V4(_)) && would_deny {
             ingest_dns_deny_audit(
                 audit_store.as_ref(),
-                policy_store.as_ref(),
+                policy_id,
                 &node_id,
                 &source_group,
                 &question,
+            );
+        }
+
+        if matches!(peer.ip(), IpAddr::V4(_)) {
+            let audit_finding_key = would_deny
+                .then(|| finding_key_for_dns_deny(policy_id, &source_group, &question.name));
+            observe_dns_threat(
+                threat_runtime.as_ref(),
+                &question.name,
+                &source_group,
+                &node_id,
+                audit_finding_key,
             );
         }
 
@@ -520,6 +561,31 @@ fn revoke_hostname_grants(question_name: &str, allowlist: &DynamicIpSetV4, dns_m
     }
 }
 
+fn observe_dns_threat(
+    threat_runtime: Option<&ThreatRuntimeSlot>,
+    hostname: &str,
+    source_group: &str,
+    node_id: &str,
+    audit_finding_key: Option<String>,
+) {
+    let Some(threat_runtime) = threat_runtime else {
+        return;
+    };
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if let Some(observation) = ThreatObservation::dns_with_audit_link(
+        hostname,
+        source_group,
+        node_id,
+        observed_at,
+        audit_finding_key,
+    ) {
+        let _ = threat_runtime.try_observe(observation);
+    }
+}
+
 async fn write_dns_tcp_response(stream: &mut TcpStream, response: &[u8]) -> Result<(), String> {
     if response.len() > u16::MAX as usize {
         return Err("tcp dns response too large".to_string());
@@ -538,7 +604,7 @@ async fn write_dns_tcp_response(stream: &mut TcpStream, response: &[u8]) -> Resu
 
 fn ingest_dns_deny_audit(
     audit_store: Option<&AuditStore>,
-    policy_store: Option<&PolicyStore>,
+    policy_id: Option<Uuid>,
     node_id: &str,
     source_group: &str,
     question: &DnsQuestion,
@@ -567,7 +633,6 @@ fn ingest_dns_deny_audit(
         query_type: Some(question.qtype),
         observed_at,
     };
-    let policy_id = policy_store.and_then(|store| store.active_policy_id());
     audit_store.ingest(event, policy_id, node_id);
 }
 

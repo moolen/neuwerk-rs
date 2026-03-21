@@ -166,6 +166,8 @@ fn api_auth_token_from_store(
 mod authz_cases;
 #[path = "http_api/cluster_audit_cases.rs"]
 mod cluster_audit_cases;
+#[path = "http_api/cluster_threat_cases.rs"]
+mod cluster_threat_cases;
 #[path = "http_api/lifecycle_cases.rs"]
 mod lifecycle_cases;
 #[path = "http_api/readiness_policy_cases.rs"]

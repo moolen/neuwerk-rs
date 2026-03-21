@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 
-use crate::controlplane::metrics::Metrics;
 use crate::dataplane::packet::Packet;
+use crate::metrics::Metrics;
 
 const ETH_HDR_LEN: usize = 14;
 const ETH_TYPE_IPV4: u16 = 0x0800;

@@ -18,6 +18,7 @@ pub mod policy_store;
 pub mod ready;
 pub mod service_accounts;
 pub mod sso;
+pub mod threat_intel;
 pub mod trafficd;
 pub mod wiretap;
 

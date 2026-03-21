@@ -4,10 +4,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crossbeam_queue::ArrayQueue;
-use neuwerk::controlplane;
-use neuwerk::controlplane::metrics::{
-    current_dpdk_worker_id, set_current_dpdk_worker_id, DpdkFlowSteerMetricHandles,
-};
 use neuwerk::dataplane::policy::{
     DynamicIpSetV4, PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
 };
@@ -17,6 +13,9 @@ use neuwerk::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo, DrainControl,
     EngineState, FrameIo, FrameOut, OverlayConfig, Packet, SharedArpState,
     SharedInterceptDemuxState, SnatMode, SoftAdapter, WiretapEmitter,
+};
+use neuwerk::metrics::{
+    current_dpdk_worker_id, set_current_dpdk_worker_id, DpdkFlowSteerMetricHandles, Metrics,
 };
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
@@ -37,7 +36,7 @@ fn run_dpdk_housekeeping(
     force: bool,
     service_lane_enabled: bool,
     housekeeping_shard_idx: usize,
-    metrics: &controlplane::metrics::Metrics,
+    metrics: &Metrics,
     detailed_lock_observability: bool,
     shared_state: Option<&std::sync::Arc<Vec<std::sync::Mutex<EngineState>>>>,
     local_state: Option<&mut EngineState>,
@@ -117,7 +116,7 @@ fn worker_emits_dhcp_housekeeping(worker_id: usize) -> bool {
 
 struct ObservedStateGuard<'a> {
     guard: std::sync::MutexGuard<'a, EngineState>,
-    metrics: controlplane::metrics::Metrics,
+    metrics: Metrics,
     worker_id: usize,
     shard_id: usize,
     acquired_at: Option<Instant>,
@@ -157,7 +156,7 @@ fn observed_state_guard<'a>(
     guard: std::sync::MutexGuard<'a, EngineState>,
     worker_id: usize,
     shard_id: usize,
-    metrics: &controlplane::metrics::Metrics,
+    metrics: &Metrics,
     detailed_lock_observability: bool,
 ) -> ObservedStateGuard<'a> {
     ObservedStateGuard {
@@ -174,7 +173,7 @@ fn try_lock_state_shard<'a>(
     shard: &'a std::sync::Mutex<EngineState>,
     worker_id: usize,
     shard_id: usize,
-    metrics: &controlplane::metrics::Metrics,
+    metrics: &Metrics,
     detailed_lock_observability: bool,
 ) -> Result<Option<ObservedStateGuard<'a>>, String> {
     match shard.try_lock() {
@@ -194,7 +193,7 @@ fn lock_state_shard_blocking<'a>(
     shard: &'a std::sync::Mutex<EngineState>,
     worker_id: usize,
     shard_id: usize,
-    metrics: &controlplane::metrics::Metrics,
+    metrics: &Metrics,
     detailed_lock_observability: bool,
 ) -> Result<ObservedStateGuard<'a>, String> {
     match shard.try_lock() {
@@ -365,12 +364,12 @@ fn dispatch_flow_steer_packet(
 
 struct SharedDpdkIo {
     io: Arc<Mutex<DpdkIo>>,
-    metrics: controlplane::metrics::Metrics,
+    metrics: Metrics,
 }
 
 struct ObservedSharedDpdkIoGuard<'a> {
     guard: std::sync::MutexGuard<'a, DpdkIo>,
-    metrics: controlplane::metrics::Metrics,
+    metrics: Metrics,
     worker_id: Option<usize>,
     acquired_at: Instant,
 }
@@ -603,7 +602,7 @@ pub fn run_dataplane(
     dhcp_rx: Option<mpsc::Receiver<DhcpTx>>,
     mac_publisher: Option<watch::Sender<[u8; 6]>>,
     shared_intercept_demux: Arc<SharedInterceptDemuxState>,
-    metrics: controlplane::metrics::Metrics,
+    metrics: Metrics,
 ) -> Result<(), String> {
     let observer_policy = policy_snapshot.clone();
     let observer_applied = policy_applied_generation.clone();
@@ -1468,7 +1467,7 @@ mod tests {
 
     #[test]
     fn dispatch_flow_steer_packet_success_keeps_dispatch_enabled() {
-        let metrics = controlplane::metrics::Metrics::new().expect("metrics");
+        let metrics = Metrics::new().expect("metrics");
         let flow_steer_metrics = metrics.bind_dpdk_flow_steer_metrics(2);
         let queues = Arc::new(vec![Arc::new(ArrayQueue::new(8))]);
         let queue_depth = Arc::new(AtomicUsize::new(1));
@@ -1495,7 +1494,7 @@ mod tests {
 
     #[test]
     fn dispatch_flow_steer_packet_missing_owner_fails_open() {
-        let metrics = controlplane::metrics::Metrics::new().expect("metrics");
+        let metrics = Metrics::new().expect("metrics");
         let flow_steer_metrics = metrics.bind_dpdk_flow_steer_metrics(3);
         let queues = Arc::new(Vec::new());
         let queue_depth = Arc::new(AtomicUsize::new(1));

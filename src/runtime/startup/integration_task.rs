@@ -6,8 +6,8 @@ use neuwerk::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
 use neuwerk::controlplane::cloud::types::{IntegrationConfig, IntegrationMode};
 use neuwerk::controlplane::cloud::{IntegrationManager, ReadyChecker, ReadyClient};
 use neuwerk::controlplane::cluster::ClusterRuntime;
-use neuwerk::controlplane::metrics::Metrics;
 use neuwerk::dataplane::DrainControl;
+use neuwerk::metrics::Metrics;
 use tracing::{error, warn};
 
 use crate::runtime::bootstrap::integration::integration_tag_filter;
