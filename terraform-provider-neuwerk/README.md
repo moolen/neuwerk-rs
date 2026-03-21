@@ -17,7 +17,7 @@ Provider authentication uses the existing bearer-token HTTP API. Admin-capable s
 ```hcl
 provider "neuwerk" {
   endpoints       = ["https://fw-a.example.com", "https://fw-b.example.com"]
-  token           = neuwerk_service_account_token.automation.token
+  token           = var.neuwerk_bootstrap_token
   ca_cert_pem     = file("${path.module}/neuwerk-ca.crt")
   request_timeout = "30s"
   retry_timeout   = "5s"
@@ -27,6 +27,7 @@ provider "neuwerk" {
 ## Service Account Resources
 
 Service accounts are the intended automation identity for the provider. Tokens are mint-once secrets and should be stored in Terraform state as sensitive values.
+An existing admin-capable token is required to create service accounts and mint tokens; the minted token is intended for subsequent Terraform runs or downstream automation.
 
 ```hcl
 resource "neuwerk_service_account" "automation" {
@@ -43,7 +44,7 @@ resource "neuwerk_service_account_token" "automation" {
 
 provider "neuwerk" {
   endpoints       = ["https://fw-a.example.com", "https://fw-b.example.com"]
-  token           = neuwerk_service_account_token.automation.token
+  token           = var.neuwerk_bootstrap_token
   ca_cert_pem     = file("${path.module}/neuwerk-ca.crt")
   request_timeout = "30s"
   retry_timeout   = "5s"

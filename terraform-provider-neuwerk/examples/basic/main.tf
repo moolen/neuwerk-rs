@@ -8,7 +8,7 @@ terraform {
 
 provider "neuwerk" {
   endpoints       = ["https://fw-a.example.com", "https://fw-b.example.com"]
-  token = neuwerk_service_account_token.terraform.token
+  token           = var.neuwerk_bootstrap_token
   ca_cert_pem     = file("${path.module}/neuwerk-ca.crt")
   request_timeout = "30s"
   retry_timeout   = "5s"
@@ -64,6 +64,11 @@ resource "neuwerk_policy" "main" {
 }
 
 variable "k8s_service_account_token" {
+  type      = string
+  sensitive = true
+}
+
+variable "neuwerk_bootstrap_token" {
   type      = string
   sensitive = true
 }
