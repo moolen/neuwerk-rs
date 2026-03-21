@@ -87,6 +87,8 @@ pub struct ThreatFeedRefreshState {
     pub last_refresh_outcome: Option<ThreatRefreshOutcome>,
     #[serde(default)]
     pub feeds: Vec<ThreatFeedStatusItem>,
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -321,6 +323,7 @@ fn snapshot_only_feed_status(
             .and_then(|state| state.last_successful_refresh_at),
         last_refresh_outcome: None,
         feeds: compute_snapshot_status(settings, snapshot, now),
+        disabled: false,
     }
 }
 
@@ -681,6 +684,7 @@ fn build_refresh_state(
         last_successful_refresh_at,
         last_refresh_outcome,
         feeds,
+        disabled: false,
     }
 }
 
@@ -776,6 +780,7 @@ mod tests {
             last_successful_refresh_at: Some(110),
             last_refresh_outcome: Some(ThreatRefreshOutcome::Success),
             feeds: compute_snapshot_status(&ThreatIntelSettings::default(), &snapshot, 120),
+            disabled: false,
         };
 
         persist_local_snapshot(&root, &snapshot).expect("persist snapshot");
@@ -883,6 +888,7 @@ mod tests {
             last_successful_refresh_at: None,
             last_refresh_outcome: Some(ThreatRefreshOutcome::Failed),
             feeds: Vec::new(),
+            disabled: false,
         };
 
         assert!(!super::refresh_due(&settings, Some(&state), 150));
@@ -904,6 +910,7 @@ mod tests {
                 last_successful_refresh_at: None,
                 last_refresh_outcome: Some(ThreatRefreshOutcome::Failed),
                 feeds: Vec::new(),
+                disabled: false,
             },
         )
         .expect("persist stale state");

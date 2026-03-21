@@ -89,6 +89,32 @@ impl ThreatSilenceEntry {
             created_by: None,
         }
     }
+
+    pub fn normalized(mut self) -> Result<Self, String> {
+        self.value = match self.kind {
+            ThreatSilenceKind::Exact => {
+                let indicator_type = self.indicator_type.ok_or_else(|| {
+                    "exact threat silence requires indicator_type".to_string()
+                })?;
+                normalize_exact_value(indicator_type, &self.value)?
+            }
+            ThreatSilenceKind::HostnameRegex => {
+                if self.indicator_type == Some(ThreatIndicatorType::Ip) {
+                    return Err(
+                        "hostname_regex threat silence cannot target ip indicators".to_string(),
+                    );
+                }
+                self.indicator_type = None;
+                compile_hostname_regex(&self.value)?.as_str().to_string()
+            }
+        };
+        self.reason = self
+            .reason
+            .take()
+            .map(|reason| reason.trim().to_string())
+            .filter(|reason| !reason.is_empty());
+        Ok(self)
+    }
 }
 
 impl ThreatSilenceList {

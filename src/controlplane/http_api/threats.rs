@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::{Query, Request, State};
+use axum::extract::{Path as AxumPath, Query, Request, State};
 use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -8,10 +9,15 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 use crate::controlplane::threat_intel::manager::{
     load_effective_feed_status, ThreatFeedIndicatorCounts, ThreatFeedRefreshState,
     ThreatFeedStatusItem,
+};
+use crate::controlplane::threat_intel::silences::{
+    load_silences, persist_silences_cluster, persist_silences_local, ThreatSilenceEntry,
+    ThreatSilenceKind, ThreatSilenceList,
 };
 use crate::controlplane::threat_intel::settings::{
     load_settings, persist_settings_cluster, persist_settings_local, ThreatIntelSettings,
@@ -36,6 +42,14 @@ pub(super) struct ThreatIntelSettingsStatus {
 pub(super) struct ThreatIntelSettingsUpdateRequest {
     pub enabled: Option<bool>,
     pub alert_threshold: Option<ThreatSeverity>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub(super) struct ThreatSilenceCreateRequest {
+    pub kind: ThreatSilenceKind,
+    pub indicator_type: Option<crate::controlplane::threat_intel::types::ThreatIndicatorType>,
+    pub value: String,
+    pub reason: Option<String>,
 }
 
 #[utoipa::path(
@@ -123,6 +137,135 @@ pub(super) async fn put_threat_settings(
 
 #[utoipa::path(
     get,
+    path = "/api/v1/threats/silences",
+    tag = "Threats",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    responses(
+        (status = 200, description = "Threat silences", body = ThreatSilenceList),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody)
+    )
+)]
+pub(super) async fn list_threat_silences(
+    State(state): State<ApiState>,
+    request: Request,
+) -> Response {
+    let _request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    match load_threat_silences(&state) {
+        Ok(silences) => Json(silences).into_response(),
+        Err(response) => response,
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/threats/silences",
+    tag = "Threats",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    request_body = ThreatSilenceCreateRequest,
+    responses(
+        (status = 200, description = "Created threat silence", body = ThreatSilenceEntry),
+        (status = 400, description = "Invalid request", body = super::openapi::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody)
+    )
+)]
+pub(super) async fn post_threat_silences(
+    State(state): State<ApiState>,
+    mut request: Request,
+) -> Response {
+    request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let body = match read_body_limited(request.into_body()).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let create: ThreatSilenceCreateRequest = match serde_json::from_slice(&body) {
+        Ok(create) => create,
+        Err(err) => return error_response(StatusCode::BAD_REQUEST, format!("invalid json: {err}")),
+    };
+
+    let mut silences = match load_threat_silences(&state) {
+        Ok(silences) => silences,
+        Err(response) => return response,
+    };
+    let entry = ThreatSilenceEntry {
+        id: Uuid::new_v4().to_string(),
+        kind: create.kind,
+        indicator_type: create.indicator_type,
+        value: create.value,
+        reason: create.reason,
+        created_at: unix_now(),
+        created_by: None,
+    };
+    let entry = match entry.normalized() {
+        Ok(entry) => entry,
+        Err(err) => return error_response(StatusCode::BAD_REQUEST, err),
+    };
+    silences.items.push(entry.clone());
+
+    match persist_threat_silences(&state, &silences).await {
+        Ok(()) => Json(entry).into_response(),
+        Err(response) => response,
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/threats/silences/{id}",
+    tag = "Threats",
+    security(
+        ("bearerAuth" = []),
+        ("sessionCookie" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Threat silence identifier")
+    ),
+    responses(
+        (status = 204, description = "Threat silence removed"),
+        (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody),
+        (status = 403, description = "Admin role required", body = super::openapi::ErrorBody),
+        (status = 404, description = "Threat silence not found", body = super::openapi::ErrorBody)
+    )
+)]
+pub(super) async fn delete_threat_silence(
+    State(state): State<ApiState>,
+    AxumPath(id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let _request = match maybe_proxy(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+
+    let mut silences = match load_threat_silences(&state) {
+        Ok(silences) => silences,
+        Err(response) => return response,
+    };
+    let before = silences.items.len();
+    silences.items.retain(|entry| entry.id != id);
+    if silences.items.len() == before {
+        return error_response(StatusCode::NOT_FOUND, "threat silence not found".to_string());
+    }
+
+    match persist_threat_silences(&state, &silences).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(response) => response,
+    }
+}
+
+#[utoipa::path(
+    get,
     path = "/api/v1/threats/findings",
     tag = "Threats",
     security(
@@ -145,6 +288,13 @@ pub(super) async fn threat_findings(
         Ok(request) => request,
         Err(response) => return response,
     };
+    let settings = match load_effective_threat_settings(&state) {
+        Ok(settings) => settings,
+        Err(response) => return response,
+    };
+    if !settings.enabled {
+        return Json(disabled_threat_findings_response()).into_response();
+    }
     if state.cluster.is_none() {
         return threat_findings_local_response(&state, &query);
     }
@@ -156,6 +306,13 @@ pub(super) async fn threat_findings_local(
     Query(query): Query<ThreatFindingQuery>,
     _request: Request,
 ) -> Response {
+    let settings = match load_effective_threat_settings(&state) {
+        Ok(settings) => settings,
+        Err(response) => return response,
+    };
+    if !settings.enabled {
+        return Json(disabled_threat_findings_response()).into_response();
+    }
     threat_findings_local_response(&state, &query)
 }
 
@@ -196,20 +353,50 @@ pub(super) async fn threat_feed_status(
         Ok(None) => empty_feed_status(&settings),
         Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
     };
+    let mut status = status;
+    status.disabled = !settings.enabled;
     Json(status).into_response()
 }
 
 #[allow(clippy::result_large_err)]
 fn load_threat_settings_status(state: &ApiState) -> Result<ThreatIntelSettingsStatus, Response> {
-    let (settings, source) = load_settings(
-        state.cluster.as_ref().map(|cluster| &cluster.store),
-        &local_controlplane_data_root(&state.local_store),
-    )
-    .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err))?;
+    let (settings, source) = load_settings_and_source(state)?;
     Ok(ThreatIntelSettingsStatus {
         settings,
         source: source.map(|source| source.as_str().to_string()),
     })
+}
+
+#[allow(clippy::result_large_err)]
+fn load_effective_threat_settings(state: &ApiState) -> Result<ThreatIntelSettings, Response> {
+    load_settings_and_source(state).map(|(settings, _)| settings)
+}
+
+#[allow(clippy::result_large_err)]
+fn load_settings_and_source(
+    state: &ApiState,
+) -> Result<
+    (
+        ThreatIntelSettings,
+        Option<crate::controlplane::threat_intel::settings::ThreatSettingsSource>,
+    ),
+    Response,
+> {
+    load_settings(
+        state.cluster.as_ref().map(|cluster| &cluster.store),
+        &local_controlplane_data_root(&state.local_store),
+    )
+    .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err))
+}
+
+#[allow(clippy::result_large_err)]
+fn load_threat_silences(state: &ApiState) -> Result<ThreatSilenceList, Response> {
+    load_silences(
+        state.cluster.as_ref().map(|cluster| &cluster.store),
+        &local_controlplane_data_root(&state.local_store),
+    )
+    .map(|(silences, _)| silences)
+    .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err))
 }
 
 async fn persist_threat_settings(
@@ -234,6 +421,22 @@ async fn persist_threat_settings(
     })
 }
 
+async fn persist_threat_silences(
+    state: &ApiState,
+    silences: &ThreatSilenceList,
+) -> Result<(), Response> {
+    if let Some(cluster) = &state.cluster {
+        persist_silences_cluster(&cluster.raft, silences)
+            .await
+            .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err))?;
+        return Ok(());
+    }
+
+    persist_silences_local(&local_controlplane_data_root(&state.local_store), silences)
+        .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err))?;
+    Ok(())
+}
+
 fn threat_findings_local_response(state: &ApiState, query: &ThreatFindingQuery) -> Response {
     let Some(threat_store) = &state.threat_store else {
         return error_response(
@@ -251,6 +454,7 @@ fn threat_findings_local_response(state: &ApiState, query: &ThreatFindingQuery) 
         node_errors: Vec::new(),
         nodes_queried: 1,
         nodes_responded: 1,
+        disabled: false,
     })
     .into_response()
 }
@@ -295,6 +499,7 @@ fn empty_feed_status(settings: &ThreatIntelSettings) -> ThreatFeedRefreshState {
                 indicator_counts: ThreatFeedIndicatorCounts::default(),
             },
         ],
+        disabled: false,
     }
 }
 
@@ -323,6 +528,7 @@ async fn threat_findings_leader_response(
             node_errors: Vec::new(),
             nodes_queried: 1,
             nodes_responded: 1,
+            disabled: false,
         })
         .into_response();
     };
@@ -427,8 +633,27 @@ async fn threat_findings_leader_response(
         node_errors,
         nodes_queried,
         nodes_responded,
+        disabled: false,
     })
     .into_response()
+}
+
+fn disabled_threat_findings_response() -> ThreatFindingQueryResponse {
+    ThreatFindingQueryResponse {
+        items: Vec::new(),
+        partial: false,
+        node_errors: Vec::new(),
+        nodes_queried: 0,
+        nodes_responded: 0,
+        disabled: true,
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs()
 }
 
 fn encode_threat_query(query: &ThreatFindingQuery) -> Result<String, String> {

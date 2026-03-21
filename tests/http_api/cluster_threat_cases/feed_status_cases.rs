@@ -58,6 +58,7 @@ async fn http_api_threat_feed_status_reads_persisted_local_state() {
                     indicator_counts: ThreatFeedIndicatorCounts { hostname: 0, ip: 3 },
                 },
             ],
+            disabled: false,
         },
     )
     .unwrap();
@@ -273,6 +274,7 @@ async fn http_api_threat_feed_status_repairs_stale_local_state_from_cluster_snap
                     indicator_counts: ThreatFeedIndicatorCounts::default(),
                 },
             ],
+            disabled: false,
         },
     )
     .unwrap();
