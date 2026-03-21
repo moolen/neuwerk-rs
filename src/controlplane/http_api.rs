@@ -111,8 +111,8 @@ use sso_settings::{
 };
 use support::{cluster_sysdump, node_sysdump};
 use threats::{
-    get_threat_settings, put_threat_settings, threat_feed_status, threat_findings,
-    threat_findings_local,
+    delete_threat_silence, get_threat_settings, list_threat_silences, post_threat_silences,
+    put_threat_settings, threat_feed_status, threat_findings, threat_findings_local,
 };
 use wiretap::wiretap_stream;
 
@@ -494,6 +494,11 @@ async fn run_http_api_with_shutdown_impl(
         .route("/audit/findings/local", get(audit_findings_local))
         .route("/threats/findings", get(threat_findings))
         .route("/threats/findings/local", get(threat_findings_local))
+        .route(
+            "/threats/silences",
+            get(list_threat_silences).post(post_threat_silences),
+        )
+        .route("/threats/silences/:id", delete(delete_threat_silence))
         .route("/threats/feeds/status", get(threat_feed_status))
         .route("/support/sysdump/cluster", post(cluster_sysdump))
         .route("/support/sysdump/node", post(node_sysdump))

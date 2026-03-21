@@ -56,11 +56,15 @@ function enrichmentPalette(status: ThreatEnrichmentStatus): React.CSSProperties 
 interface ThreatFindingsTableProps {
   items: ThreatFinding[];
   loading: boolean;
+  onSilenceExact: (item: ThreatFinding) => void;
+  onSilenceHostnameRegex: (item: ThreatFinding) => void;
 }
 
 export const ThreatFindingsTable: React.FC<ThreatFindingsTableProps> = ({
   items,
   loading,
+  onSilenceExact,
+  onSilenceHostnameRegex,
 }) => (
   <div
     className="overflow-x-auto rounded-[1.5rem]"
@@ -85,6 +89,7 @@ export const ThreatFindingsTable: React.FC<ThreatFindingsTableProps> = ({
             'Source Group',
             'Sample Nodes',
             'Enrichment',
+            'Actions',
           ].map((label) => (
             <th key={label} className="text-left p-3" style={{ color: 'var(--text-muted)' }}>
               {label}
@@ -95,7 +100,7 @@ export const ThreatFindingsTable: React.FC<ThreatFindingsTableProps> = ({
       <tbody>
         {items.length === 0 ? (
           <tr>
-            <td className="p-6 text-center" colSpan={11} style={{ color: 'var(--text-muted)' }}>
+            <td className="p-6 text-center" colSpan={12} style={{ color: 'var(--text-muted)' }}>
               {loading
                 ? 'Loading findings...'
                 : 'No threat findings match the current filters.'}
@@ -180,9 +185,7 @@ export const ThreatFindingsTable: React.FC<ThreatFindingsTableProps> = ({
                 {item.source_group}
               </td>
               <td className="p-3 align-top" style={{ color: 'var(--text-secondary)' }}>
-                {item.sample_node_ids.length > 0
-                  ? item.sample_node_ids.join(', ')
-                  : 'n/a'}
+                {item.sample_node_ids.length > 0 ? item.sample_node_ids.join(', ') : 'n/a'}
               </td>
               <td className="p-3 align-top">
                 <span
@@ -191,6 +194,37 @@ export const ThreatFindingsTable: React.FC<ThreatFindingsTableProps> = ({
                 >
                   {item.enrichment_status}
                 </span>
+              </td>
+              <td className="p-3 align-top">
+                <div className="flex flex-col gap-2 min-w-[190px]">
+                  <button
+                    type="button"
+                    className="px-3 py-2 rounded-xl text-left text-xs font-semibold transition-colors"
+                    style={{
+                      background:
+                        'linear-gradient(135deg, rgba(79,110,247,0.14), rgba(16,185,129,0.12))',
+                      color: 'var(--text)',
+                      border: '1px solid rgba(79,110,247,0.2)',
+                    }}
+                    onClick={() => onSilenceExact(item)}
+                  >
+                    Silence exact indicator
+                  </button>
+                  {item.indicator_type === 'hostname' && (
+                    <button
+                      type="button"
+                      className="px-3 py-2 rounded-xl text-left text-xs font-semibold transition-colors"
+                      style={{
+                        background: 'var(--bg-glass-subtle)',
+                        color: 'var(--text-secondary)',
+                        border: '1px solid var(--border-subtle)',
+                      }}
+                      onClick={() => onSilenceHostnameRegex(item)}
+                    >
+                      Silence hostname regex
+                    </button>
+                  )}
+                </div>
               </td>
             </tr>
           ))

@@ -155,6 +155,8 @@ pub struct ThreatFindingQueryResponse {
     pub node_errors: Vec<ThreatNodeQueryError>,
     pub nodes_queried: usize,
     pub nodes_responded: usize,
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 #[derive(Debug, Clone)]

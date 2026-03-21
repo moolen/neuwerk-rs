@@ -29,7 +29,12 @@ function threatFinding(overrides: Partial<ThreatFinding> = {}): ThreatFinding {
 describe('ThreatFindingsTable', () => {
   it('renders the spec-required columns and row details', () => {
     const html = renderToStaticMarkup(
-      <ThreatFindingsTable items={[threatFinding()]} loading={false} />,
+      <ThreatFindingsTable
+        items={[threatFinding()]}
+        loading={false}
+        onSilenceExact={() => {}}
+        onSilenceHostnameRegex={() => {}}
+      />,
     );
 
     expect(html).toContain('First Seen');
@@ -38,5 +43,33 @@ describe('ThreatFindingsTable', () => {
     expect(html).toContain('bad.example.com');
     expect(html).toContain('node-a');
     expect(html).toContain('completed');
+  });
+
+  it('renders exact and hostname-regex silence actions for hostname findings', () => {
+    const html = renderToStaticMarkup(
+      <ThreatFindingsTable
+        items={[threatFinding({ indicator_type: 'hostname' })]}
+        loading={false}
+        onSilenceExact={() => {}}
+        onSilenceHostnameRegex={() => {}}
+      />,
+    );
+
+    expect(html).toContain('Silence exact indicator');
+    expect(html).toContain('Silence hostname regex');
+  });
+
+  it('renders only the exact silence action for ip findings', () => {
+    const html = renderToStaticMarkup(
+      <ThreatFindingsTable
+        items={[threatFinding({ indicator: '203.0.113.10', indicator_type: 'ip' })]}
+        loading={false}
+        onSilenceExact={() => {}}
+        onSilenceHostnameRegex={() => {}}
+      />,
+    );
+
+    expect(html).toContain('Silence exact indicator');
+    expect(html).not.toContain('Silence hostname regex');
   });
 });
