@@ -112,7 +112,7 @@ func TestBuildHTTPClientAcceptsCustomCA(t *testing.T) {
 	}
 }
 
-func TestAPIClientCreateServiceAccount(t *testing.T) {
+func TestAPIClientCreatesServiceAccount(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +208,34 @@ func TestAPIClientListsServiceAccounts(t *testing.T) {
 	}
 	if accounts[1].Status != "disabled" {
 		t.Fatalf("unexpected status %q", accounts[1].Status)
+	}
+}
+
+func TestAPIClientListsServiceAccountsEmptyResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/service-accounts" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`null`))
+	}))
+	defer server.Close()
+
+	client := newTestAPIClient(t, server)
+	accounts, err := client.ListServiceAccounts(context.Background())
+	if err != nil {
+		t.Fatalf("list service accounts: %v", err)
+	}
+	if accounts == nil {
+		t.Fatalf("expected non-nil slice")
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("unexpected account count %d", len(accounts))
 	}
 }
 
@@ -432,6 +460,34 @@ func TestAPIClientListsAndDeletesServiceAccountToken(t *testing.T) {
 	}
 	if err := client.DeleteServiceAccountToken(context.Background(), "acc-1", "tok-1"); err != nil {
 		t.Fatalf("delete token: %v", err)
+	}
+}
+
+func TestAPIClientListsServiceAccountTokensEmptyResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/service-accounts/acc-1/tokens" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`null`))
+	}))
+	defer server.Close()
+
+	client := newTestAPIClient(t, server)
+	tokens, err := client.ListServiceAccountTokens(context.Background(), "acc-1")
+	if err != nil {
+		t.Fatalf("list tokens: %v", err)
+	}
+	if tokens == nil {
+		t.Fatalf("expected non-nil slice")
+	}
+	if len(tokens) != 0 {
+		t.Fatalf("unexpected token count %d", len(tokens))
 	}
 }
 
