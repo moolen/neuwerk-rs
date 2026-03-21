@@ -329,6 +329,7 @@ async fn startup_status_reports_empty_upstream_error() {
         Metrics::new().unwrap(),
         None,
         None,
+        None,
         "node-test".to_string(),
         Some(startup_tx),
     )
@@ -354,6 +355,7 @@ async fn startup_status_reports_bind_error() {
         std::sync::Arc::new(std::sync::RwLock::new(DnsPolicy::new(Vec::new()))),
         DnsMap::new(),
         Metrics::new().unwrap(),
+        None,
         None,
         None,
         "node-test".to_string(),

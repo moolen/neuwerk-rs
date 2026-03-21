@@ -2,6 +2,7 @@ use neuwerk::controlplane;
 use neuwerk::controlplane::audit::AuditStore;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
 use neuwerk::controlplane::ready::ReadinessState;
+use neuwerk::controlplane::threat_intel::store::ThreatStore;
 use neuwerk::controlplane::wiretap::{DnsMap, WiretapHub};
 use neuwerk::controlplane::PolicyStore;
 use neuwerk::metrics::Metrics;
@@ -29,6 +30,7 @@ pub struct HttpRuntimeThreadConfig {
     pub local_store: PolicyDiskStore,
     pub cluster: Option<controlplane::http_api::HttpApiCluster>,
     pub audit_store: Option<AuditStore>,
+    pub threat_store: Option<ThreatStore>,
     pub wiretap_hub: Option<WiretapHub>,
     pub dns_map: Option<DnsMap>,
     pub readiness: Option<ReadinessState>,
@@ -94,12 +96,13 @@ pub fn spawn_http_runtime_thread(
                 }
             };
             let res = rt.block_on(async {
-                controlplane::http_api::run_http_api_with_shutdown(
+                controlplane::http_api::run_http_api_with_shutdown_and_threat_store(
                     cfg.cfg,
                     cfg.policy_store,
                     cfg.local_store,
                     cfg.cluster,
                     cfg.audit_store,
+                    cfg.threat_store,
                     cfg.wiretap_hub,
                     cfg.dns_map,
                     cfg.readiness,

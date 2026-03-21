@@ -88,6 +88,10 @@ impl Modify for SecurityAddon {
         super::service_accounts_api::revoke_service_account_token,
         super::performance_mode::get_performance_mode,
         super::performance_mode::put_performance_mode,
+        super::threats::get_threat_settings,
+        super::threats::put_threat_settings,
+        super::threats::threat_findings,
+        super::threats::threat_feed_status,
         super::tls_intercept::get_tls_intercept_ca,
         super::tls_intercept::get_tls_intercept_ca_cert,
         super::tls_intercept::put_tls_intercept_ca,
@@ -132,6 +136,24 @@ impl Modify for SecurityAddon {
             crate::controlplane::service_accounts::ServiceAccount,
             crate::controlplane::service_accounts::TokenStatus,
             crate::controlplane::service_accounts::TokenMeta,
+            crate::controlplane::threat_intel::settings::ThreatIntelSettings,
+            crate::controlplane::threat_intel::settings::ThreatBaselineFeeds,
+            crate::controlplane::threat_intel::settings::ThreatFeedToggle,
+            crate::controlplane::threat_intel::settings::ThreatRemoteEnrichmentSettings,
+            crate::controlplane::threat_intel::types::ThreatSeverity,
+            crate::controlplane::threat_intel::types::ThreatIndicatorType,
+            crate::controlplane::threat_intel::types::ThreatObservationLayer,
+            crate::controlplane::threat_intel::store::ThreatMatchSource,
+            crate::controlplane::threat_intel::store::ThreatEnrichmentStatus,
+            crate::controlplane::threat_intel::store::ThreatFeedHit,
+            crate::controlplane::threat_intel::store::ThreatFinding,
+            crate::controlplane::threat_intel::store::ThreatFindingQuery,
+            crate::controlplane::threat_intel::store::ThreatFindingQueryResponse,
+            crate::controlplane::threat_intel::store::ThreatNodeQueryError,
+            super::threats::ThreatIntelSettingsStatus,
+            super::threats::ThreatIntelSettingsUpdateRequest,
+            super::threats::ThreatFeedStatusItem,
+            super::threats::ThreatFeedStatusResponse,
             crate::controlplane::metrics::StatsSnapshot,
             crate::controlplane::metrics::DataplaneStats,
             crate::controlplane::metrics::DecisionCounters,
@@ -150,6 +172,7 @@ impl Modify for SecurityAddon {
         (name = "Integrations", description = "External integration management"),
         (name = "Service Accounts", description = "Service account and token lifecycle"),
         (name = "Settings", description = "Mutable runtime and certificate settings"),
+        (name = "Threats", description = "Threat-intelligence findings and feed status"),
         (name = "Diagnostics", description = "Operational state and runtime statistics")
     ),
     modifiers(&SecurityAddon)
@@ -202,5 +225,6 @@ mod tests {
         assert!(paths.contains_key("/api/v1/policies"));
         assert!(paths.contains_key("/api/v1/service-accounts"));
         assert!(paths.contains_key("/api/v1/settings/performance-mode"));
+        assert!(paths.contains_key("/api/v1/settings/threat-intel"));
     }
 }

@@ -1,5 +1,7 @@
 use std::env;
+use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
@@ -11,6 +13,13 @@ use neuwerk::controlplane::cluster::ClusterRuntime;
 use neuwerk::controlplane::integrations::IntegrationStore;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
 use neuwerk::controlplane::ready::ReadinessState;
+use neuwerk::controlplane::threat_intel::feeds::ThreatSnapshot;
+use neuwerk::controlplane::threat_intel::runtime::{
+    ThreatRuntimeConfig, ThreatRuntimeHandle, ThreatRuntimeSlot,
+};
+use neuwerk::controlplane::threat_intel::settings::{load_settings, ThreatIntelSettings};
+use neuwerk::controlplane::threat_intel::store::ThreatStore;
+use neuwerk::controlplane::threat_intel::types::ThreatSeverity;
 use neuwerk::controlplane::wiretap::{DnsMap, WiretapHub};
 use neuwerk::controlplane::PolicyStore;
 use neuwerk::dataplane::{
@@ -30,6 +39,7 @@ use crate::runtime::startup::controlplane_threads::{
 
 const KUBERNETES_RECONCILE_INTERVAL_SECS: u64 = 5;
 const KUBERNETES_STALE_GRACE_SECS: u64 = 300;
+const THREAT_RUNTIME_RELOAD_INTERVAL_SECS: u64 = 5;
 
 pub struct ControlplaneRuntimeHandles {
     pub dns_task: oneshot::Receiver<Result<(), String>>,
@@ -55,6 +65,120 @@ fn env_u64_with_default(name: &str, default: u64) -> u64 {
         },
         Err(_) => default,
     }
+}
+
+fn threat_snapshot_path(local_data_root: &Path) -> PathBuf {
+    local_data_root.join("threat-intel").join("snapshot.json")
+}
+
+fn load_startup_threat_snapshot(local_data_root: &Path) -> Result<Option<ThreatSnapshot>, String> {
+    let path = threat_snapshot_path(local_data_root);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("read threat snapshot: {err}")),
+    };
+    let snapshot =
+        serde_json::from_slice(&bytes).map_err(|err| format!("parse threat snapshot: {err}"))?;
+    Ok(Some(snapshot))
+}
+
+fn load_runtime_threat_snapshot(local_data_root: &Path) -> Option<ThreatSnapshot> {
+    match load_startup_threat_snapshot(local_data_root) {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            warn!(error = %err, "threat intel snapshot load failed");
+            None
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum ThreatRuntimeState {
+    Disabled {
+        settings: ThreatIntelSettings,
+    },
+    AwaitingSnapshot {
+        settings: ThreatIntelSettings,
+    },
+    Enabled {
+        settings: ThreatIntelSettings,
+        snapshot: ThreatSnapshot,
+    },
+}
+
+fn runtime_state_from_inputs(
+    settings: &ThreatIntelSettings,
+    snapshot: Option<ThreatSnapshot>,
+) -> ThreatRuntimeState {
+    if !settings.enabled {
+        return ThreatRuntimeState::Disabled {
+            settings: settings.clone(),
+        };
+    }
+    match snapshot {
+        Some(snapshot) => ThreatRuntimeState::Enabled {
+            settings: settings.clone(),
+            snapshot,
+        },
+        None => ThreatRuntimeState::AwaitingSnapshot {
+            settings: settings.clone(),
+        },
+    }
+}
+
+fn apply_threat_runtime_state(
+    slot: &ThreatRuntimeSlot,
+    store: &ThreatStore,
+    metrics: &Metrics,
+    state: &ThreatRuntimeState,
+) -> Result<(), String> {
+    match state {
+        ThreatRuntimeState::Disabled { settings } => {
+            store.reconcile_alertable_threshold(settings.alert_threshold)?;
+            slot.replace(None)?;
+            refresh_threat_active_metrics(metrics, store)?;
+            metrics.set_threat_cluster_snapshot_version(0);
+        }
+        ThreatRuntimeState::AwaitingSnapshot { settings } => {
+            store.reconcile_alertable_threshold(settings.alert_threshold)?;
+            slot.replace(None)?;
+            refresh_threat_active_metrics(metrics, store)?;
+            metrics.set_threat_cluster_snapshot_version(0);
+        }
+        ThreatRuntimeState::Enabled { settings, snapshot } => {
+            store.reconcile_alertable_threshold(settings.alert_threshold)?;
+            let handle = ThreatRuntimeHandle::spawn(ThreatRuntimeConfig {
+                snapshot: snapshot.clone(),
+                store: store.clone(),
+                metrics: metrics.clone(),
+                queue_capacity: 4096,
+            });
+            slot.replace(Some(handle))?;
+        }
+    }
+    Ok(())
+}
+
+fn refresh_threat_active_metrics(metrics: &Metrics, store: &ThreatStore) -> Result<(), String> {
+    let counts = store.active_counts_by_severity()?;
+    for severity in [
+        ThreatSeverity::Low,
+        ThreatSeverity::Medium,
+        ThreatSeverity::High,
+        ThreatSeverity::Critical,
+    ] {
+        metrics.set_threat_findings_active(
+            match severity {
+                ThreatSeverity::Low => "low",
+                ThreatSeverity::Medium => "medium",
+                ThreatSeverity::High => "high",
+                ThreatSeverity::Critical => "critical",
+            },
+            counts.get(&severity).copied().unwrap_or(0),
+        );
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -89,10 +213,62 @@ pub async fn start_controlplane_runtime(
     let dns_map_for_dns = dns_map.clone();
     let dns_map_for_gc = dns_map.clone();
     let dns_map_for_http = dns_map.clone();
+    let local_data_root = local_controlplane_data_root();
     let audit_store = AuditStore::new(
-        local_controlplane_data_root().join("audit-store"),
+        local_data_root.join("audit-store"),
         DEFAULT_AUDIT_STORE_MAX_BYTES,
     );
+    let threat_store = ThreatStore::new(local_data_root.join("threat-store"), 1024 * 1024)?;
+    let (threat_settings, _) = load_settings(
+        cluster_runtime.map(|runtime| &runtime.store),
+        &local_data_root,
+    )
+    .map_err(|err| format!("load threat intel settings: {err}"))?;
+    let threat_runtime = ThreatRuntimeSlot::new(None, Some(metrics.clone()));
+    let initial_snapshot = load_runtime_threat_snapshot(&local_data_root);
+    let initial_state = runtime_state_from_inputs(&threat_settings, initial_snapshot);
+    if matches!(initial_state, ThreatRuntimeState::AwaitingSnapshot { .. }) {
+        warn!("threat intel enabled but no local snapshot is available yet");
+    }
+    apply_threat_runtime_state(&threat_runtime, &threat_store, &metrics, &initial_state)?;
+    let threat_cluster_store = cluster_runtime.map(|runtime| runtime.store.clone());
+    {
+        let threat_runtime = threat_runtime.clone();
+        let threat_store = threat_store.clone();
+        let metrics = metrics.clone();
+        let local_data_root = local_data_root.clone();
+        tokio::spawn(async move {
+            let mut applied_state = initial_state;
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(THREAT_RUNTIME_RELOAD_INTERVAL_SECS));
+            loop {
+                interval.tick().await;
+                let settings = match load_settings(threat_cluster_store.as_ref(), &local_data_root)
+                {
+                    Ok((settings, _)) => settings,
+                    Err(err) => {
+                        warn!(error = %err, "threat intel settings reload failed");
+                        continue;
+                    }
+                };
+                let snapshot = load_runtime_threat_snapshot(&local_data_root);
+                let state = runtime_state_from_inputs(&settings, snapshot);
+                if applied_state == state {
+                    continue;
+                }
+                if matches!(state, ThreatRuntimeState::AwaitingSnapshot { .. }) {
+                    warn!("threat intel enabled but no local snapshot is available yet");
+                }
+                if let Err(err) =
+                    apply_threat_runtime_state(&threat_runtime, &threat_store, &metrics, &state)
+                {
+                    warn!(error = %err, "threat runtime reload failed");
+                    continue;
+                }
+                applied_state = state;
+            }
+        });
+    }
     let (wiretap_tx, wiretap_rx) = mpsc::channel(1024);
     let (audit_tx, audit_rx) = mpsc::channel(4096);
     let wiretap_emitter = WiretapEmitter::new(wiretap_tx, DEFAULT_WIRETAP_REPORT_INTERVAL_SECS);
@@ -105,6 +281,7 @@ pub async fn start_controlplane_runtime(
         dns_map.clone(),
         audit_store.clone(),
         policy_store.clone(),
+        Some(threat_runtime.clone()),
         node_id.clone(),
     )?;
 
@@ -196,6 +373,7 @@ pub async fn start_controlplane_runtime(
         intercept_demux: shared_intercept_demux.clone(),
         policy_store: policy_store.clone(),
         audit_store: Some(audit_store.clone()),
+        threat_runtime: Some(threat_runtime),
         node_id: node_id.clone(),
         startup_status_tx: None,
     };
@@ -253,6 +431,7 @@ pub async fn start_controlplane_runtime(
         local_store: local_policy_store,
         cluster: http_cluster,
         audit_store: Some(audit_store),
+        threat_store: Some(threat_store),
         wiretap_hub: Some(wiretap_hub),
         dns_map: Some(dns_map_for_http),
         readiness: Some(readiness),
@@ -268,4 +447,171 @@ pub async fn start_controlplane_runtime(
         audit_emitter,
         shared_intercept_demux,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        apply_threat_runtime_state, load_runtime_threat_snapshot, load_startup_threat_snapshot,
+        runtime_state_from_inputs, threat_snapshot_path, ThreatRuntimeState,
+    };
+    use crate::controlplane::threat_intel::feeds::{ThreatIndicatorSnapshotItem, ThreatSnapshot};
+    use crate::controlplane::threat_intel::runtime::ThreatRuntimeSlot;
+    use crate::controlplane::threat_intel::settings::ThreatIntelSettings;
+    use crate::controlplane::threat_intel::store::{
+        ThreatEnrichmentStatus, ThreatFeedHit, ThreatFinding, ThreatMatchSource, ThreatStore,
+    };
+    use crate::controlplane::threat_intel::types::{ThreatIndicatorType, ThreatSeverity};
+    use neuwerk::metrics::Metrics;
+    use uuid::Uuid;
+
+    #[test]
+    fn load_startup_threat_snapshot_reads_persisted_snapshot() {
+        let dir = std::env::temp_dir().join(format!("threat-startup-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("threat-intel")).expect("mkdir");
+        let snapshot = ThreatSnapshot::new(
+            3,
+            10,
+            vec![ThreatIndicatorSnapshotItem {
+                indicator: "bad.example.com".to_string(),
+                indicator_type: ThreatIndicatorType::Hostname,
+                feed: "threatfox".to_string(),
+                severity: ThreatSeverity::High,
+                confidence: Some(80),
+                tags: Vec::new(),
+                reference_url: None,
+                feed_first_seen: Some(1),
+                feed_last_seen: Some(2),
+                expires_at: None,
+            }],
+        );
+        std::fs::write(
+            threat_snapshot_path(&dir),
+            serde_json::to_vec(&snapshot).expect("serialize"),
+        )
+        .expect("write snapshot");
+
+        let loaded = load_startup_threat_snapshot(&dir)
+            .expect("load snapshot")
+            .expect("snapshot");
+        assert_eq!(loaded, snapshot);
+    }
+
+    #[test]
+    fn load_startup_threat_snapshot_returns_none_when_missing() {
+        let dir = std::env::temp_dir().join(format!("threat-startup-{}", Uuid::new_v4()));
+        let loaded = load_startup_threat_snapshot(&dir).expect("load snapshot");
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn load_runtime_threat_snapshot_returns_none_when_corrupt() {
+        let dir = std::env::temp_dir().join(format!("threat-startup-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("threat-intel")).expect("mkdir");
+        std::fs::write(threat_snapshot_path(&dir), b"{not-json").expect("write snapshot");
+
+        let loaded = load_runtime_threat_snapshot(&dir);
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn runtime_state_waits_for_snapshot_when_enabled() {
+        let settings = ThreatIntelSettings {
+            enabled: true,
+            alert_threshold: ThreatSeverity::Critical,
+            ..ThreatIntelSettings::default()
+        };
+
+        let state = runtime_state_from_inputs(&settings, None);
+
+        assert!(matches!(
+            state,
+            ThreatRuntimeState::AwaitingSnapshot {
+                settings: ThreatIntelSettings {
+                    enabled: true,
+                    alert_threshold: ThreatSeverity::Critical,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn apply_threat_runtime_state_refreshes_active_metrics_without_runtime_handle() {
+        let metrics = Metrics::new().expect("metrics");
+        let store = ThreatStore::new(temp_store_dir(), 1024 * 1024).expect("store");
+        store
+            .upsert_finding(sample_finding("bad.example.com", ThreatSeverity::High))
+            .expect("upsert finding");
+        let slot = ThreatRuntimeSlot::new(None, Some(metrics.clone()));
+        let state = ThreatRuntimeState::AwaitingSnapshot {
+            settings: ThreatIntelSettings {
+                enabled: true,
+                alert_threshold: ThreatSeverity::High,
+                ..ThreatIntelSettings::default()
+            },
+        };
+
+        apply_threat_runtime_state(&slot, &store, &metrics, &state).expect("apply state");
+
+        let rendered = metrics.render().expect("render metrics");
+        assert_eq!(
+            metric_value_with_labels(
+                &rendered,
+                "neuwerk_threat_findings_active",
+                &[("severity", "high")]
+            ),
+            1.0
+        );
+    }
+
+    fn sample_finding(indicator: &str, severity: ThreatSeverity) -> ThreatFinding {
+        ThreatFinding {
+            indicator: indicator.to_string(),
+            indicator_type: ThreatIndicatorType::Hostname,
+            observation_layer:
+                crate::controlplane::threat_intel::types::ThreatObservationLayer::Dns,
+            match_source: ThreatMatchSource::Stream,
+            source_group: "apps".to_string(),
+            severity,
+            confidence: Some(90),
+            feed_hits: vec![ThreatFeedHit {
+                feed: "threatfox".to_string(),
+                severity,
+                confidence: Some(90),
+                reference_url: None,
+                tags: Vec::new(),
+            }],
+            first_seen: 10,
+            last_seen: 10,
+            count: 1,
+            sample_node_ids: vec!["node-a".to_string()],
+            alertable: true,
+            audit_links: Vec::new(),
+            enrichment_status: ThreatEnrichmentStatus::NotRequested,
+        }
+    }
+
+    fn temp_store_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("threat-runtime-startup-{}", Uuid::new_v4()))
+    }
+
+    fn metric_value_with_labels(rendered: &str, metric: &str, labels: &[(&str, &str)]) -> f64 {
+        rendered
+            .lines()
+            .find_map(|line| {
+                if !line.starts_with(metric) {
+                    return None;
+                }
+                let name = line.split_whitespace().next()?;
+                for (key, value) in labels {
+                    let needle = format!(r#"{key}="{value}""#);
+                    if !name.contains(&needle) {
+                        return None;
+                    }
+                }
+                line.split_whitespace().last()?.parse::<f64>().ok()
+            })
+            .unwrap_or(0.0)
+    }
 }

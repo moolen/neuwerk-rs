@@ -1,6 +1,7 @@
 use neuwerk::controlplane::audit::{
     AuditEvent as ControlplaneAuditEvent, AuditFindingType, AuditStore,
 };
+use neuwerk::controlplane::threat_intel::runtime::{ThreatObservation, ThreatRuntimeSlot};
 use neuwerk::controlplane::wiretap::{DnsMap, WiretapHub};
 use neuwerk::controlplane::PolicyStore;
 use neuwerk::dataplane::{AuditEvent, AuditEventType, WiretapEvent as DataplaneWiretapEvent};
@@ -14,6 +15,7 @@ pub fn spawn_event_bridges(
     dns_map: DnsMap,
     audit_store: AuditStore,
     policy_store: PolicyStore,
+    threat_runtime: Option<ThreatRuntimeSlot>,
     node_id: String,
 ) -> Result<(), String> {
     let hub_for_wiretap = wiretap_hub.clone();
@@ -21,6 +23,7 @@ pub fn spawn_event_bridges(
     let dns_map_for_audit = dns_map;
     let audit_store_for_events = audit_store;
     let policy_store_for_audit = policy_store;
+    let threat_runtime_for_audit = threat_runtime;
     let node_id_for_wiretap = node_id.clone();
     let node_id_for_audit = node_id;
 
@@ -45,6 +48,7 @@ pub fn spawn_event_bridges(
         .spawn(move || {
             while let Some(event) = audit_rx.blocking_recv() {
                 let fqdn = dns_map_for_audit.lookup(event.dst_ip);
+                let policy_id = policy_store_for_audit.active_policy_id();
                 let finding_type = match event.event_type {
                     AuditEventType::L4Deny => AuditFindingType::L4Deny,
                     AuditEventType::TlsDeny => AuditFindingType::TlsDeny,
@@ -52,23 +56,29 @@ pub fn spawn_event_bridges(
                 };
                 let enriched = ControlplaneAuditEvent {
                     finding_type,
-                    source_group: event.source_group,
+                    source_group: event.source_group.clone(),
                     hostname: None,
                     dst_ip: Some(event.dst_ip),
                     dst_port: Some(event.dst_port),
                     proto: Some(event.proto),
-                    fqdn,
-                    sni: event.sni,
+                    fqdn: fqdn.clone(),
+                    sni: event.sni.clone(),
                     icmp_type: event.icmp_type,
                     icmp_code: event.icmp_code,
                     query_type: None,
                     observed_at: event.observed_at,
                 };
-                audit_store_for_events.ingest(
-                    enriched,
-                    policy_store_for_audit.active_policy_id(),
-                    &node_id_for_audit,
-                );
+                audit_store_for_events.ingest(enriched, policy_id, &node_id_for_audit);
+                if let Some(threat_runtime) = threat_runtime_for_audit.as_ref() {
+                    for observation in ThreatObservation::from_audit_event(
+                        &event,
+                        fqdn,
+                        &node_id_for_audit,
+                        policy_id,
+                    ) {
+                        let _ = threat_runtime.try_observe(observation);
+                    }
+                }
             }
             warn!("audit bridge stopped because all senders dropped");
         })
