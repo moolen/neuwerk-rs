@@ -210,11 +210,31 @@ func parseServiceAccountImportID(raw string, diags *diag.Diagnostics) (string, b
 func serviceAccountStateFromAPI(prior serviceAccountResourceModel, record *apiServiceAccount) serviceAccountResourceModel {
 	state := prior
 	state.ID = types.StringValue(record.ID)
-	state.Name = types.StringValue(record.Name)
-	state.Description = optionalStringValue(record.Description)
+	if prior.Name.IsNull() || prior.Name.IsUnknown() || strings.TrimSpace(prior.Name.ValueString()) != record.Name {
+		state.Name = types.StringValue(record.Name)
+	}
+	if serviceAccountDescriptionEquivalent(prior.Description, record.Description) {
+		state.Description = prior.Description
+	} else {
+		state.Description = optionalStringValue(record.Description)
+	}
 	state.Role = types.StringValue(record.Role)
 	state.CreatedAt = types.StringValue(record.CreatedAt)
 	state.CreatedBy = types.StringValue(record.CreatedBy)
 	state.Status = types.StringValue(record.Status)
 	return state
+}
+
+func serviceAccountDescriptionEquivalent(prior types.String, apiValue *string) bool {
+	if prior.IsNull() || prior.IsUnknown() {
+		return false
+	}
+	trimmedPrior := strings.TrimSpace(prior.ValueString())
+	if trimmedPrior == "" && apiValue == nil {
+		return true
+	}
+	if apiValue == nil {
+		return false
+	}
+	return trimmedPrior == *apiValue
 }

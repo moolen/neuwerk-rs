@@ -176,8 +176,18 @@ func (r *serviceAccountTokenResource) Read(ctx context.Context, req resource.Rea
 		resp.State.RemoveResource(ctx)
 		return
 	}
+	if record.Status == "revoked" {
+		resp.State.RemoveResource(ctx)
+		return
+	}
 
 	next := serviceAccountTokenStateFromAPI(state, record)
+	if state.Name.IsNull() || state.Name.IsUnknown() {
+		next.Name = optionalStringValue(record.Name)
+	}
+	if state.Role.IsNull() || state.Role.IsUnknown() {
+		next.Role = types.StringValue(record.Role)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
 

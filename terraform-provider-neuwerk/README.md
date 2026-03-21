@@ -131,5 +131,7 @@ resource "neuwerk_policy" "main" {
 - `neuwerk_policy` imports by policy name.
 - `neuwerk_kubernetes_integration` imports by integration name.
 - `neuwerk_tls_intercept_ca` can be imported with any placeholder ID and will bind to the singleton setting.
+- `neuwerk_service_account` imports by UUID.
+- `neuwerk_service_account_token` imports by `<service_account_id>/<token_id>`.
 
 Note: the integrations API intentionally redacts `service_account_token`, so imported integration resources must be paired with configuration that supplies the token again.

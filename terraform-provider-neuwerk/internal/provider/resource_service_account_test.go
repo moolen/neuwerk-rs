@@ -56,6 +56,65 @@ func TestServiceAccountStateFromAPI(t *testing.T) {
 	}
 }
 
+func TestServiceAccountStateFromAPIPreservesNormalizedPriorValues(t *testing.T) {
+	t.Parallel()
+
+	prior := serviceAccountResourceModel{
+		Name:        types.StringValue("  ci-bot  "),
+		Description: types.StringValue("   "),
+		Role:        types.StringValue("readonly"),
+	}
+	record := &apiServiceAccount{
+		ID:          "acc-1",
+		Name:        "ci-bot",
+		Description: nil,
+		CreatedAt:   "2024-01-01T00:00:00Z",
+		CreatedBy:   "admin",
+		Role:        "admin",
+		Status:      "active",
+	}
+
+	state := serviceAccountStateFromAPI(prior, record)
+
+	if state.Name.ValueString() != "  ci-bot  " {
+		t.Fatalf("expected prior normalized name to be preserved, got %q", state.Name.ValueString())
+	}
+	if state.Description.ValueString() != "   " {
+		t.Fatalf("expected prior blank description to be preserved, got %q", state.Description.ValueString())
+	}
+	if state.Role.ValueString() != "admin" {
+		t.Fatalf("expected role to remain API-driven, got %q", state.Role.ValueString())
+	}
+}
+
+func TestServiceAccountStateFromAPIPreservesEquivalentPriorDescription(t *testing.T) {
+	t.Parallel()
+
+	prior := serviceAccountResourceModel{
+		Name:        types.StringValue("ci-bot"),
+		Description: types.StringValue("  build bot  "),
+		Role:        types.StringValue("readonly"),
+	}
+	record := &apiServiceAccount{
+		ID:          "acc-1",
+		Name:        "ci-bot",
+		Description: stringPtr("build bot"),
+		CreatedAt:   "2024-01-01T00:00:00Z",
+		CreatedBy:   "admin",
+		Role:        "admin",
+		Status:      "active",
+	}
+
+	state := serviceAccountStateFromAPI(prior, record)
+
+	if state.Description.ValueString() != "  build bot  " {
+		t.Fatalf("expected prior normalized description to be preserved, got %q", state.Description.ValueString())
+	}
+	if state.Role.ValueString() != "admin" {
+		t.Fatalf("expected role to remain API-driven, got %q", state.Role.ValueString())
+	}
+}
+
 func TestParseServiceAccountImportIDRejectsEmptyValue(t *testing.T) {
 	t.Parallel()
 

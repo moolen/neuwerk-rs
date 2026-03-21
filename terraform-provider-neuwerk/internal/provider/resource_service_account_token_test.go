@@ -315,6 +315,156 @@ func TestServiceAccountTokenCreateCanonicalizesServiceAccountIDInState(t *testin
 	}
 }
 
+func TestServiceAccountTokenReadHydratesImportedMetadata(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/service-accounts/acc-123/tokens" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{
+				"id":"tok-456",
+				"service_account_id":"acc-123",
+				"name":"imported token",
+				"created_at":"2024-01-01T00:00:00Z",
+				"created_by":"admin",
+				"expires_at":"2024-01-02T00:00:00Z",
+				"revoked_at":null,
+				"last_used_at":"2024-01-01T12:00:00Z",
+				"kid":"kid-1",
+				"role":"readonly",
+				"status":"active"
+			}
+		]`))
+	}))
+	defer server.Close()
+
+	client := newTestAPIClient(t, server)
+	res := newServiceAccountTokenResource()
+	configurable, ok := res.(resource.ResourceWithConfigure)
+	if !ok {
+		t.Fatalf("resource does not implement configure")
+	}
+	configurable.Configure(context.Background(), resource.ConfigureRequest{ProviderData: client}, &resource.ConfigureResponse{})
+
+	ctx := context.Background()
+	schemaResp := serviceAccountTokenSchema(t)
+	state := tfsdk.State{Schema: schemaResp.Schema}
+	diags := state.Set(ctx, serviceAccountTokenResourceModel{
+		ID:               types.StringValue("tok-456"),
+		ServiceAccountID: types.StringValue("acc-123"),
+	})
+	if diags.HasError() {
+		t.Fatalf("unexpected state diagnostics: %#v", diags)
+	}
+
+	req := resource.ReadRequest{State: state}
+	resp := resource.ReadResponse{State: tfsdk.State{Schema: schemaResp.Schema}}
+
+	res.Read(ctx, req, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %#v", resp.Diagnostics)
+	}
+
+	var next serviceAccountTokenResourceModel
+	resp.Diagnostics.Append(resp.State.Get(ctx, &next)...)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics reading state: %#v", resp.Diagnostics)
+	}
+	if next.Name.ValueString() != "imported token" {
+		t.Fatalf("expected imported name to hydrate from API, got %q", next.Name.ValueString())
+	}
+	if next.Role.ValueString() != "readonly" {
+		t.Fatalf("expected imported role to hydrate from API, got %q", next.Role.ValueString())
+	}
+	if next.CreatedAt.ValueString() != "2024-01-01T00:00:00Z" {
+		t.Fatalf("unexpected created_at %q", next.CreatedAt.ValueString())
+	}
+	if next.CreatedBy.ValueString() != "admin" {
+		t.Fatalf("unexpected created_by %q", next.CreatedBy.ValueString())
+	}
+	if next.ExpiresAt.ValueString() != "2024-01-02T00:00:00Z" {
+		t.Fatalf("unexpected expires_at %q", next.ExpiresAt.ValueString())
+	}
+	if next.LastUsedAt.ValueString() != "2024-01-01T12:00:00Z" {
+		t.Fatalf("unexpected last_used_at %q", next.LastUsedAt.ValueString())
+	}
+	if next.Token.IsNull() == false {
+		t.Fatalf("expected imported token secret to remain unavailable")
+	}
+}
+
+func TestServiceAccountTokenReadRemovesRevokedToken(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/service-accounts/acc-123/tokens" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{
+				"id":"tok-456",
+				"service_account_id":"acc-123",
+				"name":"revoked token",
+				"created_at":"2024-01-01T00:00:00Z",
+				"created_by":"admin",
+				"expires_at":null,
+				"revoked_at":"2024-01-02T00:00:00Z",
+				"last_used_at":null,
+				"kid":"kid-1",
+				"role":"readonly",
+				"status":"revoked"
+			}
+		]`))
+	}))
+	defer server.Close()
+
+	client := newTestAPIClient(t, server)
+	res := newServiceAccountTokenResource()
+	configurable, ok := res.(resource.ResourceWithConfigure)
+	if !ok {
+		t.Fatalf("resource does not implement configure")
+	}
+	configurable.Configure(context.Background(), resource.ConfigureRequest{ProviderData: client}, &resource.ConfigureResponse{})
+
+	ctx := context.Background()
+	schemaResp := serviceAccountTokenSchema(t)
+	state := tfsdk.State{Schema: schemaResp.Schema}
+	diags := state.Set(ctx, serviceAccountTokenResourceModel{
+		ID:               types.StringValue("tok-456"),
+		ServiceAccountID: types.StringValue("acc-123"),
+		Name:             types.StringValue("revoked token"),
+		Role:             types.StringValue("readonly"),
+	})
+	if diags.HasError() {
+		t.Fatalf("unexpected state diagnostics: %#v", diags)
+	}
+
+	req := resource.ReadRequest{State: state}
+	resp := resource.ReadResponse{State: tfsdk.State{Schema: schemaResp.Schema}}
+
+	res.Read(ctx, req, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %#v", resp.Diagnostics)
+	}
+	if !resp.State.Raw.IsNull() {
+		t.Fatalf("expected revoked token to be removed from state")
+	}
+}
+
 func TestServiceAccountTokenSchemaMarksReplaceOnCredentialInputs(t *testing.T) {
 	t.Parallel()
 
