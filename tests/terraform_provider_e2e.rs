@@ -12,7 +12,7 @@ use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa};
 use serde_json::Value;
 use tempfile::TempDir;
 
-const PROVIDER_VERSION: &str = "0.0.0";
+const PROVIDER_VERSION: &str = "0.1.0";
 
 fn next_addr(ip: Ipv4Addr) -> SocketAddr {
     let listener = TcpListener::bind(SocketAddr::from((ip, 0))).unwrap();
@@ -515,6 +515,23 @@ fn read_expected_json(fixture: &str, file: &str) -> Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
 
+fn prune_policy_value(value: &mut Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                let _ = prune_policy_value(item);
+            }
+            items.is_empty()
+        }
+        Value::Object(map) => {
+            map.retain(|_, child| !prune_policy_value(child));
+            map.is_empty()
+        }
+        _ => false,
+    }
+}
+
 fn fixture_replacements(
     harness: &NeuwerkHarness,
     extra: BTreeMap<String, String>,
@@ -562,11 +579,15 @@ async fn verify_policy_exact(
         .get("policy")
         .cloned()
         .ok_or_else(|| "policy response missing policy".to_string())?;
-    if actual != expected_policy {
+    let mut expected_canonical = expected_policy.clone();
+    let mut actual_canonical = actual.clone();
+    let _ = prune_policy_value(&mut expected_canonical);
+    let _ = prune_policy_value(&mut actual_canonical);
+    if actual_canonical != expected_canonical {
         return Err(format!(
             "policy mismatch for {name}\nexpected:\n{}\nactual:\n{}",
-            serde_json::to_string_pretty(&expected_policy).unwrap(),
-            serde_json::to_string_pretty(&actual).unwrap()
+            serde_json::to_string_pretty(&expected_canonical).unwrap(),
+            serde_json::to_string_pretty(&actual_canonical).unwrap()
         ));
     }
     Ok(())

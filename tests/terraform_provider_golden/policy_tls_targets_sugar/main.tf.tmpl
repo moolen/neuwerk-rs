@@ -15,10 +15,15 @@ provider "neuwerk" {
   retry_timeout   = "5s"
 }
 
+resource "neuwerk_tls_intercept_ca" "main" {
+  generate = true
+}
+
 resource "neuwerk_policy" "main" {
   name           = "terraform-tls-targets"
   mode           = "enforce"
   default_action = "deny"
+  depends_on     = [neuwerk_tls_intercept_ca.main]
 
   source_group = [
     {

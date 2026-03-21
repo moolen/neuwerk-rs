@@ -18,17 +18,19 @@ provider "neuwerk" {
 resource "neuwerk_kubernetes_integration" "prod" {
   name                  = "prod-k8s"
   api_server_url        = "https://10.0.0.10:6443"
-  ca_cert_pem           = <<-PEM
+  ca_cert_pem           = trimspace(<<-PEM
 -----BEGIN CERTIFICATE-----
 MIIB
 -----END CERTIFICATE-----
 PEM
+  )
   service_account_token = "{{K8S_SERVICE_ACCOUNT_TOKEN}}"
 }
 
 resource "neuwerk_policy" "main" {
-  name = "terraform-contract-raw"
-  mode = "enforce"
+  name       = "terraform-contract-raw"
+  mode       = "enforce"
+  depends_on = [neuwerk_kubernetes_integration.prod]
 
   document_json = <<-JSON
 {

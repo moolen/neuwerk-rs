@@ -1155,7 +1155,7 @@ mod tests {
             Action::Forward { out_port: 0 }
         );
 
-        state.set_time_override(Some(3));
+        state.set_time_override(Some(5));
         let mut unrelated = build_ipv4_tcp_flags(
             Ipv4Addr::new(10, 0, 0, 3),
             Ipv4Addr::new(198, 51, 100, 11),
