@@ -166,6 +166,7 @@ func (p *neuwerkProvider) Resources(_ context.Context) []func() resource.Resourc
 		newKubernetesIntegrationResource,
 		newTLSInterceptCAResource,
 		newServiceAccountResource,
+		newServiceAccountTokenResource,
 	}
 }
 
