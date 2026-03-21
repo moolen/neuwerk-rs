@@ -1,14 +1,16 @@
 ---
 title: Create Your First Policy
-description: Upload a simple policy, activate it, and verify that the Neuwerk is enforcing the result you intended.
+description: Start with hostname-aware policy in audit mode, then tighten it with TLS metadata before enforcing it.
 order: 2
 ---
 
 This tutorial shows a safe first policy workflow:
 
-1. create a named policy through the management API
-2. activate it immediately by writing it in `enforce` mode
-3. verify that the Neuwerk accepted and replayed it
+1. create a named hostname-aware policy through the management API
+2. start in `audit` mode so traffic still flows while you verify the intent
+3. confirm that DNS policy and runtime state look correct
+4. optionally tighten the allow path with TLS metadata
+5. promote the policy to `enforce` when the observed behavior matches your intent
 
 This tutorial assumes:
 
@@ -20,28 +22,34 @@ If you do not yet have admin access, start with [Get Admin Access](/docs/how-to/
 
 ## Choose A Small First Policy
 
-Start with one source group and one allow rule. The example below allows one internal network to
-reach one HTTPS destination and denies everything else.
+Start with one source group and one hostname allow rule. This shows the differentiator that
+Neuwerk exists to provide: explicit DNS-aware enforcement, not just static destination IP rules.
 
 ```json
 {
-  "mode": "enforce",
-  "name": "office-egress",
+  "mode": "audit",
+  "name": "hostname-egress",
   "policy": {
     "default_policy": "deny",
     "source_groups": [
       {
-        "id": "branch-office",
+        "id": "office-users",
         "sources": {
           "cidrs": ["10.10.0.0/16"]
         },
         "default_action": "deny",
         "rules": [
           {
-            "id": "allow-web",
+            "id": "allow-api-example-dns",
             "action": "allow",
             "match": {
-              "dst_ips": ["203.0.113.10"],
+              "dns_hostname": "^api\\.example\\.com$"
+            }
+          },
+          {
+            "id": "allow-api-example-https",
+            "action": "allow",
+            "match": {
               "proto": "tcp",
               "dst_ports": [443]
             }
@@ -56,9 +64,12 @@ reach one HTTPS destination and denies everything else.
 Why start here:
 
 - the source population is explicit
-- the allowed destination is narrow
+- the allowed destination is expressed as a hostname, not a fragile IP list
 - the default behavior is deny
-- the outcome is easy to verify
+- audit mode lets you observe the behavior before you block production traffic
+
+Important detail: hostname access needs an explicit DNS allow rule. The HTTPS rule alone does not
+grant hostname-based access.
 
 ## Upload The Policy
 
@@ -69,19 +80,19 @@ curl -sk \
   -H "Authorization: Bearer $NEUWERK_TOKEN" \
   -H "Content-Type: application/json" \
   -X PUT \
-  https://neuwerk.example/api/v1/policies/by-name/office-egress \
+  https://neuwerk.example/api/v1/policies/by-name/hostname-egress \
   --data @policy.json
 ```
 
-Using `mode: enforce` makes this policy the active policy immediately after the control plane
-accepts and compiles it.
+Using `mode: audit` makes this policy the active logic while still converting final deny outcomes
+into allow.
 
 ## Verify That The Policy Became Active
 
 Check the stored record:
 
 ```text
-GET /api/v1/policies/by-name/office-egress
+GET /api/v1/policies/by-name/hostname-egress
 ```
 
 Then check node readiness and runtime state:
@@ -97,12 +108,52 @@ What you want to see:
 - the node is ready
 - stats show the dataplane and policy state as healthy
 
+Then inspect the DNS runtime specifically:
+
+- `GET /api/v1/dns-cache`
+- `GET /api/v1/audit/findings`
+
+What you want to confirm:
+
+- queries for `api.example.com` are accepted and show up in DNS runtime state
+- traffic outside the declared policy shows up as audit findings instead of being silently allowed
+
+## Tighten The HTTPS Rule With TLS Metadata
+
+Once the DNS-based flow looks correct, you can narrow the HTTPS rule further by requiring a
+specific SNI in TLS metadata mode:
+
+```json
+{
+  "id": "allow-api-example-https",
+  "action": "allow",
+  "match": {
+    "proto": "tcp",
+    "dst_ports": [443],
+    "tls": {
+      "mode": "metadata",
+      "sni": {
+        "exact": ["api.example.com"]
+      }
+    }
+  }
+}
+```
+
+Use this when SNI or certificate metadata is enough and you do not want active TLS interception.
+That gives you a good first-time progression:
+
+1. allow DNS for the hostname you intend
+2. allow HTTPS for the matching flow
+3. optionally require the expected TLS identity before you enforce broadly
+
 ## Verify The Behavioral Result
 
 Use a test host inside `10.10.0.0/16` and confirm:
 
-- traffic to `203.0.113.10:443` is allowed
-- other unmatched traffic is denied
+- DNS for `api.example.com` is allowed
+- HTTPS to `api.example.com:443` is observed as allowed by the candidate policy
+- other unmatched traffic appears in audit findings
 
 If the Neuwerk denies more than you expected, inspect:
 
@@ -110,10 +161,20 @@ If the Neuwerk denies more than you expected, inspect:
 - `GET /api/v1/dns-cache` when hostname policy is involved
 - `GET /api/v1/wiretap/stream` when you need live confirmation
 
+## Promote The Policy To Enforce
+
+When the audit evidence matches your intent, change the top-level mode to `enforce` and write the
+same policy again:
+
+- keep the same `name`
+- keep the same `policy` body
+- change only the top-level `mode` from `audit` to `enforce`
+
 ## Warning
 
 Changing a policy in `enforce` mode changes the active policy immediately. For larger rollouts,
-test in a narrow source group first or use audit workflows before broadening enforcement.
+keep the source group narrow, validate DNS and audit behavior first, and only then broaden the
+source population.
 
 ## Next Steps
 
@@ -121,4 +182,5 @@ test in a narrow source group first or use audit workflows before broadening enf
   larger source population into enforcement.
 - Read [Policy Model](/docs/configuration/policy-model) to understand evaluation order.
 - Read [Configure DNS Enforcement](/docs/configuration/dns-handling) before using hostname-based rules.
+- Read [Policy Examples](/docs/how-to/policy-examples) for more hostname, TLS metadata, and intercept examples.
 - Read [Enable TLS Interception](/docs/configuration/tls-interception) before turning on active inspection.

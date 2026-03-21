@@ -1,6 +1,6 @@
 ---
 title: High Availability
-description: Cluster mode replicates control-plane state while each node continues to enforce traffic locally.
+description: Boot multiple appliance images, enable cluster mode, and replicate control-plane state while each node continues to enforce traffic locally.
 order: 2
 ---
 
@@ -11,13 +11,16 @@ the image, bundled DPDK runtime, or custom deployment outside the packaged image
 
 In Neuwerk, high availability means:
 
-- multiple nodes
+- multiple booted Neuwerk appliance images
 - cluster mode enabled
 - replicated control-plane state
 - leader-aware management behavior
 
 It does not mean a distributed dataplane. Each node still runs its own local dataplane and keeps
 its own local flow state.
+
+Use the shipped appliance image for each node when possible. That is the primary distribution
+artifact and keeps the cluster runtime contract consistent across nodes.
 
 ## What Cluster Mode Adds
 
@@ -54,6 +57,9 @@ There are two practical startup patterns:
 
 The seed node initializes cluster services. A joining node enrolls through the join listener before
 it begins steady-state cluster traffic.
+
+For first-admin bootstrap in cluster mode, prefer the cluster auth CLI path described in [Get Admin
+Access](/docs/how-to/get-admin-access) rather than minting separate local tokens on each node.
 
 ## Default Cluster Paths
 

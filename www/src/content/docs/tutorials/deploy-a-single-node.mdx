@@ -1,26 +1,36 @@
 ---
 title: Deploy A Single Node
-description: Bring up one Neuwerk node, verify it is reachable, and confirm the management surfaces are live.
+description: Boot the appliance image, verify the management surfaces, and mint a first admin token for a single-node deployment.
 order: 1
 ---
 
-This tutorial gets a single Neuwerk node running with the smallest supported shape: one process,
-no cluster replication, one management interface, and one data-plane interface.
+This tutorial covers the smallest supported deployment shape:
+
+- one booted Neuwerk appliance image
+- one running Neuwerk process
+- no cluster replication
+- one management interface
+- one dataplane interface
 
 If you are unsure whether you should be thinking in terms of image requirements or binary
 requirements, read [Requirements](/docs/deployment/requirements) first.
 
+Use the shipped appliance image when possible. The image is the primary distribution artifact and
+already carries the matching DPDK runtime and packaged service assumptions.
+
 You will finish with:
 
-- the Neuwerk process running
+- the appliance image booted and the Neuwerk process running
 - the management HTTPS endpoint answering
 - the metrics endpoint answering
+- a short-lived admin token minted for first login
 - enough context to add your first policy safely
 
 ## Before You Start
 
 Have these values ready:
 
+- a booted Neuwerk appliance VM with console or SSH access
 - a management interface with an IPv4 address
 - a separate data-plane interface
 - at least one DNS target IP that clients will send DNS traffic to
@@ -34,7 +44,8 @@ Important constraints:
 
 ## Start The Neuwerk
 
-The smallest accepted command shape is:
+The appliance image should be configured so that the packaged Neuwerk service starts with a runtime
+shape equivalent to:
 
 ```text
 neuwerk \
@@ -50,6 +61,9 @@ What this does:
 - enables the metrics listener on the management IP
 - enables the DNS proxy on the management IP at port `53`
 - leaves cluster replication disabled
+
+Use this command shape as the reference contract for a single node. If you are using the shipped
+image, do not rebuild or repackage the binary just to follow this guide.
 
 ## Verify The Process
 
@@ -75,6 +89,31 @@ GET /api/v1/stats
 Readiness matters more than liveness. A healthy node is up; a ready node is able to enforce
 traffic with the dataplane, DNS proxy, and service plane in a usable state.
 
+## Mint A First Admin Token
+
+Once the node is healthy, mint a short-lived admin token locally from the appliance:
+
+```bash
+umask 077
+sudo neuwerk auth token mint \
+  --sub operator@example.com \
+  --roles admin \
+  --ttl 30m \
+  --http-tls-dir /var/lib/neuwerk/http-tls > neuwerk-admin.jwt
+```
+
+Use the minted token to verify access:
+
+```bash
+export NEUWERK_TOKEN="$(cat neuwerk-admin.jwt)"
+curl -sk \
+  -H "Authorization: Bearer $NEUWERK_TOKEN" \
+  https://<management-ip>:8443/api/v1/auth/whoami
+```
+
+That local CLI bootstrap is the preferred first-admin flow for single-node deployments because it
+requires only operator access to the node itself.
+
 ## Confirm The Listener Layout
 
 Unless you override the defaults, a single node listens on:
@@ -98,8 +137,7 @@ If the process is alive but not ready, continue with [Troubleshoot Enforcement](
 
 ## Next Steps
 
-If you do not yet have an admin token or browser session, start with [Get Admin
-Access](/docs/how-to/get-admin-access).
-
-Then continue with [Create Your First Policy](/docs/tutorials/create-your-first-policy) to put the
-node into useful service.
+- Read [Get Admin Access](/docs/how-to/get-admin-access) for the browser-session and clustered
+  bootstrap variants.
+- Continue with [Create Your First Policy](/docs/tutorials/create-your-first-policy) to put the
+  node into useful service.

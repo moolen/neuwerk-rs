@@ -3,35 +3,13 @@ interface Props {
   currentPath: string;
 }
 
-import { docsNavigation, isDocsPathActive } from '../../data/docsNavigation';
+import DocsSidebarNav from './DocsSidebarNav.astro';
 
 const { currentPath } = Astro.props;
 ---
 
-<aside class="w-full lg:w-72 lg:flex-shrink-0">
-  <nav class="lg:sticky lg:top-20 lg:max-h-[calc(100vh-5rem)] overflow-y-auto pb-8">
-    {docsNavigation.map((section) => (
-      <div class="mb-6">
-        <h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-2">
-          {section.title}
-        </h3>
-        <ul class="space-y-1">
-          {section.items.map((item) => (
-            <li>
-              <a
-                href={item.href}
-                class={`block px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                  isDocsPathActive(item.href, currentPath)
-                    ? 'bg-brand-500/10 text-brand-400 font-medium'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                {item.label}
-              </a>
-            </li>
-          ))}
-        </ul>
-      </div>
-    ))}
+<aside class="hidden lg:block lg:w-72 lg:flex-shrink-0">
+  <nav class="sticky top-20 max-h-[calc(100vh-5rem)] overflow-y-auto pb-8 pr-2">
+    <DocsSidebarNav currentPath={currentPath} />
   </nav>
 </aside>

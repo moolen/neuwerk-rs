@@ -12,20 +12,20 @@ const properties = [
   },
   {
     icon: '✓',
-    text: 'Gateway can replace NAT Gateways save costs',
+    text: 'Can replace NAT gateway or cloud firewall egress paths',
     color: 'emerald',
   },
   {
     icon: '✓',
-    text: 'Scales horizontally (add gateway nodes for throughput)',
+    text: 'Audit mode lets you tune policy before enforcing it',
     color: 'emerald',
   },
 ];
 
 const integrations = [
-  'Works with any CNI (Calico, Cilium, Flannel, AWS VPC CNI)',
-  'Routing via static routes, policy-based routing, or CNI integration',
-  'No changes to workload pods or node configuration',
+  'Runs adjacent to Kubernetes as dedicated network infrastructure',
+  'Compatible CNI configurations preserve source IP visibility at the gateway',
+  'Overlay designs that hide pod source IPs are not currently supported',
 ];
 ---
 
@@ -97,7 +97,7 @@ const integrations = [
       </div>
 
       <p class="mt-6 text-sm text-slate-400 text-center">
-        The gateway runs on separate security boundary from your workloads — compromising a workload node doesn't compromise enforcement.
+        The gateway runs on a separate security boundary from your workloads — compromising a workload node does not compromise enforcement.
       </p>
     </div>
 
@@ -136,8 +136,8 @@ const integrations = [
 
         <div class="mt-6 p-4 rounded-lg bg-slate-800 border border-slate-700">
           <p class="text-sm text-slate-400">
-            <span class="text-white font-medium">Deployment requirements:</span> modern Linux with NICs and routing support appropriate for a DPDK gateway deployment.
-            Works best when the gateway is treated as dedicated network infrastructure, not as an in-node policy agent.
+            <span class="text-white font-medium">Deployment model:</span> treat the gateway as dedicated network infrastructure outside the workload node.
+            For Kubernetes, compatibility depends on pod source IPs staying visible to the gateway.
           </p>
         </div>
       </div>

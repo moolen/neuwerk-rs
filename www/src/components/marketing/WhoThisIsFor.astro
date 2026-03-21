@@ -18,11 +18,10 @@ const personas = [
   },
 ];
 
-const notFor = [
-  'Teams who need deep packet inspection or IDS/IPS',
-  'Environments where TLS inspection is already working well',
-  'Organizations that need user-identity-aware egress policies',
-  'Non-Kubernetes workloads (VM-only support is planned)',
+const boundaries = [
+  'Neuwerk runs adjacent to Kubernetes as dedicated network infrastructure, not as an in-cluster add-on.',
+  'Compatible CNI configurations keep source IPs resolvable back to pod IPs at the gateway.',
+  'Overlay networks that hide or rewrite pod source IPs before the gateway are not currently supported.',
 ];
 ---
 
@@ -52,16 +51,17 @@ const notFor = [
       ))}
     </div>
 
-    <!-- What this is NOT for -->
     <div class="mt-12 p-6 rounded-xl bg-slate-900/30 border border-slate-700">
-      <h3 class="text-lg font-semibold text-white mb-4">Not the right fit if:</h3>
-      <ul class="grid sm:grid-cols-2 gap-3">
-        {notFor.map((item) => (
-          <li class="flex items-start gap-2 text-sm">
-            <svg class="w-4 h-4 text-slate-500 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-            <span class="text-slate-400">{item}</span>
+      <h3 class="text-lg font-semibold text-white mb-4">Deployment Boundaries</h3>
+      <ul class="space-y-3">
+        {boundaries.map((item) => (
+          <li class="flex items-start gap-3 text-sm text-slate-400">
+            <div class="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-slate-700">
+              <svg class="h-3 w-3 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+            <span>{item}</span>
           </li>
         ))}
       </ul>

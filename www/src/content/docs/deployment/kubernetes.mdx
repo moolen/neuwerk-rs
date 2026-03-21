@@ -7,6 +7,9 @@ order: 3
 Neuwerk can use Kubernetes as a source of dynamic identities for policy. It does not currently
 define a full in-cluster deployment pattern, Helm chart, or operator.
 
+Operationally, Neuwerk is meant to run adjacent to the cluster as dedicated network
+infrastructure, not inside the cluster as another workload.
+
 ## What Kubernetes Support Means
 
 Kubernetes support in the current product means:
@@ -27,6 +30,10 @@ These items are not defined by the current product docs or runtime:
 - a bundled Helm chart
 - required CNI guidance
 - a fixed Service or Ingress pattern
+
+Compatibility depends on the gateway seeing source IPs that can still be resolved back to pod IPs.
+Overlay designs that hide or rewrite the original pod source IP before traffic reaches the gateway
+are not currently supported.
 
 ## How The Integration Works
 
@@ -74,6 +81,7 @@ Start troubleshooting with:
 
 - policy that follows pods or nodes without manual IP maintenance
 - separating source identity management from packet matching
+- Kubernetes-adjacent gateway deployments where pod source IPs remain visible to the Neuwerk
 
 Do not treat this page as a complete guide for running the Neuwerk itself inside Kubernetes. That
 deployment story is still a documentation gap.

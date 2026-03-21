@@ -15,51 +15,65 @@ const benefits = [
     description: 'Use your existing IaC stack. We expose a simple RESTful API.',
   },
   {
-    title: 'Drift detection',
-    description: 'Detect when runtime state diverges from declared policy.',
+    title: 'Audit-first rollout',
+    description: 'Start in audit mode, observe traffic, and only then switch to enforce.',
   },
 ];
 
 const apiFeatures = [
   'RESTful API with OpenAPI spec',
   'Idempotent policy updates',
-  'Dry-run mode for validation',
-  'Webhook notifications on changes',
+  'Audit and enforce policy modes',
+  'Service-account auth for automation',
 ];
 
-const terraformCode = `resource "neuwerk_policy" "main" {
-  name           = "prod-default"
-  mode           = "enforce"
-  default_action = "deny"
-
-  source_group = [
-    {
-      id = "prod-cluster"
-
-      sources = {
-        cidrs = ["10.20.0.0/22"]
-      }
-
-      rule = [
-        {
-          id     = "allow-dns"
-          action = "allow"
-          dns = {
-            exact = ["github.com"]
+const policyCode = `{
+  "mode": "audit",
+  "name": "github-egress",
+  "policy": {
+    "default_policy": "deny",
+    "source_groups": [
+      {
+        "id": "prod-cluster",
+        "sources": {
+          "cidrs": ["10.20.0.0/22"]
+        },
+        "default_action": "deny",
+        "rules": [
+          {
+            "id": "allow-github-dns",
+            "action": "allow",
+            "match": {
+              "dns_hostname": "^(?:api\\\\.github\\\\.com|github\\\\.com)$"
+            }
+          },
+          {
+            "id": "allow-github-https",
+            "action": "allow",
+            "match": {
+              "proto": "tcp",
+              "dst_ports": [443],
+              "tls": {
+                "mode": "metadata",
+                "sni": {
+                  "exact": ["api.github.com"]
+                }
+              }
+            }
           }
-        }
-      ]
-    }
-  ]
+        ]
+      }
+    ]
+  }
 }`;
 
 const highlighter = await createHighlighter({
   themes: ['github-dark'],
-  langs: ['hcl'],
+  langs: ['json'],
 });
 
-const highlightedCode = highlighter.codeToHtml(terraformCode, {
-  lang: 'hcl',
+const highlightedCode = highlighter.codeToHtml(policyCode, {
+  lang: 'json',
   theme: 'github-dark',
 });
 ---
@@ -71,7 +85,7 @@ const highlightedCode = highlighter.codeToHtml(terraformCode, {
         Policy as Code
       </h2>
       <p class="mt-4 text-lg text-slate-400">
-        Define egress rules in Terraform, commit to Git, deploy via CI. No click-ops. No drift.
+        Define hostname rules and optional TLS metadata constraints in Git, deploy them through the API, and roll them out in audit mode first.
       </p>
     </div>
 
@@ -108,17 +122,17 @@ const highlightedCode = highlighter.codeToHtml(terraformCode, {
         </div>
       </div>
 
-      <!-- Terraform example -->
-      <div>
-        <h3 class="text-lg font-semibold text-white mb-6">Terraform Example</h3>
-        <div class="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+      <!-- Policy example -->
+      <div class="min-w-0">
+        <h3 class="text-lg font-semibold text-white mb-6">Hostname + TLS Metadata Example</h3>
+        <div class="max-w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-900">
           <div class="px-4 py-2 bg-slate-800/50 border-b border-slate-700 flex items-center gap-2">
-            <svg class="w-4 h-4 text-purple-400" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M1 5.6v5.8l5 2.9V8.5L1 5.6zm6 3v5.8l5 2.9V11.5l-5-2.9zm6-6.9v5.8l5 2.9V4.6l-5-2.9zm6 3v5.8l5 2.9V8.5l-5-2.9z"/>
+            <svg class="w-4 h-4 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h10M7 16h6M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z" />
             </svg>
-            <span class="text-sm text-slate-400">egress.tf</span>
+            <span class="text-sm text-slate-400">policy.json</span>
           </div>
-          <div class="code-block p-4 text-sm overflow-x-auto [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!m-0" set:html={highlightedCode} />
+          <div class="code-block max-w-full overflow-x-auto overflow-y-hidden p-4 text-sm [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0" set:html={highlightedCode} />
         </div>
       </div>
     </div>
@@ -130,7 +144,7 @@ const highlightedCode = highlighter.codeToHtml(terraformCode, {
         <div>
           <h4 class="font-medium text-white">Audit trail built-in</h4>
           <p class="mt-1 text-sm text-slate-400">
-            Every policy change is a Git commit. Who changed what, when, and why — answered by your existing tools.
+            Every policy change is a Git commit. Who changed what, when, and why is answered by your existing tooling.
           </p>
         </div>
         <div>
@@ -140,9 +154,9 @@ const highlightedCode = highlighter.codeToHtml(terraformCode, {
           </p>
         </div>
         <div>
-          <h4 class="font-medium text-white">Test before deploy</h4>
+          <h4 class="font-medium text-white">Observe before enforce</h4>
           <p class="mt-1 text-sm text-slate-400">
-            Dry-run mode validates policies against your current traffic. Catch mistakes before they block production.
+            Audit mode lets the policy evaluate live traffic before it starts blocking production flows.
           </p>
         </div>
       </div>

@@ -5,16 +5,15 @@ const openSourceFeatures = [
   { feature: 'DPDK dataplane', status: 'available' },
   { feature: 'DNS proxy & resolver', status: 'available' },
   { feature: 'Policy engine', status: 'available' },
-  { feature: 'API, IaC tooling & automation', status: 'available' },
-  { feature: 'Prometheus metrics', status: 'available' },
+  { feature: 'API, web UI, and automation tooling', status: 'available' },
+  { feature: 'SSO, service accounts, and HA cluster mode', status: 'available' },
 ];
 
-const commercialFeatures = [
-  { feature: 'HA Clustered mode', status: 'available' },
-  { feature: 'Identity Control Plane', status: 'available' },
-  { feature: 'SSO & RBAC integrations', status: 'available' },
-  { feature: 'Compliance reporting', status: 'available' },
-  { feature: 'Managed upgrades & support', status: 'roadmap' },
+const supportOptions = [
+  'Design partner access for early rollouts',
+  'Commercial support for deployment and migration work',
+  'Operator reviews for audit-mode rollout plans',
+  'Direct feedback loop on roadmap gaps',
 ];
 ---
 
@@ -22,10 +21,10 @@ const commercialFeatures = [
   <div class="relative mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
     <div class="text-center max-w-3xl mx-auto">
       <h2 class="text-3xl sm:text-4xl font-bold text-white">
-        Open Core
+        Open Source
       </h2>
       <p class="mt-4 text-xl text-slate-400">
-        The security-critical functionality is open source. Build it, audit it, run it — without us.
+        The dataplane, control plane, UI, and cluster features ship in the Apache 2.0 codebase. Build it, audit it, and run it without feature gates.
       </p>
     </div>
 
@@ -65,7 +64,7 @@ const commercialFeatures = [
         </div>
       </div>
 
-      <!-- Commercial -->
+      <!-- Support -->
       <div class="p-6 rounded-xl bg-slate-800/50 border border-slate-700">
         <div class="flex items-center gap-3 mb-6">
           <div class="w-10 h-10 rounded-lg bg-slate-700 flex items-center justify-center">
@@ -74,31 +73,35 @@ const commercialFeatures = [
             </svg>
           </div>
           <div>
-            <h3 class="text-lg font-semibold text-white">Commercial</h3>
-            <p class="text-sm text-slate-400">For enterprise operations</p>
+            <h3 class="text-lg font-semibold text-white">Support & Design Partners</h3>
+            <p class="text-sm text-slate-400">Help with rollout, migration, and feedback loops</p>
           </div>
         </div>
 
-        <div class="space-y-3">
-          {commercialFeatures.map((item) => (
-            <div class="flex items-center justify-between p-3 rounded-lg bg-slate-900/30">
-              <span class="text-slate-400">{item.feature}</span>
-              <span class={`text-xs font-medium px-2 py-0.5 rounded ${
-                item.status === 'roadmap'
-                  ? 'bg-amber-500/20 text-amber-400'
-                  : 'bg-emerald-500/20 text-emerald-400'
-              }`}>
-                {item.status}
-              </span>
-            </div>
+        <ul class="space-y-3">
+          {supportOptions.map((item) => (
+            <li class="flex items-start gap-3 rounded-lg bg-slate-900/30 p-3">
+              <div class="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-slate-700">
+                <svg class="h-3 w-3 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                </svg>
+              </div>
+              <span class="text-slate-400">{item}</span>
+            </li>
           ))}
-        </div>
+        </ul>
 
         <div class="mt-6 p-4 rounded-lg bg-slate-900/50 border border-slate-700">
           <p class="text-sm text-slate-400">
-            The core egress enforcement is <strong class="text-white">fully functional</strong> in the open source version.
-            Commercial features add operational conveniences — not security capabilities.
+            <strong class="text-white">No feature gating:</strong> SSO, clustering, and the policy engine are part of the OSS release.
+            Support is about helping operators ship it safely, not hiding product capabilities.
           </p>
+        </div>
+
+        <div class="mt-6">
+          <CTAButton href="mailto:hello@neuwerk.io?subject=Neuwerk%20Support%20Inquiry" variant="primary" size="md" class="w-full">
+            Contact Engineering
+          </CTAButton>
         </div>
       </div>
     </div>
