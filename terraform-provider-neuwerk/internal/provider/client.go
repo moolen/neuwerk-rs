@@ -265,11 +265,19 @@ func (c *apiClient) ListServiceAccounts(ctx context.Context) ([]apiServiceAccoun
 }
 
 func (c *apiClient) GetServiceAccount(ctx context.Context, id string) (*apiServiceAccount, error) {
-	var out apiServiceAccount
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/service-accounts/"+url.PathEscape(id), nil, &out); err != nil {
+	accounts, err := c.ListServiceAccounts(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return &out, nil
+	for i := range accounts {
+		if accounts[i].ID == id {
+			return &accounts[i], nil
+		}
+	}
+	return nil, &apiError{
+		StatusCode: http.StatusNotFound,
+		Message:    "service account not found",
+	}
 }
 
 func (c *apiClient) CreateServiceAccount(ctx context.Context, req createServiceAccountRequest) (*apiServiceAccount, error) {

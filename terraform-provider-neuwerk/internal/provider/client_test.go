@@ -123,18 +123,18 @@ func TestAPIClientCreatesServiceAccount(t *testing.T) {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 
-		var req createServiceAccountRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if req.Name != "ci-bot" {
-			t.Fatalf("unexpected name %q", req.Name)
+		if payload["name"] != "ci-bot" {
+			t.Fatalf("unexpected name %#v", payload["name"])
 		}
-		if req.Description == nil || *req.Description != "build bot" {
-			t.Fatalf("unexpected description %#v", req.Description)
+		if payload["description"] != "build bot" {
+			t.Fatalf("unexpected description %#v", payload["description"])
 		}
-		if req.Role != "admin" {
-			t.Fatalf("unexpected role %q", req.Role)
+		if payload["role"] != "admin" {
+			t.Fatalf("unexpected role %#v", payload["role"])
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -249,21 +249,21 @@ func TestAPIClientMintsServiceAccountToken(t *testing.T) {
 		if r.URL.Path != "/api/v1/service-accounts/acc-1/tokens" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		var req createServiceAccountTokenRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if req.Name == nil || *req.Name != "deploy token" {
-			t.Fatalf("unexpected name %#v", req.Name)
+		if payload["name"] != "deploy token" {
+			t.Fatalf("unexpected name %#v", payload["name"])
 		}
-		if req.TTL == nil || *req.TTL != "24h" {
-			t.Fatalf("unexpected ttl %#v", req.TTL)
+		if payload["ttl"] != "24h" {
+			t.Fatalf("unexpected ttl %#v", payload["ttl"])
 		}
-		if req.Eternal == nil || *req.Eternal {
-			t.Fatalf("unexpected eternal %#v", req.Eternal)
+		if payload["eternal"] != false {
+			t.Fatalf("unexpected eternal %#v", payload["eternal"])
 		}
-		if req.Role == nil || *req.Role != "readonly" {
-			t.Fatalf("unexpected role %#v", req.Role)
+		if payload["role"] != "readonly" {
+			t.Fatalf("unexpected role %#v", payload["role"])
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -324,11 +324,14 @@ func TestAPIClientGetsUpdatesAndDeletesServiceAccount(t *testing.T) {
 			if r.Method != http.MethodGet {
 				t.Fatalf("unexpected method %s", r.Method)
 			}
-			if r.URL.Path != "/api/v1/service-accounts/acc-1" {
+			if r.URL.Path != "/api/v1/service-accounts" {
 				t.Fatalf("unexpected path %s", r.URL.Path)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"acc-1","name":"ci-bot","description":"build bot","created_at":"2024-01-01T00:00:00Z","created_by":"admin","role":"admin","status":"active"}`))
+			_, _ = w.Write([]byte(`[
+				{"id":"acc-1","name":"ci-bot","description":"build bot","created_at":"2024-01-01T00:00:00Z","created_by":"admin","role":"admin","status":"active"},
+				{"id":"acc-2","name":"reporter","description":null,"created_at":"2024-01-02T00:00:00Z","created_by":"admin","role":"readonly","status":"disabled"}
+			]`))
 		case 2:
 			if r.Method != http.MethodPut {
 				t.Fatalf("unexpected method %s", r.Method)
@@ -336,18 +339,18 @@ func TestAPIClientGetsUpdatesAndDeletesServiceAccount(t *testing.T) {
 			if r.URL.Path != "/api/v1/service-accounts/acc-1" {
 				t.Fatalf("unexpected path %s", r.URL.Path)
 			}
-			var req updateServiceAccountRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			if req.Name != "ci-bot-2" {
-				t.Fatalf("unexpected name %q", req.Name)
+			if payload["name"] != "ci-bot-2" {
+				t.Fatalf("unexpected name %#v", payload["name"])
 			}
-			if req.Description == nil || *req.Description != "updated" {
-				t.Fatalf("unexpected description %#v", req.Description)
+			if payload["description"] != "updated" {
+				t.Fatalf("unexpected description %#v", payload["description"])
 			}
-			if req.Role != "readonly" {
-				t.Fatalf("unexpected role %q", req.Role)
+			if payload["role"] != "readonly" {
+				t.Fatalf("unexpected role %#v", payload["role"])
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"acc-1","name":"ci-bot-2","description":"updated","created_at":"2024-01-01T00:00:00Z","created_by":"admin","role":"readonly","status":"active"}`))
