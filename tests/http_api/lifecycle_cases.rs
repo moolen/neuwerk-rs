@@ -824,3 +824,33 @@ source_groups:
         .expect("restart join")
         .expect("restart shutdown result");
 }
+
+#[test]
+fn http_api_metrics_exposes_threat_series() {
+    let metrics = Metrics::new().expect("create metrics");
+    metrics.inc_threat_match("domain", "dns", "high", "default", "inline");
+    metrics.inc_threat_alertable_match("domain", "dns", "high", "default");
+    metrics.observe_threat_feed_refresh("default", "success");
+    metrics.set_threat_feed_snapshot_age_seconds("default", 42);
+    metrics.set_threat_feed_indicators("default", "domain", 7);
+    metrics.inc_threat_backfill_run("success");
+    metrics.observe_threat_backfill_duration(Duration::from_secs(3));
+    metrics.inc_threat_enrichment_request("provider-a", "success");
+    metrics.set_threat_enrichment_queue_depth(2);
+    metrics.set_threat_findings_active("high", 1);
+    metrics.set_threat_cluster_snapshot_version(9);
+
+    let body = metrics.render().expect("render metrics");
+
+    assert!(body.contains("neuwerk_threat_matches_total"));
+    assert!(body.contains("neuwerk_threat_alertable_matches_total"));
+    assert!(body.contains("neuwerk_threat_feed_refresh_total"));
+    assert!(body.contains("neuwerk_threat_feed_snapshot_age_seconds"));
+    assert!(body.contains("neuwerk_threat_feed_indicators"));
+    assert!(body.contains("neuwerk_threat_backfill_runs_total"));
+    assert!(body.contains("neuwerk_threat_backfill_duration_seconds"));
+    assert!(body.contains("neuwerk_threat_enrichment_requests_total"));
+    assert!(body.contains("neuwerk_threat_enrichment_queue_depth"));
+    assert!(body.contains("neuwerk_threat_findings_active"));
+    assert!(body.contains("neuwerk_threat_cluster_snapshot_version"));
+}

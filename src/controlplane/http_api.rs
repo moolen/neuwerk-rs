@@ -49,6 +49,7 @@ use crate::controlplane::service_accounts::{
     TokenStatus,
 };
 use crate::controlplane::sso::SsoStore;
+use crate::controlplane::threat_intel::store::ThreatStore;
 use crate::controlplane::wiretap::{DnsMap, WiretapFilter, WiretapHub, WiretapQuery};
 use crate::controlplane::PolicyStore;
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
@@ -80,6 +81,7 @@ mod service_accounts_api;
 mod sso_auth_routes;
 mod sso_settings;
 mod support;
+mod threats;
 mod tls_intercept;
 mod wiretap;
 
@@ -108,6 +110,10 @@ use sso_settings::{
     test_sso_provider, update_sso_provider,
 };
 use support::{cluster_sysdump, node_sysdump};
+use threats::{
+    get_threat_settings, put_threat_settings, threat_feed_status, threat_findings,
+    threat_findings_local,
+};
 use wiretap::wiretap_stream;
 
 #[derive(Clone)]
@@ -173,6 +179,7 @@ struct ApiState {
     sso: SsoStore,
     integrations: IntegrationStore,
     audit_store: Option<AuditStore>,
+    threat_store: Option<ThreatStore>,
     cluster: Option<HttpApiCluster>,
     metrics: Metrics,
     proxy_client: Option<reqwest::Client>,
@@ -224,12 +231,41 @@ pub async fn run_http_api(
     readiness: Option<ReadinessState>,
     metrics: Metrics,
 ) -> Result<(), String> {
-    run_http_api_with_shutdown(
+    run_http_api_with_threat_store(
         cfg,
         policy_store,
         local_store,
         cluster,
         audit_store,
+        None,
+        wiretap_hub,
+        dns_map,
+        readiness,
+        metrics,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_http_api_with_threat_store(
+    cfg: HttpApiConfig,
+    policy_store: PolicyStore,
+    local_store: PolicyDiskStore,
+    cluster: Option<HttpApiCluster>,
+    audit_store: Option<AuditStore>,
+    threat_store: Option<ThreatStore>,
+    wiretap_hub: Option<WiretapHub>,
+    dns_map: Option<DnsMap>,
+    readiness: Option<ReadinessState>,
+    metrics: Metrics,
+) -> Result<(), String> {
+    run_http_api_with_shutdown_and_threat_store(
+        cfg,
+        policy_store,
+        local_store,
+        cluster,
+        audit_store,
+        threat_store,
         wiretap_hub,
         dns_map,
         readiness,
@@ -246,6 +282,66 @@ pub async fn run_http_api_with_shutdown(
     local_store: PolicyDiskStore,
     cluster: Option<HttpApiCluster>,
     audit_store: Option<AuditStore>,
+    wiretap_hub: Option<WiretapHub>,
+    dns_map: Option<DnsMap>,
+    readiness: Option<ReadinessState>,
+    metrics: Metrics,
+    shutdown: HttpApiShutdown,
+) -> Result<(), String> {
+    run_http_api_with_shutdown_and_threat_store(
+        cfg,
+        policy_store,
+        local_store,
+        cluster,
+        audit_store,
+        None,
+        wiretap_hub,
+        dns_map,
+        readiness,
+        metrics,
+        shutdown,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_http_api_with_shutdown_and_threat_store(
+    cfg: HttpApiConfig,
+    policy_store: PolicyStore,
+    local_store: PolicyDiskStore,
+    cluster: Option<HttpApiCluster>,
+    audit_store: Option<AuditStore>,
+    threat_store: Option<ThreatStore>,
+    wiretap_hub: Option<WiretapHub>,
+    dns_map: Option<DnsMap>,
+    readiness: Option<ReadinessState>,
+    metrics: Metrics,
+    shutdown: HttpApiShutdown,
+) -> Result<(), String> {
+    run_http_api_with_shutdown_impl(
+        cfg,
+        policy_store,
+        local_store,
+        cluster,
+        audit_store,
+        threat_store,
+        wiretap_hub,
+        dns_map,
+        readiness,
+        metrics,
+        shutdown,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_http_api_with_shutdown_impl(
+    cfg: HttpApiConfig,
+    policy_store: PolicyStore,
+    local_store: PolicyDiskStore,
+    cluster: Option<HttpApiCluster>,
+    audit_store: Option<AuditStore>,
+    threat_store: Option<ThreatStore>,
     wiretap_hub: Option<WiretapHub>,
     dns_map: Option<DnsMap>,
     readiness: Option<ReadinessState>,
@@ -325,6 +421,7 @@ pub async fn run_http_api_with_shutdown(
         sso,
         integrations,
         audit_store,
+        threat_store,
         cluster,
         metrics: metrics.clone(),
         proxy_client,
@@ -395,6 +492,9 @@ pub async fn run_http_api_with_shutdown(
         )
         .route("/audit/findings", get(audit_findings))
         .route("/audit/findings/local", get(audit_findings_local))
+        .route("/threats/findings", get(threat_findings))
+        .route("/threats/findings/local", get(threat_findings_local))
+        .route("/threats/feeds/status", get(threat_feed_status))
         .route("/support/sysdump/cluster", post(cluster_sysdump))
         .route("/support/sysdump/node", post(node_sysdump))
         .route("/wiretap/stream", get(wiretap_stream))
@@ -408,6 +508,10 @@ pub async fn run_http_api_with_shutdown(
         .route(
             "/settings/performance-mode",
             get(get_performance_mode).put(put_performance_mode),
+        )
+        .route(
+            "/settings/threat-intel",
+            get(get_threat_settings).put(put_threat_settings),
         )
         .route(
             "/settings/tls-intercept-ca/cert",

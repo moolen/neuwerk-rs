@@ -1,0 +1,27 @@
+{
+  "query_status": "ok",
+  "data": [
+    {
+      "ioc": "Bad.Example.com",
+      "ioc_type": "domain",
+      "threat_type": "botnet_cc",
+      "malware_printable": "ExampleBot",
+      "first_seen": "2025-03-11 08:00:00 UTC",
+      "last_seen": "2025-03-13 10:20:00 UTC",
+      "confidence_level": "85",
+      "reference": "https://threatfox.abuse.ch/ioc/123456/",
+      "tags": ["botnet", "c2"]
+    },
+    {
+      "ioc": "203.0.113.42",
+      "ioc_type": "ip",
+      "threat_type": "malware_download",
+      "malware_printable": "Loader",
+      "first_seen": "2025-03-10 07:00:00 UTC",
+      "last_seen": "2025-03-12 05:00:00 UTC",
+      "confidence_level": "95",
+      "reference": "https://threatfox.abuse.ch/ioc/654321/",
+      "tags": ["download", "payload"]
+    }
+  ]
+}

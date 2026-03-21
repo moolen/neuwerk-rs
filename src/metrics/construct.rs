@@ -225,6 +225,96 @@ impl Metrics {
             "Service-plane TLS intercept selected upstream HTTP/2 session peak in-flight streams over the current second window",
         ))
         .map_err(|err| err.to_string())?;
+        let threat_matches = CounterVec::new(
+            Opts::new(
+                "neuwerk_threat_matches_total",
+                "Threat-intel indicator matches by type, layer, severity, feed, and source",
+            ),
+            &[
+                "indicator_type",
+                "observation_layer",
+                "severity",
+                "feed",
+                "match_source",
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+        let threat_alertable_matches = CounterVec::new(
+            Opts::new(
+                "neuwerk_threat_alertable_matches_total",
+                "Threat-intel alertable indicator matches by type, layer, severity, and feed",
+            ),
+            &["indicator_type", "observation_layer", "severity", "feed"],
+        )
+        .map_err(|err| err.to_string())?;
+        let threat_feed_refresh = CounterVec::new(
+            Opts::new(
+                "neuwerk_threat_feed_refresh_total",
+                "Threat feed refresh attempts by feed and outcome",
+            ),
+            &["feed", "outcome"],
+        )
+        .map_err(|err| err.to_string())?;
+        let threat_feed_snapshot_age_seconds = GaugeVec::new(
+            Opts::new(
+                "neuwerk_threat_feed_snapshot_age_seconds",
+                "Age of the current threat feed snapshot in seconds",
+            ),
+            &["feed"],
+        )
+        .map_err(|err| err.to_string())?;
+        let threat_feed_indicators = GaugeVec::new(
+            Opts::new(
+                "neuwerk_threat_feed_indicators",
+                "Threat feed indicator counts by feed and indicator type",
+            ),
+            &["feed", "indicator_type"],
+        )
+        .map_err(|err| err.to_string())?;
+        let threat_backfill_runs = CounterVec::new(
+            Opts::new(
+                "neuwerk_threat_backfill_runs_total",
+                "Threat backfill runs by outcome",
+            ),
+            &["outcome"],
+        )
+        .map_err(|err| err.to_string())?;
+        let threat_backfill_duration_seconds = Histogram::with_opts(HistogramOpts::new(
+            "neuwerk_threat_backfill_duration_seconds",
+            "Threat backfill duration seconds",
+        ))
+        .map_err(|err| err.to_string())?;
+        let threat_enrichment_requests = CounterVec::new(
+            Opts::new(
+                "neuwerk_threat_enrichment_requests_total",
+                "Threat enrichment requests by provider and outcome",
+            ),
+            &["provider", "outcome"],
+        )
+        .map_err(|err| err.to_string())?;
+        let threat_enrichment_queue_depth = Gauge::with_opts(Opts::new(
+            "neuwerk_threat_enrichment_queue_depth",
+            "Threat enrichment queue depth",
+        ))
+        .map_err(|err| err.to_string())?;
+        let threat_observation_enqueue_failures = Counter::with_opts(Opts::new(
+            "neuwerk_threat_observation_enqueue_failures_total",
+            "Threat observation enqueue failures",
+        ))
+        .map_err(|err| err.to_string())?;
+        let threat_findings_active = GaugeVec::new(
+            Opts::new(
+                "neuwerk_threat_findings_active",
+                "Active threat findings by severity",
+            ),
+            &["severity"],
+        )
+        .map_err(|err| err.to_string())?;
+        let threat_cluster_snapshot_version = Gauge::with_opts(Opts::new(
+            "neuwerk_threat_cluster_snapshot_version",
+            "Threat cluster snapshot version",
+        ))
+        .map_err(|err| err.to_string())?;
         let raft_is_leader = Gauge::with_opts(Opts::new("raft_is_leader", "Raft leader status"))
             .map_err(|err| err.to_string())?;
         let raft_leader_changes = Counter::with_opts(Opts::new(
@@ -1061,6 +1151,42 @@ impl Metrics {
             ))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(threat_matches.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(threat_alertable_matches.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(threat_feed_refresh.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(threat_feed_snapshot_age_seconds.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(threat_feed_indicators.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(threat_backfill_runs.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(threat_backfill_duration_seconds.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(threat_enrichment_requests.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(threat_enrichment_queue_depth.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(threat_observation_enqueue_failures.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(threat_findings_active.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(threat_cluster_snapshot_version.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(raft_is_leader.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -1458,6 +1584,32 @@ impl Metrics {
             .with_label_values(&["http1", "request", "policy"])
             .inc_by(0.0);
         svc_policy_rst.with_label_values(&["policy"]).inc_by(0.0);
+        threat_matches
+            .with_label_values(&["domain", "dns", "high", "default", "inline"])
+            .inc_by(0.0);
+        threat_alertable_matches
+            .with_label_values(&["domain", "dns", "high", "default"])
+            .inc_by(0.0);
+        threat_feed_refresh
+            .with_label_values(&["default", "success"])
+            .inc_by(0.0);
+        threat_feed_snapshot_age_seconds
+            .with_label_values(&["default"])
+            .set(0.0);
+        threat_feed_indicators
+            .with_label_values(&["default", "domain"])
+            .set(0.0);
+        threat_backfill_runs
+            .with_label_values(&["success"])
+            .inc_by(0.0);
+        threat_backfill_duration_seconds.observe(0.0);
+        threat_enrichment_requests
+            .with_label_values(&["default", "success"])
+            .inc_by(0.0);
+        threat_enrichment_queue_depth.set(0.0);
+        threat_observation_enqueue_failures.inc_by(0.0);
+        threat_findings_active.with_label_values(&["high"]).set(0.0);
+        threat_cluster_snapshot_version.set(0.0);
         svc_fail_closed.with_label_values(&["tls"]).inc_by(0.0);
         svc_tls_intercept_errors
             .with_label_values(&["other", "failure"])
@@ -1827,6 +1979,18 @@ impl Metrics {
             svc_tls_intercept_upstream_h2_conn_termination,
             svc_tls_intercept_upstream_h2_retry,
             svc_tls_intercept_upstream_h2_selected_inflight_peak,
+            threat_matches,
+            threat_alertable_matches,
+            threat_feed_refresh,
+            threat_feed_snapshot_age_seconds,
+            threat_feed_indicators,
+            threat_backfill_runs,
+            threat_backfill_duration_seconds,
+            threat_enrichment_requests,
+            threat_enrichment_queue_depth,
+            threat_observation_enqueue_failures,
+            threat_findings_active,
+            threat_cluster_snapshot_version,
             raft_is_leader,
             raft_leader_changes,
             raft_current_term,

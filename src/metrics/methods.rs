@@ -240,6 +240,84 @@ impl Metrics {
             .set(value as f64);
     }
 
+    pub fn inc_threat_match(
+        &self,
+        indicator_type: &str,
+        layer: &str,
+        severity: &str,
+        feed: &str,
+        source: &str,
+    ) {
+        self.threat_matches
+            .with_label_values(&[indicator_type, layer, severity, feed, source])
+            .inc();
+    }
+
+    pub fn inc_threat_alertable_match(
+        &self,
+        indicator_type: &str,
+        layer: &str,
+        severity: &str,
+        feed: &str,
+    ) {
+        self.threat_alertable_matches
+            .with_label_values(&[indicator_type, layer, severity, feed])
+            .inc();
+    }
+
+    pub fn observe_threat_feed_refresh(&self, feed: &str, outcome: &str) {
+        self.threat_feed_refresh
+            .with_label_values(&[feed, outcome])
+            .inc();
+    }
+
+    pub fn set_threat_feed_snapshot_age_seconds(&self, feed: &str, age: u64) {
+        self.threat_feed_snapshot_age_seconds
+            .with_label_values(&[feed])
+            .set(age as f64);
+    }
+
+    pub fn set_threat_feed_indicators(&self, feed: &str, indicator_type: &str, count: usize) {
+        self.threat_feed_indicators
+            .with_label_values(&[feed, indicator_type])
+            .set(count as f64);
+    }
+
+    pub fn inc_threat_backfill_run(&self, outcome: &str) {
+        self.threat_backfill_runs
+            .with_label_values(&[outcome])
+            .inc();
+    }
+
+    pub fn observe_threat_backfill_duration(&self, duration: Duration) {
+        self.threat_backfill_duration_seconds
+            .observe(duration.as_secs_f64());
+    }
+
+    pub fn inc_threat_enrichment_request(&self, provider: &str, outcome: &str) {
+        self.threat_enrichment_requests
+            .with_label_values(&[provider, outcome])
+            .inc();
+    }
+
+    pub fn set_threat_enrichment_queue_depth(&self, depth: usize) {
+        self.threat_enrichment_queue_depth.set(depth as f64);
+    }
+
+    pub fn inc_threat_observation_enqueue_failure(&self) {
+        self.threat_observation_enqueue_failures.inc();
+    }
+
+    pub fn set_threat_findings_active(&self, severity: &str, count: usize) {
+        self.threat_findings_active
+            .with_label_values(&[severity])
+            .set(count as f64);
+    }
+
+    pub fn set_threat_cluster_snapshot_version(&self, version: u64) {
+        self.threat_cluster_snapshot_version.set(version as f64);
+    }
+
     pub fn set_raft_is_leader(&self, is_leader: bool) {
         self.raft_is_leader.set(if is_leader { 1.0 } else { 0.0 });
     }

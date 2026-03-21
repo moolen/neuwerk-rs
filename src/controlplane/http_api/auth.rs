@@ -406,6 +406,7 @@ mod tests {
             sso: SsoStore::local(dir.path().join("sso")),
             integrations: IntegrationStore::local(dir.path().join("integrations")),
             audit_store: None,
+            threat_store: None,
             cluster: None,
             metrics: Metrics::new().unwrap(),
             proxy_client: None,
