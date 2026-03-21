@@ -1,4 +1,11 @@
-import type { ThreatFeedStatusResponse, ThreatFindingQueryResponse } from '../../types';
+import type {
+  ThreatFeedStatusResponse,
+  ThreatFindingQueryResponse,
+  ThreatIndicatorType,
+  ThreatSilenceEntry,
+  ThreatSilenceKind,
+  ThreatSilenceListResponse,
+} from '../../types';
 import { fetchJSON } from './transport';
 
 export interface ThreatFindingsParams {
@@ -12,6 +19,13 @@ export interface ThreatFindingsParams {
   since?: number;
   until?: number;
   limit?: number;
+}
+
+export interface CreateThreatSilenceRequest {
+  kind: ThreatSilenceKind;
+  indicator_type?: ThreatIndicatorType;
+  value: string;
+  reason?: string;
 }
 
 export async function getThreatFindings(
@@ -54,4 +68,23 @@ export async function getThreatFindings(
 
 export async function getThreatFeedStatus(): Promise<ThreatFeedStatusResponse> {
   return fetchJSON<ThreatFeedStatusResponse>('/threats/feeds/status');
+}
+
+export async function listThreatSilences(): Promise<ThreatSilenceListResponse> {
+  return fetchJSON<ThreatSilenceListResponse>('/threats/silences');
+}
+
+export async function createThreatSilence(
+  request: CreateThreatSilenceRequest
+): Promise<ThreatSilenceEntry> {
+  return fetchJSON<ThreatSilenceEntry>('/threats/silences', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+export async function deleteThreatSilence(id: string): Promise<void> {
+  await fetchJSON<void>(`/threats/silences/${id}`, {
+    method: 'DELETE',
+  });
 }

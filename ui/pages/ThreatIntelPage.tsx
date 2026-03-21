@@ -1,15 +1,40 @@
 import React from 'react';
 
+import type { ThreatFinding, ThreatIndicatorType, ThreatSilenceKind } from '../types';
+import { CreateThreatSilenceModal } from './threat-intel/components/CreateThreatSilenceModal';
+import { ThreatDisableBanner } from './threat-intel/components/ThreatDisableBanner';
 import { ThreatFeedStatusPanel } from './threat-intel/components/ThreatFeedStatusPanel';
 import { ThreatFiltersPanel } from './threat-intel/components/ThreatFiltersPanel';
 import { ThreatFindingsTable } from './threat-intel/components/ThreatFindingsTable';
+import { ThreatSilencesPanel } from './threat-intel/components/ThreatSilencesPanel';
 import { useThreatIntelPage } from './threat-intel/useThreatIntelPage';
+
+interface SilenceDraftState {
+  title: string;
+  description: string;
+  kind: ThreatSilenceKind;
+  indicatorType: ThreatIndicatorType;
+  value: string;
+  reason: string;
+  lockKind: boolean;
+  lockIndicatorType: boolean;
+}
+
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function hostnameRegexSuggestion(hostname: string): string {
+  return `^${escapeRegexLiteral(hostname.toLowerCase())}$`;
+}
 
 export const ThreatIntelPage: React.FC = () => {
   const {
     items,
     rawItems,
     feedStatus,
+    silences,
+    disabled,
     filters,
     availableFeeds,
     availableSourceGroups,
@@ -19,9 +44,67 @@ export const ThreatIntelPage: React.FC = () => {
     nodeErrors,
     nodesQueried,
     nodesResponded,
+    silenceSaving,
+    deletingSilenceId,
     load,
     updateFilters,
+    createSilence,
+    deleteSilence,
   } = useThreatIntelPage();
+  const [silenceDraft, setSilenceDraft] = React.useState<SilenceDraftState | null>(null);
+
+  const openManualSilence = () => {
+    setSilenceDraft({
+      title: 'Add silence',
+      description: 'Create a global silence for an exact indicator or a hostname regex.',
+      kind: 'exact',
+      indicatorType: 'hostname',
+      value: '',
+      reason: '',
+      lockKind: false,
+      lockIndicatorType: false,
+    });
+  };
+
+  const openExactSilence = (item: ThreatFinding) => {
+    setSilenceDraft({
+      title: 'Silence exact indicator',
+      description: 'Create a global silence for future matches of this exact indicator.',
+      kind: 'exact',
+      indicatorType: item.indicator_type,
+      value: item.indicator,
+      reason: '',
+      lockKind: true,
+      lockIndicatorType: true,
+    });
+  };
+
+  const openHostnameRegexSilence = (item: ThreatFinding) => {
+    setSilenceDraft({
+      title: 'Silence hostname regex',
+      description:
+        'Create a hostname-only regex silence. Adjust the pattern if you want to broaden the suppression scope.',
+      kind: 'hostname_regex',
+      indicatorType: 'hostname',
+      value: hostnameRegexSuggestion(item.indicator),
+      reason: '',
+      lockKind: true,
+      lockIndicatorType: true,
+    });
+  };
+
+  const submitSilence = async () => {
+    if (!silenceDraft) {
+      return;
+    }
+    await createSilence({
+      kind: silenceDraft.kind,
+      indicator_type: silenceDraft.kind === 'exact' ? silenceDraft.indicatorType : undefined,
+      value: silenceDraft.value,
+      reason: silenceDraft.reason.trim() || undefined,
+    });
+    setSilenceDraft(null);
+  };
 
   return (
     <div className="space-y-6">
@@ -31,8 +114,8 @@ export const ThreatIntelPage: React.FC = () => {
             Threats
           </h1>
           <p className="text-sm mt-2 max-w-2xl" style={{ color: 'var(--text-muted)' }}>
-            Cluster-wide intelligence matches, feed freshness, and audit pivots from the
-            merged threat pipeline.
+            Cluster-wide intelligence matches, feed freshness, and audit pivots from the merged
+            threat pipeline.
           </p>
         </div>
 
@@ -68,6 +151,13 @@ export const ThreatIntelPage: React.FC = () => {
           {error}
         </div>
       )}
+
+      <ThreatDisableBanner
+        disabled={disabled}
+        onOpenSettings={() => {
+          window.location.assign('/settings');
+        }}
+      />
 
       {partial && (
         <div
@@ -127,8 +217,7 @@ export const ThreatIntelPage: React.FC = () => {
           <ul className="space-y-1 text-sm" style={{ color: 'var(--text-muted)' }}>
             {nodeErrors.map((nodeError) => (
               <li key={`${nodeError.node_id}:${nodeError.error}`}>
-                <span style={{ color: 'var(--text)' }}>{nodeError.node_id}</span>:{' '}
-                {nodeError.error}
+                <span style={{ color: 'var(--text)' }}>{nodeError.node_id}</span>: {nodeError.error}
               </li>
             ))}
           </ul>
@@ -146,17 +235,81 @@ export const ThreatIntelPage: React.FC = () => {
 
       <ThreatFeedStatusPanel feedStatus={feedStatus} />
 
+      <ThreatSilencesPanel
+        items={silences}
+        loading={loading}
+        deletingId={deletingSilenceId}
+        onDelete={(id) => void deleteSilence(id)}
+        onCreateManual={openManualSilence}
+      />
+
       <section className="space-y-3">
         <div>
           <h2 className="text-lg font-semibold" style={{ color: 'var(--text)' }}>
             Findings
           </h2>
           <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-            {items.length} findings match the current view.
+            {disabled
+              ? 'Threat findings are hidden while threat analysis is disabled.'
+              : `${items.length} findings match the current view.`}
           </p>
         </div>
-        <ThreatFindingsTable items={items} loading={loading} />
+        {disabled ? (
+          <div
+            className="rounded-[1.4rem] p-6 text-sm"
+            style={{
+              background: 'var(--bg-glass-subtle)',
+              border: '1px dashed var(--border-subtle)',
+              color: 'var(--text-muted)',
+            }}
+          >
+            Re-enable threat analysis from Settings to resume URL and IP processing and to reveal
+            stored findings again.
+          </div>
+        ) : (
+          <ThreatFindingsTable
+            items={items}
+            loading={loading}
+            onSilenceExact={openExactSilence}
+            onSilenceHostnameRegex={openHostnameRegexSilence}
+          />
+        )}
       </section>
+
+      <CreateThreatSilenceModal
+        open={silenceDraft !== null}
+        title={silenceDraft?.title ?? ''}
+        description={silenceDraft?.description ?? ''}
+        kind={silenceDraft?.kind ?? 'exact'}
+        indicatorType={silenceDraft?.indicatorType ?? 'hostname'}
+        value={silenceDraft?.value ?? ''}
+        reason={silenceDraft?.reason ?? ''}
+        saving={silenceSaving}
+        lockKind={silenceDraft?.lockKind}
+        lockIndicatorType={silenceDraft?.lockIndicatorType}
+        onKindChange={(kind) =>
+          setSilenceDraft((current) =>
+            current
+              ? {
+                  ...current,
+                  kind,
+                  indicatorType: kind === 'hostname_regex' ? 'hostname' : current.indicatorType,
+                }
+              : current,
+          )
+        }
+        onIndicatorTypeChange={(indicatorType) =>
+          setSilenceDraft((current) => (current ? { ...current, indicatorType } : current))
+        }
+        onValueChange={(value) =>
+          setSilenceDraft((current) => (current ? { ...current, value } : current))
+        }
+        onReasonChange={(reason) =>
+          setSilenceDraft((current) => (current ? { ...current, reason } : current))
+        }
+        onClose={() => setSilenceDraft(null)}
+        onSubmit={() => void submitSilence()}
+      />
     </div>
   );
 };

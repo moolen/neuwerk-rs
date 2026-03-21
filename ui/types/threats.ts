@@ -9,6 +9,7 @@ export type ThreatEnrichmentStatus =
   | 'completed'
   | 'failed';
 export type ThreatRefreshOutcome = 'success' | 'failed' | 'skipped';
+export type ThreatSilenceKind = 'exact' | 'hostname_regex';
 
 export interface ThreatFeedIndicatorCounts {
   hostname: number;
@@ -52,6 +53,21 @@ export interface ThreatFindingQueryResponse {
   node_errors: ThreatNodeError[];
   nodes_queried: number;
   nodes_responded: number;
+  disabled: boolean;
+}
+
+export interface ThreatSilenceEntry {
+  id: string;
+  kind: ThreatSilenceKind;
+  indicator_type?: ThreatIndicatorType | null;
+  value: string;
+  reason?: string | null;
+  created_at: number;
+  created_by?: string | null;
+}
+
+export interface ThreatSilenceListResponse {
+  items: ThreatSilenceEntry[];
 }
 
 export interface ThreatFeedStatusItem {
@@ -73,4 +89,5 @@ export interface ThreatFeedStatusResponse {
   last_successful_refresh_at?: number | null;
   last_refresh_outcome?: ThreatRefreshOutcome | null;
   feeds: ThreatFeedStatusItem[];
+  disabled: boolean;
 }

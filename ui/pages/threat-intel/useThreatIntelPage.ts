@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { getThreatFeedStatus, getThreatFindings } from '../../services/api';
+import {
+  createThreatSilence,
+  deleteThreatSilence,
+  getThreatFeedStatus,
+  getThreatFindings,
+  listThreatSilences,
+} from '../../services/api';
+import type { CreateThreatSilenceRequest } from '../../services/apiClient/threats';
 import type {
   ThreatFeedStatusResponse,
   ThreatFinding,
   ThreatNodeError,
+  ThreatSilenceEntry,
 } from '../../types';
 import {
   buildThreatFindingsParams,
@@ -64,9 +72,14 @@ function buildSearchFromFilters(filters: ThreatFilters): string {
   return query ? `?${query}` : '';
 }
 
+function sortSilences(items: ThreatSilenceEntry[]): ThreatSilenceEntry[] {
+  return [...items].sort((left, right) => right.created_at - left.created_at);
+}
+
 export function useThreatIntelPage() {
   const [rawItems, setRawItems] = useState<ThreatFinding[]>([]);
   const [feedStatus, setFeedStatus] = useState<ThreatFeedStatusResponse | null>(null);
+  const [silences, setSilences] = useState<ThreatSilenceEntry[]>([]);
   const [filters, setFilters] = useState<ThreatFilters>(() =>
     createDefaultThreatFilters(window.location.search),
   );
@@ -76,6 +89,9 @@ export function useThreatIntelPage() {
   const [nodeErrors, setNodeErrors] = useState<ThreatNodeError[]>([]);
   const [nodesQueried, setNodesQueried] = useState(0);
   const [nodesResponded, setNodesResponded] = useState(0);
+  const [disabled, setDisabled] = useState(false);
+  const [silenceSaving, setSilenceSaving] = useState(false);
+  const [deletingSilenceId, setDeletingSilenceId] = useState<string | null>(null);
   const serverFilterKey = buildServerFilterKey(filters);
 
   const load = async (activeFilters: ThreatFilters = filters) => {
@@ -83,9 +99,10 @@ export function useThreatIntelPage() {
     setError(null);
 
     try {
-      const [feeds, findings] = await Promise.all([
+      const [feeds, findings, silenceList] = await Promise.all([
         getThreatFeedStatus(),
         getThreatFindings(buildThreatFindingsParams(activeFilters, Date.now())),
+        listThreatSilences(),
       ]);
       setFeedStatus(feeds);
       setRawItems(findings.items);
@@ -93,6 +110,8 @@ export function useThreatIntelPage() {
       setNodeErrors(findings.node_errors);
       setNodesQueried(findings.nodes_queried);
       setNodesResponded(findings.nodes_responded);
+      setSilences(sortSilences(silenceList.items));
+      setDisabled(Boolean(findings.disabled || feeds.disabled));
     } catch (err) {
       console.error('Failed to load threat intel data:', err);
       setError(err instanceof Error ? err.message : 'Failed to load threat intel data');
@@ -137,10 +156,39 @@ export function useThreatIntelPage() {
     setFilters((current) => ({ ...current, ...patch }));
   };
 
+  const createSilence = async (request: CreateThreatSilenceRequest) => {
+    try {
+      setSilenceSaving(true);
+      setError(null);
+      await createThreatSilence(request);
+      await load(filters);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create threat silence');
+      throw err;
+    } finally {
+      setSilenceSaving(false);
+    }
+  };
+
+  const removeSilence = async (id: string) => {
+    try {
+      setDeletingSilenceId(id);
+      setError(null);
+      await deleteThreatSilence(id);
+      await load(filters);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete threat silence');
+      throw err;
+    } finally {
+      setDeletingSilenceId(null);
+    }
+  };
+
   return {
     items,
     rawItems,
     feedStatus,
+    silences,
     filters,
     availableFeeds,
     availableSourceGroups,
@@ -150,7 +198,12 @@ export function useThreatIntelPage() {
     nodeErrors,
     nodesQueried,
     nodesResponded,
+    disabled,
+    silenceSaving,
+    deletingSilenceId,
     load: () => load(filters),
     updateFilters,
+    createSilence,
+    deleteSilence: removeSilence,
   };
 }
