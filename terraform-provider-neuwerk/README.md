@@ -57,7 +57,7 @@ Token lifecycle semantics:
 
 Import semantics:
 
-- `neuwerk_service_account` imports by service account ID (the Neuwerk API returns UUIDs).
+- `neuwerk_service_account` imports by UUID.
 - `neuwerk_service_account_token` imports by `<service_account_id>/<token_id>`.
 
 ## Policy Resource
