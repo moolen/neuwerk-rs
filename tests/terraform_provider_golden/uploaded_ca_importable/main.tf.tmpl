@@ -16,11 +16,13 @@ provider "neuwerk" {
 }
 
 resource "neuwerk_tls_intercept_ca" "main" {
-  ca_cert_pem = <<-PEM
+  ca_cert_pem = trimspace(<<-PEM
 {{UPLOADED_CA_CERT_PEM}}
 PEM
+  )
 
-  ca_key_pem = <<-PEM
+  ca_key_pem = trimspace(<<-PEM
 {{UPLOADED_CA_KEY_PEM}}
 PEM
+  )
 }

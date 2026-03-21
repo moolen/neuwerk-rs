@@ -2,12 +2,16 @@ use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use neuwerk::controlplane::api_auth;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use tempfile::TempDir;
+use tokio::sync::Mutex;
+
+static RUNTIME_SIGNAL_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn next_addr(ip: Ipv4Addr) -> SocketAddr {
     let listener = TcpListener::bind(SocketAddr::from((ip, 0))).unwrap();
@@ -239,6 +243,7 @@ fn spawn_neuwerk(
 
 #[tokio::test]
 async fn neuwerk_binary_sigterm_flips_readiness_false_before_exit_and_restarts() {
+    let _guard = RUNTIME_SIGNAL_TEST_LOCK.lock().await;
     let dir = TempDir::new().unwrap();
     let tls_dir = dir.path().join("http-tls");
     let local_root = dir.path().join("var-lib");
@@ -357,6 +362,7 @@ async fn neuwerk_binary_sigterm_flips_readiness_false_before_exit_and_restarts()
 
 #[tokio::test]
 async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart() {
+    let _guard = RUNTIME_SIGNAL_TEST_LOCK.lock().await;
     let dir = TempDir::new().unwrap();
     let tls_dir = dir.path().join("http-tls");
     let local_root = dir.path().join("var-lib");

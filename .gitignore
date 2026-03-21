@@ -11,6 +11,7 @@
 /third_party/dpdk/build/
 /third_party/dpdk/install/
 .terraform
+.worktrees
 *.tfstate
 *.tfstate.backup
 /artifacts/image-build/

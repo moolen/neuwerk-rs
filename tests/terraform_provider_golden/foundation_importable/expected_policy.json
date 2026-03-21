@@ -2,35 +2,46 @@
   "default_policy": "deny",
   "source_groups": [
     {
+      "default_action": null,
       "id": "pods",
       "priority": 10,
+      "rules": [
+        {
+          "action": "allow",
+          "id": "allow-https",
+          "match": {
+            "dns_hostname": null,
+            "dst_cidrs": [],
+            "dst_ips": [],
+            "dst_ports": [
+              443
+            ],
+            "icmp_codes": [],
+            "icmp_types": [],
+            "proto": "tcp",
+            "src_ports": [],
+            "tls": null
+          },
+          "mode": "enforce",
+          "priority": 10
+        }
+      ],
       "sources": {
+        "cidrs": [],
+        "ips": [],
         "kubernetes": [
           {
             "integration": "prod-k8s",
+            "node_selector": null,
             "pod_selector": {
-              "namespace": "apps",
               "match_labels": {
                 "app": "api"
-              }
+              },
+              "namespace": "apps"
             }
           }
         ]
-      },
-      "rules": [
-        {
-          "id": "allow-https",
-          "priority": 10,
-          "action": "allow",
-          "mode": "enforce",
-          "match": {
-            "proto": "tcp",
-            "dst_ports": [
-              443
-            ]
-          }
-        }
-      ]
+      }
     }
   ]
 }

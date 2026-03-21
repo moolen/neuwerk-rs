@@ -294,7 +294,7 @@ func (r *policyResource) Read(ctx context.Context, req resource.ReadRequest, res
 	next.CompiledJSON = types.StringValue(compiledJSON)
 
 	if strings.TrimSpace(state.DocumentJSON.ValueString()) != "" {
-		next.DocumentJSON = types.StringValue(compiledJSON)
+		next.DocumentJSON = state.DocumentJSON
 	} else if state.SourceGroups.IsNull() && strings.TrimSpace(state.DefaultAction.ValueString()) == "" {
 		next.DocumentJSON = types.StringValue(compiledJSON)
 	}

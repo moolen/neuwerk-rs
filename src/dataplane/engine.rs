@@ -192,30 +192,34 @@ impl EngineState {
         }
     }
 
-    pub fn is_internal(&self, ip: Ipv4Addr) -> bool {
-        if let Some(cfg) = self.dataplane_config.get() {
-            let prefix = cfg.prefix.min(32);
-            if prefix == 0 {
-                return true;
-            }
-            let mask = u32::MAX.checked_shl(32 - prefix as u32).unwrap_or(0);
-            let net = u32::from(cfg.ip) & mask;
-            let addr = u32::from(ip) & mask;
-            if net == addr {
-                return true;
-            }
-        }
-        if self.policy_snapshot.load().is_internal(ip) {
-            return true;
-        }
-        let prefix = self.internal_prefix.min(32);
+    fn cidr_contains_ip(ip: Ipv4Addr, net_ip: Ipv4Addr, prefix: u8) -> bool {
+        let prefix = prefix.min(32);
         if prefix == 0 {
             return true;
         }
         let mask = u32::MAX.checked_shl(32 - prefix as u32).unwrap_or(0);
-        let net = u32::from(self.internal_net) & mask;
+        let net = u32::from(net_ip) & mask;
         let addr = u32::from(ip) & mask;
         net == addr
+    }
+
+    fn has_explicit_internal_cidr(&self) -> bool {
+        self.internal_net != Ipv4Addr::UNSPECIFIED || self.internal_prefix != 32
+    }
+
+    pub fn is_internal(&self, ip: Ipv4Addr) -> bool {
+        if self.policy_snapshot.load().is_internal(ip) {
+            return true;
+        }
+        if self.has_explicit_internal_cidr() {
+            return Self::cidr_contains_ip(ip, self.internal_net, self.internal_prefix);
+        }
+        if let Some(cfg) = self.dataplane_config.get() {
+            if Self::cidr_contains_ip(ip, cfg.ip, cfg.prefix) {
+                return true;
+            }
+        }
+        Self::cidr_contains_ip(ip, self.internal_net, self.internal_prefix)
     }
 
     pub fn set_time_override(&mut self, now_secs: Option<u64>) {
@@ -904,6 +908,7 @@ include!("engine/packet_path.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dataplane::config::DataplaneConfig;
     use crate::dataplane::policy::DefaultPolicy;
 
     fn test_state(snat_mode: SnatMode, idle_timeout_secs: u64) -> EngineState {
@@ -954,6 +959,32 @@ mod tests {
         let mut pkt = Packet::new(buf);
         assert!(pkt.recalc_checksums());
         pkt
+    }
+
+    #[test]
+    fn explicit_internal_cidr_overrides_dataplane_subnet_classification() {
+        let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+            DefaultPolicy::Allow,
+            vec![],
+        )));
+        let state = EngineState::new(
+            policy,
+            Ipv4Addr::new(192, 168, 178, 83),
+            32,
+            Ipv4Addr::UNSPECIFIED,
+            0,
+        );
+        state.dataplane_config.set(DataplaneConfig {
+            ip: Ipv4Addr::new(192, 168, 178, 77),
+            prefix: 24,
+            gateway: Ipv4Addr::new(192, 168, 178, 1),
+            mac: [0x52, 0x54, 0x00, 0x08, 0x1f, 0x1b],
+            lease_expiry: None,
+        });
+
+        assert!(state.is_internal(Ipv4Addr::new(192, 168, 178, 83)));
+        assert!(!state.is_internal(Ipv4Addr::new(192, 168, 178, 44)));
+        assert!(!state.is_internal(Ipv4Addr::new(192, 168, 178, 84)));
     }
 
     #[test]
@@ -1124,7 +1155,7 @@ mod tests {
             Action::Forward { out_port: 0 }
         );
 
-        state.set_time_override(Some(3));
+        state.set_time_override(Some(5));
         let mut unrelated = build_ipv4_tcp_flags(
             Ipv4Addr::new(10, 0, 0, 3),
             Ipv4Addr::new(198, 51, 100, 11),

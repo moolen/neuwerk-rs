@@ -2,8 +2,8 @@ use std::net::Ipv4Addr;
 
 use crate::dataplane::flow::FlowKey;
 
-pub const PORT_MIN: u16 = 40000;
-pub const PORT_MAX: u16 = 59999;
+pub const PORT_MIN: u16 = 1024;
+pub const PORT_MAX: u16 = 65535;
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
 
 const NAT_TABLE_DEFAULT_CAPACITY: usize = 1 << 15;
@@ -806,21 +806,7 @@ mod tests {
     #[test]
     fn allocation_wraps_from_port_max_to_port_min() {
         let mut table = NatTable::new_with_timeout(300);
-        let mut flow = FlowKey {
-            src_ip: Ipv4Addr::new(10, 0, 0, 2),
-            dst_ip: Ipv4Addr::new(203, 0, 113, 40),
-            src_port: 10000,
-            dst_port: 8443,
-            proto: 6,
-        };
-        let range = NatTable::port_range_len() as usize;
-        let mut flows = Vec::with_capacity(2);
-        while flows.len() < 2 {
-            if flow_hash(&flow) % NatTable::port_range_len() == range as u32 - 1 {
-                flows.push(flow);
-            }
-            flow.src_port = flow.src_port.wrapping_add(1);
-        }
+        let flows = colliding_flows_for_preferred_port(PORT_MAX, 2);
 
         let occupied = table.get_or_create(&flows[0], 1).unwrap();
         assert_eq!(occupied, PORT_MAX);
