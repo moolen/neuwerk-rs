@@ -2,6 +2,9 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -230,6 +233,85 @@ func TestServiceAccountTokenImportStateStartsWithoutRawToken(t *testing.T) {
 	}
 	if !state.Token.IsNull() {
 		t.Fatalf("expected imported token to be null")
+	}
+}
+
+func TestServiceAccountTokenCreateCanonicalizesServiceAccountIDInState(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/service-accounts/acc-123/tokens" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(payload) != 0 {
+			t.Fatalf("expected empty create payload, got %#v", payload)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"token":"signed-token",
+			"token_meta":{
+				"id":"tok-1",
+				"service_account_id":"acc-123",
+				"name":null,
+				"created_at":"2024-01-01T00:00:00Z",
+				"created_by":"admin",
+				"expires_at":null,
+				"revoked_at":null,
+				"last_used_at":null,
+				"kid":"kid-1",
+				"role":"readonly",
+				"status":"active"
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := newTestAPIClient(t, server)
+	res := newServiceAccountTokenResource()
+	configurable, ok := res.(resource.ResourceWithConfigure)
+	if !ok {
+		t.Fatalf("resource does not implement configure")
+	}
+	configurable.Configure(context.Background(), resource.ConfigureRequest{ProviderData: client}, &resource.ConfigureResponse{})
+
+	ctx := context.Background()
+	schemaResp := serviceAccountTokenSchema(t)
+	plan := tfsdk.Plan{Schema: schemaResp.Schema}
+	diags := plan.Set(ctx, serviceAccountTokenResourceModel{
+		ServiceAccountID: types.StringValue("  acc-123  "),
+	})
+	if diags.HasError() {
+		t.Fatalf("unexpected plan diagnostics: %#v", diags)
+	}
+
+	req := resource.CreateRequest{Plan: plan}
+	resp := resource.CreateResponse{State: tfsdk.State{Schema: schemaResp.Schema}}
+
+	res.Create(ctx, req, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %#v", resp.Diagnostics)
+	}
+
+	var state serviceAccountTokenResourceModel
+	resp.Diagnostics.Append(resp.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics reading state: %#v", resp.Diagnostics)
+	}
+	if state.ServiceAccountID.ValueString() != "acc-123" {
+		t.Fatalf("expected canonical service_account_id, got %q", state.ServiceAccountID.ValueString())
+	}
+	if state.Token.ValueString() != "signed-token" {
+		t.Fatalf("unexpected token %q", state.Token.ValueString())
 	}
 }
 

@@ -136,6 +136,7 @@ func (r *serviceAccountTokenResource) Create(ctx context.Context, req resource.C
 	if !validateServiceAccountTokenPlan(plan, &resp.Diagnostics) {
 		return
 	}
+	plan.ServiceAccountID = types.StringValue(serviceAccountID)
 
 	record, err := r.client.CreateServiceAccountToken(ctx, serviceAccountID, createServiceAccountTokenRequest{
 		Name:    optionalTrimmedStringPointer(plan.Name),
