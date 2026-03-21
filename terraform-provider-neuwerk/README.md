@@ -17,7 +17,7 @@ Provider authentication uses the existing bearer-token HTTP API. Admin-capable s
 ```hcl
 provider "neuwerk" {
   endpoints       = ["https://fw-a.example.com", "https://fw-b.example.com"]
-  token           = var.neuwerk_service_account_token
+  token           = neuwerk_service_account_token.automation.token
   ca_cert_pem     = file("${path.module}/neuwerk-ca.crt")
   request_timeout = "30s"
   retry_timeout   = "5s"
@@ -31,14 +31,14 @@ Service accounts are the intended automation identity for the provider. Tokens a
 ```hcl
 resource "neuwerk_service_account" "automation" {
   name  = "terraform-automation"
-  admin = true
+  role = "admin"
 }
 
 resource "neuwerk_service_account_token" "automation" {
   service_account_id = neuwerk_service_account.automation.id
   name               = "terraform-admin"
-  admin              = true
-  expires_at         = null
+  role    = "admin"
+  eternal = true
 }
 
 provider "neuwerk" {
@@ -58,6 +58,7 @@ Token lifecycle semantics:
 Import semantics:
 
 - `neuwerk_service_account` imports by UUID.
+- `neuwerk_service_account` imports by service account ID (the Neuwerk API returns UUIDs).
 - `neuwerk_service_account_token` imports by `<service_account_id>/<token_id>`.
 
 ## Policy Resource

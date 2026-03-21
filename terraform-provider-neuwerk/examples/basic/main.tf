@@ -16,14 +16,14 @@ provider "neuwerk" {
 
 resource "neuwerk_service_account" "terraform" {
   name  = "terraform"
-  admin = true
+  role = "admin"
 }
 
 resource "neuwerk_service_account_token" "terraform" {
   service_account_id = neuwerk_service_account.terraform.id
   name               = "terraform"
-  admin              = true
-  expires_at         = null
+  role    = "admin"
+  eternal = true
 }
 
 resource "neuwerk_kubernetes_integration" "prod" {
