@@ -304,6 +304,10 @@ impl Metrics {
         self.threat_enrichment_queue_depth.set(depth as f64);
     }
 
+    pub fn inc_threat_observation_enqueue_failure(&self) {
+        self.threat_observation_enqueue_failures.inc();
+    }
+
     pub fn set_threat_findings_active(&self, severity: &str, count: usize) {
         self.threat_findings_active
             .with_label_values(&[severity])

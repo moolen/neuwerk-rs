@@ -15,6 +15,7 @@ fn sample_threat_finding(node_id: &str) -> ThreatFinding {
         match_source: ThreatMatchSource::Stream,
         source_group: "apps".to_string(),
         severity: ThreatSeverity::Critical,
+        confidence: Some(95),
         feed_hits: vec![ThreatFeedHit {
             feed: "threatfox".to_string(),
             severity: ThreatSeverity::Critical,

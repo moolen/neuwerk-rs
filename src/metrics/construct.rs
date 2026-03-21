@@ -297,6 +297,11 @@ impl Metrics {
             "Threat enrichment queue depth",
         ))
         .map_err(|err| err.to_string())?;
+        let threat_observation_enqueue_failures = Counter::with_opts(Opts::new(
+            "neuwerk_threat_observation_enqueue_failures_total",
+            "Threat observation enqueue failures",
+        ))
+        .map_err(|err| err.to_string())?;
         let threat_findings_active = GaugeVec::new(
             Opts::new(
                 "neuwerk_threat_findings_active",
@@ -1173,6 +1178,9 @@ impl Metrics {
             .register(Box::new(threat_enrichment_queue_depth.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(threat_observation_enqueue_failures.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(threat_findings_active.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -1599,6 +1607,7 @@ impl Metrics {
             .with_label_values(&["default", "success"])
             .inc_by(0.0);
         threat_enrichment_queue_depth.set(0.0);
+        threat_observation_enqueue_failures.inc_by(0.0);
         threat_findings_active.with_label_values(&["high"]).set(0.0);
         threat_cluster_snapshot_version.set(0.0);
         svc_fail_closed.with_label_values(&["tls"]).inc_by(0.0);
@@ -1979,6 +1988,7 @@ impl Metrics {
             threat_backfill_duration_seconds,
             threat_enrichment_requests,
             threat_enrichment_queue_depth,
+            threat_observation_enqueue_failures,
             threat_findings_active,
             threat_cluster_snapshot_version,
             raft_is_leader,

@@ -299,6 +299,74 @@ impl AuditStore {
     }
 }
 
+pub(crate) fn finding_key_for_dataplane_event(
+    event: &crate::dataplane::AuditEvent,
+    policy_id: Option<Uuid>,
+    fqdn: Option<&str>,
+) -> String {
+    match event.event_type {
+        crate::dataplane::AuditEventType::L4Deny => key_for_fields(
+            AuditFindingType::L4Deny,
+            policy_id,
+            event.source_group.trim(),
+            None,
+            Some(event.dst_ip),
+            Some(event.dst_port),
+            Some(event.proto),
+            normalize_opt(fqdn.map(str::to_string)).as_deref(),
+            None,
+            None,
+            None,
+        ),
+        crate::dataplane::AuditEventType::TlsDeny => key_for_fields(
+            AuditFindingType::TlsDeny,
+            policy_id,
+            event.source_group.trim(),
+            None,
+            Some(event.dst_ip),
+            Some(event.dst_port),
+            None,
+            None,
+            normalize_opt(event.sni.clone()).as_deref(),
+            None,
+            None,
+        ),
+        crate::dataplane::AuditEventType::IcmpDeny => key_for_fields(
+            AuditFindingType::IcmpDeny,
+            policy_id,
+            event.source_group.trim(),
+            None,
+            Some(event.dst_ip),
+            None,
+            None,
+            None,
+            None,
+            event.icmp_type,
+            event.icmp_code,
+        ),
+    }
+}
+
+pub(crate) fn finding_key_for_dns_deny(
+    policy_id: Option<Uuid>,
+    source_group: &str,
+    hostname: &str,
+) -> String {
+    key_for_fields(
+        AuditFindingType::DnsDeny,
+        policy_id,
+        source_group.trim(),
+        normalize_opt(Some(hostname.to_string())).as_deref(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
 fn parse_finding_types(values: &[String]) -> Result<HashSet<AuditFindingType>, String> {
     let mut out = HashSet::new();
     for value in values {

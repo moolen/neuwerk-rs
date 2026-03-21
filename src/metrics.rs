@@ -144,6 +144,7 @@ pub struct MetricsInner {
     threat_backfill_duration_seconds: Histogram,
     threat_enrichment_requests: CounterVec,
     threat_enrichment_queue_depth: Gauge,
+    threat_observation_enqueue_failures: Counter,
     threat_findings_active: GaugeVec,
     threat_cluster_snapshot_version: Gauge,
     raft_is_leader: Gauge,
