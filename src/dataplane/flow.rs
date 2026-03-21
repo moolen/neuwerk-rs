@@ -354,6 +354,8 @@ pub struct FlowTable {
     resize_counters: FlowResizeCounters,
 }
 
+const DEFAULT_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS: u64 = 3;
+
 impl Default for FlowTable {
     fn default() -> Self {
         Self::new()
@@ -380,7 +382,7 @@ impl FlowTable {
         );
         let incomplete_tcp_syn_sent_idle_timeout_secs = env_timeout_secs(
             "NEUWERK_FLOW_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS",
-            incomplete_tcp_idle_timeout_secs,
+            DEFAULT_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS,
         );
         Self {
             slots: empty_slots(capacity),

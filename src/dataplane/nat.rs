@@ -2,8 +2,8 @@ use std::net::Ipv4Addr;
 
 use crate::dataplane::flow::FlowKey;
 
-pub const PORT_MIN: u16 = 40000;
-pub const PORT_MAX: u16 = 59999;
+pub const PORT_MIN: u16 = 1024;
+pub const PORT_MAX: u16 = 65535;
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
 
 const NAT_TABLE_DEFAULT_CAPACITY: usize = 1 << 15;
