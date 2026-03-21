@@ -7,6 +7,8 @@ Implemented resources:
 - `neuwerk_policy`
 - `neuwerk_kubernetes_integration`
 - `neuwerk_tls_intercept_ca`
+- `neuwerk_service_account`
+- `neuwerk_service_account_token`
 
 Provider authentication uses the existing bearer-token HTTP API. Admin-capable service-account tokens are supported and are the intended machine-auth mechanism for automation.
 
@@ -21,6 +23,42 @@ provider "neuwerk" {
   retry_timeout   = "5s"
 }
 ```
+
+## Service Account Resources
+
+Service accounts are the intended automation identity for the provider. Tokens are mint-once secrets and should be stored in Terraform state as sensitive values.
+
+```hcl
+resource "neuwerk_service_account" "automation" {
+  name  = "terraform-automation"
+  admin = true
+}
+
+resource "neuwerk_service_account_token" "automation" {
+  service_account_id = neuwerk_service_account.automation.id
+  name               = "terraform-admin"
+  admin              = true
+  expires_at         = null
+}
+
+provider "neuwerk" {
+  endpoints       = ["https://fw-a.example.com", "https://fw-b.example.com"]
+  token           = neuwerk_service_account_token.automation.token
+  ca_cert_pem     = file("${path.module}/neuwerk-ca.crt")
+  request_timeout = "30s"
+  retry_timeout   = "5s"
+}
+```
+
+Token lifecycle semantics:
+
+- Raw token material is returned only at create time. The provider stores that value in Terraform state as a sensitive secret.
+- Importing an existing token restores metadata only; the raw token remains unavailable after import.
+
+Import semantics:
+
+- `neuwerk_service_account` imports by UUID.
+- `neuwerk_service_account_token` imports by `<service_account_id>/<token_id>`.
 
 ## Policy Resource
 
