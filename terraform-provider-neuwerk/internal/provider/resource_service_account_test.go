@@ -246,9 +246,9 @@ func TestServiceAccountReadRemovesStateWhenNotFound(t *testing.T) {
 	schemaResp := serviceAccountSchema(t)
 	state := tfsdk.State{Schema: schemaResp.Schema}
 	diags := state.Set(ctx, serviceAccountResourceModel{
-		ID:    types.StringValue("acc-1"),
-		Name:  types.StringValue("ci-bot"),
-		Role:  types.StringValue("admin"),
+		ID:     types.StringValue("acc-1"),
+		Name:   types.StringValue("ci-bot"),
+		Role:   types.StringValue("admin"),
 		Status: types.StringValue("active"),
 	})
 	if diags.HasError() {
