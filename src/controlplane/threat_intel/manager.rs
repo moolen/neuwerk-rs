@@ -754,12 +754,14 @@ mod tests {
     use crate::controlplane::threat_intel::feeds::{snapshot_with_cidr, snapshot_with_hostname};
     use crate::controlplane::threat_intel::settings::ThreatIntelSettings;
     use crate::controlplane::threat_intel::types::ThreatSeverity;
+    use crate::metrics::Metrics;
+    use reqwest::Client;
     use uuid::Uuid;
 
     use super::{
         compute_snapshot_status, load_local_feed_status, persist_local_feed_status,
-        persist_local_snapshot, refresh_from_payloads, ThreatFeedPayloads, ThreatFeedRefreshState,
-        ThreatRefreshOutcome,
+        persist_local_snapshot, refresh_from_payloads, refresh_local_once, ThreatFeedPayloads,
+        ThreatFeedRefreshState, ThreatRefreshOutcome,
     };
 
     #[test]
@@ -917,6 +919,33 @@ mod tests {
             .feeds
             .iter()
             .any(|feed| feed.feed == "threatfox" && feed.indicator_counts.hostname == 1));
+    }
+
+    #[tokio::test]
+    async fn threat_disabled_refresh_local_once_skips_feed_refresh() {
+        let root = temp_root();
+        let config = super::ThreatManagerConfig {
+            local_data_root: root.clone(),
+            cluster: None,
+            metrics: Metrics::new().expect("metrics"),
+            poll_interval: std::time::Duration::from_secs(5),
+            http_timeout: std::time::Duration::from_secs(1),
+        };
+        let client = Client::builder().build().expect("client");
+        let settings = ThreatIntelSettings {
+            enabled: false,
+            ..ThreatIntelSettings::default()
+        };
+
+        refresh_local_once(&config, &client, &settings, None)
+            .await
+            .expect("refresh");
+
+        assert!(
+            load_local_feed_status(&root)
+                .expect("load status")
+                .is_none()
+        );
     }
 
     fn temp_root() -> PathBuf {

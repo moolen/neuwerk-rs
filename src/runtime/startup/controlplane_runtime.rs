@@ -24,6 +24,7 @@ use neuwerk::controlplane::threat_intel::manager::{
 use neuwerk::controlplane::threat_intel::runtime::{
     backfill_audit_findings, ThreatRuntimeConfig, ThreatRuntimeHandle, ThreatRuntimeSlot,
 };
+use neuwerk::controlplane::threat_intel::silences::{load_silences, ThreatSilenceList};
 use neuwerk::controlplane::threat_intel::settings::{load_settings, ThreatIntelSettings};
 use neuwerk::controlplane::threat_intel::store::ThreatStore;
 use neuwerk::controlplane::threat_intel::types::ThreatSeverity;
@@ -112,11 +113,16 @@ fn unix_now() -> u64 {
 
 fn maybe_backfill_snapshot(
     local_data_root: &Path,
+    settings: &ThreatIntelSettings,
     snapshot: &ThreatSnapshot,
+    silences: &ThreatSilenceList,
     audit_store: &AuditStore,
     threat_store: &ThreatStore,
     metrics: &Metrics,
 ) -> Result<(), String> {
+    if !settings.enabled {
+        return Ok(());
+    }
     let mut state = load_local_runtime_state(local_data_root)?.unwrap_or_default();
     if state.last_backfill_snapshot_version == Some(snapshot.version) {
         return Ok(());
@@ -126,7 +132,7 @@ fn maybe_backfill_snapshot(
     persist_local_runtime_state(local_data_root, &state)?;
 
     let started = Instant::now();
-    match backfill_audit_findings(snapshot, audit_store, threat_store, metrics) {
+    match backfill_audit_findings(snapshot, silences, audit_store, threat_store, metrics) {
         Ok(_) => {
             state.last_backfill_snapshot_version = Some(snapshot.version);
             state.last_backfill_completed_at = Some(unix_now());
@@ -151,32 +157,39 @@ fn maybe_backfill_snapshot(
 enum ThreatRuntimeState {
     Disabled {
         settings: ThreatIntelSettings,
+        silences: ThreatSilenceList,
     },
     AwaitingSnapshot {
         settings: ThreatIntelSettings,
+        silences: ThreatSilenceList,
     },
     Enabled {
         settings: ThreatIntelSettings,
         snapshot: ThreatSnapshot,
+        silences: ThreatSilenceList,
     },
 }
 
 fn runtime_state_from_inputs(
     settings: &ThreatIntelSettings,
     snapshot: Option<ThreatSnapshot>,
+    silences: &ThreatSilenceList,
 ) -> ThreatRuntimeState {
     if !settings.enabled {
         return ThreatRuntimeState::Disabled {
             settings: settings.clone(),
+            silences: silences.clone(),
         };
     }
     match snapshot {
         Some(snapshot) => ThreatRuntimeState::Enabled {
             settings: settings.clone(),
             snapshot,
+            silences: silences.clone(),
         },
         None => ThreatRuntimeState::AwaitingSnapshot {
             settings: settings.clone(),
+            silences: silences.clone(),
         },
     }
 }
@@ -188,22 +201,27 @@ fn apply_threat_runtime_state(
     state: &ThreatRuntimeState,
 ) -> Result<(), String> {
     match state {
-        ThreatRuntimeState::Disabled { settings } => {
+        ThreatRuntimeState::Disabled { settings, .. } => {
             store.reconcile_alertable_threshold(settings.alert_threshold)?;
             slot.replace(None)?;
             refresh_threat_active_metrics(metrics, store)?;
             metrics.set_threat_cluster_snapshot_version(0);
         }
-        ThreatRuntimeState::AwaitingSnapshot { settings } => {
+        ThreatRuntimeState::AwaitingSnapshot { settings, .. } => {
             store.reconcile_alertable_threshold(settings.alert_threshold)?;
             slot.replace(None)?;
             refresh_threat_active_metrics(metrics, store)?;
             metrics.set_threat_cluster_snapshot_version(0);
         }
-        ThreatRuntimeState::Enabled { settings, snapshot } => {
+        ThreatRuntimeState::Enabled {
+            settings,
+            snapshot,
+            silences,
+        } => {
             store.reconcile_alertable_threshold(settings.alert_threshold)?;
             let handle = ThreatRuntimeHandle::spawn(ThreatRuntimeConfig {
                 snapshot: snapshot.clone(),
+                silences: silences.clone(),
                 store: store.clone(),
                 metrics: metrics.clone(),
                 queue_capacity: 4096,
@@ -278,6 +296,11 @@ pub async fn start_controlplane_runtime(
         &local_data_root,
     )
     .map_err(|err| format!("load threat intel settings: {err}"))?;
+    let (threat_silences, _) = load_silences(
+        cluster_runtime.map(|runtime| &runtime.store),
+        &local_data_root,
+    )
+    .map_err(|err| format!("load threat silences: {err}"))?;
     let threat_runtime = ThreatRuntimeSlot::new(None, Some(metrics.clone()));
     let threat_cluster_store = cluster_runtime.map(|runtime| runtime.store.clone());
     let initial_snapshot = load_effective_snapshot(threat_cluster_store.as_ref(), &local_data_root)
@@ -285,7 +308,8 @@ pub async fn start_controlplane_runtime(
             warn!(error = %err, "threat intel snapshot load failed");
             None
         });
-    let initial_state = runtime_state_from_inputs(&threat_settings, initial_snapshot);
+    let initial_state =
+        runtime_state_from_inputs(&threat_settings, initial_snapshot, &threat_silences);
     if matches!(initial_state, ThreatRuntimeState::AwaitingSnapshot { .. }) {
         warn!("threat intel enabled but no local snapshot is available yet");
     }
@@ -299,10 +323,15 @@ pub async fn start_controlplane_runtime(
         threat_manager_cluster,
         metrics.clone(),
     ));
-    if let ThreatRuntimeState::Enabled { snapshot, .. } = &initial_state {
+    if let ThreatRuntimeState::Enabled {
+        snapshot, silences, ..
+    } = &initial_state
+    {
         if let Err(err) = maybe_backfill_snapshot(
             &local_data_root,
+            &threat_settings,
             snapshot,
+            silences,
             &audit_store,
             &threat_store,
             &metrics,
@@ -330,6 +359,14 @@ pub async fn start_controlplane_runtime(
                         continue;
                     }
                 };
+                let silences =
+                    match load_silences(threat_cluster_store.as_ref(), &local_data_root) {
+                        Ok((silences, _)) => silences,
+                        Err(err) => {
+                            warn!(error = %err, "threat intel silences reload failed");
+                            continue;
+                        }
+                    };
                 let snapshot = match load_effective_snapshot(
                     threat_cluster_store.as_ref(),
                     &local_data_root,
@@ -340,7 +377,7 @@ pub async fn start_controlplane_runtime(
                         None
                     }
                 };
-                let state = runtime_state_from_inputs(&settings, snapshot);
+                let state = runtime_state_from_inputs(&settings, snapshot, &silences);
                 if applied_state != state {
                     if matches!(state, ThreatRuntimeState::AwaitingSnapshot { .. }) {
                         warn!("threat intel enabled but no local snapshot is available yet");
@@ -353,10 +390,15 @@ pub async fn start_controlplane_runtime(
                     }
                     applied_state = state.clone();
                 }
-                if let ThreatRuntimeState::Enabled { snapshot, .. } = &state {
+                if let ThreatRuntimeState::Enabled {
+                    snapshot, silences, ..
+                } = &state
+                {
                     if let Err(err) = maybe_backfill_snapshot(
                         &local_data_root,
+                        &settings,
                         snapshot,
+                        silences,
                         &audit_store,
                         &threat_store,
                         &metrics,
@@ -551,10 +593,15 @@ pub async fn start_controlplane_runtime(
 mod tests {
     use super::{
         apply_threat_runtime_state, load_runtime_threat_snapshot, load_startup_threat_snapshot,
-        runtime_state_from_inputs, threat_snapshot_path, ThreatRuntimeState,
+        maybe_backfill_snapshot, runtime_state_from_inputs, threat_snapshot_path,
+        ThreatRuntimeState,
+    };
+    use crate::controlplane::audit::{
+        AuditEvent as StoredAuditEvent, AuditFindingType, AuditStore, DEFAULT_AUDIT_STORE_MAX_BYTES,
     };
     use crate::controlplane::threat_intel::feeds::{ThreatIndicatorSnapshotItem, ThreatSnapshot};
     use crate::controlplane::threat_intel::runtime::ThreatRuntimeSlot;
+    use crate::controlplane::threat_intel::silences::ThreatSilenceList;
     use crate::controlplane::threat_intel::settings::ThreatIntelSettings;
     use crate::controlplane::threat_intel::store::{
         ThreatEnrichmentStatus, ThreatFeedHit, ThreatFinding, ThreatMatchSource, ThreatStore,
@@ -620,7 +667,7 @@ mod tests {
             ..ThreatIntelSettings::default()
         };
 
-        let state = runtime_state_from_inputs(&settings, None);
+        let state = runtime_state_from_inputs(&settings, None, &ThreatSilenceList::default());
 
         assert!(matches!(
             state,
@@ -629,7 +676,8 @@ mod tests {
                     enabled: true,
                     alert_threshold: ThreatSeverity::Critical,
                     ..
-                }
+                },
+                ..
             }
         ));
     }
@@ -648,6 +696,7 @@ mod tests {
                 alert_threshold: ThreatSeverity::High,
                 ..ThreatIntelSettings::default()
             },
+            silences: ThreatSilenceList::default(),
         };
 
         apply_threat_runtime_state(&slot, &store, &metrics, &state).expect("apply state");
@@ -661,6 +710,64 @@ mod tests {
             ),
             1.0
         );
+    }
+
+    #[test]
+    fn threat_disabled_backfill_skips_persisting_findings() {
+        let metrics = Metrics::new().expect("metrics");
+        let root = temp_store_dir();
+        let audit_store = AuditStore::new(root.join("audit"), DEFAULT_AUDIT_STORE_MAX_BYTES);
+        audit_store.ingest(
+            StoredAuditEvent {
+                finding_type: AuditFindingType::DnsDeny,
+                source_group: "apps".to_string(),
+                hostname: Some("bad.example.com".to_string()),
+                dst_ip: None,
+                dst_port: None,
+                proto: None,
+                fqdn: None,
+                sni: None,
+                icmp_type: None,
+                icmp_code: None,
+                query_type: Some(1),
+                observed_at: 123,
+            },
+            None,
+            "node-a",
+        );
+        let store = ThreatStore::new(root.join("threat-store"), 1024 * 1024).expect("store");
+
+        maybe_backfill_snapshot(
+            &root,
+            &ThreatIntelSettings {
+                enabled: false,
+                ..ThreatIntelSettings::default()
+            },
+            &ThreatSnapshot::new(
+                3,
+                10,
+                vec![ThreatIndicatorSnapshotItem {
+                    indicator: "bad.example.com".to_string(),
+                    indicator_type: ThreatIndicatorType::Hostname,
+                    feed: "threatfox".to_string(),
+                    severity: ThreatSeverity::High,
+                    confidence: Some(80),
+                    tags: Vec::new(),
+                    reference_url: None,
+                    feed_first_seen: Some(1),
+                    feed_last_seen: Some(2),
+                    expires_at: None,
+                }],
+            ),
+            &ThreatSilenceList::default(),
+            &audit_store,
+            &store,
+            &metrics,
+        )
+        .expect("backfill");
+
+        let items = store.query(&Default::default()).expect("query");
+        assert!(items.is_empty());
     }
 
     fn sample_finding(indicator: &str, severity: ThreatSeverity) -> ThreatFinding {

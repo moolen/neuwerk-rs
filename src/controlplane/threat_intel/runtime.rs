@@ -15,6 +15,7 @@ use crate::dataplane::{AuditEvent, AuditEventType};
 
 use super::feeds::{ThreatIndicatorSnapshotItem, ThreatSnapshot};
 use super::matcher::{ThreatMatch, ThreatMatcher};
+use super::silences::{ThreatSilenceList, ThreatSilenceMatcher};
 use super::store::{
     ThreatEnrichmentStatus, ThreatFeedHit, ThreatFinding, ThreatMatchSource, ThreatStore,
 };
@@ -25,6 +26,7 @@ static THREAT_OBSERVATION_DROPS: AtomicUsize = AtomicUsize::new(0);
 #[derive(Debug, Clone)]
 pub struct ThreatRuntimeConfig {
     pub snapshot: ThreatSnapshot,
+    pub silences: ThreatSilenceList,
     pub store: ThreatStore,
     pub metrics: Metrics,
     pub queue_capacity: usize,
@@ -247,20 +249,27 @@ impl ThreatRuntimeHandle {
     pub fn spawn(config: ThreatRuntimeConfig) -> Self {
         let ThreatRuntimeConfig {
             snapshot,
+            silences,
             store,
             metrics,
             queue_capacity,
         } = config;
         let matcher = Arc::new(RwLock::new(ThreatMatcher::from_snapshot(&snapshot)));
+        let silences = Arc::new(
+            ThreatSilenceMatcher::compile(&silences)
+                .expect("threat runtime silences must be validated before spawn"),
+        );
         metrics.set_threat_cluster_snapshot_version(snapshot.version);
         let (sender, mut receiver) = mpsc::channel(queue_capacity.max(1));
         let matcher_for_worker = matcher.clone();
+        let silences_for_worker = silences.clone();
         let store_for_worker = store.clone();
         let metrics_for_worker = metrics.clone();
         tokio::spawn(async move {
             while let Some(observation) = receiver.recv().await {
                 process_observation(
                     &matcher_for_worker,
+                    &silences_for_worker,
                     &store_for_worker,
                     &metrics_for_worker,
                     observation,
@@ -341,6 +350,7 @@ impl ThreatRuntimeSlot {
 
 fn process_observation(
     matcher: &Arc<RwLock<ThreatMatcher>>,
+    silences: &ThreatSilenceMatcher,
     store: &ThreatStore,
     metrics: &Metrics,
     observation: ThreatObservation,
@@ -348,6 +358,9 @@ fn process_observation(
     let Some(threat_match) = match_observation(matcher, &observation) else {
         return;
     };
+    if silences.matches(threat_match.indicator_type, &threat_match.indicator) {
+        return;
+    }
 
     let finding = build_finding(observation, threat_match);
     let finding = match store.upsert_finding(finding) {
@@ -502,17 +515,22 @@ fn refresh_active_metrics(metrics: &Metrics, store: &ThreatStore) -> Result<(), 
 
 pub fn backfill_audit_findings(
     snapshot: &ThreatSnapshot,
+    silences: &ThreatSilenceList,
     audit_store: &AuditStore,
     threat_store: &ThreatStore,
     metrics: &Metrics,
 ) -> Result<usize, String> {
     let matcher = ThreatMatcher::from_snapshot(snapshot);
+    let silence_matcher = ThreatSilenceMatcher::compile(silences)?;
     let mut inserted = 0usize;
     for audit_finding in audit_store.all_findings()? {
         for observation in ThreatObservation::from_audit_finding(&audit_finding) {
             let Some(threat_match) = match_observation_with_matcher(&matcher, &observation) else {
                 continue;
             };
+            if silence_matcher.matches(threat_match.indicator_type, &threat_match.indicator) {
+                continue;
+            }
             let finding = build_backfill_finding(&audit_finding, &observation, threat_match);
             let finding = threat_store.upsert_finding(finding)?;
             record_match_metrics(metrics, &finding);
@@ -577,6 +595,7 @@ mod tests {
     use crate::controlplane::threat_intel::feeds::{
         snapshot_with_cidr, snapshot_with_hostname, ThreatIndicatorSnapshotItem, ThreatSnapshot,
     };
+    use crate::controlplane::threat_intel::silences::{ThreatSilenceEntry, ThreatSilenceList};
     use crate::controlplane::threat_intel::store::{
         ThreatFinding, ThreatFindingQuery, ThreatStore,
     };
@@ -593,6 +612,7 @@ mod tests {
         let store = ThreatStore::new(temp_store_dir(), 1024 * 1024).expect("store");
         let handle = ThreatRuntimeHandle::spawn(ThreatRuntimeConfig {
             snapshot: snapshot_with_hostname("Bad.Example.com.", ThreatSeverity::High, "threatfox"),
+            silences: ThreatSilenceList::default(),
             store: store.clone(),
             metrics: metrics.clone(),
             queue_capacity: 16,
@@ -660,6 +680,7 @@ mod tests {
                 ThreatSeverity::Critical,
                 "spamhaus_drop",
             ),
+            silences: ThreatSilenceList::default(),
             store: store.clone(),
             metrics: metrics.clone(),
             queue_capacity: 16,
@@ -773,6 +794,7 @@ mod tests {
                     },
                 ],
             ),
+            silences: ThreatSilenceList::default(),
             store,
             metrics: metrics.clone(),
             queue_capacity: 16,
@@ -818,6 +840,7 @@ mod tests {
             .expect("set threshold");
         let handle = ThreatRuntimeHandle::spawn(ThreatRuntimeConfig {
             snapshot: snapshot_with_hostname("bad.example.com", ThreatSeverity::High, "threatfox"),
+            silences: ThreatSilenceList::default(),
             store: store.clone(),
             metrics: metrics.clone(),
             queue_capacity: 16,
@@ -853,6 +876,7 @@ mod tests {
         let store = ThreatStore::new(temp_store_dir(), 1024 * 1024).expect("store");
         let handle = ThreatRuntimeHandle::spawn(ThreatRuntimeConfig {
             snapshot: snapshot_with_hostname("bad.example.com", ThreatSeverity::High, "threatfox"),
+            silences: ThreatSilenceList::default(),
             store: store.clone(),
             metrics,
             queue_capacity: 16,
@@ -943,6 +967,70 @@ mod tests {
     }
 
     #[test]
+    fn threat_disabled_runtime_slot_drops_new_observations() {
+        let slot = ThreatRuntimeSlot::default();
+
+        let observed = slot.try_observe(
+            ThreatObservation::dns("bad.example.com", "apps", "node-a", 1).expect("observation"),
+        );
+
+        assert!(!observed);
+    }
+
+    #[tokio::test]
+    async fn runtime_drops_silenced_hostname_before_persist() {
+        let metrics = Metrics::new().expect("metrics");
+        let store = ThreatStore::new(temp_store_dir(), 1024 * 1024).expect("store");
+        let handle = ThreatRuntimeHandle::spawn(ThreatRuntimeConfig {
+            snapshot: snapshot_with_hostname("bad.example.com", ThreatSeverity::High, "threatfox"),
+            silences: ThreatSilenceList {
+                items: vec![ThreatSilenceEntry::exact(
+                    ThreatIndicatorType::Hostname,
+                    "bad.example.com".to_string(),
+                    None,
+                )],
+            },
+            store: store.clone(),
+            metrics,
+            queue_capacity: 16,
+        });
+
+        assert!(handle.try_observe(
+            ThreatObservation::dns("bad.example.com", "apps", "node-a", 600).expect("observation")
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let items = store.query(&ThreatFindingQuery::default()).expect("query");
+        assert!(items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn runtime_drops_silenced_hostname_regex_before_persist() {
+        let metrics = Metrics::new().expect("metrics");
+        let store = ThreatStore::new(temp_store_dir(), 1024 * 1024).expect("store");
+        let handle = ThreatRuntimeHandle::spawn(ThreatRuntimeConfig {
+            snapshot: snapshot_with_hostname("bad.example.com", ThreatSeverity::High, "threatfox"),
+            silences: ThreatSilenceList {
+                items: vec![ThreatSilenceEntry::hostname_regex(
+                    "^.*\\.example\\.com$".to_string(),
+                    None,
+                )],
+            },
+            store: store.clone(),
+            metrics,
+            queue_capacity: 16,
+        });
+
+        assert!(handle.try_observe(
+            ThreatObservation::dns("bad.example.com", "apps", "node-a", 601).expect("observation")
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let items = store.query(&ThreatFindingQuery::default()).expect("query");
+        assert!(items.is_empty());
+    }
+
+    #[test]
     fn backfill_audit_findings_creates_backfill_matches() {
         let metrics = Metrics::new().expect("metrics");
         let audit_store = AuditStore::new(temp_audit_store_dir(), DEFAULT_AUDIT_STORE_MAX_BYTES);
@@ -968,6 +1056,7 @@ mod tests {
 
         let inserted = backfill_audit_findings(
             &snapshot_with_hostname("bad.example.com", ThreatSeverity::High, "threatfox"),
+            &ThreatSilenceList::default(),
             &audit_store,
             &threat_store,
             &metrics,
@@ -988,6 +1077,52 @@ mod tests {
             items[0].audit_links,
             vec!["dns:none:apps:bad.example.com".to_string()]
         );
+    }
+
+    #[test]
+    fn backfill_audit_findings_skips_silenced_matches() {
+        let metrics = Metrics::new().expect("metrics");
+        let audit_store = AuditStore::new(temp_audit_store_dir(), DEFAULT_AUDIT_STORE_MAX_BYTES);
+        audit_store.ingest(
+            StoredAuditEvent {
+                finding_type: AuditFindingType::DnsDeny,
+                source_group: "apps".to_string(),
+                hostname: Some("bad.example.com".to_string()),
+                dst_ip: None,
+                dst_port: None,
+                proto: None,
+                fqdn: None,
+                sni: None,
+                icmp_type: None,
+                icmp_code: None,
+                query_type: Some(1),
+                observed_at: 123,
+            },
+            None,
+            "node-a",
+        );
+        let threat_store = ThreatStore::new(temp_store_dir(), 1024 * 1024).expect("store");
+
+        let inserted = backfill_audit_findings(
+            &snapshot_with_hostname("bad.example.com", ThreatSeverity::High, "threatfox"),
+            &ThreatSilenceList {
+                items: vec![ThreatSilenceEntry::exact(
+                    ThreatIndicatorType::Hostname,
+                    "bad.example.com".to_string(),
+                    None,
+                )],
+            },
+            &audit_store,
+            &threat_store,
+            &metrics,
+        )
+        .expect("backfill");
+
+        assert_eq!(inserted, 0);
+        let items = threat_store
+            .query(&ThreatFindingQuery::default())
+            .expect("query");
+        assert!(items.is_empty());
     }
 
     async fn wait_for_findings(store: &ThreatStore, expected: usize) -> Vec<ThreatFinding> {
