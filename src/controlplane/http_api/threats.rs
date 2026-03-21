@@ -9,6 +9,10 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::controlplane::threat_intel::manager::{
+    load_effective_feed_status, ThreatFeedIndicatorCounts, ThreatFeedRefreshState,
+    ThreatFeedStatusItem,
+};
 use crate::controlplane::threat_intel::settings::{
     load_settings, persist_settings_cluster, persist_settings_local, ThreatIntelSettings,
 };
@@ -32,19 +36,6 @@ pub(super) struct ThreatIntelSettingsStatus {
 pub(super) struct ThreatIntelSettingsUpdateRequest {
     pub enabled: Option<bool>,
     pub alert_threshold: Option<ThreatSeverity>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub(super) struct ThreatFeedStatusItem {
-    pub feed: String,
-    pub enabled: bool,
-    pub snapshot_age_seconds: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub(super) struct ThreatFeedStatusResponse {
-    pub snapshot_version: u64,
-    pub feeds: Vec<ThreatFeedStatusItem>,
 }
 
 #[utoipa::path(
@@ -177,7 +168,7 @@ pub(super) async fn threat_findings_local(
         ("sessionCookie" = [])
     ),
     responses(
-        (status = 200, description = "Threat feed status", body = ThreatFeedStatusResponse),
+        (status = 200, description = "Threat feed status", body = ThreatFeedRefreshState),
         (status = 401, description = "Missing or invalid token", body = super::openapi::ErrorBody)
     )
 )]
@@ -196,28 +187,16 @@ pub(super) async fn threat_feed_status(
         Ok(value) => value,
         Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
     };
-    let feeds = vec![
-        ThreatFeedStatusItem {
-            feed: "threatfox".to_string(),
-            enabled: settings.baseline_feeds.threatfox.enabled,
-            snapshot_age_seconds: None,
-        },
-        ThreatFeedStatusItem {
-            feed: "urlhaus".to_string(),
-            enabled: settings.baseline_feeds.urlhaus.enabled,
-            snapshot_age_seconds: None,
-        },
-        ThreatFeedStatusItem {
-            feed: "spamhaus_drop".to_string(),
-            enabled: settings.baseline_feeds.spamhaus_drop.enabled,
-            snapshot_age_seconds: None,
-        },
-    ];
-    Json(ThreatFeedStatusResponse {
-        snapshot_version: 0,
-        feeds,
-    })
-    .into_response()
+    let status = match load_effective_feed_status(
+        state.cluster.as_ref().map(|cluster| &cluster.store),
+        &local_controlplane_data_root(&state.local_store),
+        &settings,
+    ) {
+        Ok(Some(status)) => status,
+        Ok(None) => empty_feed_status(&settings),
+        Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+    };
+    Json(status).into_response()
 }
 
 #[allow(clippy::result_large_err)]
@@ -274,6 +253,49 @@ fn threat_findings_local_response(state: &ApiState, query: &ThreatFindingQuery) 
         nodes_responded: 1,
     })
     .into_response()
+}
+
+fn empty_feed_status(settings: &ThreatIntelSettings) -> ThreatFeedRefreshState {
+    ThreatFeedRefreshState {
+        snapshot_version: 0,
+        snapshot_generated_at: None,
+        last_refresh_started_at: None,
+        last_refresh_completed_at: None,
+        last_successful_refresh_at: None,
+        last_refresh_outcome: None,
+        feeds: vec![
+            ThreatFeedStatusItem {
+                feed: "threatfox".to_string(),
+                enabled: settings.baseline_feeds.threatfox.enabled,
+                snapshot_age_seconds: None,
+                last_refresh_started_at: None,
+                last_refresh_completed_at: None,
+                last_successful_refresh_at: None,
+                last_refresh_outcome: None,
+                indicator_counts: ThreatFeedIndicatorCounts::default(),
+            },
+            ThreatFeedStatusItem {
+                feed: "urlhaus".to_string(),
+                enabled: settings.baseline_feeds.urlhaus.enabled,
+                snapshot_age_seconds: None,
+                last_refresh_started_at: None,
+                last_refresh_completed_at: None,
+                last_successful_refresh_at: None,
+                last_refresh_outcome: None,
+                indicator_counts: ThreatFeedIndicatorCounts::default(),
+            },
+            ThreatFeedStatusItem {
+                feed: "spamhaus_drop".to_string(),
+                enabled: settings.baseline_feeds.spamhaus_drop.enabled,
+                snapshot_age_seconds: None,
+                last_refresh_started_at: None,
+                last_refresh_completed_at: None,
+                last_successful_refresh_at: None,
+                last_refresh_outcome: None,
+                indicator_counts: ThreatFeedIndicatorCounts::default(),
+            },
+        ],
+    }
 }
 
 async fn threat_findings_leader_response(

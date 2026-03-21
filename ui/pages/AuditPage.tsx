@@ -19,6 +19,7 @@ export const AuditPage: React.FC = () => {
     policyId,
     setPolicyId,
     load,
+    threatAnnotations,
     performanceModeEnabled,
     performanceModeLoading,
     performanceModeError,
@@ -103,7 +104,7 @@ export const AuditPage: React.FC = () => {
         {filtered.length} findings
       </div>
 
-      <AuditFindingsTable items={filtered} />
+      <AuditFindingsTable items={filtered} threatAnnotations={threatAnnotations} />
     </div>
   );
 };

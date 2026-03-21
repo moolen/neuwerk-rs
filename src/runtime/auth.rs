@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use neuwerk::controlplane::api_auth::{self, ApiKeySet, DEFAULT_TTL_SECS};
 use neuwerk::controlplane::cluster::rpc::{AuthClient, RaftTlsConfig};
+use neuwerk::controlplane::cluster::store::ClusterStore;
 
 use crate::runtime::cli::{parse_socket, take_flag_value};
 
@@ -256,6 +257,22 @@ fn ensure_local_keyset(tls_dir: &Path) -> Result<(PathBuf, ApiKeySet), String> {
     Ok((api_auth::local_keyset_path(tls_dir), keyset))
 }
 
+fn load_cluster_keyset_for_local_target(tls_dir: &Path) -> Result<Option<ApiKeySet>, String> {
+    let Some(local_root) = tls_dir.parent() else {
+        return Ok(None);
+    };
+    let cluster_raft_dir = local_root.join("cluster").join("raft");
+    if !cluster_raft_dir.exists() {
+        return Ok(None);
+    }
+    let store = ClusterStore::open_read_only(cluster_raft_dir).map_err(|err| err.to_string())?;
+    let Some(keyset) = api_auth::load_keyset_from_store(&store)? else {
+        return Ok(None);
+    };
+    api_auth::persist_keyset_to_file(&api_auth::local_keyset_path(tls_dir), &keyset)?;
+    Ok(Some(keyset))
+}
+
 fn execute_local_command(target: AuthTarget, cmd: AuthCommand) -> Result<Vec<String>, String> {
     let tls_dir = match target {
         AuthTarget::Local { tls_dir } => tls_dir,
@@ -264,9 +281,16 @@ fn execute_local_command(target: AuthTarget, cmd: AuthCommand) -> Result<Vec<Str
         }
     };
     let (path, mut keyset) = ensure_local_keyset(&tls_dir)?;
+    let cluster_keyset = load_cluster_keyset_for_local_target(&tls_dir)?;
 
     match cmd {
         AuthCommand::KeyRotate { .. } => {
+            if cluster_keyset.is_some() {
+                return Err(
+                    "clustered node detected; use --cluster-addr/--cluster-tls-dir for auth key rotation"
+                        .to_string(),
+                );
+            }
             let key = api_auth::rotate_key(&mut keyset)?;
             api_auth::persist_keyset_to_file(&path, &keyset)?;
             Ok(vec![format!(
@@ -275,6 +299,7 @@ fn execute_local_command(target: AuthTarget, cmd: AuthCommand) -> Result<Vec<Str
             )])
         }
         AuthCommand::KeyList { .. } => {
+            let keyset = cluster_keyset.as_ref().unwrap_or(&keyset);
             let mut lines = vec![format!("active kid: {}", keyset.active_kid)];
             for key in api_auth::list_summaries(&keyset) {
                 let active = if key.signing { "signing" } else { "" };
@@ -286,6 +311,12 @@ fn execute_local_command(target: AuthTarget, cmd: AuthCommand) -> Result<Vec<Str
             Ok(lines)
         }
         AuthCommand::KeyRetire { kid, .. } => {
+            if cluster_keyset.is_some() {
+                return Err(
+                    "clustered node detected; use --cluster-addr/--cluster-tls-dir for auth key retirement"
+                        .to_string(),
+                );
+            }
             api_auth::retire_key(&mut keyset, &kid)?;
             api_auth::persist_keyset_to_file(&path, &keyset)?;
             Ok(vec![format!("retired key: {kid}")])
@@ -298,6 +329,7 @@ fn execute_local_command(target: AuthTarget, cmd: AuthCommand) -> Result<Vec<Str
             ..
         } => {
             let ttl = ttl_secs.or(Some(DEFAULT_TTL_SECS));
+            let keyset = cluster_keyset.as_ref().unwrap_or(&keyset);
             let token =
                 api_auth::mint_token_with_roles(&keyset, &sub, ttl, kid.as_deref(), roles)?.token;
             Ok(vec![token])
@@ -328,6 +360,12 @@ pub async fn run_auth_command(cmd: AuthCommand) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use neuwerk::controlplane::api_auth::API_KEYS_KEY;
+    use neuwerk::controlplane::cluster::store::ClusterStore;
+    use neuwerk::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
+    use openraft::entry::EntryPayload;
+    use openraft::storage::RaftStateMachine;
+    use openraft::{CommittedLeaderId, Entry, LogId};
     use tempfile::TempDir;
 
     use super::*;
@@ -399,6 +437,51 @@ mod tests {
             .expect("missing keyset");
         let claims = api_auth::validate_token(&output[0], &keyset).expect("validate token");
         assert_eq!(claims.sub, "demo-admin");
+        assert_eq!(claims.roles, Some(vec!["admin".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn execute_auth_command_prefers_cluster_keyset_when_present() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let tls_dir = tempdir.path().join("http-tls");
+        std::fs::create_dir_all(&tls_dir).expect("mkdir http tls");
+        let local_keyset = api_auth::ensure_local_keyset(&tls_dir).expect("local keyset");
+
+        let seed_tls_dir = tempdir.path().join("seed-http-tls");
+        std::fs::create_dir_all(&seed_tls_dir).expect("mkdir seed tls");
+        api_auth::ensure_local_keyset(&seed_tls_dir).expect("seed keyset");
+        let cluster_keyset =
+            api_auth::load_keyset_from_file(&api_auth::local_keyset_path(&seed_tls_dir))
+                .expect("load seed keyset")
+                .expect("missing seed keyset");
+        assert_ne!(local_keyset.active_kid, cluster_keyset.active_kid);
+
+        let mut store = ClusterStore::open(tempdir.path().join("cluster").join("raft")).unwrap();
+        store
+            .apply([Entry::<ClusterTypeConfig> {
+                log_id: LogId::new(CommittedLeaderId::new(1, 1), 1),
+                payload: EntryPayload::Normal(ClusterCommand::Put {
+                    key: API_KEYS_KEY.to_vec(),
+                    value: serde_json::to_vec(&cluster_keyset).expect("serialize keyset"),
+                }),
+            }])
+            .await
+            .expect("apply cluster keyset");
+
+        let output = execute_auth_command(AuthCommand::TokenMint {
+            target: AuthTarget::Local {
+                tls_dir: tls_dir.clone(),
+            },
+            sub: "cluster-admin".to_string(),
+            ttl_secs: Some(300),
+            kid: None,
+            roles: Some(vec!["admin".to_string()]),
+        })
+        .await
+        .expect("mint token");
+
+        let claims = api_auth::validate_token(&output[0], &cluster_keyset).expect("validate token");
+        assert_eq!(claims.sub, "cluster-admin");
         assert_eq!(claims.roles, Some(vec!["admin".to_string()]));
     }
 }

@@ -1,11 +1,12 @@
 use std::env;
+#[cfg(test)]
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use neuwerk::controlplane;
 use neuwerk::controlplane::audit::{AuditStore, DEFAULT_AUDIT_STORE_MAX_BYTES};
@@ -14,8 +15,14 @@ use neuwerk::controlplane::integrations::IntegrationStore;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
 use neuwerk::controlplane::ready::ReadinessState;
 use neuwerk::controlplane::threat_intel::feeds::ThreatSnapshot;
+#[cfg(test)]
+use neuwerk::controlplane::threat_intel::manager::local_snapshot_path;
+use neuwerk::controlplane::threat_intel::manager::{
+    load_effective_snapshot, load_local_runtime_state, persist_local_runtime_state,
+    spawn_refresh_loop, ThreatManagerCluster, ThreatManagerConfig, ThreatRefreshOutcome,
+};
 use neuwerk::controlplane::threat_intel::runtime::{
-    ThreatRuntimeConfig, ThreatRuntimeHandle, ThreatRuntimeSlot,
+    backfill_audit_findings, ThreatRuntimeConfig, ThreatRuntimeHandle, ThreatRuntimeSlot,
 };
 use neuwerk::controlplane::threat_intel::settings::{load_settings, ThreatIntelSettings};
 use neuwerk::controlplane::threat_intel::store::ThreatStore;
@@ -50,6 +57,11 @@ pub struct ControlplaneRuntimeHandles {
     pub shared_intercept_demux: Arc<SharedInterceptDemuxState>,
 }
 
+#[cfg(test)]
+fn threat_snapshot_path(local_data_root: &Path) -> PathBuf {
+    local_snapshot_path(local_data_root)
+}
+
 fn env_u64_with_default(name: &str, default: u64) -> u64 {
     match env::var(name) {
         Ok(raw) => match raw.trim().parse::<u64>() {
@@ -67,12 +79,9 @@ fn env_u64_with_default(name: &str, default: u64) -> u64 {
     }
 }
 
-fn threat_snapshot_path(local_data_root: &Path) -> PathBuf {
-    local_data_root.join("threat-intel").join("snapshot.json")
-}
-
+#[cfg(test)]
 fn load_startup_threat_snapshot(local_data_root: &Path) -> Result<Option<ThreatSnapshot>, String> {
-    let path = threat_snapshot_path(local_data_root);
+    let path = local_snapshot_path(local_data_root);
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -83,12 +92,57 @@ fn load_startup_threat_snapshot(local_data_root: &Path) -> Result<Option<ThreatS
     Ok(Some(snapshot))
 }
 
+#[cfg(test)]
 fn load_runtime_threat_snapshot(local_data_root: &Path) -> Option<ThreatSnapshot> {
     match load_startup_threat_snapshot(local_data_root) {
         Ok(snapshot) => snapshot,
         Err(err) => {
             warn!(error = %err, "threat intel snapshot load failed");
             None
+        }
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs()
+}
+
+fn maybe_backfill_snapshot(
+    local_data_root: &Path,
+    snapshot: &ThreatSnapshot,
+    audit_store: &AuditStore,
+    threat_store: &ThreatStore,
+    metrics: &Metrics,
+) -> Result<(), String> {
+    let mut state = load_local_runtime_state(local_data_root)?.unwrap_or_default();
+    if state.last_backfill_snapshot_version == Some(snapshot.version) {
+        return Ok(());
+    }
+
+    state.last_backfill_started_at = Some(unix_now());
+    persist_local_runtime_state(local_data_root, &state)?;
+
+    let started = Instant::now();
+    match backfill_audit_findings(snapshot, audit_store, threat_store, metrics) {
+        Ok(_) => {
+            state.last_backfill_snapshot_version = Some(snapshot.version);
+            state.last_backfill_completed_at = Some(unix_now());
+            state.last_backfill_outcome = Some(ThreatRefreshOutcome::Success);
+            persist_local_runtime_state(local_data_root, &state)?;
+            metrics.inc_threat_backfill_run("success");
+            metrics.observe_threat_backfill_duration(started.elapsed());
+            Ok(())
+        }
+        Err(err) => {
+            state.last_backfill_completed_at = Some(unix_now());
+            state.last_backfill_outcome = Some(ThreatRefreshOutcome::Failed);
+            persist_local_runtime_state(local_data_root, &state)?;
+            metrics.inc_threat_backfill_run("failed");
+            metrics.observe_threat_backfill_duration(started.elapsed());
+            Err(err)
         }
     }
 }
@@ -225,16 +279,41 @@ pub async fn start_controlplane_runtime(
     )
     .map_err(|err| format!("load threat intel settings: {err}"))?;
     let threat_runtime = ThreatRuntimeSlot::new(None, Some(metrics.clone()));
-    let initial_snapshot = load_runtime_threat_snapshot(&local_data_root);
+    let threat_cluster_store = cluster_runtime.map(|runtime| runtime.store.clone());
+    let initial_snapshot = load_effective_snapshot(threat_cluster_store.as_ref(), &local_data_root)
+        .unwrap_or_else(|err| {
+            warn!(error = %err, "threat intel snapshot load failed");
+            None
+        });
     let initial_state = runtime_state_from_inputs(&threat_settings, initial_snapshot);
     if matches!(initial_state, ThreatRuntimeState::AwaitingSnapshot { .. }) {
         warn!("threat intel enabled but no local snapshot is available yet");
     }
     apply_threat_runtime_state(&threat_runtime, &threat_store, &metrics, &initial_state)?;
-    let threat_cluster_store = cluster_runtime.map(|runtime| runtime.store.clone());
+    let threat_manager_cluster = cluster_runtime.map(|runtime| ThreatManagerCluster {
+        raft: runtime.raft.clone(),
+        store: runtime.store.clone(),
+    });
+    spawn_refresh_loop(ThreatManagerConfig::new(
+        local_data_root.clone(),
+        threat_manager_cluster,
+        metrics.clone(),
+    ));
+    if let ThreatRuntimeState::Enabled { snapshot, .. } = &initial_state {
+        if let Err(err) = maybe_backfill_snapshot(
+            &local_data_root,
+            snapshot,
+            &audit_store,
+            &threat_store,
+            &metrics,
+        ) {
+            warn!(error = %err, "initial threat backfill failed");
+        }
+    }
     {
         let threat_runtime = threat_runtime.clone();
         let threat_store = threat_store.clone();
+        let audit_store = audit_store.clone();
         let metrics = metrics.clone();
         let local_data_root = local_data_root.clone();
         tokio::spawn(async move {
@@ -251,21 +330,40 @@ pub async fn start_controlplane_runtime(
                         continue;
                     }
                 };
-                let snapshot = load_runtime_threat_snapshot(&local_data_root);
+                let snapshot = match load_effective_snapshot(
+                    threat_cluster_store.as_ref(),
+                    &local_data_root,
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(err) => {
+                        warn!(error = %err, "threat intel snapshot reload failed");
+                        None
+                    }
+                };
                 let state = runtime_state_from_inputs(&settings, snapshot);
-                if applied_state == state {
-                    continue;
+                if applied_state != state {
+                    if matches!(state, ThreatRuntimeState::AwaitingSnapshot { .. }) {
+                        warn!("threat intel enabled but no local snapshot is available yet");
+                    }
+                    if let Err(err) =
+                        apply_threat_runtime_state(&threat_runtime, &threat_store, &metrics, &state)
+                    {
+                        warn!(error = %err, "threat runtime reload failed");
+                        continue;
+                    }
+                    applied_state = state.clone();
                 }
-                if matches!(state, ThreatRuntimeState::AwaitingSnapshot { .. }) {
-                    warn!("threat intel enabled but no local snapshot is available yet");
+                if let ThreatRuntimeState::Enabled { snapshot, .. } = &state {
+                    if let Err(err) = maybe_backfill_snapshot(
+                        &local_data_root,
+                        snapshot,
+                        &audit_store,
+                        &threat_store,
+                        &metrics,
+                    ) {
+                        warn!(error = %err, "threat backfill failed");
+                    }
                 }
-                if let Err(err) =
-                    apply_threat_runtime_state(&threat_runtime, &threat_store, &metrics, &state)
-                {
-                    warn!(error = %err, "threat runtime reload failed");
-                    continue;
-                }
-                applied_state = state;
             }
         });
     }

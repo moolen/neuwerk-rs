@@ -2,6 +2,7 @@ export type AppPage =
   | 'dashboard'
   | 'policies'
   | 'integrations'
+  | 'threats'
   | 'wiretap'
   | 'audit'
   | 'dns'
@@ -18,6 +19,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItemDefinition> = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'policies', label: 'Policies' },
   { id: 'integrations', label: 'Integrations' },
+  { id: 'threats', label: 'Threats' },
   { id: 'wiretap', label: 'Wiretap' },
   { id: 'audit', label: 'Audit' },
   { id: 'dns', label: 'DNS Cache' },
@@ -29,6 +31,9 @@ const APP_PAGE_SET = new Set<AppPage>(NAV_ITEMS.map((item) => item.id));
 
 export function getPageFromPathname(pathname: string): AppPage {
   const path = pathname.replace(/^\//, '').replace(/\/$/, '');
+  if (path === 'threat-intel') {
+    return 'threats';
+  }
   if (path === '' || !APP_PAGE_SET.has(path as AppPage)) {
     return 'dashboard';
   }

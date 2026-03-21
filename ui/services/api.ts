@@ -20,6 +20,8 @@ export {
 export { getDNSCache } from './apiClient/dns';
 export type { AuditFindingsParams } from './apiClient/audit';
 export { getAuditFindings } from './apiClient/audit';
+export type { ThreatFindingsParams } from './apiClient/threats';
+export { getThreatFeedStatus, getThreatFindings } from './apiClient/threats';
 export { subscribeToWiretap } from './apiClient/wiretap';
 export {
   createServiceAccount,
