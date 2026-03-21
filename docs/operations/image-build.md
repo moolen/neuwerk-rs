@@ -117,7 +117,7 @@ make package.image.build.gcp TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERSION=v
 ```
 
 Cloud builds require the usual provider credentials for Packer.
-These provider build targets are manual/optional build workflows and are not the canonical automated distribution path for published Ubuntu 24.04 appliance releases.
+These provider build targets are engineering-facing manual build workflows. They are not the canonical operator distribution path for published Ubuntu 24.04 appliance releases.
 
 ## Release Metadata
 
@@ -135,9 +135,11 @@ make package.image.release-assets TARGET=ubuntu-24.04-minimal-amd64 RELEASE_VERS
 
 Distribution contract for Ubuntu 24.04 appliance images:
 
-- GitHub Releases is the canonical distribution channel for Ubuntu 24.04 appliance images.
-- The published release artifacts are intended for manual import into AWS, Azure, and GCP.
+- GitHub Releases is the canonical distribution channel for the published `ubuntu-24.04-minimal-amd64` appliance image.
+- The published release artifacts contain a generic `qcow2` appliance bundle plus metadata.
+- AWS, Azure, and GCP consumption currently happens through operator-managed conversion and manual import.
 - Provider-native image publication is not automated in this phase.
+- The concrete operator workflow is documented in [Appliance Image Usage](./appliance-image-usage.md).
 
 This creates `artifacts/image-build/github-release/<target>/` with:
 
@@ -177,6 +179,8 @@ The workflow:
 6. creates or updates the GitHub Release for the requested tag
 
 This host-prebuild path exists to avoid compiling DPDK and the Rust workspace inside a software-emulated guest on GitHub-hosted runners. Local builds still default to the original in-guest compile path unless `USE_PREBUILT_ARTIFACTS=true` is passed to `make package.image.build.qemu`.
+
+The workflow currently publishes the generic `qcow2` release bundle only. Cloud-provider import, disk conversion, and first-boot appliance configuration remain operator-facing steps documented in [Appliance Image Usage](./appliance-image-usage.md).
 
 ## Current Artifact Sizes
 
