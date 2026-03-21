@@ -64,7 +64,10 @@ func TestServiceAccountTokenStateFromAPIKeepsPriorSecret(t *testing.T) {
 	t.Parallel()
 
 	prior := serviceAccountTokenResourceModel{
-		Token: types.StringValue("signed-token"),
+		ServiceAccountID: types.StringValue("acc-1"),
+		Name:             types.StringValue("deploy token"),
+		Role:             types.StringValue("readonly"),
+		Token:            types.StringValue("signed-token"),
 	}
 	record := &apiServiceAccountTokenMeta{
 		ID:               "tok-1",
@@ -114,6 +117,78 @@ func TestServiceAccountTokenStateFromAPIKeepsPriorSecret(t *testing.T) {
 	}
 	if state.Role.ValueString() != "readonly" {
 		t.Fatalf("unexpected role %q", state.Role.ValueString())
+	}
+	if state.Status.ValueString() != "active" {
+		t.Fatalf("unexpected status %q", state.Status.ValueString())
+	}
+}
+
+func TestServiceAccountTokenStateFromAPIPreservesManagedInputs(t *testing.T) {
+	t.Parallel()
+
+	prior := serviceAccountTokenResourceModel{
+		ServiceAccountID: types.StringValue("acc-keep"),
+		Name:             types.StringNull(),
+		TTL:              types.StringValue("24h"),
+		Eternal:          types.BoolValue(false),
+		Role:             types.StringNull(),
+		Token:            types.StringValue("signed-token"),
+	}
+	record := &apiServiceAccountTokenMeta{
+		ID:               "tok-1",
+		ServiceAccountID: "acc-from-api",
+		Name:             stringPtr("effective token name"),
+		CreatedAt:        "2024-01-01T00:00:00Z",
+		CreatedBy:        "admin",
+		ExpiresAt:        stringPtr("2024-01-02T00:00:00Z"),
+		RevokedAt:        nil,
+		LastUsedAt:       stringPtr("2024-01-01T12:00:00Z"),
+		Kid:              "kid-1",
+		Role:             "readonly",
+		Status:           "active",
+	}
+
+	state := serviceAccountTokenStateFromAPI(prior, record)
+
+	if state.ServiceAccountID.ValueString() != "acc-keep" {
+		t.Fatalf("service_account_id should preserve prior value, got %q", state.ServiceAccountID.ValueString())
+	}
+	if !state.Name.IsNull() {
+		t.Fatalf("name should preserve prior null value, got %q", state.Name.ValueString())
+	}
+	if state.TTL.ValueString() != "24h" {
+		t.Fatalf("ttl should preserve prior value, got %q", state.TTL.ValueString())
+	}
+	if state.Eternal.ValueBool() {
+		t.Fatalf("eternal should preserve prior false value")
+	}
+	if !state.Role.IsNull() {
+		t.Fatalf("role should preserve prior null value, got %q", state.Role.ValueString())
+	}
+	if state.Token.ValueString() != "signed-token" {
+		t.Fatalf("token should preserve prior value, got %q", state.Token.ValueString())
+	}
+
+	if state.ID.ValueString() != "tok-1" {
+		t.Fatalf("unexpected id %q", state.ID.ValueString())
+	}
+	if state.CreatedAt.ValueString() != "2024-01-01T00:00:00Z" {
+		t.Fatalf("unexpected created_at %q", state.CreatedAt.ValueString())
+	}
+	if state.CreatedBy.ValueString() != "admin" {
+		t.Fatalf("unexpected created_by %q", state.CreatedBy.ValueString())
+	}
+	if state.ExpiresAt.ValueString() != "2024-01-02T00:00:00Z" {
+		t.Fatalf("unexpected expires_at %q", state.ExpiresAt.ValueString())
+	}
+	if !state.RevokedAt.IsNull() {
+		t.Fatalf("expected revoked_at to be null")
+	}
+	if state.LastUsedAt.ValueString() != "2024-01-01T12:00:00Z" {
+		t.Fatalf("unexpected last_used_at %q", state.LastUsedAt.ValueString())
+	}
+	if state.Kid.ValueString() != "kid-1" {
+		t.Fatalf("unexpected kid %q", state.Kid.ValueString())
 	}
 	if state.Status.ValueString() != "active" {
 		t.Fatalf("unexpected status %q", state.Status.ValueString())
@@ -194,6 +269,31 @@ func TestFindServiceAccountTokenReturnsMatchByID(t *testing.T) {
 	}
 	if record.Kid != "kid-2" {
 		t.Fatalf("unexpected kid %q", record.Kid)
+	}
+}
+
+func TestServiceAccountTokenUpdateAlwaysErrors(t *testing.T) {
+	t.Parallel()
+
+	res := newServiceAccountTokenResource().(resource.Resource)
+	ctx := context.Background()
+	schemaResp := serviceAccountTokenSchema(t)
+
+	resp := resource.UpdateResponse{
+		State: tfsdk.State{Schema: schemaResp.Schema},
+	}
+	resp.State.Raw = tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil)
+
+	res.Update(ctx, resource.UpdateRequest{}, &resp)
+
+	if !resp.Diagnostics.HasError() {
+		t.Fatalf("expected update diagnostics error")
+	}
+	if got := resp.Diagnostics.Errors()[0].Detail(); got != "Service account tokens are immutable; replace the resource to mint a new token." {
+		t.Fatalf("unexpected error detail %q", got)
+	}
+	if !resp.State.Raw.IsNull() {
+		t.Fatalf("expected update path not to mutate state")
 	}
 }
 

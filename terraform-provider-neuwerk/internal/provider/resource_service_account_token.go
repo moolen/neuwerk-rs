@@ -290,15 +290,12 @@ func findServiceAccountToken(tokens []apiServiceAccountTokenMeta, id string) *ap
 func serviceAccountTokenStateFromAPI(prior serviceAccountTokenResourceModel, record *apiServiceAccountTokenMeta) serviceAccountTokenResourceModel {
 	state := prior
 	state.ID = types.StringValue(record.ID)
-	state.ServiceAccountID = types.StringValue(record.ServiceAccountID)
-	state.Name = optionalStringValue(record.Name)
 	state.CreatedAt = types.StringValue(record.CreatedAt)
 	state.CreatedBy = types.StringValue(record.CreatedBy)
 	state.ExpiresAt = optionalStringValue(record.ExpiresAt)
 	state.RevokedAt = optionalStringValue(record.RevokedAt)
 	state.LastUsedAt = optionalStringValue(record.LastUsedAt)
 	state.Kid = types.StringValue(record.Kid)
-	state.Role = types.StringValue(record.Role)
 	state.Status = types.StringValue(record.Status)
 	return state
 }
