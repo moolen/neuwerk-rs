@@ -3,6 +3,7 @@ import { PerformanceModeCard } from './settings/components/PerformanceModeCard';
 import { SettingsStatusCard } from './settings/components/SettingsStatusCard';
 import { SsoProvidersForm } from './settings/components/SsoProvidersForm';
 import { SupportBundleCard } from './settings/components/SupportBundleCard';
+import { ThreatAnalysisCard } from './settings/components/ThreatAnalysisCard';
 import { TlsInterceptCaForm } from './settings/components/TlsInterceptCaForm';
 import { useSettingsPage } from './settings/useSettingsPage';
 
@@ -10,8 +11,10 @@ export const SettingsPage: React.FC = () => {
   const {
     status,
     performanceMode,
+    threatSettings,
     loading,
     performanceModeSaving,
+    threatSettingsSaving,
     saving,
     generating,
     downloading,
@@ -28,6 +31,7 @@ export const SettingsPage: React.FC = () => {
     sysdumpDownloading,
     downloadClusterBundle,
     savePerformanceMode,
+    saveThreatAnalysisEnabled,
     ssoProviders,
     ssoLoading,
     ssoSaving,
@@ -49,7 +53,7 @@ export const SettingsPage: React.FC = () => {
       <div className="mb-6">
         <h1 className="text-2xl font-bold mb-1" style={{ color: 'var(--text)' }}>Settings</h1>
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Manage performance mode, DPI TLS interception CA material, and SSO providers.
+          Manage performance mode, threat analysis, DPI TLS interception CA material, and SSO providers.
         </p>
       </div>
 
@@ -58,6 +62,13 @@ export const SettingsPage: React.FC = () => {
         loading={loading}
         saving={performanceModeSaving}
         onToggle={(enabled) => void savePerformanceMode(enabled)}
+      />
+
+      <ThreatAnalysisCard
+        status={threatSettings}
+        loading={loading}
+        saving={threatSettingsSaving}
+        onToggle={(enabled) => void saveThreatAnalysisEnabled(enabled)}
       />
 
       <SettingsStatusCard status={status} loading={loading} onRefresh={() => void refresh()} />

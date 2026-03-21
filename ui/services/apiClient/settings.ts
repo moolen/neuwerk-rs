@@ -1,4 +1,8 @@
-import type { PerformanceModeStatus, TlsInterceptCaStatus } from '../../types';
+import type {
+  PerformanceModeStatus,
+  ThreatIntelSettingsStatus,
+  TlsInterceptCaStatus,
+} from '../../types';
 import { fetchBlob, fetchJSON, fetchText } from './transport';
 
 export async function getTlsInterceptCaStatus(): Promise<TlsInterceptCaStatus> {
@@ -34,6 +38,19 @@ export async function getPerformanceModeStatus(): Promise<PerformanceModeStatus>
 
 export async function updatePerformanceMode(enabled: boolean): Promise<PerformanceModeStatus> {
   return fetchJSON<PerformanceModeStatus>('/settings/performance-mode', {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function getThreatIntelSettings(): Promise<ThreatIntelSettingsStatus> {
+  return fetchJSON<ThreatIntelSettingsStatus>('/settings/threat-intel');
+}
+
+export async function updateThreatIntelSettings(
+  enabled: boolean
+): Promise<ThreatIntelSettingsStatus> {
+  return fetchJSON<ThreatIntelSettingsStatus>('/settings/threat-intel', {
     method: 'PUT',
     body: JSON.stringify({ enabled }),
   });

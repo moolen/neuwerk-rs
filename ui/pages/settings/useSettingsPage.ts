@@ -5,15 +5,22 @@ import {
   deleteSsoProvider,
   generateTlsInterceptCa,
   getPerformanceModeStatus,
+  getThreatIntelSettings,
   getTlsInterceptCaCertPem,
   getTlsInterceptCaStatus,
   listSsoProviders,
   testSsoProvider,
+  updateThreatIntelSettings,
   updatePerformanceMode,
   updateSsoProvider,
   updateTlsInterceptCa,
 } from '../../services/api';
-import type { PerformanceModeStatus, SsoProviderView, TlsInterceptCaStatus } from '../../types';
+import type {
+  PerformanceModeStatus,
+  SsoProviderView,
+  ThreatIntelSettingsStatus,
+  TlsInterceptCaStatus,
+} from '../../types';
 import { validateTlsInterceptCaInput } from './helpers';
 import {
   buildSsoCreateRequest,
@@ -27,8 +34,10 @@ import {
 export function useSettingsPage() {
   const [status, setStatus] = useState<TlsInterceptCaStatus | null>(null);
   const [performanceMode, setPerformanceMode] = useState<PerformanceModeStatus | null>(null);
+  const [threatSettings, setThreatSettings] = useState<ThreatIntelSettingsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [performanceModeSaving, setPerformanceModeSaving] = useState(false);
+  const [threatSettingsSaving, setThreatSettingsSaving] = useState(false);
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -51,12 +60,14 @@ export function useSettingsPage() {
     try {
       setLoading(true);
       setError(null);
-      const [current, perf] = await Promise.all([
+      const [current, perf, threat] = await Promise.all([
         getTlsInterceptCaStatus(),
         getPerformanceModeStatus(),
+        getThreatIntelSettings(),
       ]);
       setStatus(current);
       setPerformanceMode(perf);
+      setThreatSettings(threat);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
@@ -197,6 +208,21 @@ export function useSettingsPage() {
     }
   };
 
+  const saveThreatAnalysisEnabled = async (enabled: boolean) => {
+    setError(null);
+    setSuccess(null);
+    try {
+      setThreatSettingsSaving(true);
+      const next = await updateThreatIntelSettings(enabled);
+      setThreatSettings(next);
+      setSuccess(`Threat analysis ${next.enabled ? 'enabled' : 'disabled'}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update threat analysis');
+    } finally {
+      setThreatSettingsSaving(false);
+    }
+  };
+
   const createNewSsoDraft = () => {
     setSsoError(null);
     setSsoSuccess(null);
@@ -280,8 +306,10 @@ export function useSettingsPage() {
   return {
     status,
     performanceMode,
+    threatSettings,
     loading,
     performanceModeSaving,
+    threatSettingsSaving,
     saving,
     generating,
     downloading,
@@ -298,6 +326,7 @@ export function useSettingsPage() {
     sysdumpDownloading,
     downloadClusterBundle,
     savePerformanceMode,
+    saveThreatAnalysisEnabled,
     ssoProviders,
     ssoLoading,
     ssoSaving,
