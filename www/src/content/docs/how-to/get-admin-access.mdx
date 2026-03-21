@@ -1,17 +1,57 @@
 ---
 title: Get Admin Access
-description: Use an existing bearer token, browser token login, SSO, or the cluster auth CLI to obtain operator access.
+description: Bootstrap a short-lived admin token with the CLI, exchange it for a browser session, or use SSO and cluster auth flows.
 order: 1
 ---
 
 Use this guide when you need to access the web UI or management API as an administrator.
 
-There are four practical access paths:
+For a first-time operator, the recommended bootstrap path is:
+
+1. use console or SSH access to the Neuwerk node
+2. mint a short-lived admin token locally with the CLI
+3. exchange that token for a browser session in the UI
+4. create a longer-lived automation token only after normal admin access is working
+
+Other practical access paths are:
 
 1. use an existing bearer token directly with the API
 2. exchange an existing bearer token for a browser session
 3. log in through SSO if an admin-mapped provider is already configured
 4. mint a temporary admin token through the cluster auth CLI in clustered deployments
+
+## Bootstrap A First Admin Token On A Single Node
+
+If you have console or SSH access to a single-node appliance, mint a short-lived human admin token
+directly from the local HTTP auth keyset:
+
+```bash
+umask 077
+sudo neuwerk auth token mint \
+  --sub operator@example.com \
+  --roles admin \
+  --ttl 30m \
+  --http-tls-dir /var/lib/neuwerk/http-tls > neuwerk-admin.jwt
+```
+
+Why this is the recommended single-node bootstrap:
+
+- it only requires operator access to the node itself
+- it does not depend on pre-existing API credentials
+- it mints a short-lived JWT signed by the same local auth material the HTTP API already trusts
+- it avoids keeping a long-lived human admin token around longer than necessary
+
+Use a human-readable subject in `--sub` such as an email address. Keep the TTL short. After login,
+create a service account for automation and stop reusing the bootstrap token.
+
+You can then use the token directly:
+
+```bash
+export NEUWERK_TOKEN="$(cat neuwerk-admin.jwt)"
+curl -sk \
+  -H "Authorization: Bearer $NEUWERK_TOKEN" \
+  https://neuwerk.example/api/v1/auth/whoami
+```
 
 ## Use A Bearer Token Directly
 
@@ -110,17 +150,6 @@ POST /api/v1/service-accounts/{id}/tokens
 
 The raw token value is returned only once. Later list operations return token metadata, not the
 secret value.
-
-## Important Limitation
-
-Single-node deployments without pre-existing admin credentials or pre-configured SSO do not
-currently have a documented self-serve first-admin bootstrap workflow in the product docs.
-
-Operationally, that means one of these must already exist before normal admin use begins:
-
-- a valid bearer token
-- a working admin-mapped SSO provider
-- a clustered deployment where an operator can use the cluster auth CLI
 
 ## Next Steps
 

@@ -3,6 +3,7 @@ import BaseLayout from './BaseLayout.astro';
 import Header from '../components/common/Header.astro';
 import Footer from '../components/common/Footer.astro';
 import DocsSidebar from '../components/docs/DocsSidebar.astro';
+import DocsMobileNav from '../components/docs/DocsMobileNav.astro';
 import TableOfContents from '../components/docs/TableOfContents.astro';
 
 interface Props {
@@ -18,11 +19,12 @@ const currentPath = Astro.url.pathname.replace(/\/$/, '');
 <BaseLayout title={title} description={description}>
   <Header currentPath={currentPath} />
   <div class="pt-16 min-h-screen">
-    <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-12">
+    <div class="mx-auto max-w-7xl px-4 pt-6 pb-12 sm:px-6 lg:px-8 lg:py-12">
       <div class="flex flex-col gap-8 lg:flex-row">
         <DocsSidebar currentPath={currentPath} />
 
         <main class="flex-1 min-w-0">
+          <DocsMobileNav currentPath={currentPath} />
           <article class="prose prose-invert prose-slate max-w-none">
             <h1>{title}</h1>
             {description && <p class="lead text-xl text-slate-400">{description}</p>}

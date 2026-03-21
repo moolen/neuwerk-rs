@@ -1,0 +1,190 @@
+---
+interface Props {
+  currentPath: string;
+}
+
+import DocsSidebarNav from './DocsSidebarNav.astro';
+
+const { currentPath } = Astro.props;
+---
+
+<div class="mb-6 lg:hidden" data-docs-mobile-nav>
+  <div class="sticky top-20 z-30 -mx-4 px-4 py-3 sm:-mx-6 sm:px-6">
+    <button
+      type="button"
+      class="flex w-full items-center justify-between rounded-xl border border-slate-700 bg-slate-800/70 px-4 py-3 text-left text-sm font-medium text-white shadow-lg shadow-slate-950/20 transition-colors hover:border-brand-500/30 hover:bg-slate-800"
+      aria-controls="docs-mobile-drawer"
+      aria-expanded="false"
+      data-docs-mobile-open
+    >
+      <span class="flex items-center gap-3">
+        <span class="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-brand-500/10 text-brand-400">
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h10" />
+          </svg>
+        </span>
+        <span>
+          <span class="block text-xs uppercase tracking-[0.2em] text-slate-500">Docs</span>
+          <span>Browse docs</span>
+        </span>
+      </span>
+      <svg class="h-4 w-4 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 6l6 6-6 6" />
+      </svg>
+    </button>
+  </div>
+
+  <div
+    id="docs-mobile-drawer"
+    class="fixed inset-0 z-[60] hidden opacity-0 transition-opacity duration-200"
+    aria-hidden="true"
+    data-docs-mobile-drawer
+  >
+    <button
+      type="button"
+      class="absolute inset-0 bg-slate-950/70"
+      aria-label="Close docs navigation"
+      data-docs-mobile-backdrop
+    ></button>
+    <div class="absolute inset-y-0 left-0 w-[min(24rem,92vw)] -translate-x-full border-r border-slate-700 bg-[var(--bg)] shadow-2xl transition-transform duration-200" role="dialog" aria-modal="true" aria-labelledby="docs-mobile-drawer-title" data-docs-mobile-panel>
+      <div class="flex h-full flex-col">
+        <div class="flex items-center justify-between border-b border-slate-800 px-4 py-4">
+          <div>
+            <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Documentation</p>
+            <h2 id="docs-mobile-drawer-title" class="mt-1 text-base font-semibold text-white">Browse docs</h2>
+          </div>
+          <button
+            type="button"
+            class="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-800/80 text-slate-300 transition-colors hover:border-brand-500/30 hover:text-white"
+            aria-label="Close docs navigation"
+            data-docs-mobile-close
+          >
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <nav class="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-4">
+          <DocsSidebarNav currentPath={currentPath} />
+        </nav>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const roots = document.querySelectorAll('[data-docs-mobile-nav]');
+
+  for (const root of roots) {
+    if (!(root instanceof HTMLElement) || root.dataset.bound === 'true') {
+      continue;
+    }
+
+    root.dataset.bound = 'true';
+
+    const openButton = root.querySelector('[data-docs-mobile-open]');
+    const drawer = root.querySelector('[data-docs-mobile-drawer]');
+    const panel = root.querySelector('[data-docs-mobile-panel]');
+    const backdrop = root.querySelector('[data-docs-mobile-backdrop]');
+    const closeButton = root.querySelector('[data-docs-mobile-close]');
+    const links = root.querySelectorAll('nav a');
+
+    if (
+      !(openButton instanceof HTMLButtonElement) ||
+      !(drawer instanceof HTMLElement) ||
+      !(panel instanceof HTMLElement) ||
+      !(backdrop instanceof HTMLButtonElement) ||
+      !(closeButton instanceof HTMLButtonElement)
+    ) {
+      continue;
+    }
+
+    let isOpen = false;
+    let closeTimer = 0;
+
+    const clearCloseTimer = () => {
+      if (closeTimer) {
+        window.clearTimeout(closeTimer);
+        closeTimer = 0;
+      }
+    };
+
+    const syncBodyScroll = (open) => {
+      document.documentElement.style.overflow = open ? 'hidden' : '';
+      document.body.style.overflow = open ? 'hidden' : '';
+    };
+
+    const finishClose = () => {
+      drawer.classList.add('hidden');
+      drawer.setAttribute('aria-hidden', 'true');
+    };
+
+    const closeDrawer = ({ restoreFocus } = { restoreFocus: true }) => {
+      if (!isOpen) {
+        return;
+      }
+
+      isOpen = false;
+      openButton.setAttribute('aria-expanded', 'false');
+      drawer.classList.add('opacity-0');
+      panel.classList.add('-translate-x-full');
+      syncBodyScroll(false);
+      clearCloseTimer();
+      closeTimer = window.setTimeout(finishClose, 200);
+
+      if (restoreFocus) {
+        openButton.focus();
+      }
+    };
+
+    const openDrawer = () => {
+      if (isOpen) {
+        return;
+      }
+
+      isOpen = true;
+      clearCloseTimer();
+      drawer.classList.remove('hidden');
+      drawer.setAttribute('aria-hidden', 'false');
+
+      requestAnimationFrame(() => {
+        drawer.classList.remove('opacity-0');
+        panel.classList.remove('-translate-x-full');
+      });
+
+      openButton.setAttribute('aria-expanded', 'true');
+      syncBodyScroll(true);
+      closeButton.focus();
+    };
+
+    const toggleDrawer = () => {
+      if (isOpen) {
+        closeDrawer();
+      } else {
+        openDrawer();
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        closeDrawer();
+      }
+    };
+
+    openButton.addEventListener('click', toggleDrawer);
+    backdrop.addEventListener('click', () => closeDrawer());
+    closeButton.addEventListener('click', () => closeDrawer());
+
+    for (const link of links) {
+      link.addEventListener('click', () => closeDrawer({ restoreFocus: false }));
+    }
+
+    document.addEventListener('keydown', handleEscape);
+    window.addEventListener('pagehide', () => {
+      clearCloseTimer();
+      syncBodyScroll(false);
+      document.removeEventListener('keydown', handleEscape);
+    }, { once: true });
+  }
+</script>

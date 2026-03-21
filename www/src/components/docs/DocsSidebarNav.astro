@@ -1,0 +1,35 @@
+---
+interface Props {
+  currentPath: string;
+}
+
+import { docsNavigation, isDocsPathActive } from '../../data/docsNavigation';
+
+const { currentPath } = Astro.props;
+---
+
+<>
+  {docsNavigation.map((section) => (
+    <div class="mb-6">
+      <h3 class="mb-2 text-sm font-semibold uppercase tracking-wider text-slate-400">
+        {section.title}
+      </h3>
+      <ul class="space-y-1">
+        {section.items.map((item) => (
+          <li>
+            <a
+              href={item.href}
+              class={`block rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                isDocsPathActive(item.href, currentPath)
+                  ? 'bg-brand-500/10 font-medium text-brand-400'
+                  : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              {item.label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  ))}
+</>

@@ -14,7 +14,7 @@ import CTAButton from '../common/CTAButton.astro';
   <div class="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
     <div class="text-center">
       <h1 class="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-white">
-        The only <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-400 to-violet-400">egress control</span> that survives <span class="text-transparent bg-clip-text bg-gradient-to-r from-violet-400 to-brand-500">container escape</span>
+        <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-400 to-violet-400">Egress control</span> built to survive <span class="text-transparent bg-clip-text bg-gradient-to-r from-violet-400 to-brand-500">container escape</span>
       </h1>
       <p class="mt-6 text-xl sm:text-2xl text-slate-400">
         Enforce outbound traffic outside the compromised node <br class="hidden sm:inline"/> — where attackers can't disable it.
@@ -28,10 +28,17 @@ import CTAButton from '../common/CTAButton.astro';
     </p>
 
     <div class="mt-10 flex flex-col sm:flex-row gap-4 justify-center">
-      <CTAButton href="https://github.com/moolen/neuwerk" variant="primary" size="lg">
+      <CTAButton href="/docs/tutorials/run-the-vagrant-demo-box" variant="primary" size="lg">
+        Run The Demo Box
+      </CTAButton>
+      <CTAButton href="https://github.com/moolen/neuwerk" variant="secondary" size="lg">
         View on GitHub
       </CTAButton>
     </div>
+
+    <p class="mt-4 text-center text-sm text-slate-500">
+      Start with a single VM demo, then move the same policy model into audit mode before enforcing it.
+    </p>
   </div>
 </section>
 
