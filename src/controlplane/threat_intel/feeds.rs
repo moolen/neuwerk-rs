@@ -153,10 +153,8 @@ impl ThreatFeedAdapter for ThreatFoxAdapter {
         version: u64,
         generated_at: u64,
     ) -> Result<ThreatSnapshot, String> {
-        let response: ThreatFoxResponse = serde_json::from_str(payload)
-            .map_err(|err| format!("parse threatfox payload: {err}"))?;
         let mut items = Vec::new();
-        for entry in response.data {
+        for entry in parse_threatfox_entries(payload)? {
             if let Some(item) = threatfox_entry_to_item(entry, self.feed_name())? {
                 items.push(item);
             }
@@ -179,8 +177,17 @@ impl ThreatFeedAdapter for UrlhausAdapter {
         let items =
             if payload.trim_start().starts_with('{') || payload.trim_start().starts_with('[') {
                 parse_urlhaus_json_items(payload, self.feed_name())?
-            } else {
+            } else if payload
+                .lines()
+                .find(|line| {
+                    let trimmed = line.trim();
+                    !trimmed.is_empty() && !trimmed.starts_with('#')
+                })
+                .is_some_and(|line| line.contains(','))
+            {
                 parse_urlhaus_csv_items(payload, self.feed_name())?
+            } else {
+                parse_urlhaus_text_items(payload, self.feed_name())
             };
         Ok(ThreatSnapshot::new(version, generated_at, items))
     }
@@ -202,6 +209,38 @@ impl ThreatFeedAdapter for SpamhausDropAdapter {
         for line in payload.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with(';') || trimmed.starts_with('#') {
+                continue;
+            }
+            if trimmed.starts_with('{') {
+                let value: Value = serde_json::from_str(trimmed)
+                    .map_err(|err| format!("parse spamhaus drop payload: {err}"))?;
+                let Some(object) = value.as_object() else {
+                    continue;
+                };
+                if !object.contains_key("cidr") {
+                    continue;
+                }
+                let entry: SpamhausDropEntry = serde_json::from_value(value)
+                    .map_err(|err| format!("parse spamhaus drop payload: {err}"))?;
+                let mut tags = Vec::new();
+                if !entry.sblid.trim().is_empty() {
+                    tags.push(entry.sblid);
+                }
+                if !entry.rir.trim().is_empty() {
+                    tags.push(entry.rir);
+                }
+                items.push(ThreatIndicatorSnapshotItem {
+                    indicator: entry.cidr,
+                    indicator_type: ThreatIndicatorType::Ip,
+                    feed: self.feed_name().to_string(),
+                    severity: ThreatSeverity::Critical,
+                    confidence: Some(100),
+                    tags,
+                    reference_url: None,
+                    feed_first_seen: seen_at,
+                    feed_last_seen: seen_at,
+                    expires_at: None,
+                });
                 continue;
             }
             let indicator = trimmed
@@ -331,11 +370,17 @@ fn parse_timestamp(raw: &str) -> Result<u64, String> {
     if let Ok(timestamp) = OffsetDateTime::parse(trimmed, &Rfc3339) {
         return Ok(timestamp.unix_timestamp().max(0) as u64);
     }
-    let format = format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second] UTC")
-        .map_err(|err| format!("invalid timestamp format description: {err}"))?;
-    let timestamp = PrimitiveDateTime::parse(trimmed, &format)
-        .map_err(|err| format!("parse timestamp {trimmed:?}: {err}"))?;
-    Ok(timestamp.assume_utc().unix_timestamp().max(0) as u64)
+    for format in [
+        "[year]-[month]-[day] [hour]:[minute]:[second] UTC",
+        "[year]-[month]-[day] [hour]:[minute]:[second]",
+    ] {
+        let format = format_description::parse(format)
+            .map_err(|err| format!("invalid timestamp format description: {err}"))?;
+        if let Ok(timestamp) = PrimitiveDateTime::parse(trimmed, &format) {
+            return Ok(timestamp.assume_utc().unix_timestamp().max(0) as u64);
+        }
+    }
+    Err(format!("parse timestamp {trimmed:?}: unsupported format"))
 }
 
 fn parse_optional_timestamp(raw: Option<&str>) -> Option<u64> {
@@ -397,6 +442,8 @@ fn threatfox_entry_to_item(
     }
     if !entry.malware_printable.trim().is_empty() {
         tags.push(entry.malware_printable);
+    } else if !entry.malware.trim().is_empty() {
+        tags.push(entry.malware);
     }
 
     Ok(Some(ThreatIndicatorSnapshotItem {
@@ -418,11 +465,14 @@ fn threatfox_indicator(ioc_type: &str, ioc: &str) -> Option<(ThreatIndicatorType
     match ioc_type.as_str() {
         "domain" | "hostname" | "fqdn" => Some((ThreatIndicatorType::Hostname, ioc.to_string())),
         "ip" | "netblock" | "cidr" => Some((ThreatIndicatorType::Ip, ioc.to_string())),
+        "url" | "uri" => extract_url_host_indicator(ioc),
         "ip:port" => ioc
             .split_once(':')
             .map(|(ip, _)| (ThreatIndicatorType::Ip, ip.to_string())),
         _ => {
-            if ioc.parse::<Ipv4Addr>().is_ok() || ioc.contains('/') {
+            if let Some(indicator) = extract_url_host_indicator(ioc) {
+                Some(indicator)
+            } else if ioc.parse::<Ipv4Addr>().is_ok() || ioc.contains('/') {
                 Some((ThreatIndicatorType::Ip, ioc.to_string()))
             } else if ioc.contains('.') {
                 Some((ThreatIndicatorType::Hostname, ioc.to_string()))
@@ -497,6 +547,32 @@ fn parse_urlhaus_json_items(
         });
     }
     Ok(normalized)
+}
+
+fn parse_urlhaus_text_items(payload: &str, feed_name: &str) -> Vec<ThreatIndicatorSnapshotItem> {
+    let mut items = Vec::new();
+    for line in payload.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((indicator_type, indicator)) = extract_url_host_indicator(trimmed) else {
+            continue;
+        };
+        items.push(ThreatIndicatorSnapshotItem {
+            indicator,
+            indicator_type,
+            feed: feed_name.to_string(),
+            severity: ThreatSeverity::High,
+            confidence: Some(80),
+            tags: Vec::new(),
+            reference_url: None,
+            feed_first_seen: None,
+            feed_last_seen: None,
+            expires_at: None,
+        });
+    }
+    items
 }
 
 fn parse_urlhaus_csv_items(
@@ -608,28 +684,71 @@ fn csv_field<'a>(
     fields.get(fallback_index).map(String::as_str)
 }
 
-#[derive(Debug, Deserialize)]
-struct ThreatFoxResponse {
-    #[serde(default)]
-    data: Vec<ThreatFoxEntry>,
+fn parse_threatfox_entries(payload: &str) -> Result<Vec<ThreatFoxEntry>, String> {
+    let value: Value =
+        serde_json::from_str(payload).map_err(|err| format!("parse threatfox payload: {err}"))?;
+    let mut entries = Vec::new();
+    match value {
+        Value::Array(items) => decode_threatfox_entry_list(items, &mut entries)?,
+        Value::Object(mut object) => {
+            if let Some(data) = object.remove("data") {
+                match data {
+                    Value::Array(items) => decode_threatfox_entry_list(items, &mut entries)?,
+                    other => decode_threatfox_value(other, &mut entries)?,
+                }
+            } else {
+                for value in object.into_values() {
+                    decode_threatfox_value(value, &mut entries)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(entries)
+}
+
+fn decode_threatfox_value(value: Value, entries: &mut Vec<ThreatFoxEntry>) -> Result<(), String> {
+    match value {
+        Value::Array(items) => decode_threatfox_entry_list(items, entries),
+        Value::Object(object) => {
+            let entry = serde_json::from_value(Value::Object(object))
+                .map_err(|err| format!("parse threatfox entry: {err}"))?;
+            entries.push(entry);
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn decode_threatfox_entry_list(
+    items: Vec<Value>,
+    entries: &mut Vec<ThreatFoxEntry>,
+) -> Result<(), String> {
+    for item in items {
+        decode_threatfox_value(item, entries)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
 struct ThreatFoxEntry {
+    #[serde(default, alias = "ioc_value")]
     ioc: String,
     #[serde(default)]
     ioc_type: String,
     #[serde(default)]
     threat_type: String,
     #[serde(default)]
+    malware: String,
+    #[serde(default)]
     malware_printable: String,
     #[serde(default)]
     confidence_level: Option<FlexibleU8>,
     #[serde(default)]
     reference: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "first_seen_utc")]
     first_seen: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "last_seen_utc")]
     last_seen: Option<String>,
     #[serde(default)]
     tags: FlexibleTags,
@@ -649,6 +768,15 @@ enum FlexibleTags {
     Missing,
     One(String),
     Many(Vec<String>),
+}
+
+#[derive(Debug, Deserialize)]
+struct SpamhausDropEntry {
+    cidr: String,
+    #[serde(default)]
+    sblid: String,
+    #[serde(default)]
+    rir: String,
 }
 
 #[cfg(test)]
@@ -742,6 +870,24 @@ mod tests {
     }
 
     #[test]
+    fn urlhaus_plaintext_parser_extracts_hostname() {
+        let payload = concat!(
+            "# urlhaus plain text\n",
+            "https://Bad.Example.com/dropper\n",
+            "https://[2001:db8::1]/skip-me\n"
+        );
+
+        let snapshot = parse_urlhaus_fixture(payload).expect("snapshot");
+
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].indicator, "bad.example.com");
+        assert_eq!(
+            snapshot.items[0].indicator_type,
+            ThreatIndicatorType::Hostname
+        );
+    }
+
+    #[test]
     fn threatfox_parser_tolerates_invalid_timestamps() {
         let payload = r#"{
             "query_status": "ok",
@@ -765,6 +911,45 @@ mod tests {
     }
 
     #[test]
+    fn threatfox_parser_accepts_current_live_export_shape() {
+        let payload = r#"{
+            "1773104": [
+                {
+                    "ioc_value": "http://178.16.52.201/9cca20c6df659f72/t_cpt_bld172638.bin",
+                    "ioc_type": "url",
+                    "threat_type": "payload_delivery",
+                    "malware": "win.cobalt_strike",
+                    "malware_printable": "Cobalt Strike",
+                    "first_seen_utc": "2026-03-21 08:34:09",
+                    "last_seen_utc": null,
+                    "confidence_level": 90,
+                    "reference": "https://www.virustotal.com/gui/file/55db39b500d29cd000291a1917d8b62479c4594f6e08bfae29dd113de71b551e",
+                    "tags": "ClickFix"
+                }
+            ]
+        }"#;
+
+        let snapshot = parse_threatfox_fixture(payload).expect("snapshot");
+
+        assert_eq!(snapshot.items.len(), 1);
+        let item = snapshot.items.first().expect("item");
+        assert_eq!(item.indicator_type, ThreatIndicatorType::Ip);
+        assert_eq!(item.indicator, "178.16.52.201");
+        assert_eq!(item.severity, ThreatSeverity::Critical);
+        assert_eq!(item.feed_first_seen, Some(1_774_082_049));
+        assert_eq!(item.feed_last_seen, None);
+        assert_eq!(
+            item.reference_url.as_deref(),
+            Some(
+                "https://www.virustotal.com/gui/file/55db39b500d29cd000291a1917d8b62479c4594f6e08bfae29dd113de71b551e"
+            )
+        );
+        assert!(item.tags.iter().any(|tag| tag == "clickfix"));
+        assert!(item.tags.iter().any(|tag| tag == "payload_delivery"));
+        assert!(item.tags.iter().any(|tag| tag == "cobalt strike"));
+    }
+
+    #[test]
     fn spamhaus_drop_parser_skips_comments_and_collects_description_tags() {
         let payload = concat!(
             "; comment\n",
@@ -777,5 +962,39 @@ mod tests {
         assert_eq!(item.indicator, "203.0.113.0/24");
         assert_eq!(item.severity, ThreatSeverity::Critical);
         assert!(item.tags.iter().any(|tag| tag == "botnet c2"));
+    }
+
+    #[test]
+    fn spamhaus_drop_parser_accepts_ndjson_payload() {
+        let payload = concat!(
+            "{\"cidr\":\"203.0.113.0/24\",\"sblid\":\"SBL12345\",\"rir\":\"arin\"}\n",
+            "{\"cidr\":\"198.51.100.0/24\",\"sblid\":\"SBL54321\",\"rir\":\"ripencc\"}\n"
+        );
+
+        let snapshot = parse_spamhaus_drop_fixture(payload).expect("snapshot");
+
+        assert_eq!(snapshot.items.len(), 2);
+        assert_eq!(snapshot.items[0].indicator_type, ThreatIndicatorType::Ip);
+        assert!(snapshot
+            .items
+            .iter()
+            .any(|item| item.indicator == "203.0.113.0/24"));
+        assert!(snapshot
+            .items
+            .iter()
+            .any(|item| item.tags.iter().any(|tag| tag == "sbl12345")));
+    }
+
+    #[test]
+    fn spamhaus_drop_parser_skips_metadata_records() {
+        let payload = concat!(
+            "{\"cidr\":\"203.0.113.0/24\",\"sblid\":\"SBL12345\",\"rir\":\"arin\"}\n",
+            "{\"type\":\"metadata\",\"timestamp\":1774086242,\"size\":93600,\"records\":1534,\"copyright\":\"(c) 2026 The Spamhaus Project SLU\",\"terms\":\"https://www.spamhaus.org/drop/terms/\"}\n"
+        );
+
+        let snapshot = parse_spamhaus_drop_fixture(payload).expect("snapshot");
+
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].indicator, "203.0.113.0/24");
     }
 }

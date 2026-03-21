@@ -7,7 +7,9 @@ use tokio::sync::mpsc;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::controlplane::audit::finding_key_for_dataplane_event;
+use crate::controlplane::audit::{
+    finding_key_for_dataplane_event, AuditFinding, AuditFindingType, AuditStore,
+};
 use crate::controlplane::metrics::Metrics;
 use crate::dataplane::{AuditEvent, AuditEventType};
 
@@ -137,6 +139,91 @@ impl ThreatObservation {
                     }
                 }
             }
+        }
+
+        observations
+    }
+
+    pub fn from_audit_finding(finding: &AuditFinding) -> Vec<Self> {
+        let mut observations = Vec::new();
+        let audit_finding_key = finding.key();
+        let sample_node_id = finding
+            .node_ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        match finding.finding_type {
+            AuditFindingType::DnsDeny => {
+                if let Some(hostname) = finding.hostname.as_deref() {
+                    if let Some(observation) = Self::dns_with_audit_link(
+                        hostname,
+                        &finding.source_group,
+                        &sample_node_id,
+                        finding.last_seen,
+                        Some(audit_finding_key),
+                    ) {
+                        observations.push(observation);
+                    }
+                }
+            }
+            AuditFindingType::L4Deny | AuditFindingType::IcmpDeny => {
+                if let Some(dst_ip) = finding.dst_ip {
+                    observations.push(Self {
+                        indicator: dst_ip.to_string(),
+                        indicator_type: ThreatIndicatorType::Ip,
+                        observation_layer: ThreatObservationLayer::L4,
+                        source_group: finding.source_group.clone(),
+                        node_id: sample_node_id.clone(),
+                        observed_at: finding.last_seen,
+                        dst_ip: Some(dst_ip),
+                        audit_finding_key: Some(audit_finding_key.clone()),
+                    });
+                }
+                if let Some(hostname) = finding.fqdn.as_deref().map(normalize_hostname) {
+                    if !hostname.is_empty() {
+                        observations.push(Self {
+                            indicator: hostname,
+                            indicator_type: ThreatIndicatorType::Hostname,
+                            observation_layer: ThreatObservationLayer::L4,
+                            source_group: finding.source_group.clone(),
+                            node_id: sample_node_id.clone(),
+                            observed_at: finding.last_seen,
+                            dst_ip: finding.dst_ip,
+                            audit_finding_key: Some(audit_finding_key.clone()),
+                        });
+                    }
+                }
+            }
+            AuditFindingType::TlsDeny => {
+                if let Some(dst_ip) = finding.dst_ip {
+                    observations.push(Self {
+                        indicator: dst_ip.to_string(),
+                        indicator_type: ThreatIndicatorType::Ip,
+                        observation_layer: ThreatObservationLayer::Tls,
+                        source_group: finding.source_group.clone(),
+                        node_id: sample_node_id.clone(),
+                        observed_at: finding.last_seen,
+                        dst_ip: Some(dst_ip),
+                        audit_finding_key: Some(audit_finding_key.clone()),
+                    });
+                }
+                if let Some(hostname) = finding.sni.as_deref().map(normalize_hostname) {
+                    if !hostname.is_empty() {
+                        observations.push(Self {
+                            indicator: hostname,
+                            indicator_type: ThreatIndicatorType::Hostname,
+                            observation_layer: ThreatObservationLayer::Tls,
+                            source_group: finding.source_group.clone(),
+                            node_id: sample_node_id.clone(),
+                            observed_at: finding.last_seen,
+                            dst_ip: finding.dst_ip,
+                            audit_finding_key: Some(audit_finding_key.clone()),
+                        });
+                    }
+                }
+            }
+            AuditFindingType::AuthSso => {}
         }
 
         observations
@@ -281,13 +368,20 @@ fn match_observation(
     observation: &ThreatObservation,
 ) -> Option<ThreatMatch> {
     let lock = matcher.read().ok()?;
+    match_observation_with_matcher(&lock, observation)
+}
+
+fn match_observation_with_matcher(
+    matcher: &ThreatMatcher,
+    observation: &ThreatObservation,
+) -> Option<ThreatMatch> {
     match observation.indicator_type {
-        ThreatIndicatorType::Hostname => lock.match_hostname(&observation.indicator),
+        ThreatIndicatorType::Hostname => matcher.match_hostname(&observation.indicator),
         ThreatIndicatorType::Ip => observation
             .indicator
             .parse::<Ipv4Addr>()
             .ok()
-            .and_then(|ip| lock.match_ip(ip)),
+            .and_then(|ip| matcher.match_ip(ip)),
     }
 }
 
@@ -311,6 +405,34 @@ fn build_finding(observation: ThreatObservation, threat_match: ThreatMatch) -> T
         sample_node_ids: vec![observation.node_id],
         alertable: false,
         audit_links: observation.audit_finding_key.into_iter().collect(),
+        enrichment_status: ThreatEnrichmentStatus::NotRequested,
+    }
+}
+
+fn build_backfill_finding(
+    audit_finding: &AuditFinding,
+    observation: &ThreatObservation,
+    threat_match: ThreatMatch,
+) -> ThreatFinding {
+    ThreatFinding {
+        indicator: threat_match.indicator,
+        indicator_type: threat_match.indicator_type,
+        observation_layer: observation.observation_layer,
+        match_source: ThreatMatchSource::Backfill,
+        source_group: observation.source_group.clone(),
+        severity: threat_match.severity,
+        confidence: threat_match.confidence,
+        feed_hits: threat_match
+            .feed_hits
+            .into_iter()
+            .map(feed_hit_from_snapshot)
+            .collect(),
+        first_seen: audit_finding.first_seen,
+        last_seen: audit_finding.last_seen,
+        count: audit_finding.count,
+        sample_node_ids: audit_finding.node_ids.clone(),
+        alertable: false,
+        audit_links: vec![audit_finding.key()],
         enrichment_status: ThreatEnrichmentStatus::NotRequested,
     }
 }
@@ -378,6 +500,31 @@ fn refresh_active_metrics(metrics: &Metrics, store: &ThreatStore) -> Result<(), 
     Ok(())
 }
 
+pub fn backfill_audit_findings(
+    snapshot: &ThreatSnapshot,
+    audit_store: &AuditStore,
+    threat_store: &ThreatStore,
+    metrics: &Metrics,
+) -> Result<usize, String> {
+    let matcher = ThreatMatcher::from_snapshot(snapshot);
+    let mut inserted = 0usize;
+    for audit_finding in audit_store.all_findings()? {
+        for observation in ThreatObservation::from_audit_finding(&audit_finding) {
+            let Some(threat_match) = match_observation_with_matcher(&matcher, &observation) else {
+                continue;
+            };
+            let finding = build_backfill_finding(&audit_finding, &observation, threat_match);
+            let finding = threat_store.upsert_finding(finding)?;
+            record_match_metrics(metrics, &finding);
+            inserted += 1;
+        }
+    }
+    if inserted > 0 {
+        refresh_active_metrics(metrics, threat_store)?;
+    }
+    Ok(inserted)
+}
+
 fn indicator_type_label(indicator_type: ThreatIndicatorType) -> &'static str {
     match indicator_type {
         ThreatIndicatorType::Hostname => "hostname",
@@ -420,7 +567,13 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::time::Duration;
 
-    use super::{ThreatObservation, ThreatRuntimeConfig, ThreatRuntimeHandle, ThreatRuntimeSlot};
+    use super::{
+        backfill_audit_findings, ThreatObservation, ThreatRuntimeConfig, ThreatRuntimeHandle,
+        ThreatRuntimeSlot,
+    };
+    use crate::controlplane::audit::{
+        AuditEvent as StoredAuditEvent, AuditFindingType, AuditStore, DEFAULT_AUDIT_STORE_MAX_BYTES,
+    };
     use crate::controlplane::threat_intel::feeds::{
         snapshot_with_cidr, snapshot_with_hostname, ThreatIndicatorSnapshotItem, ThreatSnapshot,
     };
@@ -789,6 +942,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn backfill_audit_findings_creates_backfill_matches() {
+        let metrics = Metrics::new().expect("metrics");
+        let audit_store = AuditStore::new(temp_audit_store_dir(), DEFAULT_AUDIT_STORE_MAX_BYTES);
+        audit_store.ingest(
+            StoredAuditEvent {
+                finding_type: AuditFindingType::DnsDeny,
+                source_group: "apps".to_string(),
+                hostname: Some("bad.example.com".to_string()),
+                dst_ip: None,
+                dst_port: None,
+                proto: None,
+                fqdn: None,
+                sni: None,
+                icmp_type: None,
+                icmp_code: None,
+                query_type: Some(1),
+                observed_at: 123,
+            },
+            None,
+            "node-a",
+        );
+        let threat_store = ThreatStore::new(temp_store_dir(), 1024 * 1024).expect("store");
+
+        let inserted = backfill_audit_findings(
+            &snapshot_with_hostname("bad.example.com", ThreatSeverity::High, "threatfox"),
+            &audit_store,
+            &threat_store,
+            &metrics,
+        )
+        .expect("backfill");
+
+        assert_eq!(inserted, 1);
+        let items = threat_store
+            .query(&ThreatFindingQuery::default())
+            .expect("query");
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].match_source,
+            crate::controlplane::threat_intel::store::ThreatMatchSource::Backfill
+        );
+        assert_eq!(items[0].count, 1);
+        assert_eq!(
+            items[0].audit_links,
+            vec!["dns:none:apps:bad.example.com".to_string()]
+        );
+    }
+
     async fn wait_for_findings(store: &ThreatStore, expected: usize) -> Vec<ThreatFinding> {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -824,6 +1025,10 @@ mod tests {
 
     fn temp_store_dir() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("threat-runtime-{}", Uuid::new_v4()))
+    }
+
+    fn temp_audit_store_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("threat-runtime-audit-{}", Uuid::new_v4()))
     }
 
     fn metric_value_with_labels(rendered: &str, metric: &str, labels: &[(&str, &str)]) -> f64 {

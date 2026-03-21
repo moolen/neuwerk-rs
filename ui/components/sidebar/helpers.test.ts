@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { NavItemDefinition } from '../../navigation';
+import { NAV_ITEMS, type NavItemDefinition } from '../../navigation';
+import { PAGE_ICONS } from './constants';
 import {
   applySidebarHoverStyle,
   clearSidebarHoverStyle,
@@ -48,5 +49,11 @@ describe('sidebar helpers', () => {
     clearSidebarHoverStyle(active, true);
     expect(active.style.background).toBe('');
     expect(active.style.color).toBe('');
+  });
+
+  it('defines an icon for every sidebar item', () => {
+    for (const item of NAV_ITEMS) {
+      expect(PAGE_ICONS[item.id]).toBeDefined();
+    }
   });
 });

@@ -1,9 +1,20 @@
 import { useEffect, useState } from 'react';
-import { getAuditFindings, getPerformanceModeStatus } from '../../services/api';
+import {
+  getAuditFindings,
+  getPerformanceModeStatus,
+  getThreatFindings,
+} from '../../services/api';
 import type { AuditFinding, AuditFindingType } from '../../types';
+import {
+  buildAuditThreatAnnotations,
+  type AuditThreatAnnotation,
+} from './threatAnnotations';
 
 export function useAuditPage() {
   const [items, setItems] = useState<AuditFinding[]>([]);
+  const [threatAnnotations, setThreatAnnotations] = useState<
+    Record<string, AuditThreatAnnotation>
+  >({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [partial, setPartial] = useState(false);
@@ -29,16 +40,27 @@ export function useAuditPage() {
     setLoading(true);
     setError(null);
     try {
-      const response = await getAuditFindings({
-        finding_type: typeFilter === 'all' ? [] : [typeFilter],
-        source_group: sourceGroup.trim() ? [sourceGroup.trim()] : [],
-        policy_id: policyId.trim() || undefined,
-        limit: 1000,
-      });
+      const [response, threatResponse] = await Promise.all([
+        getAuditFindings({
+          finding_type: typeFilter === 'all' ? [] : [typeFilter],
+          source_group: sourceGroup.trim() ? [sourceGroup.trim()] : [],
+          policy_id: policyId.trim() || undefined,
+          limit: 1000,
+        }),
+        getThreatFindings({ limit: 1000 }).catch((err) => {
+          console.error('Failed to load threat annotations for audit page:', err);
+          return null;
+        }),
+      ]);
       setItems(response.items);
       setPartial(response.partial);
       setNodes({ queried: response.nodes_queried, responded: response.nodes_responded });
       setNodeErrors(response.node_errors ?? []);
+      setThreatAnnotations(
+        threatResponse
+          ? buildAuditThreatAnnotations(response.items, threatResponse.items)
+          : {},
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load audit findings');
     } finally {
@@ -97,6 +119,7 @@ export function useAuditPage() {
     policyId,
     setPolicyId,
     load,
+    threatAnnotations,
     performanceModeEnabled,
     performanceModeLoading,
     performanceModeError,

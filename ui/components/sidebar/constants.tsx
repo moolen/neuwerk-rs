@@ -7,6 +7,7 @@ import {
   Search,
   Settings,
   Shield,
+  ShieldAlert,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -16,6 +17,7 @@ export const PAGE_ICONS: Record<AppPage, LucideIcon> = {
   dashboard: LayoutDashboard,
   policies: Shield,
   integrations: Link,
+  threats: ShieldAlert,
   wiretap: Radio,
   audit: Search,
   dns: Globe,

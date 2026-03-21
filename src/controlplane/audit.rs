@@ -77,7 +77,7 @@ impl AuditFinding {
         }
     }
 
-    fn key(&self) -> String {
+    pub fn key(&self) -> String {
         key_for_fields(
             self.finding_type,
             self.policy_id,
@@ -242,6 +242,22 @@ impl AuditStore {
                 .then_with(|| b.count.cmp(&a.count))
         });
         items
+    }
+
+    pub fn all_findings(&self) -> Result<Vec<AuditFinding>, String> {
+        let mut items = self
+            .inner
+            .read()
+            .map_err(|_| "audit store lock poisoned".to_string())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        items.sort_by(|a, b| {
+            b.last_seen
+                .cmp(&a.last_seen)
+                .then_with(|| b.count.cmp(&a.count))
+        });
+        Ok(items)
     }
 
     fn ensure_dirs(&self) -> Result<(), String> {
