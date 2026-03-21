@@ -70,6 +70,35 @@ type apiPolicyRecord struct {
 	Policy    json.RawMessage `json:"policy"`
 }
 
+type apiServiceAccount struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description"`
+	CreatedAt   string  `json:"created_at"`
+	CreatedBy   string  `json:"created_by"`
+	Role        string  `json:"role"`
+	Status      string  `json:"status"`
+}
+
+type apiServiceAccountTokenMeta struct {
+	ID               string  `json:"id"`
+	ServiceAccountID string  `json:"service_account_id"`
+	Name             *string `json:"name"`
+	CreatedAt        string  `json:"created_at"`
+	CreatedBy        string  `json:"created_by"`
+	ExpiresAt        *string `json:"expires_at"`
+	RevokedAt        *string `json:"revoked_at"`
+	LastUsedAt       *string `json:"last_used_at"`
+	Kid              string  `json:"kid"`
+	Role             string  `json:"role"`
+	Status           string  `json:"status"`
+}
+
+type apiServiceAccountTokenRecord struct {
+	Token     string                     `json:"token"`
+	TokenMeta apiServiceAccountTokenMeta `json:"token_meta"`
+}
+
 type createIntegrationRequest struct {
 	Name                string `json:"name"`
 	Kind                string `json:"kind"`
@@ -82,6 +111,25 @@ type updateIntegrationRequest struct {
 	APIServerURL        string `json:"api_server_url"`
 	CACertPEM           string `json:"ca_cert_pem"`
 	ServiceAccountToken string `json:"service_account_token"`
+}
+
+type createServiceAccountRequest struct {
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+	Role        string  `json:"role"`
+}
+
+type updateServiceAccountRequest struct {
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+	Role        string  `json:"role"`
+}
+
+type createServiceAccountTokenRequest struct {
+	Name    *string `json:"name,omitempty"`
+	TTL     *string `json:"ttl,omitempty"`
+	Eternal *bool   `json:"eternal,omitempty"`
+	Role    *string `json:"role,omitempty"`
 }
 
 type putTLSInterceptCARequest struct {
@@ -203,6 +251,68 @@ func (c *apiClient) UpsertPolicyByName(ctx context.Context, name string, req ups
 
 func (c *apiClient) DeletePolicy(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/policies/"+url.PathEscape(id), nil, nil)
+}
+
+func (c *apiClient) ListServiceAccounts(ctx context.Context) ([]apiServiceAccount, error) {
+	var out []apiServiceAccount
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/service-accounts", nil, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []apiServiceAccount{}, nil
+	}
+	return out, nil
+}
+
+func (c *apiClient) GetServiceAccount(ctx context.Context, id string) (*apiServiceAccount, error) {
+	var out apiServiceAccount
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/service-accounts/"+url.PathEscape(id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) CreateServiceAccount(ctx context.Context, req createServiceAccountRequest) (*apiServiceAccount, error) {
+	var out apiServiceAccount
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/service-accounts", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) UpdateServiceAccount(ctx context.Context, id string, req updateServiceAccountRequest) (*apiServiceAccount, error) {
+	var out apiServiceAccount
+	if err := c.doJSON(ctx, http.MethodPut, "/api/v1/service-accounts/"+url.PathEscape(id), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) DeleteServiceAccount(ctx context.Context, id string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/service-accounts/"+url.PathEscape(id), nil, nil)
+}
+
+func (c *apiClient) ListServiceAccountTokens(ctx context.Context, serviceAccountID string) ([]apiServiceAccountTokenMeta, error) {
+	var out []apiServiceAccountTokenMeta
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/service-accounts/"+url.PathEscape(serviceAccountID)+"/tokens", nil, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []apiServiceAccountTokenMeta{}, nil
+	}
+	return out, nil
+}
+
+func (c *apiClient) CreateServiceAccountToken(ctx context.Context, serviceAccountID string, req createServiceAccountTokenRequest) (*apiServiceAccountTokenRecord, error) {
+	var out apiServiceAccountTokenRecord
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/service-accounts/"+url.PathEscape(serviceAccountID)+"/tokens", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) DeleteServiceAccountToken(ctx context.Context, serviceAccountID string, tokenID string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/service-accounts/"+url.PathEscape(serviceAccountID)+"/tokens/"+url.PathEscape(tokenID), nil, nil)
 }
 
 func (c *apiClient) doJSON(ctx context.Context, method string, path string, requestBody any, out any) error {
