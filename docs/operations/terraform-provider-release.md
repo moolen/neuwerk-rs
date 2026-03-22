@@ -13,6 +13,8 @@ Current publication model:
 - signed GitHub Release assets are published from this monorepo
 - public Terraform Registry onboarding remains follow-up work
 
+For the public Registry publication path, see `docs/operations/terraform-provider-registry-publication.md`.
+
 ## Prerequisites
 
 Configure these repository secrets before attempting a provider release:
