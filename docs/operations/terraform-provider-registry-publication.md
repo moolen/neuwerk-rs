@@ -3,7 +3,7 @@
 Public Terraform Registry publication uses a two-repository model:
 
 - `firewall` stays the development repository
-- `neuwerk/terraform-provider-neuwerk` becomes the public provider release-source repository
+- `moolen/terraform-provider-neuwerk` becomes the public provider release-source repository
 
 The public repository exists to satisfy Terraform Registry publication requirements. Provider code,
 tests, and docs still originate in this monorepo and are exported into the public repository.
@@ -12,8 +12,8 @@ tests, and docs still originate in this monorepo and are exported into the publi
 
 Before creating the public repository:
 
-- choose and commit the final Neuwerk OSS `LICENSE`
-- create the public GitHub repository `neuwerk/terraform-provider-neuwerk`
+- commit the Apache 2.0 `LICENSE` in this monorepo
+- create the public GitHub repository `moolen/terraform-provider-neuwerk`
 - configure these repository secrets in that public repository:
   - `TERRAFORM_PROVIDER_GPG_PRIVATE_KEY`
   - `TERRAFORM_PROVIDER_GPG_PASSPHRASE`
@@ -34,7 +34,7 @@ Push that exported tree to the public repository:
 ```bash
 cd /tmp/terraform-provider-neuwerk
 git init
-git remote add origin git@github.com:neuwerk/terraform-provider-neuwerk.git
+git remote add origin git@github.com:moolen/terraform-provider-neuwerk.git
 git checkout -b main
 git add .
 git commit -m "release-source: sync from firewall"
@@ -47,14 +47,14 @@ in `firewall` first, then be re-exported and pushed.
 ## Publish A Provider Release
 
 1. export a fresh release-source tree from this monorepo
-2. push the updated tree to `neuwerk/terraform-provider-neuwerk`
+2. push the updated tree to `moolen/terraform-provider-neuwerk`
 3. run the public repository workflow `.github/workflows/release.yml`
 4. provide a tag such as `v0.1.0`
 
 The public repository workflow builds signed provider archives, publishes `SHA256SUMS`, and uploads
 the detached checksum signature. It uses the same provider source address:
 
-- `neuwerk/neuwerk`
+- `moolen/neuwerk`
 
 ## Registry Onboarding
 

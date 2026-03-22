@@ -6,7 +6,7 @@ This repository publishes the Terraform provider from the monorepo with:
 
 The provider source address is:
 
-- `neuwerk/neuwerk`
+- `moolen/neuwerk`
 
 Current publication model:
 

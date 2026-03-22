@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the Terraform provider release path registry-ready from the monorepo by switching to `neuwerk/neuwerk`, adding a hard signing gate, producing signed checksum artifacts, and adding provider-facing install/reference docs.
+**Goal:** Make the Terraform provider release path registry-ready from the monorepo by switching to `moolen/neuwerk`, adding a hard signing gate, producing signed checksum artifacts, and adding provider-facing install/reference docs.
 
-**Architecture:** Keep the existing monorepo release workflow and custom provider asset builder, but harden the provider-specific contract around it. Treat signing as a required release input, migrate all provider source references to `neuwerk/neuwerk`, and add a minimal first-party docs tree under `terraform-provider-neuwerk/docs/` for registry/manual install readiness.
+**Architecture:** Keep the existing monorepo release workflow and custom provider asset builder, but harden the provider-specific contract around it. Treat signing as a required release input, migrate all provider source references to `moolen/neuwerk`, and add a minimal first-party docs tree under `terraform-provider-neuwerk/docs/` for registry/manual install readiness.
 
 **Tech Stack:** Go provider entrypoint, Rust Terraform contract harness, GitHub Actions, Bash release scripts, Markdown docs
 
@@ -13,11 +13,11 @@
 ## File Map
 
 - Modify: `terraform-provider-neuwerk/main.go`
-  Responsibility: update provider registry address to `registry.terraform.io/neuwerk/neuwerk`.
+  Responsibility: update provider registry address to `registry.terraform.io/moolen/neuwerk`.
 - Modify: `terraform-provider-neuwerk/examples/basic/main.tf`
   Responsibility: update required provider source address.
 - Modify: `tests/terraform_provider_e2e.rs`
-  Responsibility: update local mirror path and install config from `moolen/neuwerk` to `neuwerk/neuwerk`.
+  Responsibility: update local mirror path and install config from `neuwerk/neuwerk` to `moolen/neuwerk`.
 - Modify: `packaging/scripts/build_terraform_provider_release_assets.sh`
   Responsibility: require GPG inputs, sign the generated SHA256SUMS file, and fail hard if signing prerequisites are absent.
 - Modify: `.github/workflows/image-release.yml`
@@ -25,13 +25,13 @@
 - Create: `terraform-provider-neuwerk/docs/index.md`
   Responsibility: top-level provider docs entry with install guidance and links.
 - Create: `terraform-provider-neuwerk/docs/provider.md`
-  Responsibility: provider configuration, `neuwerk/neuwerk` source address, and manual-install guidance from GitHub Releases.
+  Responsibility: provider configuration, `moolen/neuwerk` source address, and manual-install guidance from GitHub Releases.
 - Create: `terraform-provider-neuwerk/docs/resources/*.md`
   Responsibility: concise resource references covering arguments, computed fields, import IDs, and secret lifecycle notes.
 - Modify: `terraform-provider-neuwerk/README.md`
   Responsibility: align provider source address and link to the new docs tree.
 - Modify: `www/src/content/docs/interfaces/terraform-provider.mdx`
-  Responsibility: align public docs with `neuwerk/neuwerk` source and release/install story.
+  Responsibility: align public docs with `moolen/neuwerk` source and release/install story.
 
 ### Task 1: Migrate The Provider Source Address
 
@@ -46,7 +46,7 @@
 
 Add or update targeted tests in `tests/terraform_provider_e2e.rs` so the local Terraform mirror points at:
 
-- `registry.terraform.io/neuwerk/neuwerk`
+- `registry.terraform.io/moolen/neuwerk`
 
 and no longer references `moolen/neuwerk`.
 
@@ -140,7 +140,7 @@ Expected: FAIL with a clear signing-prerequisite error.
 
 Write concise docs that cover:
 
-- provider source `neuwerk/neuwerk`
+- provider source `moolen/neuwerk`
 - GitHub Releases manual-install path
 - signed checksum verification expectation
 - pointer to the per-resource docs
@@ -159,7 +159,7 @@ Each resource doc should cover:
 
 Keep the README minimal, but update it to:
 
-- use `neuwerk/neuwerk`
+- use `moolen/neuwerk`
 - point readers to `terraform-provider-neuwerk/docs/`
 
 ### Task 4: Final Verification

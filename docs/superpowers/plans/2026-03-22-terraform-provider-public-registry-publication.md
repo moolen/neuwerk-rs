@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Publish the Neuwerk Terraform provider on the public Terraform Registry without moving provider source-of-truth out of this monorepo.
+**Goal:** Publish the Neuwerk Terraform provider on the public Terraform Registry as `moolen/neuwerk` without moving provider source-of-truth out of this monorepo.
 
 **Architecture:** Keep `firewall` as the authoritative development repository. Export a flat, provider-only release-source tree from this monorepo into a separate public repository named `terraform-provider-neuwerk`, and run provider release publication from that public repository. Validate the export contract in monorepo CI so provider release-source drift is caught on pull requests.
 
@@ -37,7 +37,7 @@
 
 The target public repository is:
 
-- `neuwerk/terraform-provider-neuwerk`
+- `moolen/terraform-provider-neuwerk`
 
 That repository should contain:
 
@@ -65,7 +65,7 @@ this monorepo first.
 Document in `packaging/scripts/export_terraform_provider_release_source.sh` that the output tree must:
 
 - place the provider Go module at repository root
-- preserve the `neuwerk/neuwerk` provider source address
+- preserve the `moolen/neuwerk` provider source address
 - include `docs/` and `examples/`
 - include a root `LICENSE` file
 - omit unrelated monorepo code
@@ -178,7 +178,7 @@ the monorepo.
 
 State clearly that:
 
-- the repository publishes provider releases for source address `neuwerk/neuwerk`
+- the repository publishes provider releases for source address `moolen/neuwerk`
 - development happens in the `firewall` monorepo
 - pull requests against the public repo should be limited to release plumbing or be redirected
 
@@ -222,14 +222,14 @@ should not become the primary authoring surface.
 Explain:
 
 - `firewall` stays the development repo
-- `terraform-provider-neuwerk` is the public release-source repo
+- `moolen/terraform-provider-neuwerk` is the public release-source repo
 - signed GitHub Releases continue to be required
 
 - [ ] **Step 2: Document the bootstrap steps for the public repo**
 
 Include:
 
-1. create public GitHub repository `neuwerk/terraform-provider-neuwerk`
+1. create public GitHub repository `moolen/terraform-provider-neuwerk`
 2. export the release-source tree from this monorepo
 3. push the exported tree to the public repo default branch
 4. configure the provider signing secrets in the public repo
@@ -242,7 +242,7 @@ Include exact maintainer commands:
 make package.terraform-provider.release-source OUTPUT_DIR=/tmp/terraform-provider-neuwerk
 cd /tmp/terraform-provider-neuwerk
 git init
-git remote add origin git@github.com:neuwerk/terraform-provider-neuwerk.git
+git remote add origin git@github.com:moolen/terraform-provider-neuwerk.git
 git checkout -b main
 git add .
 git commit -m "release-source: sync from firewall"
