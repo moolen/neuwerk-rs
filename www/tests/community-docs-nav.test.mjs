@@ -9,6 +9,12 @@ test('docs navigation includes a bottom community section with release and commu
   assert.match(navSource, /href: '\/docs\/community\/release-process', label: 'Release Process'/);
   assert.match(navSource, /href: '\/docs\/community\/contributing', label: 'Contributing'/);
   assert.match(navSource, /href: '\/docs\/community\/security', label: 'Security'/);
+  assert.match(
+    navSource,
+    /href: '\/docs\/tutorials\/launch-from-released-cloud-image', label: 'Launch Neuwerk From The Released Cloud Image'/,
+  );
+  assert.doesNotMatch(navSource, /label: 'Deploy A Single Node'/);
+  assert.doesNotMatch(navSource, /label: 'Build A Two-Node Cluster'/);
 
   const referenceIndex = navSource.indexOf("title: 'Reference'");
   const communityIndex = navSource.indexOf("title: 'Community'");
