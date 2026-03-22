@@ -22,6 +22,14 @@ require_cmd() {
   fi
 }
 
+require_env() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    echo "missing required environment variable: $name" >&2
+    exit 1
+  fi
+}
+
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 provider_dir="terraform-provider-neuwerk"
 provider_name="terraform-provider-neuwerk"
@@ -64,9 +72,14 @@ if [[ -z "$release_version" || -z "$output_dir" ]]; then
 fi
 
 require_cmd go
+require_cmd gpg
 require_cmd mktemp
 require_cmd python3
 require_cmd sha256sum
+
+require_env GPG_PRIVATE_KEY
+require_env GPG_PASSPHRASE
+require_env GPG_KEY_ID
 
 cd "$repo_root"
 
@@ -122,5 +135,35 @@ done
 
 (
   cd "$output_dir_path"
-  sha256sum ./*.zip > "${provider_name}_${version}_SHA256SUMS"
+  mapfile -t archive_names < <(find . -maxdepth 1 -type f -name '*.zip' -printf '%f\n' | sort)
+  sha256sum "${archive_names[@]}" > "${provider_name}_${version}_SHA256SUMS"
 )
+
+keyring_dir="$(mktemp -d)"
+chmod 0700 "$keyring_dir"
+cleanup() {
+  rm -rf "$keyring_dir"
+}
+trap cleanup EXIT
+
+checksum_path="${output_dir_path}/${provider_name}_${version}_SHA256SUMS"
+signature_path="${checksum_path}.sig"
+
+GNUPGHOME="$keyring_dir" gpg --batch --import <<EOF
+${GPG_PRIVATE_KEY}
+EOF
+
+GNUPGHOME="$keyring_dir" gpg \
+  --batch \
+  --yes \
+  --pinentry-mode loopback \
+  --passphrase "$GPG_PASSPHRASE" \
+  --local-user "$GPG_KEY_ID" \
+  --output "$signature_path" \
+  --detach-sign \
+  "$checksum_path"
+
+if [[ ! -s "$signature_path" ]]; then
+  echo "failed to create provider checksum signature: $signature_path" >&2
+  exit 1
+fi

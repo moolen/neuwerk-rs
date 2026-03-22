@@ -1,4 +1,4 @@
-.PHONY: build test test.clippy test.integration test.integration.sso test.security fuzz.check fuzz.smoke fuzz.nightly ha.up ha.down dpdk.prepare bench.dataplane package.target.validate package.image.bundle package.image.prebuilt-bundle package.image.qemu-key package.image.validate package.image.build.qemu package.image.build.aws package.image.build.azure package.image.build.gcp package.image.release-manifest package.image.release-assets package.vagrant.box package.vagrant.metadata
+.PHONY: build test test.all-features test.clippy test.integration test.integration.sso test.security fuzz.check fuzz.smoke fuzz.nightly ha.up ha.down dpdk.prepare bench.dataplane openapi.sync openapi.check package.target.validate package.image.bundle package.image.prebuilt-bundle package.image.qemu-key package.image.validate package.image.build.qemu package.image.build.aws package.image.build.azure package.image.build.gcp package.image.release-manifest package.image.release-assets package.terraform-provider.release-source package.terraform-provider.release-source.sync package.vagrant.box package.vagrant.metadata
 
 DPDK_VERSION := $(shell cat third_party/dpdk/VERSION 2>/dev/null)
 DPDK_INSTALL := third_party/dpdk/install/$(DPDK_VERSION)
@@ -6,6 +6,7 @@ DPDK_DIR_ABS := $(abspath $(DPDK_INSTALL))
 DPDK_PKG_CONFIG_PATH := $(DPDK_DIR_ABS)/lib/pkgconfig:$(DPDK_DIR_ABS)/lib/x86_64-linux-gnu/pkgconfig:$(DPDK_DIR_ABS)/lib64/pkgconfig
 DPDK_LD_LIBRARY_PATH := $(DPDK_DIR_ABS)/lib:$(DPDK_DIR_ABS)/lib/x86_64-linux-gnu:$(DPDK_DIR_ABS)/lib64
 TARGET ?= ubuntu-24.04-minimal-amd64
+OPENAPI_STATIC_PATH ?= www/public/openapi/neuwerk-v1.json
 PACKER ?= packer
 PACKER_DIR ?= $(CURDIR)/packer
 PACKER_ARTIFACT_DIR ?= $(CURDIR)/artifacts/image-build
@@ -41,12 +42,28 @@ dpdk.prepare:
 bench.dataplane:
 	./scripts/bench-dataplane.sh
 
+openapi.sync:
+	cargo run --quiet --bin export_openapi -- $(OPENAPI_STATIC_PATH)
+
+openapi.check:
+	@tmp="$$(mktemp)"; \
+	trap 'rm -f "$$tmp"' EXIT; \
+	cargo run --quiet --bin export_openapi -- "$$tmp"; \
+	if ! diff -u "$(OPENAPI_STATIC_PATH)" "$$tmp"; then \
+		echo ""; \
+		echo "OpenAPI artifact is stale. Run: make openapi.sync"; \
+		exit 1; \
+	fi
+
 build.ui:
 	@echo "Building UI..."
 	@cd ui && npm install && npm run build
 
 test:
 	cargo test
+
+test.all-features:
+	cargo test --all-features -- --test-threads=1
 
 test.clippy:
 	cargo clippy --workspace --all-targets --no-default-features --no-deps -- -D warnings
@@ -156,6 +173,19 @@ package.image.release-assets: package.target.validate
 		--release-version $(RELEASE_VERSION) \
 		--git-revision $(GIT_REVISION) \
 		--output-dir $(GITHUB_RELEASE_ARTIFACT_DIR)
+
+package.terraform-provider.release-source:
+	@test -n "$(OUTPUT_DIR)" || { echo "OUTPUT_DIR is required" >&2; exit 1; }
+	bash packaging/scripts/export_terraform_provider_release_source.sh \
+		--output-dir "$(OUTPUT_DIR)"
+
+package.terraform-provider.release-source.sync:
+	@test -n "$(REPO_DIR)" || { echo "REPO_DIR is required" >&2; exit 1; }
+	bash packaging/scripts/sync_terraform_provider_release_source.sh \
+		--repo-dir "$(REPO_DIR)" \
+		$(if $(REMOTE_URL),--remote-url "$(REMOTE_URL)") \
+		$(if $(BRANCH),--branch "$(BRANCH)") \
+		$(if $(PUSH),--push)
 
 package.vagrant.box: package.target.validate
 	bash packaging/scripts/build_vagrant_box.sh \

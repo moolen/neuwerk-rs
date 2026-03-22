@@ -146,8 +146,10 @@ This creates `artifacts/image-build/github-release/<target>/` with:
 - split compressed `qcow2` parts below the per-file GitHub Release limit
 - `restore-qcow2.sh`
 - `SHA256SUMS`
+- `SHA256SUMS.sig`
 - `manifest.json`
 - `linkage.json`
+- `neuwerk-release-signing-key.asc`
 - `packer-manifest.json`
 - image and rootfs SBOMs
 - a compressed `rootfs` archive
@@ -169,6 +171,12 @@ It is intentionally not triggered on push or merge. Use GitHub Actions `workflow
 - `runner`, default `ubuntu-24.04`
 - `qemu_accelerator`, default `none`
 
+Before running that workflow, configure these repository secrets:
+
+- `RELEASE_GPG_PRIVATE_KEY`
+- `RELEASE_GPG_PASSPHRASE`
+- `RELEASE_GPG_KEY_ID`
+
 The workflow:
 
 1. validates the Packer/image configuration
@@ -176,7 +184,8 @@ The workflow:
 3. builds the qemu image and reuses those prebuilt artifacts inside the guest when enabled
 4. optionally builds VirtualBox/Vagrant release assets when requested
 5. packages GitHub-safe release assets
-6. creates or updates the GitHub Release for the requested tag
+6. signs `SHA256SUMS` and stages the public signing key
+7. creates or updates the GitHub Release for the requested tag
 
 This host-prebuild path exists to avoid compiling DPDK and the Rust workspace inside a software-emulated guest on GitHub-hosted runners. Local builds still default to the original in-guest compile path unless `USE_PREBUILT_ARTIFACTS=true` is passed to `make package.image.build.qemu`.
 
@@ -226,7 +235,7 @@ This is a practical baseline, not a claim of complete CIS Level 2 coverage. Rema
 
 ## SBOMs
 
-The build currently emits two SBOM layers when `syft` is available in the guest:
+The release packaging contract expects two SBOM layers:
 
 - rootfs SBOMs from the staged runtime tree:
   - `<target>-rootfs.spdx.json`
@@ -236,6 +245,8 @@ The build currently emits two SBOM layers when `syft` is available in the guest:
   - `<target>-image.cyclonedx.json`
 
 These are downloaded back to `artifacts/image-build/release/<target>/` by the Packer file provisioner.
+`package.image.release-assets` treats both SBOM layers and the per-target source bundle as
+required provenance artifacts and fails if they are missing.
 
 ## Notes
 

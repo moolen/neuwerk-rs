@@ -1,0 +1,160 @@
+name: Terraform Provider Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Release tag/version to create or update
+        required: true
+        type: string
+      draft:
+        description: Publish the GitHub release as a draft
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        required: true
+        default: false
+        type: boolean
+      runner:
+        description: Runner label to use for the build
+        required: true
+        default: ubuntu-24.04
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: terraform-provider-release-${{ inputs.release_version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 120
+    env:
+      RELEASE_VERSION: ${{ inputs.release_version }}
+      GPG_PRIVATE_KEY: ${{ secrets.TERRAFORM_PROVIDER_GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.TERRAFORM_PROVIDER_GPG_PASSPHRASE }}
+      GPG_KEY_ID: ${{ secrets.TERRAFORM_PROVIDER_GPG_KEY_ID }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Verify Terraform provider signing configuration
+        run: |
+          for name in GPG_PRIVATE_KEY GPG_PASSPHRASE GPG_KEY_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "missing required Terraform provider signing secret: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: terraform-provider-neuwerk/go.mod
+          cache-dependency-path: terraform-provider-neuwerk/go.sum
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gpg \
+            iproute2 \
+            libclang-dev \
+            libnuma-dev \
+            llvm-dev \
+            meson \
+            ninja-build \
+            pkg-config \
+            protobuf-compiler \
+            python3-pyelftools
+
+      - name: Run Terraform provider unit tests
+        run: cd terraform-provider-neuwerk && go test ./... -count=1
+
+      - name: Run Terraform provider contract suite
+        run: |
+          CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"
+          sudo --preserve-env=HOME,RUSTUP_HOME,CARGO_HOME \
+            "$CARGO_BIN" test --test terraform_provider_e2e -- --test-threads=1
+
+      - name: Build Terraform provider release assets
+        env:
+          PROVIDER_DIR: terraform-provider-neuwerk
+          PROVIDER_NAME: terraform-provider-neuwerk
+          GPG_PRIVATE_KEY: ${{ secrets.TERRAFORM_PROVIDER_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.TERRAFORM_PROVIDER_GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.TERRAFORM_PROVIDER_GPG_KEY_ID }}
+        run: |
+          bash packaging/scripts/build_terraform_provider_release_assets.sh \
+            --provider-dir "$PROVIDER_DIR" \
+            --provider-name "$PROVIDER_NAME" \
+            --release-version "$RELEASE_VERSION" \
+            --output-dir "$PWD/artifacts/terraform-provider-release"
+
+      - name: Write Terraform provider release notes
+        run: |
+          cat > artifacts/terraform-provider-release/release-notes.md <<EOF
+          Terraform provider release assets for ${RELEASE_VERSION}
+
+          Source address: \`moolen/neuwerk\`
+          Docs: \`terraform-provider-neuwerk/docs/\`
+          Signing key fingerprint: \`DC34EB84D498D1445B68CB405E6B936CF37928C3\`
+
+          Attached assets include the platform archives, SHA256SUMS file, and detached SHA256SUMS signature.
+          EOF
+
+      - name: Ensure Git tag ref exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_VERSION}" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -X POST \
+            -f ref="refs/tags/${RELEASE_VERSION}" \
+            -f sha="$(git rev-parse HEAD)" >/dev/null
+
+      - name: Ensure GitHub release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          args=()
+          if [[ "${{ inputs.draft }}" == "true" ]]; then
+            args+=(--draft)
+          fi
+          if [[ "${{ inputs.prerelease }}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "$RELEASE_VERSION" "${args[@]}" \
+            --notes-file artifacts/terraform-provider-release/release-notes.md
+
+      - name: Upload GitHub Terraform provider release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_VERSION" \
+            artifacts/terraform-provider-release/*.zip \
+            artifacts/terraform-provider-release/*_SHA256SUMS \
+            artifacts/terraform-provider-release/*_SHA256SUMS.sig \
+            --clobber

@@ -165,6 +165,11 @@ func (p *neuwerkProvider) Resources(_ context.Context) []func() resource.Resourc
 		newPolicyResource,
 		newKubernetesIntegrationResource,
 		newTLSInterceptCAResource,
+		newServiceAccountResource,
+		newServiceAccountTokenResource,
+		newGoogleSsoProviderResource,
+		newGithubSsoProviderResource,
+		newGenericOidcSsoProviderResource,
 	}
 }
 
