@@ -146,6 +146,30 @@ func TestGenericOidcSchemaRequiresExplicitEndpoints(t *testing.T) {
 	}
 }
 
+func TestGenericOidcCreateRejectsBlankRequiredEndpoint(t *testing.T) {
+	t.Parallel()
+
+	plan := emptyGenericOidcSsoProviderModel()
+	plan.Name = types.StringValue("OIDC Provider")
+	plan.ClientID = types.StringValue("oidc-client-id")
+	plan.ClientSecret = types.StringValue("super-secret")
+	plan.AuthorizationURL = types.StringValue("   ")
+	plan.TokenURL = types.StringValue("https://oidc.example.com/token")
+	plan.UserinfoURL = types.StringValue("https://oidc.example.com/userinfo")
+
+	var diags diag.Diagnostics
+	_, ok := buildSsoProviderCreateRequest(plan, "generic-oidc", &diags)
+	if ok {
+		t.Fatalf("expected create request build to fail for blank authorization_url")
+	}
+	if !diags.HasError() {
+		t.Fatalf("expected diagnostics for blank authorization_url")
+	}
+	if !strings.Contains(diags.Errors()[0].Detail(), "authorization_url must not be empty") {
+		t.Fatalf("unexpected diagnostics detail: %q", diags.Errors()[0].Detail())
+	}
+}
+
 func TestSsoProviderStateFromAPIAcceptsDefaultedEndpoints(t *testing.T) {
 	t.Parallel()
 
@@ -832,6 +856,103 @@ func TestGoogleSsoProviderUpdateRejectsKindMismatch(t *testing.T) {
 		t.Fatalf("expected no PUT request when pre-update kind validation fails")
 	}
 	if !strings.Contains(resp.Diagnostics.Errors()[0].Detail(), `expected "google", got "github"`) {
+		t.Fatalf("unexpected diagnostics detail: %q", resp.Diagnostics.Errors()[0].Detail())
+	}
+}
+
+func TestGenericOidcUpdateRejectsBlankRequiredEndpoint(t *testing.T) {
+	t.Parallel()
+
+	var sawPut bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
+				"name":"OIDC Provider",
+				"kind":"generic-oidc",
+				"enabled":true,
+				"display_order":0,
+				"client_id":"oidc-client-id",
+				"client_secret_configured":true,
+				"authorization_url":"https://oidc.example.com/auth",
+				"token_url":"https://oidc.example.com/token",
+				"userinfo_url":"https://oidc.example.com/userinfo",
+				"scopes":[],
+				"pkce_required":true,
+				"subject_claim":"sub",
+				"admin_subjects":[],
+				"admin_groups":[],
+				"admin_email_domains":[],
+				"readonly_subjects":[],
+				"readonly_groups":[],
+				"readonly_email_domains":[],
+				"allowed_email_domains":[],
+				"session_ttl_secs":3600,
+				"created_at":"2026-03-22T00:00:00Z",
+				"updated_at":"2026-03-22T00:00:01Z"
+			}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6":
+			sawPut = true
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"unexpected update call"}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	res := newProviderResourceByTypeSuffix(t, "_sso_provider_generic_oidc")
+	configurable, ok := res.(resource.ResourceWithConfigure)
+	if !ok {
+		t.Fatalf("resource does not implement configure")
+	}
+	configurable.Configure(context.Background(), resource.ConfigureRequest{ProviderData: newTestAPIClient(t, server)}, &resource.ConfigureResponse{})
+
+	ctx := context.Background()
+	schemaResp := genericOidcSsoProviderSchema(t)
+
+	planValue := emptyGenericOidcSsoProviderModel()
+	planValue.ID = types.StringValue("26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6")
+	planValue.Name = types.StringValue("OIDC Provider")
+	planValue.ClientID = types.StringValue("oidc-client-id")
+	planValue.AuthorizationURL = types.StringValue(" ")
+	planValue.TokenURL = types.StringValue("https://oidc.example.com/token")
+	planValue.UserinfoURL = types.StringValue("https://oidc.example.com/userinfo")
+	plan := tfsdk.Plan{Schema: schemaResp.Schema}
+	diags := plan.Set(ctx, planValue)
+	if diags.HasError() {
+		t.Fatalf("unexpected plan diagnostics: %#v", diags)
+	}
+
+	priorStateValue := planValue
+	priorStateValue.AuthorizationURL = types.StringValue("https://oidc.example.com/auth")
+	priorStateValue.ClientSecret = types.StringValue("existing-secret")
+	priorState := tfsdk.State{Schema: schemaResp.Schema}
+	diags = priorState.Set(ctx, priorStateValue)
+	if diags.HasError() {
+		t.Fatalf("unexpected state diagnostics: %#v", diags)
+	}
+
+	req := resource.UpdateRequest{
+		Plan:  plan,
+		State: priorState,
+		Config: tfsdk.Config{
+			Schema: schemaResp.Schema,
+			Raw:    plan.Raw,
+		},
+	}
+	resp := resource.UpdateResponse{State: tfsdk.State{Schema: schemaResp.Schema}}
+	res.Update(ctx, req, &resp)
+
+	if !resp.Diagnostics.HasError() {
+		t.Fatalf("expected diagnostics for blank authorization_url")
+	}
+	if sawPut {
+		t.Fatalf("expected no PUT request when blank authorization_url is rejected")
+	}
+	if !strings.Contains(resp.Diagnostics.Errors()[0].Detail(), "authorization_url must not be empty") {
 		t.Fatalf("unexpected diagnostics detail: %q", resp.Diagnostics.Errors()[0].Detail())
 	}
 }

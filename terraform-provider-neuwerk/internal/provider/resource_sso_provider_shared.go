@@ -286,6 +286,10 @@ func (r *ssoProviderResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
+	if !validateSsoProviderRequiredEndpoints(r.kindConfig.kind, plan, &resp.Diagnostics) {
+		return
+	}
+
 	var configClientSecret types.String
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("client_secret"), &configClientSecret)...)
 	if resp.Diagnostics.HasError() {
@@ -361,6 +365,9 @@ func buildSsoProviderCreateRequest(plan ssoProviderResourceModel, kind string, d
 	clientSecret := strings.TrimSpace(plan.ClientSecret.ValueString())
 	if clientSecret == "" {
 		diags.AddAttributeError(path.Root("client_secret"), "Invalid Client Secret", "client_secret must not be empty.")
+		return createSsoProviderRequest{}, false
+	}
+	if !validateSsoProviderRequiredEndpoints(kind, plan, diags) {
 		return createSsoProviderRequest{}, false
 	}
 
@@ -443,6 +450,28 @@ func parseSsoProviderImportID(raw string, diags *diag.Diagnostics) (string, bool
 		return "", false
 	}
 	return id, true
+}
+
+func validateSsoProviderRequiredEndpoints(kind string, plan ssoProviderResourceModel, diags *diag.Diagnostics) bool {
+	if kind != "generic-oidc" {
+		return true
+	}
+
+	validateRequiredEndpoint(path.Root("authorization_url"), "authorization_url", plan.AuthorizationURL, diags)
+	validateRequiredEndpoint(path.Root("token_url"), "token_url", plan.TokenURL, diags)
+	validateRequiredEndpoint(path.Root("userinfo_url"), "userinfo_url", plan.UserinfoURL, diags)
+
+	return !diags.HasError()
+}
+
+func validateRequiredEndpoint(attrPath path.Path, field string, value types.String, diags *diag.Diagnostics) {
+	if value.IsNull() || value.IsUnknown() || strings.TrimSpace(value.ValueString()) == "" {
+		diags.AddAttributeError(
+			attrPath,
+			"Invalid OIDC Endpoint URL",
+			fmt.Sprintf("%s must not be empty for generic OIDC SSO providers.", field),
+		)
+	}
 }
 
 func ssoProviderStateFromAPI(prior ssoProviderResourceModel, record *apiSsoProvider) ssoProviderResourceModel {
