@@ -1,0 +1,201 @@
+# Generated from the Neuwerk firewall monorepo.
+# Do not treat this repository as the primary development surface.
+name: Terraform Provider Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Release tag/version to create or update
+        required: true
+        type: string
+      draft:
+        description: Publish the GitHub release as a draft
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        required: true
+        default: false
+        type: boolean
+      runner:
+        description: Runner label to use for the build
+        required: true
+        default: ubuntu-24.04
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: terraform-provider-release-${{ inputs.release_version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    env:
+      RELEASE_VERSION: ${{ inputs.release_version }}
+      GPG_PRIVATE_KEY: ${{ secrets.TERRAFORM_PROVIDER_GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.TERRAFORM_PROVIDER_GPG_PASSPHRASE }}
+      GPG_KEY_ID: ${{ secrets.TERRAFORM_PROVIDER_GPG_KEY_ID }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Verify Terraform provider signing configuration
+        run: |
+          for name in GPG_PRIVATE_KEY GPG_PASSPHRASE GPG_KEY_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "missing required Terraform provider signing secret: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install signing dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gpg
+
+      - name: Run provider tests
+        run: go test ./... -count=1
+
+      - name: Build Terraform provider release assets
+        run: |
+          version="${RELEASE_VERSION#v}"
+          output_dir="$PWD/artifacts/terraform-provider-release"
+          provider_name="terraform-provider-neuwerk"
+          mkdir -p "$output_dir"
+
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "darwin amd64"
+            "darwin arm64"
+            "windows amd64"
+          )
+
+          for target in "${targets[@]}"; do
+            read -r goos goarch <<<"$target"
+            ext=""
+            if [[ "$goos" == "windows" ]]; then
+              ext=".exe"
+            fi
+
+            bin_name="${provider_name}_v${version}${ext}"
+            archive_name="${provider_name}_${version}_${goos}_${goarch}.zip"
+            archive_path="${output_dir}/${archive_name}"
+            stage_dir="$(mktemp -d)"
+
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w -X main.version=${RELEASE_VERSION}" \
+              -o "${stage_dir}/${bin_name}" .
+
+            STAGE_DIR="$stage_dir" ARCHIVE_PATH="$archive_path" python3 - <<'PY'
+          import os
+          import pathlib
+          import zipfile
+
+          stage = pathlib.Path(os.environ["STAGE_DIR"])
+          archive = pathlib.Path(os.environ["ARCHIVE_PATH"])
+
+          with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+              for path in sorted(stage.iterdir()):
+                  zf.write(path, path.name)
+          PY
+
+            rm -rf "$stage_dir"
+          done
+
+          (
+            cd "$output_dir"
+            mapfile -t archive_names < <(find . -maxdepth 1 -type f -name '*.zip' -printf '%f\n' | sort)
+            sha256sum "${archive_names[@]}" > "${provider_name}_${version}_SHA256SUMS"
+          )
+
+          keyring_dir="$(mktemp -d)"
+          chmod 0700 "$keyring_dir"
+          trap 'rm -rf "$keyring_dir"' EXIT
+
+          checksum_path="${output_dir}/${provider_name}_${version}_SHA256SUMS"
+          signature_path="${checksum_path}.sig"
+
+          GNUPGHOME="$keyring_dir" gpg --batch --import <<EOF
+          ${GPG_PRIVATE_KEY}
+          EOF
+
+          GNUPGHOME="$keyring_dir" gpg \
+            --batch \
+            --yes \
+            --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --local-user "$GPG_KEY_ID" \
+            --output "$signature_path" \
+            --detach-sign \
+            "$checksum_path"
+
+          if [[ ! -s "$signature_path" ]]; then
+            echo "failed to create provider checksum signature: $signature_path" >&2
+            exit 1
+          fi
+
+      - name: Write release notes
+        run: |
+          mkdir -p artifacts/terraform-provider-release
+          cat > artifacts/terraform-provider-release/release-notes.md <<EOF
+          Terraform provider release assets for ${RELEASE_VERSION}
+
+          Source address: \`moolen/neuwerk\`
+          Signing key fingerprint: \`DC34EB84D498D1445B68CB405E6B936CF37928C3\`
+
+          Attached assets include the platform archives, SHA256SUMS file, and detached SHA256SUMS signature.
+          EOF
+
+      - name: Ensure Git tag ref exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_VERSION}" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -X POST \
+            -f ref="refs/tags/${RELEASE_VERSION}" \
+            -f sha="$(git rev-parse HEAD)" >/dev/null
+
+      - name: Ensure GitHub release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          args=()
+          if [[ "${{ inputs.draft }}" == "true" ]]; then
+            args+=(--draft)
+          fi
+          if [[ "${{ inputs.prerelease }}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "$RELEASE_VERSION" "${args[@]}" \
+            --notes-file artifacts/terraform-provider-release/release-notes.md
+
+      - name: Upload GitHub Terraform provider release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_VERSION" \
+            artifacts/terraform-provider-release/*.zip \
+            artifacts/terraform-provider-release/*_SHA256SUMS \
+            artifacts/terraform-provider-release/*_SHA256SUMS.sig \
+            --clobber

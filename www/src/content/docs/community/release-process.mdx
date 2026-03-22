@@ -1,0 +1,79 @@
+---
+title: Release Process
+description: Canonical release process for Neuwerk OSS artifacts, including appliance image publication and Terraform provider distribution.
+order: 1
+---
+
+Neuwerk currently has two OSS release surfaces:
+
+1. the appliance image release
+2. the Terraform provider release
+
+Both are published through GitHub Releases. The provider source address remains `moolen/neuwerk`.
+
+## Appliance Image Releases
+
+The appliance image release is the primary operator-facing distribution path today.
+
+Current contract:
+
+- published through GitHub Releases
+- signed `SHA256SUMS`
+- detached `SHA256SUMS.sig`
+- published public signing key
+- release notes
+- provenance metadata
+- source bundle
+- image and rootfs SBOMs
+
+The release workflow is `.github/workflows/image-release.yml`.
+
+Before running it, configure:
+
+- `RELEASE_GPG_PRIVATE_KEY`
+- `RELEASE_GPG_PASSPHRASE`
+- `RELEASE_GPG_KEY_ID`
+
+The detailed operator-facing artifact and verification flow is documented in:
+
+- [Appliance Image Usage](/docs/operations/appliance-image-usage)
+- [Image Build](/docs/operations/image-build)
+
+## Terraform Provider Releases
+
+The Terraform provider release path is separate from the appliance image release path.
+
+Current contract:
+
+- provider source address: `moolen/neuwerk`
+- signed provider release assets are published from `moolen/terraform-provider-neuwerk`
+- the monorepo keeps the provider packaging and release-source export contract under CI
+
+Provider release flow:
+
+1. land provider changes in the Neuwerk monorepo
+2. export and sync the public release-source repository
+3. run the public release workflow in `moolen/terraform-provider-neuwerk`
+4. publish a signed GitHub Release for the requested tag
+
+The public Registry onboarding step is still separate:
+
+1. sign in to Terraform Registry with the GitHub account that owns the public provider repository
+2. add the public GPG key in Terraform Registry signing keys
+3. publish the provider from `moolen/terraform-provider-neuwerk`
+4. let future GitHub Releases flow into Registry through the installed webhook
+
+The detailed provider release and publication flow is documented in:
+
+- [Terraform Provider](/docs/interfaces/terraform-provider)
+
+## Current Status
+
+The high-level launch status is tracked on:
+
+- [OSS Release Readiness](/docs/community/release-readiness)
+
+## Related
+
+- [Contributing](/docs/community/contributing)
+- [Security](/docs/community/security)

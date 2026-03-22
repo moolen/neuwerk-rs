@@ -9,6 +9,8 @@ use neuwerk::controlplane::api_auth;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa};
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -205,6 +207,35 @@ struct NeuwerkHarness {
     token: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ContractServiceAccount {
+    id: String,
+    name: String,
+    role: String,
+    status: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ContractServiceAccountToken {
+    id: String,
+    service_account_id: String,
+    name: Option<String>,
+    role: String,
+    status: String,
+    revoked_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ContractSsoProvider {
+    id: String,
+    name: String,
+    kind: String,
+    authorization_url: Option<String>,
+    token_url: Option<String>,
+    userinfo_url: Option<String>,
+    client_secret_configured: bool,
+}
+
 impl NeuwerkHarness {
     async fn start(label: &str) -> Result<Self, String> {
         let dir = TempDir::new().map_err(|err| err.to_string())?;
@@ -270,6 +301,24 @@ impl NeuwerkHarness {
             return Err(format!("get {path} status {status}: {body}"));
         }
         resp.json::<Value>()
+            .await
+            .map_err(|err| format!("decode {path} failed: {err}"))
+    }
+
+    async fn get_typed_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+        let resp = self
+            .client
+            .get(format!("https://{}{}", self.http_bind, path))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|err| format!("get {path} failed: {err}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("get {path} status {status}: {body}"));
+        }
+        resp.json::<T>()
             .await
             .map_err(|err| format!("decode {path} failed: {err}"))
     }
@@ -603,6 +652,174 @@ async fn verify_integration_exists(harness: &NeuwerkHarness, name: &str) -> Resu
     Ok(())
 }
 
+async fn verify_service_account_exists(
+    harness: &NeuwerkHarness,
+    name: &str,
+    expected_role: &str,
+) -> Result<ContractServiceAccount, String> {
+    let accounts: Vec<ContractServiceAccount> =
+        harness.get_typed_json("/api/v1/service-accounts").await?;
+    let account = accounts
+        .into_iter()
+        .find(|account| account.name == name)
+        .ok_or_else(|| format!("service account {name} not found"))?;
+    if account.role != expected_role {
+        return Err(format!(
+            "service account {name} role mismatch: expected {expected_role}, got {}",
+            account.role
+        ));
+    }
+    if account.status != "active" {
+        return Err(format!(
+            "service account {name} status mismatch: expected active, got {}",
+            account.status
+        ));
+    }
+    Ok(account)
+}
+
+async fn verify_service_account_disabled(
+    harness: &NeuwerkHarness,
+    name: &str,
+) -> Result<ContractServiceAccount, String> {
+    let accounts: Vec<ContractServiceAccount> =
+        harness.get_typed_json("/api/v1/service-accounts").await?;
+    let account = accounts
+        .into_iter()
+        .find(|account| account.name == name)
+        .ok_or_else(|| format!("service account {name} not found"))?;
+    if account.status != "disabled" {
+        return Err(format!(
+            "service account {name} status mismatch: expected disabled, got {}",
+            account.status
+        ));
+    }
+    Ok(account)
+}
+
+async fn verify_service_account_token_exists(
+    harness: &NeuwerkHarness,
+    service_account_id: &str,
+    token_name: &str,
+    expected_role: &str,
+) -> Result<ContractServiceAccountToken, String> {
+    let tokens: Vec<ContractServiceAccountToken> = harness
+        .get_typed_json(&format!("/api/v1/service-accounts/{service_account_id}/tokens"))
+        .await?;
+    let token = tokens
+        .into_iter()
+        .find(|token| token.name.as_deref() == Some(token_name))
+        .ok_or_else(|| format!("service account token {token_name} not found"))?;
+    if token.service_account_id != service_account_id {
+        return Err(format!(
+            "service account token {token_name} service_account_id mismatch: expected {service_account_id}, got {}",
+            token.service_account_id
+        ));
+    }
+    if token.role != expected_role {
+        return Err(format!(
+            "service account token {token_name} role mismatch: expected {expected_role}, got {}",
+            token.role
+        ));
+    }
+    if token.status != "active" {
+        return Err(format!(
+            "service account token {token_name} status mismatch: expected active, got {}",
+            token.status
+        ));
+    }
+    Ok(token)
+}
+
+async fn verify_service_account_token_revoked(
+    harness: &NeuwerkHarness,
+    service_account_id: &str,
+    token_name: &str,
+) -> Result<(), String> {
+    let tokens: Vec<ContractServiceAccountToken> = harness
+        .get_typed_json(&format!("/api/v1/service-accounts/{service_account_id}/tokens"))
+        .await?;
+    let token = tokens
+        .into_iter()
+        .find(|token| token.name.as_deref() == Some(token_name))
+        .ok_or_else(|| format!("service account token {token_name} not found"))?;
+    if token.status != "revoked" {
+        return Err(format!(
+            "service account token {token_name} status mismatch: expected revoked, got {}",
+            token.status
+        ));
+    }
+    if token.revoked_at.as_deref().unwrap_or_default().is_empty() {
+        return Err(format!(
+            "service account token {token_name} expected revoked_at to be populated"
+        ));
+    }
+    Ok(())
+}
+
+async fn verify_sso_provider_exists(
+    harness: &NeuwerkHarness,
+    name: &str,
+    expected_kind: &str,
+) -> Result<ContractSsoProvider, String> {
+    let providers: Vec<ContractSsoProvider> = harness
+        .get_typed_json("/api/v1/settings/sso/providers")
+        .await?;
+    let provider = providers
+        .into_iter()
+        .find(|provider| provider.name == name)
+        .ok_or_else(|| format!("sso provider {name} not found"))?;
+    if provider.kind != expected_kind {
+        return Err(format!(
+            "sso provider {name} kind mismatch: expected {expected_kind}, got {}",
+            provider.kind
+        ));
+    }
+    if !provider.client_secret_configured {
+        return Err(format!(
+            "sso provider {name} expected client_secret_configured = true"
+        ));
+    }
+    Ok(provider)
+}
+
+fn verify_generic_oidc_endpoints(
+    provider: &ContractSsoProvider,
+    expected_authorization_url: &str,
+    expected_token_url: &str,
+    expected_userinfo_url: &str,
+) -> Result<(), String> {
+    if provider.authorization_url.as_deref() != Some(expected_authorization_url) {
+        return Err(format!(
+            "generic oidc authorization_url mismatch: expected {expected_authorization_url:?}, got {:?}",
+            provider.authorization_url
+        ));
+    }
+    if provider.token_url.as_deref() != Some(expected_token_url) {
+        return Err(format!(
+            "generic oidc token_url mismatch: expected {expected_token_url:?}, got {:?}",
+            provider.token_url
+        ));
+    }
+    if provider.userinfo_url.as_deref() != Some(expected_userinfo_url) {
+        return Err(format!(
+            "generic oidc userinfo_url mismatch: expected {expected_userinfo_url:?}, got {:?}",
+            provider.userinfo_url
+        ));
+    }
+    Ok(())
+}
+
+async fn verify_sso_provider_missing(harness: &NeuwerkHarness, name: &str) -> Result<(), String> {
+    let providers: Vec<ContractSsoProvider> = harness
+        .get_typed_json("/api/v1/settings/sso/providers")
+        .await?;
+    if providers.into_iter().any(|provider| provider.name == name) {
+        return Err(format!("expected sso provider {name} to be missing"));
+    }
+    Ok(())
+}
+
 async fn verify_policy_missing(harness: &NeuwerkHarness, name: &str) -> Result<(), String> {
     let status = harness
         .get_status(&format!("/api/v1/policies/by-name/{name}"))
@@ -683,6 +900,63 @@ async fn run_foundation_import_case(
 
     verify_integration_missing(harness, "prod-k8s").await?;
     verify_policy_missing(harness, "terraform-contract-raw").await?;
+    Ok(())
+}
+
+async fn run_identity_resources_import_case(
+    harness: &NeuwerkHarness,
+    provider: &ProviderInstall,
+) -> Result<(), String> {
+    let workspace = TerraformWorkspace::new(
+        provider,
+        "identity_resources_importable",
+        &fixture_replacements(harness, BTreeMap::new()),
+    )?;
+    workspace.init()?;
+    workspace.apply()?;
+    workspace.expect_plan_clean()?;
+
+    let service_account = verify_service_account_exists(harness, "terraform-identity", "admin").await?;
+    let token = verify_service_account_token_exists(
+        harness,
+        &service_account.id,
+        "terraform-admin",
+        "admin",
+    )
+    .await?;
+    let google = verify_sso_provider_exists(harness, "Terraform Google", "google").await?;
+    let github = verify_sso_provider_exists(harness, "Terraform GitHub", "github").await?;
+    let oidc = verify_sso_provider_exists(harness, "Terraform OIDC", "generic-oidc").await?;
+    verify_generic_oidc_endpoints(
+        &oidc,
+        "https://idp.example.com/oauth2/authorize",
+        "https://idp.example.com/oauth2/token",
+        "https://idp.example.com/oauth2/userinfo",
+    )?;
+
+    let import_workspace = TerraformWorkspace::new(
+        provider,
+        "identity_resources_importable",
+        &fixture_replacements(harness, BTreeMap::new()),
+    )?;
+    import_workspace.init()?;
+    import_workspace.import("neuwerk_service_account.identity", &service_account.id)?;
+    import_workspace.import(
+        "neuwerk_service_account_token.identity",
+        &format!("{}/{}", service_account.id, token.id),
+    )?;
+    import_workspace.import("neuwerk_sso_provider_google.google", &google.id)?;
+    import_workspace.import("neuwerk_sso_provider_github.github", &github.id)?;
+    import_workspace.import("neuwerk_sso_provider_generic_oidc.oidc", &oidc.id)?;
+    import_workspace.apply()?;
+    import_workspace.expect_plan_clean()?;
+    import_workspace.destroy()?;
+
+    verify_service_account_disabled(harness, "terraform-identity").await?;
+    verify_service_account_token_revoked(harness, &service_account.id, "terraform-admin").await?;
+    verify_sso_provider_missing(harness, "Terraform Google").await?;
+    verify_sso_provider_missing(harness, "Terraform GitHub").await?;
+    verify_sso_provider_missing(harness, "Terraform OIDC").await?;
     Ok(())
 }
 
@@ -882,6 +1156,9 @@ async fn terraform_provider_golden_contract_suite() {
     run_foundation_import_case(&harness, &provider)
         .await
         .expect("foundation importable case");
+    run_identity_resources_import_case(&harness, &provider)
+        .await
+        .expect("identity resources importable case");
     run_uploaded_ca_import_case(&harness, &provider)
         .await
         .expect("uploaded ca importable case");

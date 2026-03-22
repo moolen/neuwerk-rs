@@ -62,6 +62,16 @@ export const docsNavigation: DocsNavSection[] = [
       { href: '/docs/reference/glossary', label: 'Glossary' },
     ],
   },
+  {
+    title: 'Community',
+    items: [
+      { href: '/docs/community/launch-checklist', label: 'Launch Checklist' },
+      { href: '/docs/community/release-process', label: 'Release Process' },
+      { href: '/docs/community/release-readiness', label: 'OSS Release Readiness' },
+      { href: '/docs/community/contributing', label: 'Contributing' },
+      { href: '/docs/community/security', label: 'Security' },
+    ],
+  },
 ];
 
 export function isDocsPathActive(href: string, current: string): boolean {

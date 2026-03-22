@@ -15,7 +15,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  oss-launch-surface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: www/package-lock.json
+
+      - name: Install docs dependencies
+        run: npm --prefix www ci
+
+      - name: Verify OSS launch surface
+        run: bash packaging/scripts/check_oss_launch_surface.sh
+
+      - name: Run docs tests
+        run: node --test www/tests/*.test.mjs
+
+      - name: Build docs site
+        run: npm --prefix www run build
+
   build-and-test:
+    needs: oss-launch-surface
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -45,6 +72,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            gpg \
             libclang-dev \
             libnuma-dev \
             llvm-dev \
@@ -178,3 +206,139 @@ jobs:
           OWNER_GID="$(id -g)"
           sudo chown -R "$OWNER_UID:$OWNER_GID" "$GITHUB_WORKSPACE"
           sudo chown -R "$OWNER_UID:$OWNER_GID" "${CARGO_HOME:-$HOME/.cargo}" "${RUSTUP_HOME:-$HOME/.rustup}"
+
+  terraform-provider-release-assets:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: terraform-provider-neuwerk/go.mod
+          cache-dependency-path: terraform-provider-neuwerk/go.sum
+
+      - name: Install signing dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gpg
+
+      - name: Build signed Terraform provider release assets
+        run: |
+          key_home="$(mktemp -d)"
+          export GNUPGHOME="$key_home"
+          chmod 700 "$GNUPGHOME"
+          trap 'rm -rf "$key_home" key.conf' EXIT
+          passphrase="neuwerk-ci-passphrase"
+
+          cat >key.conf <<'EOF'
+          Key-Type: RSA
+          Key-Length: 3072
+          Name-Real: Neuwerk CI
+          Name-Email: ci@neuwerk.invalid
+          Expire-Date: 0
+          %commit
+          EOF
+
+          gpg --batch --pinentry-mode loopback --passphrase "$passphrase" --generate-key key.conf
+          key_id="$(gpg --batch --list-secret-keys --with-colons ci@neuwerk.invalid | awk -F: '/^sec:/ { print $5; exit }')"
+          export GPG_PRIVATE_KEY="$(
+            gpg --batch --pinentry-mode loopback --passphrase "$passphrase" \
+              --armor --export-secret-keys "$key_id"
+          )"
+          export GPG_PASSPHRASE="$passphrase"
+          export GPG_KEY_ID="$key_id"
+
+          output_dir="$RUNNER_TEMP/terraform-provider-release"
+          bash packaging/scripts/build_terraform_provider_release_assets.sh \
+            --release-version v0.0.0-ci \
+            --output-dir "$output_dir"
+
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_linux_amd64.zip"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_linux_arm64.zip"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_darwin_amd64.zip"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_darwin_arm64.zip"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_windows_amd64.zip"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS.sig"
+          ! grep -q ' \./terraform-provider-neuwerk_0.0.0-ci_' \
+            "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS"
+          grep -q '  terraform-provider-neuwerk_0.0.0-ci_linux_amd64.zip' \
+            "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS"
+
+          gpg --batch --verify \
+            "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS.sig" \
+            "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS"
+
+  terraform-provider-release-source:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: terraform-provider-neuwerk/go.mod
+          cache-dependency-path: terraform-provider-neuwerk/go.sum
+
+      - name: Export Terraform provider release-source tree
+        run: make package.terraform-provider.release-source OUTPUT_DIR="$RUNNER_TEMP/terraform-provider-neuwerk"
+
+      - name: Verify exported release-source files
+        run: |
+          export_root="$RUNNER_TEMP/terraform-provider-neuwerk"
+          test -f "$export_root/README.md"
+          test -f "$export_root/LICENSE"
+          test -f "$export_root/.gitignore"
+          test -f "$export_root/.github/workflows/ci.yml"
+          test -f "$export_root/.github/workflows/release.yml"
+          test -f "$export_root/main.go"
+          test -f "$export_root/go.mod"
+          test -f "$export_root/internal/provider/provider.go"
+          test ! -e "$export_root/src"
+          test ! -e "$export_root/ui"
+          test ! -e "$export_root/packer"
+          test ! -e "$export_root/terraform-provider-neuwerk"
+
+      - name: Test exported release-source tree
+        run: |
+          cd "$RUNNER_TEMP/terraform-provider-neuwerk"
+          go test ./... -count=1
+
+  appliance-release-assets:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libclang-dev \
+            libnuma-dev \
+            llvm-dev \
+            meson \
+            ninja-build \
+            pkg-config \
+            protobuf-compiler \
+            python3-pyelftools \
+            zstd
+
+      - name: Verify appliance GitHub release asset contract
+        run: |
+          cargo test --test appliance_release_assets_contract -- --ignored

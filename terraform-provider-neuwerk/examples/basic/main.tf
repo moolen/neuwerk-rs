@@ -8,10 +8,22 @@ terraform {
 
 provider "neuwerk" {
   endpoints       = ["https://fw-a.example.com", "https://fw-b.example.com"]
-  token           = var.neuwerk_service_account_token
+  token           = var.neuwerk_bootstrap_token
   ca_cert_pem     = file("${path.module}/neuwerk-ca.crt")
   request_timeout = "30s"
   retry_timeout   = "5s"
+}
+
+resource "neuwerk_service_account" "terraform" {
+  name  = "terraform"
+  role = "admin"
+}
+
+resource "neuwerk_service_account_token" "terraform" {
+  service_account_id = neuwerk_service_account.terraform.id
+  name               = "terraform"
+  role    = "admin"
+  eternal = true
 }
 
 resource "neuwerk_kubernetes_integration" "prod" {
@@ -51,12 +63,12 @@ resource "neuwerk_policy" "main" {
   ]
 }
 
-variable "neuwerk_service_account_token" {
+variable "k8s_service_account_token" {
   type      = string
   sensitive = true
 }
 
-variable "k8s_service_account_token" {
+variable "neuwerk_bootstrap_token" {
   type      = string
   sensitive = true
 }

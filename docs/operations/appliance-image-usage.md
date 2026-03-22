@@ -30,6 +30,8 @@ The minimum asset set needed to restore the published appliance image is:
 - `neuwerk-ubuntu-24.04-minimal-amd64.qcow2.zst.part-*`
 - `restore-qcow2.sh`
 - `SHA256SUMS`
+- `SHA256SUMS.sig`
+- `neuwerk-release-signing-key.asc`
 
 The full release typically also includes:
 
@@ -44,7 +46,14 @@ The full release typically also includes:
 
 Download the selected release into one working directory and verify it there:
 
+Current shared Neuwerk release-signing fingerprint:
+
+- `DC34EB84D498D1445B68CB405E6B936CF37928C3`
+
 ```bash
+gpg --import neuwerk-release-signing-key.asc
+gpg --show-keys --with-fingerprint neuwerk-release-signing-key.asc
+gpg --verify SHA256SUMS.sig SHA256SUMS
 sha256sum -c SHA256SUMS
 ```
 

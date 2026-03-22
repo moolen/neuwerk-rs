@@ -70,6 +70,35 @@ type apiPolicyRecord struct {
 	Policy    json.RawMessage `json:"policy"`
 }
 
+type apiServiceAccount struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description"`
+	CreatedAt   string  `json:"created_at"`
+	CreatedBy   string  `json:"created_by"`
+	Role        string  `json:"role"`
+	Status      string  `json:"status"`
+}
+
+type apiServiceAccountTokenMeta struct {
+	ID               string  `json:"id"`
+	ServiceAccountID string  `json:"service_account_id"`
+	Name             *string `json:"name"`
+	CreatedAt        string  `json:"created_at"`
+	CreatedBy        string  `json:"created_by"`
+	ExpiresAt        *string `json:"expires_at"`
+	RevokedAt        *string `json:"revoked_at"`
+	LastUsedAt       *string `json:"last_used_at"`
+	Kid              string  `json:"kid"`
+	Role             string  `json:"role"`
+	Status           string  `json:"status"`
+}
+
+type apiServiceAccountTokenRecord struct {
+	Token     string                     `json:"token"`
+	TokenMeta apiServiceAccountTokenMeta `json:"token_meta"`
+}
+
 type createIntegrationRequest struct {
 	Name                string `json:"name"`
 	Kind                string `json:"kind"`
@@ -82,6 +111,78 @@ type updateIntegrationRequest struct {
 	APIServerURL        string `json:"api_server_url"`
 	CACertPEM           string `json:"ca_cert_pem"`
 	ServiceAccountToken string `json:"service_account_token"`
+}
+
+type createSsoProviderRequest struct {
+	Name                 string   `json:"name"`
+	Kind                 string   `json:"kind"`
+	Enabled              *bool    `json:"enabled,omitempty"`
+	DisplayOrder         *int64   `json:"display_order,omitempty"`
+	IssuerURL            *string  `json:"issuer_url,omitempty"`
+	AuthorizationURL     *string  `json:"authorization_url,omitempty"`
+	TokenURL             *string  `json:"token_url,omitempty"`
+	UserinfoURL          *string  `json:"userinfo_url,omitempty"`
+	ClientID             string   `json:"client_id"`
+	ClientSecret         *string  `json:"client_secret,omitempty"`
+	Scopes               []string `json:"scopes,omitempty"`
+	PKCERequired         *bool    `json:"pkce_required,omitempty"`
+	SubjectClaim         *string  `json:"subject_claim,omitempty"`
+	EmailClaim           *string  `json:"email_claim,omitempty"`
+	GroupsClaim          *string  `json:"groups_claim,omitempty"`
+	DefaultRole          *string  `json:"default_role,omitempty"`
+	AdminSubjects        []string `json:"admin_subjects,omitempty"`
+	AdminGroups          []string `json:"admin_groups,omitempty"`
+	AdminEmailDomains    []string `json:"admin_email_domains,omitempty"`
+	ReadonlySubjects     []string `json:"readonly_subjects,omitempty"`
+	ReadonlyGroups       []string `json:"readonly_groups,omitempty"`
+	ReadonlyEmailDomains []string `json:"readonly_email_domains,omitempty"`
+	AllowedEmailDomains  []string `json:"allowed_email_domains,omitempty"`
+	SessionTTLSecs       *int64   `json:"session_ttl_secs,omitempty"`
+}
+
+type updateSsoProviderRequest struct {
+	Name                 *string  `json:"name,omitempty"`
+	Enabled              *bool    `json:"enabled,omitempty"`
+	DisplayOrder         *int64   `json:"display_order,omitempty"`
+	IssuerURL            *string  `json:"issuer_url,omitempty"`
+	AuthorizationURL     *string  `json:"authorization_url,omitempty"`
+	TokenURL             *string  `json:"token_url,omitempty"`
+	UserinfoURL          *string  `json:"userinfo_url,omitempty"`
+	ClientID             *string  `json:"client_id,omitempty"`
+	ClientSecret         *string  `json:"client_secret,omitempty"`
+	Scopes               []string `json:"scopes,omitempty"`
+	PKCERequired         *bool    `json:"pkce_required,omitempty"`
+	SubjectClaim         *string  `json:"subject_claim,omitempty"`
+	EmailClaim           *string  `json:"email_claim,omitempty"`
+	GroupsClaim          *string  `json:"groups_claim,omitempty"`
+	DefaultRole          *string  `json:"default_role,omitempty"`
+	AdminSubjects        []string `json:"admin_subjects,omitempty"`
+	AdminGroups          []string `json:"admin_groups,omitempty"`
+	AdminEmailDomains    []string `json:"admin_email_domains,omitempty"`
+	ReadonlySubjects     []string `json:"readonly_subjects,omitempty"`
+	ReadonlyGroups       []string `json:"readonly_groups,omitempty"`
+	ReadonlyEmailDomains []string `json:"readonly_email_domains,omitempty"`
+	AllowedEmailDomains  []string `json:"allowed_email_domains,omitempty"`
+	SessionTTLSecs       *int64   `json:"session_ttl_secs,omitempty"`
+}
+
+type createServiceAccountRequest struct {
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+	Role        string  `json:"role"`
+}
+
+type updateServiceAccountRequest struct {
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+	Role        string  `json:"role"`
+}
+
+type createServiceAccountTokenRequest struct {
+	Name    *string `json:"name,omitempty"`
+	TTL     *string `json:"ttl,omitempty"`
+	Eternal *bool   `json:"eternal,omitempty"`
+	Role    *string `json:"role,omitempty"`
 }
 
 type putTLSInterceptCARequest struct {
@@ -157,6 +258,34 @@ func (c *apiClient) DeleteIntegration(ctx context.Context, name string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/integrations/"+url.PathEscape(name), nil, nil)
 }
 
+func (c *apiClient) CreateSsoProvider(ctx context.Context, req createSsoProviderRequest) (*apiSsoProvider, error) {
+	var out apiSsoProvider
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/settings/sso/providers", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) GetSsoProvider(ctx context.Context, id string) (*apiSsoProvider, error) {
+	var out apiSsoProvider
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/settings/sso/providers/"+url.PathEscape(id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) UpdateSsoProvider(ctx context.Context, id string, req updateSsoProviderRequest) (*apiSsoProvider, error) {
+	var out apiSsoProvider
+	if err := c.doJSON(ctx, http.MethodPut, "/api/v1/settings/sso/providers/"+url.PathEscape(id), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) DeleteSsoProvider(ctx context.Context, id string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/settings/sso/providers/"+url.PathEscape(id), nil, nil)
+}
+
 func (c *apiClient) GetTLSInterceptCA(ctx context.Context) (*apiTLSInterceptCAStatus, error) {
 	var out apiTLSInterceptCAStatus
 	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/settings/tls-intercept-ca", nil, &out); err != nil {
@@ -203,6 +332,76 @@ func (c *apiClient) UpsertPolicyByName(ctx context.Context, name string, req ups
 
 func (c *apiClient) DeletePolicy(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/policies/"+url.PathEscape(id), nil, nil)
+}
+
+func (c *apiClient) ListServiceAccounts(ctx context.Context) ([]apiServiceAccount, error) {
+	var out []apiServiceAccount
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/service-accounts", nil, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []apiServiceAccount{}, nil
+	}
+	return out, nil
+}
+
+func (c *apiClient) GetServiceAccount(ctx context.Context, id string) (*apiServiceAccount, error) {
+	accounts, err := c.ListServiceAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range accounts {
+		if accounts[i].ID == id {
+			return &accounts[i], nil
+		}
+	}
+	return nil, &apiError{
+		StatusCode: http.StatusNotFound,
+		Message:    "service account not found",
+	}
+}
+
+func (c *apiClient) CreateServiceAccount(ctx context.Context, req createServiceAccountRequest) (*apiServiceAccount, error) {
+	var out apiServiceAccount
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/service-accounts", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) UpdateServiceAccount(ctx context.Context, id string, req updateServiceAccountRequest) (*apiServiceAccount, error) {
+	var out apiServiceAccount
+	if err := c.doJSON(ctx, http.MethodPut, "/api/v1/service-accounts/"+url.PathEscape(id), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) DeleteServiceAccount(ctx context.Context, id string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/service-accounts/"+url.PathEscape(id), nil, nil)
+}
+
+func (c *apiClient) ListServiceAccountTokens(ctx context.Context, serviceAccountID string) ([]apiServiceAccountTokenMeta, error) {
+	var out []apiServiceAccountTokenMeta
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/service-accounts/"+url.PathEscape(serviceAccountID)+"/tokens", nil, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []apiServiceAccountTokenMeta{}, nil
+	}
+	return out, nil
+}
+
+func (c *apiClient) CreateServiceAccountToken(ctx context.Context, serviceAccountID string, req createServiceAccountTokenRequest) (*apiServiceAccountTokenRecord, error) {
+	var out apiServiceAccountTokenRecord
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/service-accounts/"+url.PathEscape(serviceAccountID)+"/tokens", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) DeleteServiceAccountToken(ctx context.Context, serviceAccountID string, tokenID string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/service-accounts/"+url.PathEscape(serviceAccountID)+"/tokens/"+url.PathEscape(tokenID), nil, nil)
 }
 
 func (c *apiClient) doJSON(ctx context.Context, method string, path string, requestBody any, out any) error {

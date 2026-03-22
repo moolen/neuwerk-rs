@@ -26,6 +26,15 @@ require_cmd() {
   fi
 }
 
+require_file() {
+  local path="$1"
+  local kind="${2:-file}"
+  if [[ ! -f "$path" ]]; then
+    echo "missing required ${kind}: $path" >&2
+    exit 1
+  fi
+}
+
 human_size() {
   numfmt --to=iec --suffix=B "$1"
 }
@@ -111,6 +120,11 @@ vagrant_dir="${artifact_dir}/vagrant/${target}"
 packer_manifest_path="${artifact_dir}/packer-manifest.json"
 source_bundle_path="${artifact_dir}/source/${target}.tar.gz"
 rootfs_dir="${release_dir}/rootfs"
+linkage_path="${release_dir}/linkage.json"
+image_spdx_path="${release_dir}/${target}-image.spdx.json"
+image_cyclonedx_path="${release_dir}/${target}-image.cyclonedx.json"
+rootfs_spdx_path="${release_dir}/${target}-rootfs.spdx.json"
+rootfs_cyclonedx_path="${release_dir}/${target}-rootfs.cyclonedx.json"
 
 if [[ ! -d "$release_dir" ]]; then
   echo "release artifact directory not found: $release_dir" >&2
@@ -122,10 +136,13 @@ if [[ ! -d "$rootfs_dir" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$packer_manifest_path" ]]; then
-  echo "packer manifest not found: $packer_manifest_path" >&2
-  exit 1
-fi
+require_file "$linkage_path" "release artifact"
+require_file "$image_spdx_path" "release artifact"
+require_file "$image_cyclonedx_path" "release artifact"
+require_file "$rootfs_spdx_path" "release artifact"
+require_file "$rootfs_cyclonedx_path" "release artifact"
+require_file "$packer_manifest_path" "release artifact"
+require_file "$source_bundle_path" "release artifact"
 
 qcow2_path="$(find "$qemu_dir" -maxdepth 1 -type f -name '*.qcow2' | sort | head -n 1)"
 if [[ -z "$qcow2_path" ]]; then
@@ -136,16 +153,13 @@ fi
 rm -rf "$output_dir"
 mkdir -p "$output_dir"
 
-cp "$release_dir/linkage.json" "$output_dir/"
-cp "$release_dir/${target}-image.spdx.json" "$output_dir/"
-cp "$release_dir/${target}-image.cyclonedx.json" "$output_dir/"
-cp "$release_dir/${target}-rootfs.spdx.json" "$output_dir/"
-cp "$release_dir/${target}-rootfs.cyclonedx.json" "$output_dir/"
+cp "$linkage_path" "$output_dir/"
+cp "$image_spdx_path" "$output_dir/"
+cp "$image_cyclonedx_path" "$output_dir/"
+cp "$rootfs_spdx_path" "$output_dir/"
+cp "$rootfs_cyclonedx_path" "$output_dir/"
 cp "$packer_manifest_path" "$output_dir/"
-
-if [[ -f "$source_bundle_path" ]]; then
-  cp "$source_bundle_path" "$output_dir/neuwerk-${target}-source.tar.gz"
-fi
+cp "$source_bundle_path" "$output_dir/neuwerk-${target}-source.tar.gz"
 
 if [[ -d "$vagrant_dir" ]]; then
   while IFS= read -r path; do
