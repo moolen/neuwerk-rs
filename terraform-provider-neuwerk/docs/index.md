@@ -6,14 +6,14 @@ The Neuwerk Terraform provider is published under:
 terraform {
   required_providers {
     neuwerk = {
-      source = "neuwerk/neuwerk"
+      source = "moolen/neuwerk"
     }
   }
 }
 ```
 
 Use these docs as the provider reference for the current signed GitHub Releases distribution path.
-The intended provider source address remains `neuwerk/neuwerk`.
+The intended provider source address remains `moolen/neuwerk`.
 
 ## Install
 
@@ -22,7 +22,7 @@ Current distribution path:
 1. download the matching provider archive for your platform from GitHub Releases
 2. verify `terraform-provider-neuwerk_<version>_SHA256SUMS`
 3. verify the detached checksum signature
-4. place the unpacked provider binary under the local Terraform filesystem mirror path for `registry.terraform.io/neuwerk/neuwerk`
+4. place the unpacked provider binary under the local Terraform filesystem mirror path for `registry.terraform.io/moolen/neuwerk`
 
 Unsigned provider releases are intentionally unsupported.
 Terraform Registry publication is follow-up work once the provider is published from a

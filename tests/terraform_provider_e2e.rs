@@ -357,7 +357,7 @@ impl ProviderInstall {
         let mirror_dir = dir.path().join("plugins");
         let host_dir = mirror_dir
             .join("registry.terraform.io")
-            .join("neuwerk")
+            .join("moolen")
             .join("neuwerk")
             .join(PROVIDER_VERSION)
             .join(terraform_platform_dir()?);
@@ -392,10 +392,10 @@ impl ProviderInstall {
 provider_installation {{
   filesystem_mirror {{
     path    = "{mirror}"
-    include = ["registry.terraform.io/neuwerk/neuwerk"]
+    include = ["registry.terraform.io/moolen/neuwerk"]
   }}
   direct {{
-    exclude = ["registry.terraform.io/neuwerk/neuwerk"]
+    exclude = ["registry.terraform.io/moolen/neuwerk"]
   }}
 }}
 "#,

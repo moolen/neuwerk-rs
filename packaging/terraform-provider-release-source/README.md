@@ -2,7 +2,7 @@
 
 This repository publishes Terraform provider release artifacts for source address:
 
-- `neuwerk/neuwerk`
+- `moolen/neuwerk`
 
 Development happens in the Neuwerk `firewall` monorepo.
 

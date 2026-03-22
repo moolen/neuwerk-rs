@@ -262,6 +262,7 @@ jobs:
         run: |
           export_root="$RUNNER_TEMP/terraform-provider-neuwerk"
           test -f "$export_root/README.md"
+          test -f "$export_root/LICENSE"
           test -f "$export_root/.gitignore"
           test -f "$export_root/.github/workflows/ci.yml"
           test -f "$export_root/.github/workflows/release.yml"

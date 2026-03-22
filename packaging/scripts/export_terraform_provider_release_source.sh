@@ -25,6 +25,7 @@ require_dir() {
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 provider_dir="$repo_root/terraform-provider-neuwerk"
 template_dir="$repo_root/packaging/terraform-provider-release-source"
+license_path="$repo_root/LICENSE"
 output_dir=""
 
 while [[ $# -gt 0 ]]; do
@@ -57,9 +58,14 @@ fi
 
 require_dir "$provider_dir"
 require_dir "$template_dir"
+if [[ ! -f "$license_path" ]]; then
+  echo "missing required file: $license_path" >&2
+  exit 1
+fi
 
 rm -rf "$output_dir"
 mkdir -p "$output_dir"
 
 cp -R "$provider_dir"/. "$output_dir"/
 cp -R "$template_dir"/. "$output_dir"/
+cp "$license_path" "$output_dir"/LICENSE

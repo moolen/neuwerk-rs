@@ -151,7 +151,7 @@ jobs:
           cat > artifacts/terraform-provider-release/release-notes.md <<EOF
           Terraform provider release assets for ${RELEASE_VERSION}
 
-          Source address: \`neuwerk/neuwerk\`
+          Source address: \`moolen/neuwerk\`
 
           Attached assets include the platform archives, SHA256SUMS file, and detached SHA256SUMS signature.
           EOF

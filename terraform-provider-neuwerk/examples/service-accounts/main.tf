@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     neuwerk = {
-      source = "neuwerk/neuwerk"
+      source = "moolen/neuwerk"
     }
   }
 }

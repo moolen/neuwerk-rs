@@ -8,7 +8,7 @@ Provider source:
 terraform {
   required_providers {
     neuwerk = {
-      source = "neuwerk/neuwerk"
+      source = "moolen/neuwerk"
     }
   }
 }
@@ -27,7 +27,7 @@ For the public Registry publication path, see
 [`docs/operations/terraform-provider-registry-publication.md`](../docs/operations/terraform-provider-registry-publication.md).
 
 Current distribution is via signed GitHub Releases. The provider source address remains
-`neuwerk/neuwerk`; public Terraform Registry publication is follow-up work.
+`moolen/neuwerk`; public Terraform Registry publication is follow-up work.
 
 Implemented resources:
 
@@ -48,7 +48,7 @@ Provider authentication uses the existing bearer-token HTTP API. Admin-capable s
 terraform {
   required_providers {
     neuwerk = {
-      source = "neuwerk/neuwerk"
+      source = "moolen/neuwerk"
     }
   }
 }
