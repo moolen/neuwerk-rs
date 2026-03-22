@@ -110,3 +110,8 @@ NEUWERK_BENCH_CORE=2 NEUWERK_BENCH_COMPARE_BASELINE=before make bench.dataplane
 ```
 
 The runner lives at `scripts/bench-dataplane.sh` and standardizes sample size, warm-up time, optional CPU affinity, optional nice level, and log capture under `target/criterion-runs/`.
+
+## Project Status
+
+- Release readiness: `docs/operations/release-readiness.md`
+- Security contact: `security@neuwerk.io`
