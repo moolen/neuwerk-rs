@@ -11,6 +11,11 @@ function assertAstroHref(source, href, message) {
   assert.match(source, new RegExp(`href\\s*=\\s*"${escapedHref}"`), message);
 }
 
+function assertAstroFrontmatterHref(source, href, message) {
+  const escapedHref = escapeRegex(href);
+  assert.match(source, new RegExp(`href\\s*:\\s*'${escapedHref}'`), message);
+}
+
 function assertMdxLink(source, href, message) {
   const escapedHref = escapeRegex(href);
   assert.match(
@@ -75,7 +80,7 @@ test('docs index links to cloud-first onboarding and rollout concepts pages', ()
 
 test('footer links to cloud-first onboarding path', () => {
   const footer = readFileSync(new URL('../src/components/common/Footer.astro', import.meta.url), 'utf8');
-  assertAstroHref(
+  assertAstroFrontmatterHref(
     footer,
     '/docs/tutorials/launch-from-released-cloud-image',
     'expected footer to reference /docs/tutorials/launch-from-released-cloud-image',
@@ -109,14 +114,12 @@ test('upgrade-a-cluster page links to cloud rollout integration page', () => {
   );
 });
 
-test('new cloud onboarding docs pages exist', () => {
-  const expectedPages = [
-    '../src/content/docs/tutorials/launch-from-released-cloud-image.mdx',
-    '../src/content/docs/architecture/cloud-rollout-integration.mdx',
-  ];
+test('launch-from-released-cloud-image docs page exists', () => {
+  const fileUrl = new URL('../src/content/docs/tutorials/launch-from-released-cloud-image.mdx', import.meta.url);
+  assert.equal(existsSync(fileUrl), true, 'expected tutorials/launch-from-released-cloud-image.mdx to exist');
+});
 
-  for (const relativePath of expectedPages) {
-    const fileUrl = new URL(relativePath, import.meta.url);
-    assert.equal(existsSync(fileUrl), true, `expected ${relativePath} to exist`);
-  }
+test('cloud-rollout-integration docs page exists', () => {
+  const fileUrl = new URL('../src/content/docs/architecture/cloud-rollout-integration.mdx', import.meta.url);
+  assert.equal(existsSync(fileUrl), true, 'expected architecture/cloud-rollout-integration.mdx to exist');
 });
