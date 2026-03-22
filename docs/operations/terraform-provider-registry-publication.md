@@ -2,119 +2,103 @@
 
 Public Terraform Registry publication uses a two-repository model:
 
-- `firewall` stays the development repository
-- `moolen/terraform-provider-neuwerk` becomes the public provider release-source repository
+- `firewall` remains the development repository
+- `moolen/terraform-provider-neuwerk` is the public release-source repository
 
-The public repository exists to satisfy Terraform Registry publication requirements. Provider code,
-tests, and docs still originate in this monorepo and are exported into the public repository.
+Provider code, tests, and docs originate in this monorepo and are exported into the public
+repository for release and Registry ingestion. The provider source address stays `moolen/neuwerk`.
 
 ## Prerequisites
 
-Before creating the public repository:
+Before onboarding the provider in Terraform Registry:
 
-- commit the Apache 2.0 `LICENSE` in this monorepo
-- create the public GitHub repository `moolen/terraform-provider-neuwerk`
-- configure these repository secrets in that public repository:
+- keep the Apache 2.0 `LICENSE` committed in this monorepo
+- keep the public repository `moolen/terraform-provider-neuwerk` in sync with the exported
+  release-source tree
+- configure these repository secrets in the public repository:
   - `TERRAFORM_PROVIDER_GPG_PRIVATE_KEY`
   - `TERRAFORM_PROVIDER_GPG_PASSPHRASE`
   - `TERRAFORM_PROVIDER_GPG_KEY_ID`
+- keep the armored public signing key in the public repository root as
+  `terraform-provider-neuwerk-signing-key.asc`
 
 Unsigned provider releases are intentionally unsupported.
 
-## Bootstrap The Public Repository
+## Sync The Public Repository
 
-Export the provider release-source tree from this monorepo:
-
-```bash
-make package.terraform-provider.release-source OUTPUT_DIR=/tmp/terraform-provider-neuwerk
-```
-
-Or do the export plus repo sync in one step:
+Export and sync the public release-source tree from this monorepo:
 
 ```bash
-make package.terraform-provider.release-source.sync \
-  REPO_DIR="$HOME/src/terraform-provider-neuwerk" \
-  REMOTE_URL=git@github.com:moolen/terraform-provider-neuwerk.git
+bash packaging/scripts/sync_terraform_provider_release_source.sh \
+  --repo-dir "$HOME/src/terraform-provider-neuwerk" \
+  --push
 ```
 
-Push that exported tree to the public repository:
+If you need to bootstrap a fresh clone first:
 
 ```bash
-cd /tmp/terraform-provider-neuwerk
-git init
-git remote add origin git@github.com:moolen/terraform-provider-neuwerk.git
-git checkout -b main
-git add .
-git commit -m "release-source: sync from firewall"
-git push -u origin main
+bash packaging/scripts/sync_terraform_provider_release_source.sh \
+  --repo-dir "$HOME/src/terraform-provider-neuwerk" \
+  --remote-url git@github.com:moolen/terraform-provider-neuwerk.git \
+  --push
 ```
 
-That public repository should stay a release-source mirror. Functional provider changes should land
-in `firewall` first, then be re-exported and pushed.
+That script exports the release-source tree, replaces the public repository contents, creates a
+`release-source: sync from firewall` commit when changes are present, and optionally pushes it.
 
-To push the sync in the same step:
+## Release Requirements
 
-```bash
-make package.terraform-provider.release-source.sync \
-  REPO_DIR="$HOME/src/terraform-provider-neuwerk" \
-  PUSH=1
-```
+Each public GitHub Release must contain only:
 
-## Publish A Provider Release
+- the supported platform archives
+- `terraform-provider-neuwerk_<version>_SHA256SUMS`
+- `terraform-provider-neuwerk_<version>_SHA256SUMS.sig`
 
-1. export a fresh release-source tree from this monorepo
-2. push the updated tree to `moolen/terraform-provider-neuwerk`
-3. run the public repository workflow `.github/workflows/release.yml`
-4. provide a tag such as `v0.1.0`
+Terraform Registry uses those filenames to ingest a provider release. Extra release assets can
+cause Registry parsing failures.
 
-The public repository workflow builds signed provider archives, publishes `SHA256SUMS`, and uploads
-the detached checksum signature. The armored public signing key stays tracked in the repository root
-as `terraform-provider-neuwerk-signing-key.asc` and should also be added under Terraform Registry
-signing keys. It uses the same provider source address:
-
-- `moolen/neuwerk`
+The public signing key should be configured in Terraform Registry signing-key settings, not
+attached to the GitHub Release.
 
 Current signing fingerprint:
 
 - `DC34EB84D498D1445B68CB405E6B936CF37928C3`
 
+## Publish A Provider Release
+
+1. Sync the public release-source repository from this monorepo.
+2. Trigger `.github/workflows/release.yml` in `moolen/terraform-provider-neuwerk`.
+3. Supply the release tag, such as `v0.1.3`.
+4. Verify the resulting asset list matches the Registry-compatible filenames.
+
+The public repository workflow builds signed provider archives, publishes `SHA256SUMS`, and uploads
+the detached checksum signature for the same provider source address:
+
+- `moolen/neuwerk`
+
 ## Registry Onboarding
 
-Registry onboarding starts only after:
+Registry onboarding is a one-time manual step after the public repository and signed releases are
+stable:
 
-- the public repository exists
-- signed provider releases are being published from that repository
-- the repository name and release layout are stable
+1. Sign in to Terraform Registry with the GitHub account that owns
+   `moolen/terraform-provider-neuwerk`.
+2. Add `terraform-provider-neuwerk-signing-key.asc` under Registry signing keys.
+3. Open `Publish -> Provider`.
+4. Choose namespace `moolen`.
+5. Choose repository `terraform-provider-neuwerk`.
+6. Confirm publication.
 
-Treat GitHub Releases and Registry publication as separate concerns:
+That flow installs the Registry webhook on the GitHub repository. Future GitHub Releases in the
+public repository should then be ingested automatically as long as the asset contract stays stable.
 
-- GitHub Releases provides the signed provider artifacts
-- Terraform Registry provides provider discovery and installation metadata
+## Status Check
 
-## Current State
-
-- `moolen/terraform-provider-neuwerk` is public
-- signed provider release `v0.1.0` exists there
-- `moolen/neuwerk` is not onboarded in the public Terraform Registry yet
-
-The quickest status check is:
+The quickest Registry status check is:
 
 ```bash
 curl -fsSL https://registry.terraform.io/v1/providers/moolen/neuwerk
 ```
 
-If that returns `404`, Registry onboarding has not happened yet.
-
-## One-Time Registry Publish Step
-
-Once the public repository and signed releases are in place:
-
-1. sign in to Terraform Registry with the GitHub account that owns `moolen/terraform-provider-neuwerk`
-2. add the public GPG key under Registry signing keys
-3. open `Publish -> Provider`
-4. choose namespace `moolen`
-5. choose repository `terraform-provider-neuwerk`
-6. confirm publication
-
-That publish flow installs the Registry webhook on the GitHub repository. Future GitHub Releases in
-that repository should then be ingested by Registry without repeating the initial onboarding flow.
+If that returns `404`, Registry onboarding has not happened yet or Registry has not ingested the
+release metadata.

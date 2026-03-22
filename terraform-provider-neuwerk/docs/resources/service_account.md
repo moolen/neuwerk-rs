@@ -2,24 +2,45 @@
 
 Manages a service account for automation and API access.
 
-## Key Arguments
+## Example Usage
 
-- `name`
-- `description`
-- `role`
+```hcl
+resource "neuwerk_service_account" "automation" {
+  name        = "terraform-automation"
+  description = "automation identity"
+  role        = "admin"
+}
+```
 
-## Computed Attributes
+## Argument Reference
 
-- `id`
-- `created_at`
-- `created_by`
-- `status`
+- `name` (String, Required)
+  Human-readable service account name. Blank names are rejected by the provider.
+- `description` (String, Optional)
+  Optional description stored alongside the account.
+- `role` (String, Required)
+  Neuwerk role assigned to the service account, such as `admin` or `readonly`.
 
-## Notes
+## Attribute Reference
 
-- Service accounts are the intended machine identity for Terraform automation.
-- Deleting this resource disables the service account in the API.
+- `id` (String)
+  Service account UUID.
+- `created_at` (String)
+  RFC3339 timestamp for when the account was created.
+- `created_by` (String)
+  Identity that created the service account.
+- `status` (String)
+  Current status returned by the API.
 
 ## Import
 
-Import by service-account UUID.
+Import by service account UUID:
+
+```bash
+terraform import neuwerk_service_account.automation acc-123
+```
+
+## Notes
+
+- Service accounts are the intended long-lived machine identity for Terraform automation.
+- Empty or whitespace-only descriptions are omitted from API requests.

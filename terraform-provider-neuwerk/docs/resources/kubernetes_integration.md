@@ -1,28 +1,54 @@
 # `neuwerk_kubernetes_integration`
 
-Manages a Kubernetes integration record.
+Manages a Kubernetes integration record that Neuwerk can reference from policy source selectors.
 
-## Key Arguments
+## Example Usage
 
-- `name`
-- `api_server_url`
-- `ca_cert_pem`
-- `service_account_token`
+```hcl
+resource "neuwerk_kubernetes_integration" "prod" {
+  name                  = "prod-k8s"
+  api_server_url        = "https://10.0.0.10:6443"
+  ca_cert_pem           = file("${path.module}/k8s-ca.pem")
+  service_account_token = var.k8s_service_account_token
+}
+```
 
-## Computed Attributes
+## Argument Reference
 
-- `id`
-- `created_at`
-- `kind`
-- `auth_type`
-- `token_configured`
+- `name` (String, Required)
+  Integration name. This is also the identifier used by policy `kubernetes_selector.integration`
+  references and by `terraform import`.
+- `api_server_url` (String, Required)
+  Kubernetes API server URL that Neuwerk should contact.
+- `ca_cert_pem` (String, Required)
+  PEM-encoded Kubernetes cluster CA certificate used to verify the API server.
+- `service_account_token` (String, Required, Sensitive)
+  Bearer token Neuwerk uses to authenticate to the Kubernetes API.
 
-## Notes
+## Attribute Reference
 
-- `service_account_token` is sensitive.
-- The API does not return the raw token value on read or import.
-- Imported resources should be paired with configuration that re-supplies `service_account_token`.
+- `id` (String)
+  Server-generated integration ID.
+- `created_at` (String)
+  RFC3339 timestamp for when the integration was created.
+- `kind` (String)
+  Integration kind returned by the API. For this resource it is `kubernetes`.
+- `auth_type` (String)
+  Authentication mode recorded by the API for the integration.
+- `token_configured` (Bool)
+  Whether the API currently has service-account token material stored for this integration.
 
 ## Import
 
-Import by integration name.
+Import by integration name:
+
+```bash
+terraform import neuwerk_kubernetes_integration.prod prod-k8s
+```
+
+## Notes
+
+- The API does not return the raw `service_account_token` value on reads or imports. Keep the
+  token in configuration or a secret input so Terraform can continue to manage the resource.
+- Renaming the integration changes the name Neuwerk policies must reference in
+  `kubernetes_selector.integration`.

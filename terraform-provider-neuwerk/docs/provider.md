@@ -1,5 +1,11 @@
 # Provider Configuration
 
+Configure the provider with one or more Neuwerk API endpoints plus a bearer token that is
+authorized to manage the resources in this provider. The provider normalizes endpoint URLs, uses
+HTTPS transport, and retries transient transport failures across the configured endpoint list.
+
+## Example Usage
+
 ```hcl
 terraform {
   required_providers {
@@ -12,48 +18,54 @@ terraform {
 provider "neuwerk" {
   endpoints       = ["https://fw-a.example.com", "https://fw-b.example.com"]
   token           = var.neuwerk_token
-  ca_cert_pem     = file("${path.module}/neuwerk-ca.crt")
+  ca_cert_file    = "${path.module}/neuwerk-ca.crt"
   request_timeout = "30s"
   retry_timeout   = "5s"
+  headers = {
+    "X-Request-Origin" = "terraform"
+  }
 }
 ```
 
-## Arguments
+## Argument Reference
 
-- `endpoints`
-  Required list of HTTPS API base URLs. Endpoints are tried in order.
-- `token`
-  Required bearer token. Admin-capable service-account tokens are the intended automation credential.
-- `ca_cert_pem`
-  Optional PEM-encoded CA certificate.
-- `ca_cert_file`
-  Optional path to a PEM-encoded CA certificate. Use either this or `ca_cert_pem`.
-- `request_timeout`
-  Optional per-request timeout in Go duration syntax.
-- `retry_timeout`
-  Optional total retry budget for transient transport failures.
-- `headers`
-  Optional extra headers attached to every API request.
-
-## Transport Behavior
-
-- HTTPS endpoint normalization
-- bearer-token authentication
-- optional custom CA trust
-- endpoint failover across the configured `endpoints`
-- retries for transient transport failures up to `retry_timeout`
+- `endpoints` (List of String, Required)
+  Ordered list of HTTPS base URLs for the Neuwerk API. The provider tries endpoints in order and
+  fails over on transient transport errors.
+- `token` (String, Required, Sensitive)
+  Bearer token used for API authentication. For automation, use an admin-capable service account
+  token instead of a user session token.
+- `ca_cert_pem` (String, Optional)
+  PEM-encoded CA certificate used to verify the Neuwerk API server.
+- `ca_cert_file` (String, Optional)
+  Path to a PEM-encoded CA certificate used to verify the Neuwerk API server.
+- `request_timeout` (String, Optional)
+  Per-request timeout in Go duration syntax such as `30s`. If unset, the provider uses `30s`.
+- `retry_timeout` (String, Optional)
+  Total retry budget for transient transport failures in Go duration syntax. If unset, the
+  provider uses `5s`.
+- `headers` (Map of String, Optional)
+  Extra headers attached to every HTTP request the provider sends to the Neuwerk API.
 
 ## Manual Install
 
-The current supported install path is signed GitHub Releases from
-`moolen/terraform-provider-neuwerk`:
+1. Download the provider archive for your platform from `moolen/terraform-provider-neuwerk`.
+2. Download `terraform-provider-neuwerk_<version>_SHA256SUMS` and
+   `terraform-provider-neuwerk_<version>_SHA256SUMS.sig`.
+3. Download `terraform-provider-neuwerk-signing-key.asc` from the repository root.
+4. Verify the signing key fingerprint `DC34EB84D498D1445B68CB405E6B936CF37928C3`.
+5. Verify the checksum signature, then verify the provider archive checksum.
+6. Unpack the provider binary into a filesystem mirror path under
+   `registry.terraform.io/moolen/neuwerk/<version>/<os>_<arch>/`.
 
-1. download the archive for your platform
-2. download `terraform-provider-neuwerk-signing-key.asc` from the repository root
-3. verify the signing key fingerprint `DC34EB84D498D1445B68CB405E6B936CF37928C3`
-4. verify the SHA256SUMS file
-5. verify the detached SHA256SUMS signature
-6. place the unpacked binary in a Terraform filesystem mirror under `registry.terraform.io/moolen/neuwerk`
+Use `source = "moolen/neuwerk"` in Terraform configuration even while installation still happens
+through the signed GitHub Release assets.
 
-Terraform Registry publication is planned as a later step and does not change the intended source
-address.
+## Notes
+
+- Configure exactly one of `ca_cert_pem` or `ca_cert_file`. Setting both is an error.
+- `request_timeout` and `retry_timeout` must be valid positive Go duration strings.
+- Endpoint failover applies to transport-level failures. A server-side API error returned by a
+  reachable endpoint is surfaced back to Terraform.
+- All values in `headers` are sent on every API request, so reserve them for static metadata and
+  not per-request secrets.
