@@ -1,0 +1,191 @@
+---
+title: Launch Neuwerk From The Released Cloud Image
+description: Download the signed release artifact, convert and import it into AWS, Azure, or GCP, then bootstrap first boot with appliance.env and cloud-init.
+order: 1
+---
+
+Use this guide to launch Neuwerk from the published cloud appliance release instead of building a custom image first.
+
+## Download And Verify The Release
+
+Download one release into a dedicated working directory. The minimum asset set is:
+
+- `neuwerk-ubuntu-24.04-minimal-amd64.qcow2.zst.part-*`
+- `restore-qcow2.sh`
+- `SHA256SUMS`
+- `SHA256SUMS.sig`
+- `neuwerk-release-signing-key.asc`
+
+Then verify signature and checksums:
+
+```bash
+gpg --import neuwerk-release-signing-key.asc
+gpg --show-keys --with-fingerprint neuwerk-release-signing-key.asc
+gpg --verify SHA256SUMS.sig SHA256SUMS
+sha256sum -c SHA256SUMS
+```
+
+If verification passes, restore the published image:
+
+```bash
+bash ./restore-qcow2.sh
+```
+
+Expected output artifact:
+
+- `neuwerk-ubuntu-24.04-minimal-amd64.qcow2`
+
+## Convert And Import For Your Cloud
+
+### AWS
+
+Convert the restored `qcow2` to `raw`:
+
+```bash
+qemu-img convert \
+  -f qcow2 \
+  -O raw \
+  neuwerk-ubuntu-24.04-minimal-amd64.qcow2 \
+  neuwerk-ubuntu-24.04-minimal-amd64.raw
+```
+
+Upload and import:
+
+```bash
+aws s3 cp \
+  neuwerk-ubuntu-24.04-minimal-amd64.raw \
+  s3://<bucket>/neuwerk-ubuntu-24.04-minimal-amd64.raw
+
+aws ec2 import-image \
+  --description "Neuwerk ubuntu-24.04-minimal-amd64" \
+  --disk-containers "Format=raw,UserBucket={S3Bucket=<bucket>,S3Key=neuwerk-ubuntu-24.04-minimal-amd64.raw}"
+```
+
+Poll until the AMI is ready:
+
+```bash
+aws ec2 describe-import-image-tasks --import-task-ids <import-task-id>
+```
+
+### Azure
+
+Convert the restored `qcow2` to a fixed VHD:
+
+```bash
+qemu-img convert \
+  -f qcow2 \
+  -O vpc \
+  -o subformat=fixed \
+  neuwerk-ubuntu-24.04-minimal-amd64.qcow2 \
+  neuwerk-ubuntu-24.04-minimal-amd64.vhd
+```
+
+Upload and import as a specialized OS disk:
+
+```bash
+az storage blob upload \
+  --account-name <storage-account> \
+  --container-name <container> \
+  --name neuwerk-ubuntu-24.04-minimal-amd64.vhd \
+  --file neuwerk-ubuntu-24.04-minimal-amd64.vhd \
+  --type page
+
+az disk create \
+  --resource-group <resource-group> \
+  --name neuwerk-ubuntu-24.04-minimal-amd64 \
+  --source https://<storage-account>.blob.core.windows.net/<container>/neuwerk-ubuntu-24.04-minimal-amd64.vhd
+
+az vm create \
+  --resource-group <resource-group> \
+  --name neuwerk-appliance \
+  --attach-os-disk neuwerk-ubuntu-24.04-minimal-amd64 \
+  --os-type Linux \
+  --specialized
+```
+
+### GCP
+
+Convert the restored `qcow2` to the required `disk.raw`:
+
+```bash
+qemu-img convert \
+  -f qcow2 \
+  -O raw \
+  neuwerk-ubuntu-24.04-minimal-amd64.qcow2 \
+  disk.raw
+```
+
+Package, upload, and import:
+
+```bash
+tar --format=oldgnu -Sczf \
+  neuwerk-ubuntu-24.04-minimal-amd64-disk.raw.tar.gz \
+  disk.raw
+
+gcloud storage cp \
+  neuwerk-ubuntu-24.04-minimal-amd64-disk.raw.tar.gz \
+  gs://<bucket>/neuwerk-ubuntu-24.04-minimal-amd64-disk.raw.tar.gz
+
+gcloud compute images create neuwerk-ubuntu-24-04-minimal-amd64 \
+  --source-uri=gs://<bucket>/neuwerk-ubuntu-24.04-minimal-amd64-disk.raw.tar.gz
+```
+
+## Configure First Boot
+
+The supported override file is:
+
+- `/etc/neuwerk/appliance.env`
+
+Use `NEUWERK_BOOTSTRAP_*` keys to express operator intent. The bootstrap script resolves interfaces, metadata, and defaults into generated runtime values.
+
+Use plain `NEUWERK_*` keys only for runtime pass-through settings that should be forwarded directly to Neuwerk launch arguments (for example integration identifiers, cloud account fields, worker tuning, or extra advanced args).
+
+In cloud environments, prefer writing `/etc/neuwerk/appliance.env` from cloud-init (or equivalent startup metadata) rather than injecting a fully expanded Neuwerk command line. Keep first boot declarative: intent in `appliance.env`, resolved runtime in generated `neuwerk.env`.
+
+Cloud-init-friendly example:
+
+```yaml
+#cloud-config
+write_files:
+  - path: /etc/neuwerk/appliance.env
+    owner: root:root
+    permissions: "0644"
+    content: |
+      NEUWERK_BOOTSTRAP_CLOUD_PROVIDER=aws
+      NEUWERK_BOOTSTRAP_MANAGEMENT_INTERFACE=eth0
+      NEUWERK_BOOTSTRAP_DATA_INTERFACE=eth1
+      NEUWERK_BOOTSTRAP_DNS_TARGET_IPS=10.20.0.10
+      NEUWERK_BOOTSTRAP_DNS_UPSTREAMS=10.20.0.2:53,10.20.0.3:53
+      NEUWERK_BOOTSTRAP_DEFAULT_POLICY=deny
+      NEUWERK_INTEGRATION_MODE=aws-asg
+      NEUWERK_AWS_REGION=eu-central-1
+      NEUWERK_AWS_ASG_NAME=neuwerk-prod-asg
+runcmd:
+  - systemctl restart neuwerk.service
+```
+
+## Start And Verify Neuwerk
+
+On first boot (or after updating `appliance.env`), restart the service:
+
+```bash
+sudo systemctl restart neuwerk.service
+sudo journalctl -u neuwerk.service -n 200 --no-pager
+```
+
+Then verify service health and readiness:
+
+```bash
+curl -fsS http://127.0.0.1:8443/health
+curl -fsS http://127.0.0.1:8443/ready
+```
+
+For first admin access, follow [Get Admin Access](/docs/how-to/get-admin-access) after the node reports ready.
+
+## Production Next Steps
+
+After first launch:
+
+- read [Cloud Rollout Integration](/docs/architecture/cloud-rollout-integration) before using managed replacement groups
+- use [Upgrade A Cluster](/docs/how-to/upgrade-a-cluster) for conservative rolling upgrades
+- use [High Availability](/docs/deployment/high-availability) when moving from one node to replicated control-plane deployments
