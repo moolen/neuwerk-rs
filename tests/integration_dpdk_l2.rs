@@ -360,6 +360,7 @@ fn integration_dpdk_intercept_steers_to_service_lane_queue() {
             tls: Some(TlsMatch {
                 mode: TlsMode::Intercept,
                 sni: None,
+                server_dn: None,
                 server_san: None,
                 server_cn: None,
                 fingerprints_sha256: Vec::new(),

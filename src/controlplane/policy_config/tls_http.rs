@@ -414,11 +414,19 @@ impl TlsMatchConfig {
             None => None,
         };
 
-        let server_cn = match (self.server_cn, self.server_dn) {
-            (Some(config), _) => Some(config.compile(rule_id, "tls.server_cn")?),
-            (None, Some(legacy)) => {
-                Some(TlsNameMatchConfig::String(legacy).compile(rule_id, "tls.server_dn")?)
+        let server_dn = match self.server_dn {
+            Some(subject) => {
+                let subject = normalize_distinguished_name(&subject);
+                if subject.is_empty() {
+                    return Err(format!("rule {rule_id}: tls.server_dn cannot be empty"));
+                }
+                Some(subject)
             }
+            None => None,
+        };
+
+        let server_cn = match self.server_cn {
+            Some(config) => Some(config.compile(rule_id, "tls.server_cn")?),
             _ => None,
         };
 
@@ -461,6 +469,7 @@ impl TlsMatchConfig {
             }
             TlsMode::Intercept => {
                 if sni.is_some()
+                    || server_dn.is_some()
                     || server_cn.is_some()
                     || server_san.is_some()
                     || !fingerprints_sha256.is_empty()
@@ -481,6 +490,7 @@ impl TlsMatchConfig {
         Ok(TlsMatch {
             mode,
             sni,
+            server_dn,
             server_san,
             server_cn,
             fingerprints_sha256,

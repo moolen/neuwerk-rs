@@ -63,6 +63,61 @@ fn recalc_checksums_rejects_malformed_ipv4_total_len_smaller_than_ihl() {
 }
 
 #[test]
+fn tcp_accessors_reject_bytes_beyond_ipv4_total_len() {
+    let mut buf = vec![0u8; 14 + 20 + 20];
+    buf[12] = 0x08;
+    buf[13] = 0x00;
+    buf[14] = 0x45;
+    buf[16..18].copy_from_slice(&20u16.to_be_bytes());
+    buf[22] = 64;
+    buf[23] = 6;
+    buf[26..30].copy_from_slice(&[10, 0, 0, 1]);
+    buf[30..34].copy_from_slice(&[203, 0, 113, 10]);
+    let l4 = 14 + 20;
+    buf[l4..l4 + 2].copy_from_slice(&1234u16.to_be_bytes());
+    buf[l4 + 2..l4 + 4].copy_from_slice(&443u16.to_be_bytes());
+    buf[l4 + 4..l4 + 8].copy_from_slice(&0x11223344u32.to_be_bytes());
+    buf[l4 + 8..l4 + 12].copy_from_slice(&0x55667788u32.to_be_bytes());
+    buf[l4 + 12] = 0x50;
+    buf[l4 + 13] = 0x02;
+
+    let pkt = Packet::new(buf);
+    assert_eq!(pkt.ports(), None);
+    assert_eq!(pkt.tcp_seq(), None);
+    assert_eq!(pkt.tcp_ack(), None);
+    assert_eq!(pkt.tcp_flags(), None);
+    assert_eq!(pkt.tcp_payload(), None);
+}
+
+#[test]
+fn icmp_inner_tuple_rejects_inner_transport_bytes_beyond_inner_total_len() {
+    let total = 14 + 20 + 8 + 20 + 8;
+    let mut buf = vec![0u8; total];
+    buf[12] = 0x08;
+    buf[13] = 0x00;
+    buf[14] = 0x45;
+    let outer_total_len: u16 = (20 + 8 + 20 + 8) as u16;
+    buf[16..18].copy_from_slice(&outer_total_len.to_be_bytes());
+    buf[22] = 64;
+    buf[23] = 1;
+
+    let icmp_off = 14 + 20;
+    buf[icmp_off] = 3;
+    let inner_ip = icmp_off + 8;
+    buf[inner_ip] = 0x45;
+    buf[inner_ip + 2..inner_ip + 4].copy_from_slice(&20u16.to_be_bytes());
+    buf[inner_ip + 9] = 6;
+    buf[inner_ip + 12..inner_ip + 16].copy_from_slice(&[192, 0, 2, 1]);
+    buf[inner_ip + 16..inner_ip + 20].copy_from_slice(&[198, 51, 100, 7]);
+    let inner_l4 = inner_ip + 20;
+    buf[inner_l4..inner_l4 + 2].copy_from_slice(&4444u16.to_be_bytes());
+    buf[inner_l4 + 2..inner_l4 + 4].copy_from_slice(&443u16.to_be_bytes());
+
+    let pkt = Packet::new(buf);
+    assert_eq!(pkt.icmp_inner_tuple().map(|inner| inner.src_port), None);
+}
+
+#[test]
 fn take_transfer_bytes_compacts_payload_and_preserves_owned_capacity_for_reuse() {
     let mut pkt = Packet::new(vec![0u8; 65_536]);
     pkt.truncate(64);

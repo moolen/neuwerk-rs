@@ -48,6 +48,12 @@ impl TlsMatch {
                 return TlsMatchOutcome::Deny;
             }
 
+            if let Some(server_dn) = &self.server_dn {
+                if &chain.leaf_subject_dn != server_dn {
+                    return TlsMatchOutcome::Mismatch;
+                }
+            }
+
             if let Some(server_san) = &self.server_san {
                 if !chain
                     .leaf_san
@@ -78,7 +84,8 @@ impl TlsMatch {
     }
 
     fn requires_certificate(&self) -> bool {
-        self.server_san.is_some()
+        self.server_dn.is_some()
+            || self.server_san.is_some()
             || self.server_cn.is_some()
             || !self.fingerprints_sha256.is_empty()
             || !self.trust_anchors.is_empty()

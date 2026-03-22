@@ -5,6 +5,7 @@ use x509_parser::extensions::GeneralName;
 use x509_parser::extensions::ParsedExtension;
 use x509_parser::parse_x509_certificate;
 use x509_parser::prelude::X509Certificate;
+use x509_parser::time::ASN1Time;
 
 #[derive(Debug, Clone, Default)]
 pub struct TlsObservation {
@@ -21,6 +22,7 @@ pub struct TlsCertChain {
     pub der_chain: Vec<Vec<u8>>,
     pub leaf_san: Vec<String>,
     pub leaf_cn: Vec<String>,
+    pub leaf_subject_dn: String,
     pub leaf_fingerprint: [u8; 32],
 }
 
@@ -53,6 +55,7 @@ impl TlsCertChain {
                 }
             }
         }
+        let leaf_subject_dn = normalize_distinguished_name(&cert.subject().to_string());
 
         let mut hasher = Sha256::new();
         hasher.update(leaf_der);
@@ -64,6 +67,7 @@ impl TlsCertChain {
             der_chain,
             leaf_san,
             leaf_cn,
+            leaf_subject_dn,
             leaf_fingerprint,
         })
     }
@@ -429,9 +433,11 @@ impl TlsVerifier {
     }
 
     pub fn verify_chain(&self, chain: &TlsCertChain, extra_anchors: &[Vec<u8>]) -> bool {
-        let mut anchors = Vec::with_capacity(self.system_anchors.len() + extra_anchors.len());
-        anchors.extend(self.system_anchors.iter().cloned());
-        anchors.extend(extra_anchors.iter().cloned());
+        let anchors = if extra_anchors.is_empty() {
+            &self.system_anchors
+        } else {
+            extra_anchors
+        };
 
         let mut chain_parsed = Vec::with_capacity(chain.der_chain.len());
         for der in &chain.der_chain {
@@ -446,7 +452,7 @@ impl TlsVerifier {
         }
 
         let mut anchors_parsed = Vec::new();
-        for der in &anchors {
+        for der in anchors {
             if let Ok((_, cert)) = parse_x509_certificate(der) {
                 anchors_parsed.push(cert);
             }
@@ -455,14 +461,18 @@ impl TlsVerifier {
             return false;
         }
 
+        let now = ASN1Time::now();
         for idx in 0..chain_parsed.len() {
             let cert = &chain_parsed[idx];
+            if !cert.validity().is_valid_at(now) {
+                return false;
+            }
             if idx + 1 < chain_parsed.len() {
                 let issuer = &chain_parsed[idx + 1];
                 if !names_match(cert.issuer(), issuer.subject()) {
                     return false;
                 }
-                if !is_ca_cert(issuer) {
+                if !is_ca_cert(issuer) || !ca_key_usage_allows_cert_signing(issuer) {
                     return false;
                 }
                 if cert.verify_signature(Some(issuer.public_key())).is_err() {
@@ -471,7 +481,10 @@ impl TlsVerifier {
             } else {
                 let mut verified = false;
                 for anchor in &anchors_parsed {
-                    if !is_ca_cert(anchor) {
+                    if !anchor.validity().is_valid_at(now) {
+                        continue;
+                    }
+                    if !is_ca_cert(anchor) || !ca_key_usage_allows_cert_signing(anchor) {
                         continue;
                     }
                     if !names_match(cert.issuer(), anchor.subject()) {
@@ -508,7 +521,15 @@ fn is_ca_cert(cert: &X509Certificate<'_>) -> bool {
             return constraints.ca;
         }
     }
-    true
+    false
+}
+
+fn ca_key_usage_allows_cert_signing(cert: &X509Certificate<'_>) -> bool {
+    match cert.key_usage() {
+        Ok(Some(key_usage)) => key_usage.value.key_cert_sign(),
+        Ok(None) => true,
+        Err(_) => false,
+    }
 }
 
 #[derive(Debug)]
@@ -587,4 +608,101 @@ impl TcpReassembly {
 
 pub fn normalize_hostname(name: &str) -> String {
     name.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+pub fn normalize_distinguished_name(name: &str) -> String {
+    name.trim().replace(", ", ",").replace(" + ", "+")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyUsagePurpose};
+    use time::{Duration, OffsetDateTime};
+
+    fn ca_cert(name: &str) -> Certificate {
+        let mut params = CertificateParams::default();
+        params.distinguished_name.push(DnType::CommonName, name);
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
+        ];
+        Certificate::from_params(params).unwrap()
+    }
+
+    fn non_ca_cert(name: &str) -> Certificate {
+        let mut params = CertificateParams::default();
+        params.distinguished_name.push(DnType::CommonName, name);
+        Certificate::from_params(params).unwrap()
+    }
+
+    fn leaf_der_signed_by(
+        signer: &Certificate,
+        common_name: &str,
+        not_before: OffsetDateTime,
+        not_after: OffsetDateTime,
+    ) -> Vec<u8> {
+        let mut params = CertificateParams::default();
+        params.distinguished_name.push(DnType::CommonName, common_name);
+        params.not_before = not_before;
+        params.not_after = not_after;
+        Certificate::from_params(params)
+            .unwrap()
+            .serialize_der_with_signer(signer)
+            .unwrap()
+    }
+
+    #[test]
+    fn verify_chain_rejects_anchor_without_basic_constraints() {
+        let root = non_ca_cert("non-ca-root");
+        let now = OffsetDateTime::now_utc();
+        let leaf = leaf_der_signed_by(
+            &root,
+            "api.example.com",
+            now - Duration::days(1),
+            now + Duration::days(1),
+        );
+        let chain = TlsCertChain::from_der_chain(vec![leaf]).unwrap();
+        let verifier = TlsVerifier {
+            system_anchors: Vec::new(),
+        };
+        assert!(!verifier.verify_chain(&chain, &[root.serialize_der().unwrap()]));
+    }
+
+    #[test]
+    fn verify_chain_rejects_expired_leaf_certificates() {
+        let root = ca_cert("policy-root");
+        let now = OffsetDateTime::now_utc();
+        let leaf = leaf_der_signed_by(
+            &root,
+            "api.example.com",
+            now - Duration::days(5),
+            now - Duration::days(1),
+        );
+        let chain = TlsCertChain::from_der_chain(vec![leaf]).unwrap();
+        let verifier = TlsVerifier {
+            system_anchors: Vec::new(),
+        };
+        assert!(!verifier.verify_chain(&chain, &[root.serialize_der().unwrap()]));
+    }
+
+    #[test]
+    fn verify_chain_uses_explicit_anchors_instead_of_unioning_system_roots() {
+        let system_root = ca_cert("system-root");
+        let policy_root = ca_cert("policy-root");
+        let now = OffsetDateTime::now_utc();
+        let leaf = leaf_der_signed_by(
+            &system_root,
+            "api.example.com",
+            now - Duration::days(1),
+            now + Duration::days(1),
+        );
+        let chain = TlsCertChain::from_der_chain(vec![leaf]).unwrap();
+        let verifier = TlsVerifier {
+            system_anchors: vec![system_root.serialize_der().unwrap()],
+        };
+        assert!(!verifier.verify_chain(&chain, &[policy_root.serialize_der().unwrap()]));
+    }
 }

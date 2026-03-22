@@ -1,6 +1,14 @@
 use std::net::Ipv4Addr;
 
 use super::*;
+use crate::controlplane::policy_config::{
+    PolicyConfig, PolicyValue, PortSpec, ProtoValue, RuleConfig, RuleMatchConfig,
+    RuleMode as ConfigRuleMode,
+    SourceGroupConfig, SourcesConfig, TlsMatchConfig,
+};
+use crate::dataplane::tls::{TlsCertChain, TlsObservation, TlsVerifier};
+use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyUsagePurpose};
+use x509_parser::parse_x509_certificate;
 
 #[test]
 fn allowlist_gc_respects_active_flows() {
@@ -287,6 +295,102 @@ fn evaluate_exact_source_group_dispatch_matches_expected_group() {
     assert_eq!(group.as_deref(), Some("b"));
     assert!(policy.is_internal(src_b));
     assert!(!policy.is_internal(Ipv4Addr::new(172, 16, 0, 99)));
+}
+
+fn ca_cert(name: &str) -> Certificate {
+    let mut params = CertificateParams::default();
+    params.distinguished_name.push(DnType::CommonName, name);
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![
+        KeyUsagePurpose::DigitalSignature,
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::CrlSign,
+    ];
+    Certificate::from_params(params).unwrap()
+}
+
+fn leaf_cert_der(signer: &Certificate, common_name: &str, organization: &str) -> Vec<u8> {
+    let mut params = CertificateParams::default();
+    params.distinguished_name.push(DnType::CommonName, common_name);
+    params
+        .distinguished_name
+        .push(DnType::OrganizationName, organization);
+    Certificate::from_params(params)
+        .unwrap()
+        .serialize_der_with_signer(signer)
+        .unwrap()
+}
+
+#[test]
+fn server_dn_matches_full_subject_dn_not_just_common_name() {
+    let ca = ca_cert("policy-root");
+    let ca_pem = ca.serialize_pem().unwrap();
+    let leaf_der = leaf_cert_der(&ca, "api.example.com", "Example Corp");
+    let (_, leaf_cert) = parse_x509_certificate(&leaf_der).unwrap();
+    let subject_dn = leaf_cert.subject().to_string();
+
+    let cfg = PolicyConfig {
+        default_policy: Some(PolicyValue::String("deny".to_string())),
+        source_groups: vec![SourceGroupConfig {
+            id: "tls-users".to_string(),
+            priority: Some(0),
+            sources: SourcesConfig {
+                cidrs: vec!["10.40.0.0/24".to_string()],
+                ips: Vec::new(),
+                kubernetes: Vec::new(),
+            },
+            rules: vec![RuleConfig {
+                id: "allow-server-dn".to_string(),
+                priority: Some(0),
+                action: PolicyValue::String("allow".to_string()),
+                mode: ConfigRuleMode::Enforce,
+                matcher: RuleMatchConfig {
+                    dst_cidrs: Vec::new(),
+                    dst_ips: vec!["203.0.113.10".to_string()],
+                    dns_hostname: None,
+                    proto: Some(ProtoValue::String("tcp".to_string())),
+                    src_ports: Vec::new(),
+                    dst_ports: vec![PortSpec::Number(443)],
+                    icmp_types: Vec::new(),
+                    icmp_codes: Vec::new(),
+                    tls: Some(TlsMatchConfig {
+                        mode: None,
+                        sni: None,
+                        server_dn: Some(subject_dn),
+                        server_san: None,
+                        server_cn: None,
+                        fingerprint_sha256: Vec::new(),
+                        trust_anchors_pem: vec![ca_pem],
+                        tls13_uninspectable: None,
+                        http: None,
+                    }),
+                },
+            }],
+            default_action: Some(PolicyValue::String("deny".to_string())),
+        }],
+    };
+    let compiled = cfg.compile().unwrap();
+    let policy = PolicySnapshot::new(DefaultPolicy::Deny, compiled.groups);
+
+    let observation = TlsObservation {
+        client_hello_seen: true,
+        server_hello_seen: true,
+        certificate_seen: true,
+        tls13: false,
+        sni: None,
+        cert_chain: Some(TlsCertChain::from_der_chain(vec![leaf_der]).unwrap()),
+    };
+    let meta = PacketMeta {
+        src_ip: Ipv4Addr::new(10, 40, 0, 5),
+        dst_ip: Ipv4Addr::new(203, 0, 113, 10),
+        proto: 6,
+        src_port: 40000,
+        dst_port: 443,
+        icmp_type: None,
+        icmp_code: None,
+    };
+    let decision = policy.evaluate(&meta, Some(&observation), Some(&TlsVerifier::new()));
+    assert_eq!(decision, PolicyDecision::Allow);
 }
 
 #[test]

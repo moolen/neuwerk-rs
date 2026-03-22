@@ -79,25 +79,52 @@ impl Packet {
     }
 
     fn ipv4_header_len(&self, ip_off: usize) -> Option<usize> {
-        if ip_off + 1 > self.buf.len() {
+        self.ipv4_header_len_within(ip_off, self.buf.len())
+    }
+
+    fn ipv4_total_len(&self, ip_off: usize) -> Option<usize> {
+        self.ipv4_total_len_within(ip_off, self.buf.len())
+    }
+
+    fn ipv4_logical_end(&self, ip_off: usize) -> Option<usize> {
+        self.ipv4_logical_end_within(ip_off, self.buf.len())
+    }
+
+    fn ipv4_header_len_within(&self, ip_off: usize, buf_end: usize) -> Option<usize> {
+        if ip_off + 1 > buf_end {
             return None;
         }
         let ihl = (self.buf[ip_off] & 0x0f) as usize * 4;
-        if ihl < 20 || ip_off + ihl > self.buf.len() {
+        if ihl < 20 || ip_off + ihl > buf_end {
             return None;
         }
         Some(ihl)
     }
 
-    fn ipv4_total_len(&self, ip_off: usize) -> Option<usize> {
-        if ip_off + 4 > self.buf.len() {
+    fn ipv4_total_len_within(&self, ip_off: usize, buf_end: usize) -> Option<usize> {
+        if ip_off + 4 > buf_end {
             return None;
         }
         let total_len = u16::from_be_bytes([self.buf[ip_off + 2], self.buf[ip_off + 3]]) as usize;
-        if total_len < 20 || ip_off + total_len > self.buf.len() {
+        if total_len < 20 || ip_off + total_len > buf_end {
             return None;
         }
         Some(total_len)
+    }
+
+    fn ipv4_logical_end_within(&self, ip_off: usize, buf_end: usize) -> Option<usize> {
+        let total_len = self.ipv4_total_len_within(ip_off, buf_end)?;
+        ip_off.checked_add(total_len).filter(|end| *end <= buf_end)
+    }
+
+    fn ipv4_range_within(&self, ip_off: usize, buf_end: usize, start: usize, len: usize) -> bool {
+        let Some(end) = start.checked_add(len) else {
+            return false;
+        };
+        match self.ipv4_logical_end_within(ip_off, buf_end) {
+            Some(ip_end) => end <= ip_end,
+            None => false,
+        }
     }
 
     pub fn protocol(&self) -> Option<u8> {

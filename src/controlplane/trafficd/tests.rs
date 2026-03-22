@@ -106,6 +106,7 @@ fn intercept_snapshot(generation: u64) -> PolicySnapshot {
             tls: Some(TlsMatch {
                 mode: TlsMode::Intercept,
                 sni: None,
+                server_dn: None,
                 server_san: None,
                 server_cn: None,
                 fingerprints_sha256: Vec::new(),
@@ -143,6 +144,7 @@ fn intercept_http_snapshot(generation: u64) -> PolicySnapshot {
             tls: Some(TlsMatch {
                 mode: TlsMode::Intercept,
                 sni: None,
+                server_dn: None,
                 server_san: None,
                 server_cn: None,
                 fingerprints_sha256: Vec::new(),
@@ -180,6 +182,7 @@ fn intercept_h2_passthrough_snapshot(generation: u64) -> PolicySnapshot {
             tls: Some(TlsMatch {
                 mode: TlsMode::Intercept,
                 sni: None,
+                server_dn: None,
                 server_san: None,
                 server_cn: None,
                 fingerprints_sha256: Vec::new(),
@@ -3254,6 +3257,7 @@ fn infer_intercept_original_dst_uses_unique_rule_target() {
             tls: Some(TlsMatch {
                 mode: TlsMode::Intercept,
                 sni: None,
+                server_dn: None,
                 server_san: None,
                 server_cn: None,
                 fingerprints_sha256: Vec::new(),
@@ -3303,6 +3307,7 @@ fn infer_intercept_original_dst_rejects_ambiguous_targets() {
             tls: Some(TlsMatch {
                 mode: TlsMode::Intercept,
                 sni: None,
+                server_dn: None,
                 server_san: None,
                 server_cn: None,
                 fingerprints_sha256: Vec::new(),

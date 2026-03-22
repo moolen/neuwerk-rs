@@ -164,6 +164,48 @@ source_groups:
     }
 
     #[test]
+    fn dns_hostname_only_rule_does_not_allow_packet_traffic() {
+        let yaml = r#"
+default_policy: deny
+source_groups:
+  - id: "dns"
+    sources:
+      ips: ["192.0.2.2"]
+    default_action: deny
+    rules:
+      - id: "allow-name"
+        action: allow
+        match:
+          dns_hostname: '^api\.example\.com$'
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let compiled = cfg.compile().unwrap();
+        assert!(compiled.dns_policy.allows(
+            "192.0.2.2".parse().unwrap(),
+            "api.example.com"
+        ));
+
+        let policy = crate::dataplane::policy::PolicySnapshot::new(
+            crate::dataplane::policy::DefaultPolicy::Deny,
+            compiled.groups,
+        );
+        let decision = policy.evaluate(
+            &crate::dataplane::policy::PacketMeta {
+                src_ip: "192.0.2.2".parse().unwrap(),
+                dst_ip: "203.0.113.10".parse().unwrap(),
+                proto: 6,
+                src_port: 40000,
+                dst_port: 22,
+                icmp_type: None,
+                icmp_code: None,
+            },
+            None,
+            None,
+        );
+        assert_eq!(decision, crate::dataplane::policy::PolicyDecision::Deny);
+    }
+
+    #[test]
     fn audit_rules_are_mode_filtered() {
         let yaml = r#"
 source_groups:
