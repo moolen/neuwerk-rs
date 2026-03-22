@@ -131,6 +131,15 @@ The common resource surface should include:
 - `allowed_email_domains`
 - `session_ttl_secs`
 
+Collection intent:
+
+- `scopes` should behave as an unordered Terraform set of strings.
+- the subject, group, and email-domain match lists should also behave as unordered
+  Terraform sets of strings.
+
+These values are membership-oriented rather than order-oriented, so the provider should
+avoid introducing plan churn from API ordering differences.
+
 ### Endpoint and issuer fields
 
 `google` and `github` should expose the endpoint override fields already supported by
@@ -161,10 +170,15 @@ defaults and therefore requires explicit endpoint configuration to operate.
 
 The resource contract should be:
 
-- `client_secret` is required on create.
+- Terraform schema should model `client_secret` as optional and sensitive, not computed.
+- `Create` must reject missing, unknown, null, or blank `client_secret` values.
+- `client_secret` is therefore required by provider behavior on create, while remaining
+  omittable for import and for updates that do not rotate the secret.
 - `client_secret` is stored in Terraform state as sensitive.
 - `Read` preserves the prior state value for `client_secret` when the API reports only
   `client_secret_configured: true`.
+- `Read` should set `client_secret` to null when the API reports
+  `client_secret_configured: false`.
 - `Import` restores metadata but cannot recover the raw secret.
 - After import, users must supply `client_secret` in configuration again if they want
   Terraform to manage future secret updates.
@@ -173,6 +187,8 @@ Update behavior should be in-place:
 
 - when configuration supplies `client_secret`, the provider sends it in the update
   request
+- when configuration omits `client_secret`, the provider does not send a replacement
+  secret during update
 - when configuration keeps the existing `client_secret`, refresh must not cause drift
   simply because the API redacts the secret
 
