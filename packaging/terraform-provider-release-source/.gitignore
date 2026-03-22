@@ -1,0 +1,6 @@
+.terraform/
+artifacts/
+dist/
+*.zip
+terraform-provider-neuwerk_*_SHA256SUMS
+terraform-provider-neuwerk_*_SHA256SUMS.sig

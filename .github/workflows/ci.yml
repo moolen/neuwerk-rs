@@ -240,3 +240,40 @@ jobs:
           gpg --batch --verify \
             "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS.sig" \
             "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS"
+
+  terraform-provider-release-source:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: terraform-provider-neuwerk/go.mod
+          cache-dependency-path: terraform-provider-neuwerk/go.sum
+
+      - name: Export Terraform provider release-source tree
+        run: make package.terraform-provider.release-source OUTPUT_DIR="$RUNNER_TEMP/terraform-provider-neuwerk"
+
+      - name: Verify exported release-source files
+        run: |
+          export_root="$RUNNER_TEMP/terraform-provider-neuwerk"
+          test -f "$export_root/README.md"
+          test -f "$export_root/.gitignore"
+          test -f "$export_root/.github/workflows/ci.yml"
+          test -f "$export_root/.github/workflows/release.yml"
+          test -f "$export_root/main.go"
+          test -f "$export_root/go.mod"
+          test -f "$export_root/internal/provider/provider.go"
+          test ! -e "$export_root/src"
+          test ! -e "$export_root/ui"
+          test ! -e "$export_root/packer"
+          test ! -e "$export_root/terraform-provider-neuwerk"
+
+      - name: Test exported release-source tree
+        run: |
+          cd "$RUNNER_TEMP/terraform-provider-neuwerk"
+          go test ./... -count=1
