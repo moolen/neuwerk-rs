@@ -309,6 +309,4 @@ jobs:
 
       - name: Verify appliance GitHub release asset contract
         run: |
-          cargo test --test appliance_release_assets_contract \
-            prepare_github_release_emits_verified_appliance_contract \
-            -- --ignored --exact
+          cargo test --test appliance_release_assets_contract -- --ignored

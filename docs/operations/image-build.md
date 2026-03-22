@@ -226,7 +226,7 @@ This is a practical baseline, not a claim of complete CIS Level 2 coverage. Rema
 
 ## SBOMs
 
-The build currently emits two SBOM layers when `syft` is available in the guest:
+The release packaging contract expects two SBOM layers:
 
 - rootfs SBOMs from the staged runtime tree:
   - `<target>-rootfs.spdx.json`
@@ -236,6 +236,8 @@ The build currently emits two SBOM layers when `syft` is available in the guest:
   - `<target>-image.cyclonedx.json`
 
 These are downloaded back to `artifacts/image-build/release/<target>/` by the Packer file provisioner.
+`package.image.release-assets` treats both SBOM layers and the per-target source bundle as
+required provenance artifacts and fails if they are missing.
 
 ## Notes
 
