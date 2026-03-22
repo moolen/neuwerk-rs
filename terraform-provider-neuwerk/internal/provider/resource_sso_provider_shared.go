@@ -124,7 +124,7 @@ func ssoProviderSecretState(prior types.String, configured bool) types.String {
 	if !configured {
 		return types.StringNull()
 	}
-	if prior.IsNull() || prior.IsUnknown() {
+	if prior.IsNull() {
 		return types.StringNull()
 	}
 	return prior

@@ -59,6 +59,24 @@ func TestParseSsoProviderImportIDRejectsBlank(t *testing.T) {
 	}
 }
 
+func TestSsoProviderStateFromAPIPreservesUnknownSecretWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	prior := ssoProviderResourceModel{
+		ClientSecret: types.StringUnknown(),
+	}
+	record := &apiSsoProvider{
+		ID:                     "sso-1",
+		Name:                   "corp-oidc",
+		ClientSecretConfigured: true,
+	}
+
+	state := ssoProviderStateFromAPI(prior, record)
+	if !state.ClientSecret.IsUnknown() {
+		t.Fatalf("expected unknown client_secret to be preserved when configured")
+	}
+}
+
 func setStringValues(values ...types.String) types.Set {
 	set, diags := types.SetValueFrom(context.Background(), types.StringType, values)
 	if diags.HasError() {
