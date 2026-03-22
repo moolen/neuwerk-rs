@@ -20,9 +20,11 @@ The intended provider source address remains `moolen/neuwerk`.
 Current distribution path:
 
 1. download the matching provider archive for your platform from GitHub Releases
-2. verify `terraform-provider-neuwerk_<version>_SHA256SUMS`
-3. verify the detached checksum signature
-4. place the unpacked provider binary under the local Terraform filesystem mirror path for `registry.terraform.io/moolen/neuwerk`
+2. download `terraform-provider-neuwerk-signing-key.asc`
+3. verify the signing key fingerprint `DC34EB84D498D1445B68CB405E6B936CF37928C3`
+4. verify `terraform-provider-neuwerk_<version>_SHA256SUMS`
+5. verify the detached checksum signature
+6. place the unpacked provider binary under the local Terraform filesystem mirror path for `registry.terraform.io/moolen/neuwerk`
 
 Unsigned provider releases are intentionally unsupported.
 Terraform Registry publication is follow-up work once the provider is published from a

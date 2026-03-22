@@ -34,6 +34,7 @@ fn export_creates_flat_provider_release_source_tree() {
     assert_exists(&exported_root.join("examples/basic/main.tf"));
     assert_exists(&exported_root.join("README.md"));
     assert_exists(&exported_root.join("LICENSE"));
+    assert_exists(&exported_root.join("terraform-provider-neuwerk-signing-key.asc"));
     assert_exists(&exported_root.join(".gitignore"));
     assert_exists(&exported_root.join(".github/workflows/ci.yml"));
     assert_exists(&exported_root.join(".github/workflows/release.yml"));
@@ -63,6 +64,32 @@ fn export_creates_flat_provider_release_source_tree() {
     assert!(
         exported_license.contains("Apache License") && exported_license.contains("Version 2.0"),
         "expected exported LICENSE to contain Apache 2.0 text"
+    );
+
+    let exported_public_key = fs::read_to_string(
+        exported_root.join("terraform-provider-neuwerk-signing-key.asc"),
+    )
+    .expect("read exported signing key");
+    assert!(
+        exported_public_key.contains("BEGIN PGP PUBLIC KEY BLOCK"),
+        "expected exported signing key to contain an armored public key"
+    );
+    assert!(
+        exported_public_key.contains("DC34EB84D498D1445B68CB405E6B936CF37928C3"),
+        "expected exported signing key to contain the tracked release signing fingerprint"
+    );
+
+    let exported_release_workflow = fs::read_to_string(
+        exported_root.join(".github/workflows/release.yml"),
+    )
+    .expect("read exported release workflow");
+    assert!(
+        exported_release_workflow.contains("refs/tags/${RELEASE_VERSION}"),
+        "expected exported release workflow to create the release tag ref"
+    );
+    assert!(
+        exported_release_workflow.contains("terraform-provider-neuwerk-signing-key.asc"),
+        "expected exported release workflow to publish the signing public key"
     );
 
     assert_missing(&exported_root.join("src"));

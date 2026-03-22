@@ -112,9 +112,28 @@ jobs:
 
           Source address: \`moolen/neuwerk\`
           Docs: \`terraform-provider-neuwerk/docs/\`
+          Signing key fingerprint: \`DC34EB84D498D1445B68CB405E6B936CF37928C3\`
 
           Attached assets include the platform archives, SHA256SUMS file, and detached SHA256SUMS signature.
           EOF
+
+      - name: Stage Terraform provider signing public key
+        run: |
+          cp packaging/terraform-provider-release-source/terraform-provider-neuwerk-signing-key.asc \
+            artifacts/terraform-provider-release/
+
+      - name: Ensure Git tag ref exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_VERSION}" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -X POST \
+            -f ref="refs/tags/${RELEASE_VERSION}" \
+            -f sha="$(git rev-parse HEAD)" >/dev/null
 
       - name: Ensure GitHub release exists
         env:

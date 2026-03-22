@@ -67,8 +67,13 @@ release packaging contract stays current.
 The workflow uploads:
 
 - platform archives for supported targets
+- `terraform-provider-neuwerk-signing-key.asc`
 - `terraform-provider-neuwerk_<version>_SHA256SUMS`
 - `terraform-provider-neuwerk_<version>_SHA256SUMS.sig`
+
+Signing fingerprint:
+
+- `DC34EB84D498D1445B68CB405E6B936CF37928C3`
 
 These assets are attached to the GitHub Release for the requested tag. They are separate from the
 appliance image release workflow.
