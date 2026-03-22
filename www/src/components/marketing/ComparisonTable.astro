@@ -44,7 +44,7 @@ const comparisons = [
     approach: 'Neuwerk',
     location: 'Gateway nodes',
     survivesCompromise: true,
-    tlsInspection: 'No',
+    tlsInspection: 'Optional',
     complexity: 'Low–Med',
     cost: 'Free/$',
     highlight: true,
@@ -65,8 +65,8 @@ const differentiators = [
     description: 'Unlike CNI/service mesh, survives node compromise.',
   },
   {
-    title: 'optional TLS inspection',
-    description: 'Works without breaking certificates or trusting proxies.',
+    title: 'Optional TLS interception',
+    description: 'Supports HTTP-aware TLS interception when deeper inspection is worth the trade-off.',
   },
 ];
 ---
