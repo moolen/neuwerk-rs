@@ -18,19 +18,45 @@ test('docs navigation promotes cloud onboarding and removes obsolete getting sta
 });
 
 test('site entry points and docs pages link to the cloud-first onboarding path', () => {
-  const expectedCloudPath = '/docs/tutorials/launch-from-released-cloud-image';
-  const filesToCheck = [
-    '../src/pages/docs/index.astro',
-    '../src/components/common/Footer.astro',
-    '../src/content/docs/deployment/requirements.mdx',
-    '../src/content/docs/community/release-process.mdx',
-    '../src/content/docs/how-to/upgrade-a-cluster.mdx',
-  ];
+  const docsIndex = readFileSync(new URL('../src/pages/docs/index.astro', import.meta.url), 'utf8');
+  assert.match(
+    docsIndex,
+    /\/docs\/tutorials\/launch-from-released-cloud-image/,
+    'expected docs index to reference /docs/tutorials/launch-from-released-cloud-image',
+  );
+  assert.match(
+    docsIndex,
+    /\/docs\/architecture\/cloud-rollout-integration/,
+    'expected docs index to reference /docs/architecture/cloud-rollout-integration',
+  );
 
-  for (const relativePath of filesToCheck) {
-    const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8');
-    assert.match(source, new RegExp(expectedCloudPath.replaceAll('/', '\\/')), `expected ${relativePath} to reference ${expectedCloudPath}`);
-  }
+  const footer = readFileSync(new URL('../src/components/common/Footer.astro', import.meta.url), 'utf8');
+  assert.match(
+    footer,
+    /\/docs\/tutorials\/launch-from-released-cloud-image/,
+    'expected footer to reference /docs/tutorials/launch-from-released-cloud-image',
+  );
+
+  const requirements = readFileSync(new URL('../src/content/docs/deployment/requirements.mdx', import.meta.url), 'utf8');
+  assert.match(
+    requirements,
+    /\/docs\/tutorials\/launch-from-released-cloud-image/,
+    'expected deployment requirements to reference /docs/tutorials/launch-from-released-cloud-image',
+  );
+
+  const releaseProcess = readFileSync(new URL('../src/content/docs/community/release-process.mdx', import.meta.url), 'utf8');
+  assert.match(
+    releaseProcess,
+    /\/docs\/tutorials\/launch-from-released-cloud-image/,
+    'expected release process to reference /docs/tutorials/launch-from-released-cloud-image',
+  );
+
+  const upgradeCluster = readFileSync(new URL('../src/content/docs/how-to/upgrade-a-cluster.mdx', import.meta.url), 'utf8');
+  assert.match(
+    upgradeCluster,
+    /\/docs\/architecture\/cloud-rollout-integration/,
+    'expected upgrade a cluster to reference /docs/architecture/cloud-rollout-integration',
+  );
 });
 
 test('new cloud onboarding docs pages exist', () => {
