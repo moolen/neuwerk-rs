@@ -135,7 +135,8 @@ done
 
 (
   cd "$output_dir_path"
-  sha256sum ./*.zip > "${provider_name}_${version}_SHA256SUMS"
+  mapfile -t archive_names < <(find . -maxdepth 1 -type f -name '*.zip' -printf '%f\n' | sort)
+  sha256sum "${archive_names[@]}" > "${provider_name}_${version}_SHA256SUMS"
 )
 
 keyring_dir="$(mktemp -d)"

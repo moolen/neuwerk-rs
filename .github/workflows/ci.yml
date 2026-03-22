@@ -264,6 +264,10 @@ jobs:
           test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_windows_amd64.zip"
           test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS"
           test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS.sig"
+          ! grep -q ' \./terraform-provider-neuwerk_0.0.0-ci_' \
+            "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS"
+          grep -q '  terraform-provider-neuwerk_0.0.0-ci_linux_amd64.zip' \
+            "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS"
 
           gpg --batch --verify \
             "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS.sig" \
