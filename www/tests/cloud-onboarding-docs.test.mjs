@@ -143,3 +143,41 @@ test('cloud-rollout-integration docs page exists', () => {
   const fileUrl = new URL('../src/content/docs/architecture/cloud-rollout-integration.mdx', import.meta.url);
   assert.equal(existsSync(fileUrl), true, 'expected architecture/cloud-rollout-integration.mdx to exist');
 });
+
+test('related docs cross-link to cloud-first onboarding and rollout guidance', () => {
+  const requirements = readFileSync(
+    new URL('../src/content/docs/deployment/requirements.mdx', import.meta.url),
+    'utf8',
+  );
+  const upgrade = readFileSync(new URL('../src/content/docs/how-to/upgrade-a-cluster.mdx', import.meta.url), 'utf8');
+  const releaseProcess = readFileSync(
+    new URL('../src/content/docs/community/release-process.mdx', import.meta.url),
+    'utf8',
+  );
+
+  assertMdxLink(
+    requirements,
+    '/docs/tutorials/launch-from-released-cloud-image',
+    'expected deployment requirements doc to reference /docs/tutorials/launch-from-released-cloud-image',
+  );
+  assert.doesNotMatch(
+    requirements,
+    /\[Deploy A Single Node\]\(\/docs\/tutorials\/deploy-a-single-node\)/,
+    'expected deployment requirements related pages to remove /docs/tutorials/deploy-a-single-node',
+  );
+  assertMdxLink(
+    upgrade,
+    '/docs/architecture/cloud-rollout-integration',
+    'expected upgrade-a-cluster doc to reference /docs/architecture/cloud-rollout-integration',
+  );
+  assertMdxLink(
+    releaseProcess,
+    '/docs/tutorials/launch-from-released-cloud-image',
+    'expected release-process doc to reference /docs/tutorials/launch-from-released-cloud-image',
+  );
+  assert.doesNotMatch(
+    releaseProcess,
+    /\/docs\/operations\/appliance-image-usage|\/docs\/operations\/image-build/,
+    'expected release-process doc to remove broken appliance image routes',
+  );
+});
