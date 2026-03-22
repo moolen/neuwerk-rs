@@ -23,6 +23,10 @@ export const docsNavigation: DocsNavSection[] = [
   {
     title: 'How-To Guides',
     items: [
+      {
+        href: '/docs/how-to/customize-the-appliance-image-at-first-boot',
+        label: 'Customize The Appliance Image At First Boot',
+      },
       { href: '/docs/how-to/get-admin-access', label: 'Get Admin Access' },
       { href: '/docs/how-to/policy-examples', label: 'Policy Examples' },
       { href: '/docs/how-to/roll-out-a-policy-with-audit-mode', label: 'Roll Out A Policy Safely' },

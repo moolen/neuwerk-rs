@@ -175,6 +175,8 @@ NEUWERK_BOOTSTRAP_DATA_PLANE_SELECTOR=mac:aa:bb:cc:dd:ee:ff
 
 In cloud environments, prefer writing `/etc/neuwerk/appliance.env` from cloud-init (or equivalent startup metadata) rather than injecting a fully expanded Neuwerk command line. Keep first boot declarative: intent in `appliance.env`, resolved runtime in generated `neuwerk.env`.
 
+If you also need supporting packages, certificates, helper scripts, or a fuller first-boot customization pattern, read [Customize The Appliance Image At First Boot](/docs/how-to/customize-the-appliance-image-at-first-boot).
+
 Cloud-init-friendly example:
 
 ```yaml
@@ -220,6 +222,7 @@ For first admin access, follow [Get Admin Access](/docs/how-to/get-admin-access)
 
 After first launch:
 
+- use [Customize The Appliance Image At First Boot](/docs/how-to/customize-the-appliance-image-at-first-boot) when your cloud rollout needs extra env vars, packages, files, or scripts at first boot
 - read [Cloud Rollout Integration](/docs/architecture/cloud-rollout-integration) before using managed replacement groups
 - use [Upgrade A Cluster](/docs/how-to/upgrade-a-cluster) for conservative rolling upgrades
 - use [High Availability](/docs/deployment/high-availability) when moving from one node to replicated control-plane deployments
