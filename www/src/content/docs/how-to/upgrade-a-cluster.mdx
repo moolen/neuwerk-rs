@@ -9,6 +9,11 @@ cluster-wide control-plane outage.
 
 This is a conservative runbook, not a version-specific migration matrix.
 
+If your deployment runs behind managed replacement groups (AWS Auto Scaling Groups, Azure VM Scale
+Sets, or GCP managed instance groups), pair this runbook with [Cloud Rollout
+Integration](/docs/architecture/cloud-rollout-integration) before changing the group image or
+template.
+
 ## Before You Start
 
 Make sure:

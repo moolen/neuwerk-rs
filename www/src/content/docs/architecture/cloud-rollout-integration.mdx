@@ -1,0 +1,90 @@
+---
+title: Cloud Rollout Integration
+description: Understand how Neuwerk integrates with AWS ASGs, Azure VMSS, and GCP MIG-style replacements, including drain, readiness, and upgrade behavior.
+order: 6
+---
+
+Cloud rollout integration lets Neuwerk participate in cloud-managed replacement behavior while still enforcing traffic locally on each node.
+
+It is designed for environments where node lifecycle is controlled by a managed group rather than manual VM replacement.
+
+## What The Integration Does
+
+At a high level, integration mode coordinates with provider lifecycle behavior so rollout automation and Neuwerk health signals can align:
+
+- readiness is visible through Neuwerk health endpoints
+- replacement can honor drain windows
+- node-local enforcement stays explicit even while instances are replaced by the platform
+
+Neuwerk remains a per-node dataplane and control-plane process. Integration mode does not create shared dataplane state.
+
+## Standalone VM Versus Managed Group
+
+Standalone VM operation:
+
+- you replace, restart, and validate nodes directly
+- rollout sequencing is handled by your runbook
+- no managed group reconciliation loop is expected
+
+Managed group operation:
+
+- the provider group decides when to create/replace instances
+- Neuwerk integration settings map node behavior to that lifecycle
+- readiness and drain behavior become rollout-critical signals
+
+If you do not use an auto-replacing group, leave integration mode unset and operate as standalone VMs.
+
+## Provider Mapping
+
+Use `NEUWERK_INTEGRATION_MODE` to select provider semantics:
+
+- `NEUWERK_INTEGRATION_MODE=aws-asg`
+- `NEUWERK_INTEGRATION_MODE=azure-vmss`
+- `NEUWERK_INTEGRATION_MODE=gcp-mig`
+
+Pair that mode with provider-specific `NEUWERK_*` fields (for example region/project/group identifiers) in `/etc/neuwerk/appliance.env`.
+
+Provider requirements for managed-group modes:
+
+- `aws-asg`: `NEUWERK_AWS_REGION`, `NEUWERK_AWS_VPC_ID`, `NEUWERK_AWS_ASG_NAME`
+- `azure-vmss`: `NEUWERK_AZURE_SUBSCRIPTION_ID`, `NEUWERK_AZURE_RESOURCE_GROUP`, `NEUWERK_AZURE_VMSS_NAME`
+- `gcp-mig`: `NEUWERK_GCP_PROJECT`, `NEUWERK_GCP_REGION`, `NEUWERK_GCP_IG_NAME`
+
+## Bootstrap Configuration Model
+
+The appliance runtime has two layers:
+
+- `NEUWERK_BOOTSTRAP_*`: intent-level settings the bootstrap step resolves into concrete runtime values
+- plain `NEUWERK_*`: runtime pass-through values forwarded to Neuwerk flags
+
+Example split:
+
+- bootstrap: `NEUWERK_BOOTSTRAP_MANAGEMENT_INTERFACE`, `NEUWERK_BOOTSTRAP_DATA_INTERFACE`, `NEUWERK_BOOTSTRAP_DNS_UPSTREAMS`
+- runtime pass-through: `NEUWERK_INTEGRATION_MODE`, `NEUWERK_AWS_ASG_NAME`, `NEUWERK_AZURE_VMSS_NAME`, `NEUWERK_GCP_IG_NAME`
+
+Prefer writing these values through cloud-init or startup metadata into `/etc/neuwerk/appliance.env` so first boot stays declarative and reproducible.
+
+For first-boot customization patterns that add env vars, files, certificates, helper scripts, or extra packages around that model, see [Customize The Appliance Image At First Boot](/docs/how-to/customize-the-appliance-image-at-first-boot).
+
+## Recommended Upgrade Model
+
+For production rollouts, use an image-first replacement pattern:
+
+1. publish and verify a new Neuwerk image release
+2. import or register that image in your cloud
+3. update the template/image reference used by ASG, VMSS, or MIG
+4. roll replacements gradually
+5. watch `GET /ready`, service logs, and drain behavior before increasing rollout speed
+
+This keeps binary/runtime coupling aligned and avoids hand-mutating long-lived instances.
+
+## What Not To Do
+
+Avoid these patterns:
+
+- do not treat managed-group replacement as a substitute for readiness checks
+- do not push fully expanded one-off Neuwerk command lines via metadata when `appliance.env` intent keys are sufficient
+- do not roll the whole group at once without observing drain and readiness signals
+- do not mix unmanaged manual node edits with automated group replacement and expect deterministic outcomes
+
+For hands-on bootstrapping flow, see [Launch Neuwerk From The Released Cloud Image](/docs/tutorials/launch-from-released-cloud-image). For cluster-safe sequencing, see [Upgrade A Cluster](/docs/how-to/upgrade-a-cluster).

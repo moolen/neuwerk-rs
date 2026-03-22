@@ -1,0 +1,106 @@
+---
+title: Customize The Appliance Image At First Boot
+description: Use cloud-init or equivalent startup metadata to supply env vars, install extra packages, and add supporting files to the released Neuwerk appliance image.
+order: 4
+---
+
+Use this guide when you want to adapt the released Neuwerk appliance image at first boot without forking the base image build.
+
+## When To Customize
+
+Use `/etc/neuwerk/appliance.env` when your change is only runtime intent: interface selection, DNS settings, default policy behavior, cloud provider hinting, or integration identifiers.
+
+Use cloud-init `write_files` alone when you only need to place declarative config files or small support assets on disk (for example cert material, local config fragments, or helper scripts).
+
+Use cloud-init package installation when the image is missing a true supporting dependency (for example provider CLI tooling, diagnostics packages, or a helper binary your automation calls).
+
+Do not casually replace Neuwerk's packaged runtime contract. The released appliance already carries the binary/runtime coupling and launch assumptions; treat that as the baseline unless you intentionally own the full custom runtime contract.
+
+## Customize Runtime Settings
+
+`/etc/neuwerk/appliance.env` is the supported first-boot override file.
+
+Use `NEUWERK_BOOTSTRAP_*` keys for intent-level settings that the bootstrap step resolves into generated runtime values (`/etc/neuwerk/neuwerk.env`).
+
+Use plain `NEUWERK_*` keys for runtime pass-through values that should go directly to Neuwerk launch flags. This includes integration mode and provider integration identifiers.
+
+Example via cloud-init:
+
+```yaml
+#cloud-config
+write_files:
+  - path: /etc/neuwerk/appliance.env
+    owner: root:root
+    permissions: "0644"
+    content: |
+      NEUWERK_BOOTSTRAP_CLOUD_PROVIDER=aws
+      NEUWERK_BOOTSTRAP_MANAGEMENT_INTERFACE=eth0
+      NEUWERK_BOOTSTRAP_DATA_INTERFACE=eth1
+      NEUWERK_BOOTSTRAP_DATA_PLANE_MODE=dpdk
+      NEUWERK_BOOTSTRAP_DNS_TARGET_IPS=10.20.0.10
+      NEUWERK_BOOTSTRAP_DNS_UPSTREAMS=10.20.0.2:53,10.20.0.3:53
+      NEUWERK_BOOTSTRAP_DEFAULT_POLICY=deny
+      NEUWERK_INTEGRATION_MODE=aws-asg
+      NEUWERK_AWS_REGION=eu-central-1
+      NEUWERK_AWS_VPC_ID=vpc-0123456789abcdef0
+      NEUWERK_AWS_ASG_NAME=neuwerk-prod-asg
+runcmd:
+  - systemctl restart neuwerk.service
+```
+
+## Install Extra Packages
+
+If you need additional dependencies, keep package installation explicit in cloud-init:
+
+```yaml
+#cloud-config
+package_update: true
+packages:
+  - jq
+  - ca-certificates
+  - dnsutils
+runcmd:
+  - apt-get -y install --no-install-recommends ethtool
+  - systemctl restart neuwerk.service
+```
+
+Use `runcmd:` when ordering matters (for example when a package must exist before a script executes).
+
+## Add Files, Certificates, Or Scripts
+
+Use cloud-init `write_files` to place certificates, configuration fragments, or helper scripts without rebuilding the image:
+
+```yaml
+#cloud-config
+write_files:
+  - path: /etc/neuwerk/certs/upstream-ca.pem
+    owner: root:root
+    permissions: "0644"
+    content: |
+      -----BEGIN CERTIFICATE-----
+      <redacted>
+      -----END CERTIFICATE-----
+  - path: /usr/local/bin/neuwerk-post-bootstrap.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      install -d -m 0755 /var/lib/neuwerk/custom
+      touch /var/lib/neuwerk/custom/first-boot.stamp
+runcmd:
+  - /usr/local/bin/neuwerk-post-bootstrap.sh
+  - systemctl restart neuwerk.service
+```
+
+## Customization Boundaries
+
+- do add env vars, files, and supporting packages declaratively
+- do not replace bundled DPDK/runtime libraries casually
+- do not turn managed fleets into hand-tuned pet VMs
+
+## Related Pages
+
+- [Launch Neuwerk From The Released Cloud Image](/docs/tutorials/launch-from-released-cloud-image)
+- [Cloud Rollout Integration](/docs/architecture/cloud-rollout-integration)
+- [Requirements](/docs/deployment/requirements)
