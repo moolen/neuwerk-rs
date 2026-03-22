@@ -118,6 +118,12 @@ To refresh or verify the checked-in static OpenAPI artifact, use:
 
 ---
 
+## License
+
+Neuwerk is licensed under Apache License 2.0. See `LICENSE`.
+
+---
+
 ## Local Benchmarking
 
 For dataplane microbenchmarks, use the repo runner instead of ad hoc `cargo bench` commands:
