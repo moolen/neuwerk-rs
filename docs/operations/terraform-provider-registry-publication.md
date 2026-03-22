@@ -29,6 +29,14 @@ Export the provider release-source tree from this monorepo:
 make package.terraform-provider.release-source OUTPUT_DIR=/tmp/terraform-provider-neuwerk
 ```
 
+Or do the export plus repo sync in one step:
+
+```bash
+make package.terraform-provider.release-source.sync \
+  REPO_DIR="$HOME/src/terraform-provider-neuwerk" \
+  REMOTE_URL=git@github.com:moolen/terraform-provider-neuwerk.git
+```
+
 Push that exported tree to the public repository:
 
 ```bash
@@ -43,6 +51,14 @@ git push -u origin main
 
 That public repository should stay a release-source mirror. Functional provider changes should land
 in `firewall` first, then be re-exported and pushed.
+
+To push the sync in the same step:
+
+```bash
+make package.terraform-provider.release-source.sync \
+  REPO_DIR="$HOME/src/terraform-provider-neuwerk" \
+  PUSH=1
+```
 
 ## Publish A Provider Release
 
