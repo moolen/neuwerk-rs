@@ -338,6 +338,7 @@ fn policy_with_tls_intercept(
             tls: Some(TlsMatch {
                 mode: TlsMode::Intercept,
                 sni: None,
+                server_dn: None,
                 server_san: None,
                 server_cn: None,
                 fingerprints_sha256: Vec::new(),

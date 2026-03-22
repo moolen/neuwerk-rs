@@ -64,6 +64,7 @@ fn base_tls_match() -> TlsMatch {
     TlsMatch {
         mode: TlsMode::Metadata,
         sni: None,
+        server_dn: None,
         server_san: None,
         server_cn: None,
         fingerprints_sha256: Vec::new(),
