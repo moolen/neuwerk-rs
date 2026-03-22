@@ -290,6 +290,16 @@ func (r *ssoProviderResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
+	current, err := r.client.GetSsoProvider(ctx, plan.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Update SSO Provider Failed", err.Error())
+		return
+	}
+	if err := validateSsoProviderKind(r.kindConfig.kind, current); err != nil {
+		resp.Diagnostics.AddError("Update SSO Provider Failed", err.Error())
+		return
+	}
+
 	record, err := r.client.UpdateSsoProvider(ctx, plan.ID.ValueString(), buildSsoProviderUpdateRequest(plan, configClientSecret))
 	if err != nil {
 		resp.Diagnostics.AddError("Update SSO Provider Failed", err.Error())

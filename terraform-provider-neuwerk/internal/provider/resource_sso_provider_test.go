@@ -263,43 +263,66 @@ func TestGoogleSsoProviderUpdatePreservesPriorSecretWhenConfigOmitsIt(t *testing
 
 	var sawClientSecretInPayload bool
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Fatalf("unexpected method %s", r.Method)
-		}
-		if r.URL.Path != "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6" {
-			t.Fatalf("unexpected path %s", r.URL.Path)
-		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
+				"name":"Google Workspace",
+				"kind":"google",
+				"enabled":true,
+				"display_order":0,
+				"issuer_url":"https://accounts.google.com",
+				"client_id":"google-client-id",
+				"client_secret_configured":true,
+				"scopes":["openid","email","profile"],
+				"pkce_required":true,
+				"subject_claim":"sub",
+				"admin_subjects":[],
+				"admin_groups":[],
+				"admin_email_domains":[],
+				"readonly_subjects":[],
+				"readonly_groups":[],
+				"readonly_email_domains":[],
+				"allowed_email_domains":[],
+				"session_ttl_secs":3600,
+				"created_at":"2026-03-22T00:00:00Z",
+				"updated_at":"2026-03-22T00:00:01Z"
+			}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			_, sawClientSecretInPayload = payload["client_secret"]
 
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode request: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
+				"name":"Google Workspace",
+				"kind":"google",
+				"enabled":true,
+				"display_order":0,
+				"issuer_url":"https://accounts.google.com",
+				"client_id":"google-client-id",
+				"client_secret_configured":true,
+				"scopes":["openid","email","profile"],
+				"pkce_required":true,
+				"subject_claim":"sub",
+				"admin_subjects":[],
+				"admin_groups":[],
+				"admin_email_domains":[],
+				"readonly_subjects":[],
+				"readonly_groups":[],
+				"readonly_email_domains":[],
+				"allowed_email_domains":[],
+				"session_ttl_secs":3600,
+				"created_at":"2026-03-22T00:00:00Z",
+				"updated_at":"2026-03-22T00:00:01Z"
+			}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		_, sawClientSecretInPayload = payload["client_secret"]
-
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
-			"name":"Google Workspace",
-			"kind":"google",
-			"enabled":true,
-			"display_order":0,
-			"issuer_url":"https://accounts.google.com",
-			"client_id":"google-client-id",
-			"client_secret_configured":true,
-			"scopes":["openid","email","profile"],
-			"pkce_required":true,
-			"subject_claim":"sub",
-			"admin_subjects":[],
-			"admin_groups":[],
-			"admin_email_domains":[],
-			"readonly_subjects":[],
-			"readonly_groups":[],
-			"readonly_email_domains":[],
-			"allowed_email_domains":[],
-			"session_ttl_secs":3600,
-			"created_at":"2026-03-22T00:00:00Z",
-			"updated_at":"2026-03-22T00:00:01Z"
-		}`))
 	}))
 	defer server.Close()
 
@@ -368,45 +391,68 @@ func TestGoogleSsoProviderUpdateUsesConfiguredSecretWhenSet(t *testing.T) {
 
 	var gotClientSecret string
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Fatalf("unexpected method %s", r.Method)
-		}
-		if r.URL.Path != "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6" {
-			t.Fatalf("unexpected path %s", r.URL.Path)
-		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
+				"name":"Google Workspace",
+				"kind":"google",
+				"enabled":true,
+				"display_order":0,
+				"issuer_url":"https://accounts.google.com",
+				"client_id":"google-client-id",
+				"client_secret_configured":true,
+				"scopes":["openid","email","profile"],
+				"pkce_required":true,
+				"subject_claim":"sub",
+				"admin_subjects":[],
+				"admin_groups":[],
+				"admin_email_domains":[],
+				"readonly_subjects":[],
+				"readonly_groups":[],
+				"readonly_email_domains":[],
+				"allowed_email_domains":[],
+				"session_ttl_secs":3600,
+				"created_at":"2026-03-22T00:00:00Z",
+				"updated_at":"2026-03-22T00:00:02Z"
+			}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if secret, ok := payload["client_secret"].(string); ok {
+				gotClientSecret = secret
+			}
 
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode request: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
+				"name":"Google Workspace",
+				"kind":"google",
+				"enabled":true,
+				"display_order":0,
+				"issuer_url":"https://accounts.google.com",
+				"client_id":"google-client-id",
+				"client_secret_configured":true,
+				"scopes":["openid","email","profile"],
+				"pkce_required":true,
+				"subject_claim":"sub",
+				"admin_subjects":[],
+				"admin_groups":[],
+				"admin_email_domains":[],
+				"readonly_subjects":[],
+				"readonly_groups":[],
+				"readonly_email_domains":[],
+				"allowed_email_domains":[],
+				"session_ttl_secs":3600,
+				"created_at":"2026-03-22T00:00:00Z",
+				"updated_at":"2026-03-22T00:00:02Z"
+			}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		if secret, ok := payload["client_secret"].(string); ok {
-			gotClientSecret = secret
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
-			"name":"Google Workspace",
-			"kind":"google",
-			"enabled":true,
-			"display_order":0,
-			"issuer_url":"https://accounts.google.com",
-			"client_id":"google-client-id",
-			"client_secret_configured":true,
-			"scopes":["openid","email","profile"],
-			"pkce_required":true,
-			"subject_claim":"sub",
-			"admin_subjects":[],
-			"admin_groups":[],
-			"admin_email_domains":[],
-			"readonly_subjects":[],
-			"readonly_groups":[],
-			"readonly_email_domains":[],
-			"allowed_email_domains":[],
-			"session_ttl_secs":3600,
-			"created_at":"2026-03-22T00:00:00Z",
-			"updated_at":"2026-03-22T00:00:02Z"
-		}`))
 	}))
 	defer server.Close()
 
@@ -539,36 +585,40 @@ func TestGoogleSsoProviderReadRejectsKindMismatch(t *testing.T) {
 func TestGoogleSsoProviderUpdateRejectsKindMismatch(t *testing.T) {
 	t.Parallel()
 
+	var sawPut bool
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Fatalf("unexpected method %s", r.Method)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
+				"name":"GitHub Provider",
+				"kind":"github",
+				"enabled":true,
+				"display_order":0,
+				"client_id":"client-id",
+				"client_secret_configured":true,
+				"scopes":[],
+				"pkce_required":true,
+				"subject_claim":"sub",
+				"admin_subjects":[],
+				"admin_groups":[],
+				"admin_email_domains":[],
+				"readonly_subjects":[],
+				"readonly_groups":[],
+				"readonly_email_domains":[],
+				"allowed_email_domains":[],
+				"session_ttl_secs":3600,
+				"created_at":"2026-03-22T00:00:00Z",
+				"updated_at":"2026-03-22T00:00:01Z"
+			}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6":
+			sawPut = true
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"unexpected update call"}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		if r.URL.Path != "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6" {
-			t.Fatalf("unexpected path %s", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
-			"name":"GitHub Provider",
-			"kind":"github",
-			"enabled":true,
-			"display_order":0,
-			"client_id":"client-id",
-			"client_secret_configured":true,
-			"scopes":[],
-			"pkce_required":true,
-			"subject_claim":"sub",
-			"admin_subjects":[],
-			"admin_groups":[],
-			"admin_email_domains":[],
-			"readonly_subjects":[],
-			"readonly_groups":[],
-			"readonly_email_domains":[],
-			"allowed_email_domains":[],
-			"session_ttl_secs":3600,
-			"created_at":"2026-03-22T00:00:00Z",
-			"updated_at":"2026-03-22T00:00:01Z"
-		}`))
 	}))
 	defer server.Close()
 
@@ -613,6 +663,9 @@ func TestGoogleSsoProviderUpdateRejectsKindMismatch(t *testing.T) {
 
 	if !resp.Diagnostics.HasError() {
 		t.Fatalf("expected diagnostics on kind mismatch")
+	}
+	if sawPut {
+		t.Fatalf("expected no PUT request when pre-update kind validation fails")
 	}
 	if !strings.Contains(resp.Diagnostics.Errors()[0].Detail(), `expected "google", got "github"`) {
 		t.Fatalf("unexpected diagnostics detail: %q", resp.Diagnostics.Errors()[0].Detail())
