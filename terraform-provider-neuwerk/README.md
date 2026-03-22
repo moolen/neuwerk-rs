@@ -24,6 +24,9 @@ Additional examples live under:
 Maintainers publishing provider releases from this monorepo should see
 [`docs/operations/terraform-provider-release.md`](../docs/operations/terraform-provider-release.md).
 
+Current distribution is via signed GitHub Releases. The provider source address remains
+`neuwerk/neuwerk`; public Terraform Registry publication is follow-up work.
+
 Implemented resources:
 
 - `neuwerk_policy`

@@ -45,9 +45,12 @@ provider "neuwerk" {
 
 ## Manual Install
 
-If you need to install the provider from GitHub Releases before Registry publication is available:
+The current supported install path is signed GitHub Releases:
 
 1. download the archive for your platform
 2. verify the SHA256SUMS file
 3. verify the detached SHA256SUMS signature
 4. place the unpacked binary in a Terraform filesystem mirror under `registry.terraform.io/neuwerk/neuwerk`
+
+Terraform Registry publication is planned as a later step and does not change the intended source
+address.

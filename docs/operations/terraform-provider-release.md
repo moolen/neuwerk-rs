@@ -8,6 +8,11 @@ The provider source address is:
 
 - `neuwerk/neuwerk`
 
+Current publication model:
+
+- signed GitHub Release assets are published from this monorepo
+- public Terraform Registry onboarding remains follow-up work
+
 ## Prerequisites
 
 Configure these repository secrets before attempting a provider release:
@@ -18,6 +23,13 @@ Configure these repository secrets before attempting a provider release:
 
 Unsigned provider releases are intentionally unsupported. The workflow fails before publication if
 any signing secret is missing.
+
+## Registry Status
+
+This monorepo release workflow is enough for signed GitHub Release assets and manual installation.
+Public Terraform Registry publication still requires a registry-detectable public repository for
+the provider release source. Until that exists, treat GitHub Releases as the supported provider
+distribution channel.
 
 ## Workflow Inputs
 

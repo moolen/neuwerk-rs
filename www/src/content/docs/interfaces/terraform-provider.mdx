@@ -23,6 +23,10 @@ terraform {
 Use it when you want to manage Neuwerk configuration through infrastructure-as-code instead of
 calling the HTTP API directly.
 
+The current supported distribution path is signed GitHub Releases plus a Terraform filesystem
+mirror. The intended provider source address is already `neuwerk/neuwerk`, so consumer
+configuration does not need to change when public Terraform Registry publication is added later.
+
 ## Current Scope
 
 The provider is intentionally small and currently exposes:
@@ -300,6 +304,6 @@ That means:
 For now, the provider should be treated as a curated automation surface for the implemented API
 subset above.
 
-Release artifacts are distributed through GitHub Releases. Provider release publication is blocked
-until checksum signing is configured, and manual installs are expected to verify both the checksum
-file and its detached signature.
+Release artifacts are currently distributed through signed GitHub Releases. Manual installs are
+expected to verify both the checksum file and its detached signature before placing the provider in
+a Terraform filesystem mirror.

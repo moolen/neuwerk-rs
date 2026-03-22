@@ -12,15 +12,12 @@ terraform {
 }
 ```
 
-Use these docs as the provider reference from GitHub Releases and, once configured, the Terraform Registry.
+Use these docs as the provider reference for the current signed GitHub Releases distribution path.
+The intended provider source address remains `neuwerk/neuwerk`.
 
 ## Install
 
-Preferred:
-
-- install from the Terraform Registry as `neuwerk/neuwerk`
-
-Manual fallback:
+Current distribution path:
 
 1. download the matching provider archive for your platform from GitHub Releases
 2. verify `terraform-provider-neuwerk_<version>_SHA256SUMS`
@@ -28,6 +25,8 @@ Manual fallback:
 4. place the unpacked provider binary under the local Terraform filesystem mirror path for `registry.terraform.io/neuwerk/neuwerk`
 
 Unsigned provider releases are intentionally unsupported.
+Terraform Registry publication is follow-up work once the provider is published from a
+registry-detectable public repository.
 
 ## References
 
