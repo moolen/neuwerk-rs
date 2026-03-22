@@ -178,3 +178,65 @@ jobs:
           OWNER_GID="$(id -g)"
           sudo chown -R "$OWNER_UID:$OWNER_GID" "$GITHUB_WORKSPACE"
           sudo chown -R "$OWNER_UID:$OWNER_GID" "${CARGO_HOME:-$HOME/.cargo}" "${RUSTUP_HOME:-$HOME/.rustup}"
+
+  terraform-provider-release-assets:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: terraform-provider-neuwerk/go.mod
+          cache-dependency-path: terraform-provider-neuwerk/go.sum
+
+      - name: Install signing dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gpg
+
+      - name: Build signed Terraform provider release assets
+        run: |
+          key_home="$(mktemp -d)"
+          export GNUPGHOME="$key_home"
+          chmod 700 "$GNUPGHOME"
+          trap 'rm -rf "$key_home" key.conf' EXIT
+          passphrase="neuwerk-ci-passphrase"
+
+          cat >key.conf <<'EOF'
+          Key-Type: RSA
+          Key-Length: 3072
+          Name-Real: Neuwerk CI
+          Name-Email: ci@neuwerk.invalid
+          Expire-Date: 0
+          %commit
+          EOF
+
+          gpg --batch --pinentry-mode loopback --passphrase "$passphrase" --generate-key key.conf
+          key_id="$(gpg --batch --list-secret-keys --with-colons ci@neuwerk.invalid | awk -F: '/^sec:/ { print $5; exit }')"
+          export GPG_PRIVATE_KEY="$(
+            gpg --batch --pinentry-mode loopback --passphrase "$passphrase" \
+              --armor --export-secret-keys "$key_id"
+          )"
+          export GPG_PASSPHRASE="$passphrase"
+          export GPG_KEY_ID="$key_id"
+
+          output_dir="$RUNNER_TEMP/terraform-provider-release"
+          bash packaging/scripts/build_terraform_provider_release_assets.sh \
+            --release-version v0.0.0-ci \
+            --output-dir "$output_dir"
+
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_linux_amd64.zip"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_linux_arm64.zip"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_darwin_amd64.zip"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_darwin_arm64.zip"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_windows_amd64.zip"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS"
+          test -f "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS.sig"
+
+          gpg --batch --verify \
+            "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS.sig" \
+            "$output_dir/terraform-provider-neuwerk_0.0.0-ci_SHA256SUMS"

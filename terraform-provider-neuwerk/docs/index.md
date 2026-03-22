@@ -40,3 +40,9 @@ Unsigned provider releases are intentionally unsupported.
 - [Google SSO Provider Resource](./resources/sso_provider_google.md)
 - [GitHub SSO Provider Resource](./resources/sso_provider_github.md)
 - [Generic OIDC SSO Provider Resource](./resources/sso_provider_generic_oidc.md)
+
+## Examples
+
+- `terraform-provider-neuwerk/examples/basic/main.tf`
+- `terraform-provider-neuwerk/examples/service-accounts/main.tf`
+- `terraform-provider-neuwerk/examples/sso/main.tf`

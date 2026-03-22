@@ -15,6 +15,11 @@ terraform {
 ```
 
 Additional provider reference docs live under `terraform-provider-neuwerk/docs/`.
+Additional examples live under:
+
+- `terraform-provider-neuwerk/examples/basic/main.tf`
+- `terraform-provider-neuwerk/examples/service-accounts/main.tf`
+- `terraform-provider-neuwerk/examples/sso/main.tf`
 
 Implemented resources:
 
