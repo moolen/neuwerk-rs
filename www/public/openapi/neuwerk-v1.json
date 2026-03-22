@@ -1721,6 +1721,110 @@
         ]
       }
     },
+    "/api/v1/settings/threat-intel": {
+      "get": {
+        "tags": [
+          "Settings"
+        ],
+        "operationId": "get_threat_settings",
+        "responses": {
+          "200": {
+            "description": "Threat intel settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreatIntelSettingsStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Settings"
+        ],
+        "operationId": "put_threat_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThreatIntelSettingsUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated threat intel settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreatIntelSettingsStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
     "/api/v1/settings/tls-intercept-ca": {
       "get": {
         "tags": [
@@ -1986,6 +2090,353 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/threats/feeds/status": {
+      "get": {
+        "tags": [
+          "Threats"
+        ],
+        "operationId": "threat_feed_status",
+        "responses": {
+          "200": {
+            "description": "Threat feed status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreatFeedRefreshState"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/threats/findings": {
+      "get": {
+        "tags": [
+          "Threats"
+        ],
+        "operationId": "threat_findings",
+        "parameters": [
+          {
+            "name": "indicator_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "source_group",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "observation_layer",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "feed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "match_source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "alertable_only",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Threat findings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreatFindingQueryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/threats/silences": {
+      "get": {
+        "tags": [
+          "Threats"
+        ],
+        "operationId": "list_threat_silences",
+        "responses": {
+          "200": {
+            "description": "Threat silences",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreatSilenceList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Threats"
+        ],
+        "operationId": "post_threat_silences",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThreatSilenceCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Created threat silence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreatSilenceEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/threats/silences/{id}": {
+      "delete": {
+        "tags": [
+          "Threats"
+        ],
+        "operationId": "delete_threat_silence",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Threat silence identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Threat silence removed"
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Threat silence not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3173,6 +3624,679 @@
           }
         }
       },
+      "ThreatBaselineFeeds": {
+        "type": "object",
+        "properties": {
+          "spamhaus_drop": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThreatFeedToggle"
+              }
+            ],
+            "default": {
+              "enabled": true,
+              "refresh_interval_secs": 3600
+            }
+          },
+          "threatfox": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThreatFeedToggle"
+              }
+            ],
+            "default": {
+              "enabled": true,
+              "refresh_interval_secs": 3600
+            }
+          },
+          "urlhaus": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThreatFeedToggle"
+              }
+            ],
+            "default": {
+              "enabled": true,
+              "refresh_interval_secs": 3600
+            }
+          }
+        }
+      },
+      "ThreatEnrichmentStatus": {
+        "type": "string",
+        "enum": [
+          "not_requested",
+          "queued",
+          "running",
+          "completed",
+          "failed"
+        ]
+      },
+      "ThreatFeedHit": {
+        "type": "object",
+        "required": [
+          "feed",
+          "severity"
+        ],
+        "properties": {
+          "confidence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "feed": {
+            "type": "string"
+          },
+          "reference_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "severity": {
+            "$ref": "#/components/schemas/ThreatSeverity"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ThreatFeedIndicatorCounts": {
+        "type": "object",
+        "properties": {
+          "hostname": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ip": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "ThreatFeedRefreshState": {
+        "type": "object",
+        "properties": {
+          "disabled": {
+            "type": "boolean"
+          },
+          "feeds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreatFeedStatusItem"
+            }
+          },
+          "last_refresh_completed_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "last_refresh_outcome": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThreatRefreshOutcome"
+              }
+            ]
+          },
+          "last_refresh_started_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "last_successful_refresh_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "snapshot_generated_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "snapshot_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ThreatFeedStatusItem": {
+        "type": "object",
+        "required": [
+          "feed",
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "feed": {
+            "type": "string"
+          },
+          "indicator_counts": {
+            "$ref": "#/components/schemas/ThreatFeedIndicatorCounts"
+          },
+          "last_refresh_completed_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "last_refresh_outcome": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThreatRefreshOutcome"
+              }
+            ]
+          },
+          "last_refresh_started_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "last_successful_refresh_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "snapshot_age_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ThreatFeedToggle": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "refresh_interval_secs": {
+            "type": "integer",
+            "format": "int64",
+            "default": 3600,
+            "minimum": 0
+          }
+        }
+      },
+      "ThreatFinding": {
+        "type": "object",
+        "required": [
+          "indicator",
+          "indicator_type",
+          "observation_layer",
+          "match_source",
+          "source_group",
+          "severity",
+          "feed_hits",
+          "first_seen",
+          "last_seen",
+          "count",
+          "sample_node_ids",
+          "alertable",
+          "audit_links",
+          "enrichment_status"
+        ],
+        "properties": {
+          "alertable": {
+            "type": "boolean"
+          },
+          "audit_links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confidence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "enrichment_status": {
+            "$ref": "#/components/schemas/ThreatEnrichmentStatus"
+          },
+          "feed_hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreatFeedHit"
+            }
+          },
+          "first_seen": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "indicator": {
+            "type": "string"
+          },
+          "indicator_type": {
+            "$ref": "#/components/schemas/ThreatIndicatorType"
+          },
+          "last_seen": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "match_source": {
+            "$ref": "#/components/schemas/ThreatMatchSource"
+          },
+          "observation_layer": {
+            "$ref": "#/components/schemas/ThreatObservationLayer"
+          },
+          "sample_node_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "severity": {
+            "$ref": "#/components/schemas/ThreatSeverity"
+          },
+          "source_group": {
+            "type": "string"
+          }
+        }
+      },
+      "ThreatFindingQuery": {
+        "type": "object",
+        "properties": {
+          "alertable_only": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "feed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "indicator_type": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "match_source": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "observation_layer": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "severity": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "since": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "source_group": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "until": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ThreatFindingQueryResponse": {
+        "type": "object",
+        "required": [
+          "items",
+          "partial",
+          "node_errors",
+          "nodes_queried",
+          "nodes_responded"
+        ],
+        "properties": {
+          "disabled": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreatFinding"
+            }
+          },
+          "node_errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreatNodeQueryError"
+            }
+          },
+          "nodes_queried": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "nodes_responded": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "partial": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ThreatIndicatorType": {
+        "type": "string",
+        "enum": [
+          "hostname",
+          "ip"
+        ]
+      },
+      "ThreatIntelSettings": {
+        "type": "object",
+        "properties": {
+          "alert_threshold": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThreatSeverity"
+              }
+            ],
+            "default": "high"
+          },
+          "baseline_feeds": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThreatBaselineFeeds"
+              }
+            ],
+            "default": {
+              "spamhaus_drop": {
+                "enabled": true,
+                "refresh_interval_secs": 3600
+              },
+              "threatfox": {
+                "enabled": true,
+                "refresh_interval_secs": 3600
+              },
+              "urlhaus": {
+                "enabled": true,
+                "refresh_interval_secs": 3600
+              }
+            }
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "remote_enrichment": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThreatRemoteEnrichmentSettings"
+              }
+            ],
+            "default": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      "ThreatIntelSettingsStatus": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ThreatIntelSettings"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ThreatIntelSettingsUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "alert_threshold": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThreatSeverity"
+              }
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "ThreatMatchSource": {
+        "type": "string",
+        "enum": [
+          "stream",
+          "backfill"
+        ]
+      },
+      "ThreatNodeQueryError": {
+        "type": "object",
+        "required": [
+          "node_id",
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ThreatObservationLayer": {
+        "type": "string",
+        "enum": [
+          "dns",
+          "tls",
+          "l4"
+        ]
+      },
+      "ThreatRefreshOutcome": {
+        "type": "string",
+        "enum": [
+          "success",
+          "failed",
+          "skipped"
+        ]
+      },
+      "ThreatRemoteEnrichmentSettings": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "ThreatSeverity": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ]
+      },
+      "ThreatSilenceCreateRequest": {
+        "type": "object",
+        "required": [
+          "kind",
+          "value"
+        ],
+        "properties": {
+          "indicator_type": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThreatIndicatorType"
+              }
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ThreatSilenceKind"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "ThreatSilenceEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "value",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "indicator_type": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ThreatIndicatorType"
+              }
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ThreatSilenceKind"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "ThreatSilenceKind": {
+        "type": "string",
+        "enum": [
+          "exact",
+          "hostname_regex"
+        ]
+      },
+      "ThreatSilenceList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreatSilenceEntry"
+            },
+            "default": []
+          }
+        }
+      },
       "Tls13UninspectableValue": {
         "type": "string",
         "enum": [
@@ -3477,6 +4601,10 @@
     {
       "name": "Settings",
       "description": "Mutable runtime and certificate settings"
+    },
+    {
+      "name": "Threats",
+      "description": "Threat-intelligence findings and feed status"
     },
     {
       "name": "Diagnostics",

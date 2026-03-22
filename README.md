@@ -99,6 +99,25 @@ The goal is simple:
 
 ---
 
+## Documentation
+
+Start with the operator and deployment material in this repository:
+
+- `docs/operations/` for appliance, observability, backup, upgrade, and local demo workflows
+- `demo/vagrant/README.md` for the fastest local evaluation path
+- `terraform-provider-neuwerk/README.md` for Terraform automation coverage
+- `www/src/content/docs/` for the broader structured docs set that backs the project site
+
+For API integrations, Neuwerk also exposes a generated OpenAPI document at runtime and ships a
+static docs copy under `www/public/openapi/`.
+
+To refresh or verify the checked-in static OpenAPI artifact, use:
+
+- `make openapi.sync`
+- `make openapi.check`
+
+---
+
 ## Local Benchmarking
 
 For dataplane microbenchmarks, use the repo runner instead of ad hoc `cargo bench` commands:
@@ -110,6 +129,12 @@ NEUWERK_BENCH_CORE=2 NEUWERK_BENCH_COMPARE_BASELINE=before make bench.dataplane
 ```
 
 The runner lives at `scripts/bench-dataplane.sh` and standardizes sample size, warm-up time, optional CPU affinity, optional nice level, and log capture under `target/criterion-runs/`.
+
+For the feature-gated Rust surface, use:
+
+```bash
+make test.all-features
+```
 
 ## Project Status
 

@@ -57,6 +57,9 @@ jobs:
             protobuf-compiler \
             python3-pyelftools
 
+      - name: Check OpenAPI artifact
+        run: make openapi.check
+
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
@@ -82,6 +85,9 @@ jobs:
 
       - name: Run Rust full suite
         run: make test
+
+      - name: Run Rust full suite with all features
+        run: make test.all-features
 
       - name: Install Kind
         uses: helm/kind-action@v1

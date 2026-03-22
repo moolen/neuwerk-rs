@@ -82,6 +82,9 @@ jobs:
             protobuf-compiler \
             python3-pyelftools
 
+      - name: Check OpenAPI artifact
+        run: make openapi.check
+
       - name: Install UI dependencies
         run: npm --prefix ui ci
 
@@ -110,6 +113,9 @@ jobs:
 
       - name: Run Rust tests
         run: cargo test -- --test-threads=1
+
+      - name: Run Rust tests with all features
+        run: make test.all-features
 
   integration-tests:
     needs: build-and-test
@@ -144,6 +150,9 @@ jobs:
             pkg-config \
             protobuf-compiler \
             python3-pyelftools
+
+      - name: Check OpenAPI artifact
+        run: make openapi.check
 
       - name: Setup Kind
         uses: helm/kind-action@v1
