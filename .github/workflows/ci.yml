@@ -15,7 +15,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  oss-launch-surface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: www/package-lock.json
+
+      - name: Install docs dependencies
+        run: npm --prefix www ci
+
+      - name: Verify OSS launch surface
+        run: bash packaging/scripts/check_oss_launch_surface.sh
+
+      - name: Run docs tests
+        run: node --test www/tests/*.test.mjs
+
+      - name: Build docs site
+        run: npm --prefix www run build
+
   build-and-test:
+    needs: oss-launch-surface
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
