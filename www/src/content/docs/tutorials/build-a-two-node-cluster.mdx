@@ -1,104 +1,49 @@
 ---
 title: Build A Two-Node Cluster
-description: Start a seed node, join a second node, and verify that clustered control-plane state is healthy.
+description: Compatibility guidance for legacy two-node onboarding references; first-time cloud onboarding should start from the released cloud image tutorial.
 order: 3
 ---
 
-This tutorial introduces the clustered deployment shape. In Neuwerk, clustering replicates the
-control plane. Each node still enforces traffic locally in its own dataplane.
+This page is retained for compatibility with older docs links and internal runbooks.
 
-You will finish with:
+For first-time cloud onboarding, this tutorial is obsolete. Start with <a href="/docs/tutorials/launch-from-released-cloud-image">Launch Neuwerk From The Released Cloud Image</a> and treat this page as migration context only.
 
-- one seed node
-- one joining node
-- replicated control-plane state
-- a simple post-join verification sequence
+## Why This Page Still Exists
 
-## Before You Start
+Older guides often used "build a two-node cluster" as the first deployment step. The supported flow has changed:
 
-Have these values ready for both nodes:
+- first boot and baseline validation should follow the cloud-image tutorial
+- rollout behavior for autoscaling groups should follow [Cloud Rollout Integration](/docs/architecture/cloud-rollout-integration)
+- cluster topology and failure boundaries should follow [Run An HA Cluster](/docs/deployment/high-availability)
 
-- a management interface with an IPv4 address
-- a separate data-plane interface
-- a bootstrap token file
-- routable cluster bind and advertise addresses
-- matching DNS target and upstream settings for the deployment
+## Legacy Cluster Checks You Can Reuse
 
-Cluster mode adds two network surfaces:
+If you inherited an existing two-node environment, keep these verification checks:
 
-- the main cluster RPC listener for steady-state node-to-node traffic
-- the join listener for bootstrap enrollment
+- each node reports healthy and ready state
+- leader election is stable
+- replicated policy state converges on both nodes
+- state-changing API calls succeed when routed through either management endpoint
 
-## Start The Seed Node
+These checks remain valuable even though this page is no longer the recommended starting point.
 
-Start the first node without a `--join` flag:
+## Migration Note For Existing Runbooks
 
-```text
-neuwerk \
-  --management-interface mgmt0 \
-  --data-plane-interface data0 \
-  --dns-target-ip 10.0.0.53 \
-  --dns-upstream 1.1.1.1:53 \
-  --cluster-bind 10.0.0.11:9600 \
-  --cluster-join-bind 10.0.0.11:9601 \
-  --cluster-advertise 10.0.0.11:9600 \
-  --bootstrap-token-path /var/lib/neuwerk/bootstrap-token
-```
+If your runbook currently says:
 
-This node becomes the initial seed because clustering is enabled and no join target is provided.
+- "deploy single node"
+- "build two-node cluster"
+- "then create first policy"
 
-## Join The Second Node
+Update it to:
 
-Start the second node with the seed node's join address:
-
-```text
-neuwerk \
-  --management-interface mgmt0 \
-  --data-plane-interface data0 \
-  --dns-target-ip 10.0.0.53 \
-  --dns-upstream 1.1.1.1:53 \
-  --cluster-bind 10.0.0.12:9600 \
-  --cluster-join-bind 10.0.0.12:9601 \
-  --cluster-advertise 10.0.0.12:9600 \
-  --join 10.0.0.11:9601 \
-  --bootstrap-token-path /var/lib/neuwerk/bootstrap-token
-```
-
-The join path is separate from the steady-state cluster RPC path on purpose. It is only for node
-enrollment.
-
-## Verify Cluster Health
-
-After both nodes start, verify:
-
-```text
-GET /health
-GET /ready
-GET /api/v1/stats
-```
-
-In a healthy cluster:
-
-- both nodes are live
-- both nodes are ready
-- the cluster has a known leader
-- policy replication is caught up locally on each node
-
-## Verify Leader-Aware Management
-
-Write or read policy through the management API on either node. Most cluster-aware API calls are
-routed to the leader automatically, so clients do not need separate leader discovery.
-
-If a node cannot determine the leader, state-changing requests fail with `503`. Treat that as a
-cluster problem, not just an API problem.
-
-## Warning
-
-HA improves control-plane availability. It does not turn the dataplane into a shared distributed
-engine. Each node still has its own local enforcement state and local forwarding behavior.
+1. launch from released cloud image
+2. create first policy
+3. apply cloud rollout integration guidance
+4. scale and validate HA behavior
 
 ## Next Steps
 
-- Read [Run An HA Cluster](/docs/deployment/high-availability) for the operational model.
-- Read [Cluster Replication](/docs/architecture/cluster-replication) for the failure and recovery boundaries.
-- Read [Back Up And Restore State](/docs/operations/backup-restore) before relying on the cluster in production.
+- Start from <a href="/docs/tutorials/launch-from-released-cloud-image">Launch Neuwerk From The Released Cloud Image</a> if onboarding a new deployment.
+- Read [Cloud Rollout Integration](/docs/architecture/cloud-rollout-integration) before ASG/VMSS/MIG-based scaling.
+- Use [Run An HA Cluster](/docs/deployment/high-availability) and [Cluster Replication](/docs/architecture/cluster-replication) for cluster operation details.

@@ -13,9 +13,11 @@ export const docsNavigation: DocsNavSection[] = [
     title: 'Getting Started',
     items: [
       { href: '/docs/tutorials/run-the-vagrant-demo-box', label: 'Run The Vagrant Demo Box' },
-      { href: '/docs/tutorials/deploy-a-single-node', label: 'Deploy A Single Node' },
+      {
+        href: '/docs/tutorials/launch-from-released-cloud-image',
+        label: 'Launch Neuwerk From The Released Cloud Image',
+      },
       { href: '/docs/tutorials/create-your-first-policy', label: 'Create Your First Policy' },
-      { href: '/docs/tutorials/build-a-two-node-cluster', label: 'Build A Two-Node Cluster' },
     ],
   },
   {
@@ -43,6 +45,7 @@ export const docsNavigation: DocsNavSection[] = [
       { href: '/docs/architecture/dataplane', label: 'Dataplane' },
       { href: '/docs/architecture/control-plane', label: 'Control Plane' },
       { href: '/docs/architecture/cluster-replication', label: 'Cluster Replication' },
+      { href: '/docs/architecture/cloud-rollout-integration', label: 'Cloud Rollout Integration' },
       { href: '/docs/configuration/policy-model', label: 'Policy Model' },
       { href: '/docs/deployment/kubernetes', label: 'Kubernetes-Backed Sources' },
       { href: '/docs/operations/observability', label: 'Observability Model' },

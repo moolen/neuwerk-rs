@@ -87,30 +87,35 @@ test('footer links to cloud-first onboarding path', () => {
   );
 });
 
-test('deployment requirements page links to cloud-first onboarding path', () => {
-  const requirements = readFileSync(new URL('../src/content/docs/deployment/requirements.mdx', import.meta.url), 'utf8');
-  assertMdxLink(
-    requirements,
-    '/docs/tutorials/launch-from-released-cloud-image',
-    'expected deployment requirements to reference /docs/tutorials/launch-from-released-cloud-image',
+test('legacy tutorials are kept as compatibility pages and point to the cloud-first path', () => {
+  const singleNode = readFileSync(
+    new URL('../src/content/docs/tutorials/deploy-a-single-node.mdx', import.meta.url),
+    'utf8',
   );
-});
-
-test('release process page links to cloud-first onboarding path', () => {
-  const releaseProcess = readFileSync(new URL('../src/content/docs/community/release-process.mdx', import.meta.url), 'utf8');
-  assertMdxLink(
-    releaseProcess,
-    '/docs/tutorials/launch-from-released-cloud-image',
-    'expected release process to reference /docs/tutorials/launch-from-released-cloud-image',
+  const twoNode = readFileSync(
+    new URL('../src/content/docs/tutorials/build-a-two-node-cluster.mdx', import.meta.url),
+    'utf8',
   );
-});
 
-test('upgrade-a-cluster page links to cloud rollout integration page', () => {
-  const upgradeCluster = readFileSync(new URL('../src/content/docs/how-to/upgrade-a-cluster.mdx', import.meta.url), 'utf8');
+  assert.match(
+    singleNode,
+    /obsolete/i,
+    'expected deploy-a-single-node tutorial to call out obsolete onboarding status',
+  );
+  assert.match(
+    twoNode,
+    /obsolete/i,
+    'expected build-a-two-node-cluster tutorial to call out obsolete onboarding status',
+  );
   assertMdxLink(
-    upgradeCluster,
-    '/docs/architecture/cloud-rollout-integration',
-    'expected upgrade a cluster to reference /docs/architecture/cloud-rollout-integration',
+    singleNode,
+    '/docs/tutorials/launch-from-released-cloud-image',
+    'expected deploy-a-single-node tutorial to reference /docs/tutorials/launch-from-released-cloud-image',
+  );
+  assertMdxLink(
+    twoNode,
+    '/docs/tutorials/launch-from-released-cloud-image',
+    'expected build-a-two-node-cluster tutorial to reference /docs/tutorials/launch-from-released-cloud-image',
   );
 });
 

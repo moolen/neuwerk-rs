@@ -1,143 +1,51 @@
 ---
 title: Deploy A Single Node
-description: Boot the appliance image, verify the management surfaces, and mint a first admin token for a single-node deployment.
+description: Compatibility guidance for operators maintaining older single-node playbooks while onboarding should follow the released cloud image tutorial.
 order: 1
 ---
 
-This tutorial covers the smallest supported deployment shape:
+This page is kept for compatibility with older runbooks and bookmarks.
 
-- one booted Neuwerk appliance image
-- one running Neuwerk process
-- no cluster replication
-- one management interface
-- one dataplane interface
+For first-time cloud onboarding, this tutorial is obsolete. Use <a href="/docs/tutorials/launch-from-released-cloud-image">Launch Neuwerk From The Released Cloud Image</a> as the primary path.
 
-If you are unsure whether you should be thinking in terms of image requirements or binary
-requirements, read [Requirements](/docs/deployment/requirements) first.
+## When This Compatibility Page Is Still Useful
 
-Use the shipped appliance image when possible. The image is the primary distribution artifact and
-already carries the matching DPDK runtime and packaged service assumptions.
+Use this page only if you are:
 
-You will finish with:
+- translating an older "single node" procedure into the current cloud-image flow
+- validating a legacy environment that still references this title
+- comparing old command expectations against current service defaults
 
-- the appliance image booted and the Neuwerk process running
-- the management HTTPS endpoint answering
-- the metrics endpoint answering
-- a short-lived admin token minted for first login
-- enough context to add your first policy safely
+If you are starting fresh, go directly to the cloud-image tutorial and come back here only for historical mapping.
 
-## Before You Start
+## Legacy-to-Current Mapping
 
-Have these values ready:
+Older single-node guidance usually mapped to these outcomes:
 
-- a booted Neuwerk appliance VM with console or SSH access
-- a management interface with an IPv4 address
-- a separate data-plane interface
-- at least one DNS target IP that clients will send DNS traffic to
-- at least one upstream DNS resolver
+- boot one appliance instance
+- confirm management and metrics endpoints
+- mint an initial admin token
+- create first policy
 
-Important constraints:
+Those outcomes now live in two canonical docs:
 
-- the management and data-plane interfaces must be different
-- DNS policy depends on the Neuwerk receiving client DNS traffic
-- the smallest deployment shape still runs both the control plane and the dataplane
+- instance bootstrap and verification: <a href="/docs/tutorials/launch-from-released-cloud-image">Launch Neuwerk From The Released Cloud Image</a>
+- first enforcement workflow: [Create Your First Policy](/docs/tutorials/create-your-first-policy)
 
-## Start The Neuwerk
+## If You Must Validate An Existing Single-Node Runtime
 
-The appliance image should be configured so that the packaged Neuwerk service starts with a runtime
-shape equivalent to:
+When checking an environment that was built from older instructions, verify:
 
-```text
-neuwerk \
-  --management-interface mgmt0 \
-  --data-plane-interface data0 \
-  --dns-target-ip 10.0.0.53 \
-  --dns-upstream 1.1.1.1:53
-```
+- management API health endpoint responds
+- metrics endpoint responds
+- management and data interfaces are distinct
+- DNS target/upstream settings are present
+- token mint flow works for operator bootstrap
 
-What this does:
-
-- enables the management HTTPS listener on the management IP
-- enables the metrics listener on the management IP
-- enables the DNS proxy on the management IP at port `53`
-- leaves cluster replication disabled
-
-Use this command shape as the reference contract for a single node. If you are using the shipped
-image, do not rebuild or repackage the binary just to follow this guide.
-
-## Verify The Process
-
-Check that the management process is alive:
-
-```text
-GET /health
-```
-
-Then confirm that metrics are exposed:
-
-```text
-GET /metrics
-```
-
-If you already have management credentials, also check readiness:
-
-```text
-GET /ready
-GET /api/v1/stats
-```
-
-Readiness matters more than liveness. A healthy node is up; a ready node is able to enforce
-traffic with the dataplane, DNS proxy, and service plane in a usable state.
-
-## Mint A First Admin Token
-
-Once the node is healthy, mint a short-lived admin token locally from the appliance:
-
-```bash
-umask 077
-sudo neuwerk auth token mint \
-  --sub operator@example.com \
-  --roles admin \
-  --ttl 30m \
-  --http-tls-dir /var/lib/neuwerk/http-tls > neuwerk-admin.jwt
-```
-
-Use the minted token to verify access:
-
-```bash
-export NEUWERK_TOKEN="$(cat neuwerk-admin.jwt)"
-curl -sk \
-  -H "Authorization: Bearer $NEUWERK_TOKEN" \
-  https://<management-ip>:8443/api/v1/auth/whoami
-```
-
-That local CLI bootstrap is the preferred first-admin flow for single-node deployments because it
-requires only operator access to the node itself.
-
-## Confirm The Listener Layout
-
-Unless you override the defaults, a single node listens on:
-
-- `management-ip:8443` for the web UI and management API
-- `management-ip:8080` for Prometheus metrics
-- `management-ip:53` for DNS proxy traffic
-
-The node does not start cluster listeners in this mode.
-
-## What To Check If Startup Fails
-
-Start with these questions:
-
-- does the management interface have an IPv4 address
-- are the management and data-plane interfaces different
-- did you provide at least one `--dns-target-ip`
-- did you provide at least one `--dns-upstream`
-
-If the process is alive but not ready, continue with [Troubleshoot Enforcement](/docs/operations/troubleshooting).
+For concrete endpoint and bootstrap command details, rely on the cloud-image tutorial so your validation steps stay aligned with the supported distribution path.
 
 ## Next Steps
 
-- Read [Get Admin Access](/docs/how-to/get-admin-access) for the browser-session and clustered
-  bootstrap variants.
-- Continue with [Create Your First Policy](/docs/tutorials/create-your-first-policy) to put the
-  node into useful service.
+- For first-time onboarding, start at <a href="/docs/tutorials/launch-from-released-cloud-image">Launch Neuwerk From The Released Cloud Image</a>.
+- Continue with [Create Your First Policy](/docs/tutorials/create-your-first-policy).
+- Use [Troubleshoot Enforcement](/docs/operations/troubleshooting) if a legacy environment is alive but not ready.
