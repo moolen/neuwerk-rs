@@ -9,6 +9,9 @@ Implemented resources:
 - `neuwerk_tls_intercept_ca`
 - `neuwerk_service_account`
 - `neuwerk_service_account_token`
+- `neuwerk_sso_provider_google`
+- `neuwerk_sso_provider_github`
+- `neuwerk_sso_provider_generic_oidc`
 
 Provider authentication uses the existing bearer-token HTTP API. Admin-capable service-account tokens are supported and are the intended machine-auth mechanism for automation.
 
@@ -60,6 +63,35 @@ Import semantics:
 
 - `neuwerk_service_account` imports by UUID.
 - `neuwerk_service_account_token` imports by `<service_account_id>/<token_id>`.
+
+## SSO Provider Resources
+
+```hcl
+resource "neuwerk_sso_provider_google" "corp" {
+  name          = "Corp Google"
+  client_id     = var.google_client_id
+  client_secret = var.google_client_secret
+  scopes        = ["openid", "email", "profile"]
+}
+
+resource "neuwerk_sso_provider_github" "corp" {
+  name          = "Corp GitHub"
+  client_id     = var.github_client_id
+  client_secret = var.github_client_secret
+}
+
+resource "neuwerk_sso_provider_generic_oidc" "corp" {
+  name              = "Corp OIDC"
+  client_id         = var.oidc_client_id
+  client_secret     = var.oidc_client_secret
+  authorization_url = "https://idp.example.com/oauth2/authorize"
+  token_url         = "https://idp.example.com/oauth2/token"
+  userinfo_url      = "https://idp.example.com/oauth2/userinfo"
+}
+```
+
+- All SSO provider resources import by provider UUID.
+- `client_secret` is required on create, stored as a sensitive value in Terraform state, and cannot be recovered from the API during import.
 
 ## Policy Resource
 
@@ -133,5 +165,6 @@ resource "neuwerk_policy" "main" {
 - `neuwerk_tls_intercept_ca` can be imported with any placeholder ID and will bind to the singleton setting.
 - `neuwerk_service_account` imports by UUID.
 - `neuwerk_service_account_token` imports by `<service_account_id>/<token_id>`.
+- All SSO provider resources import by provider UUID.
 
 Note: the integrations API intentionally redacts `service_account_token`, so imported integration resources must be paired with configuration that supplies the token again.
