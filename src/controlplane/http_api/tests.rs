@@ -2,14 +2,90 @@ use super::*;
 
 use std::net::Ipv4Addr;
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::controlplane::sso::{SsoProvider, SsoProviderKind, SsoStore};
 use crate::dataplane::policy::DefaultPolicy;
 use axum::http::{header::AUTHORIZATION, header::COOKIE, header::SET_COOKIE, HeaderValue, Method};
 use rcgen::{BasicConstraints, Certificate, CertificateParams, IsCa, SanType};
+use serde_json::json;
 use tempfile::TempDir;
 use tower::ServiceExt;
+
+fn test_api_state(dir: &TempDir, auth_source: ApiAuthSource) -> ApiState {
+    ApiState {
+        policy_store: PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24),
+        local_store: PolicyDiskStore::new(dir.path().join("policies")),
+        service_accounts: ServiceAccountStore::local(dir.path().join("service-accounts")),
+        sso: SsoStore::local(dir.path().join("sso")),
+        integrations: IntegrationStore::local(dir.path().join("integrations")),
+        audit_store: None,
+        threat_store: None,
+        cluster: None,
+        metrics: Metrics::new().unwrap(),
+        proxy_client: None,
+        http_port: 8443,
+        auth_source,
+        auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
+        wiretap_hub: None,
+        cluster_tls_dir: None,
+        tls_dir: dir.path().join("http-tls"),
+        token_path: dir.path().join("bootstrap-token"),
+        external_url: "https://127.0.0.1:8443".to_string(),
+        tls_intercept_ca_ready: None,
+        tls_intercept_ca_generation: None,
+        dns_map: None,
+        readiness: None,
+    }
+}
+
+async fn spawn_oidc_discovery_server() -> (SocketAddr, Arc<AtomicUsize>, tokio::task::JoinHandle<()>)
+{
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = format!("http://{addr}");
+    let app = Router::new().route(
+        "/.well-known/openid-configuration",
+        get({
+            let hits = hits.clone();
+            let base = base.clone();
+            move || {
+                let hits = hits.clone();
+                let base = base.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({
+                        "issuer": base,
+                        "authorization_endpoint": format!("{base}/authorize"),
+                        "token_endpoint": format!("{base}/token"),
+                        "userinfo_endpoint": format!("{base}/userinfo"),
+                        "jwks_uri": format!("{base}/jwks"),
+                    }))
+                }
+            }
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+    (addr, hits, server)
+}
+
+fn generic_oidc_provider(issuer_url: String) -> SsoProvider {
+    let mut provider = SsoProvider::new(
+        "Private IdP".to_string(),
+        SsoProviderKind::GenericOidc,
+        "client-id".to_string(),
+        "client-secret".to_string(),
+    )
+    .unwrap();
+    provider.issuer_url = Some(issuer_url);
+    provider
+}
 
 #[tokio::test]
 async fn proxy_stream_forwards_auth_header() {
@@ -365,6 +441,7 @@ async fn security_headers_are_attached() {
         ));
 
     let resp = app
+        .clone()
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
         .await
         .unwrap();
@@ -416,6 +493,136 @@ async fn auth_routes_set_no_store_cache_control() {
         resp.headers().get("cache-control").unwrap(),
         HeaderValue::from_static("no-store")
     );
+}
+
+#[tokio::test]
+async fn ui_route_serves_local_assets_without_remote_script_origins() {
+    let app = Router::new()
+        .fallback(ui_handler)
+        .layer(axum::middleware::from_fn(
+            security::security_headers_middleware,
+        ));
+
+    let resp = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let csp = resp
+        .headers()
+        .get("content-security-policy")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(csp.contains("script-src 'self'"));
+    assert!(!csp.contains("unsafe-inline"));
+    assert!(!csp.contains("cdn.tailwindcss.com"));
+    assert!(!csp.contains("esm.sh"));
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!body.contains("cdn.tailwindcss.com"));
+    assert!(!body.contains("esm.sh"));
+    assert!(!body.contains("type=\"importmap\""));
+    assert!(body.contains("/assets/"));
+
+    let css_name = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/assets"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .find(|name| name.ends_with(".css"))
+        .expect("expected bundled UI stylesheet");
+    let css_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/assets/{css_name}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(css_resp.status(), StatusCode::OK);
+    let css = axum::body::to_bytes(css_resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let css = String::from_utf8(css.to_vec()).unwrap();
+    assert!(!css.contains("fonts.googleapis.com"));
+    assert!(!css.contains("fonts.gstatic.com"));
+}
+
+#[tokio::test]
+async fn sso_start_requires_authenticated_admin_before_provider_metadata_fetch() {
+    let dir = TempDir::new().unwrap();
+    let (addr, hits, server) = spawn_oidc_discovery_server().await;
+    let issuer_url = format!("http://{addr}");
+    let provider = generic_oidc_provider(issuer_url);
+
+    let state = test_api_state(&dir, ApiAuthSource::Local(dir.path().join("auth.json")));
+    state.sso.write_provider(&provider).await.unwrap();
+
+    let app = Router::new()
+        .route("/api/v1/auth/sso/:id/start", get(auth_sso_start))
+        .with_state(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/auth/sso/{}/start", provider.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn sso_start_allows_authenticated_admin_to_use_private_provider_metadata() {
+    let dir = TempDir::new().unwrap();
+    let tls_dir = dir.path().join("http-tls");
+    std::fs::create_dir_all(&tls_dir).unwrap();
+    api_auth::ensure_local_keyset(&tls_dir).unwrap();
+    let keyset_path = api_auth::local_keyset_path(&tls_dir);
+    let keyset = api_auth::load_keyset_from_file(&keyset_path)
+        .unwrap()
+        .expect("missing keyset");
+    let token = api_auth::mint_token(&keyset, "admin-user", Some(300), None).unwrap();
+
+    let (addr, hits, server) = spawn_oidc_discovery_server().await;
+    let issuer_url = format!("http://{addr}");
+    let provider = generic_oidc_provider(issuer_url);
+
+    let state = test_api_state(&dir, ApiAuthSource::Local(keyset_path));
+    state.sso.write_provider(&provider).await.unwrap();
+
+    let app = Router::new()
+        .route("/api/v1/auth/sso/:id/start", get(auth_sso_start))
+        .with_state(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/auth/sso/{}/start", provider.id))
+                .header(AUTHORIZATION, format!("Bearer {}", token.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let location = resp.headers().get("location").unwrap().to_str().unwrap();
+    assert!(location.starts_with(&format!("http://{addr}/authorize?")));
+    server.abort();
 }
 
 #[test]
@@ -924,6 +1131,7 @@ async fn sso_public_providers_only_returns_enabled() {
 async fn sso_start_sets_state_cookie_and_redirects() {
     let dir = TempDir::new().unwrap();
     let keyset_path = test_auth_setup(&dir);
+    let admin_token = mint_admin_token(&keyset_path);
     let state = test_state(&dir, keyset_path, Metrics::new().unwrap());
 
     let mut provider = SsoProvider::new(
@@ -949,6 +1157,7 @@ async fn sso_start_sets_state_cookie_and_redirects() {
                     "/api/v1/auth/sso/{}/start?next=%2Fpolicies",
                     provider.id
                 ))
+                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

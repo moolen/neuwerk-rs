@@ -42,8 +42,6 @@ impl ReadyClient {
             let cert = reqwest::Certificate::from_pem(&pem)
                 .map_err(|err| format!("ready client invalid ca pem: {err}"))?;
             builder = builder.add_root_certificate(cert);
-        } else {
-            builder = builder.danger_accept_invalid_certs(true);
         }
         let client = builder
             .build()

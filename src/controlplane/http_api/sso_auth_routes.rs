@@ -158,7 +158,16 @@ pub(super) async fn auth_sso_start(
     State(state): State<ApiState>,
     Path(id): Path<String>,
     Query(query): Query<SsoStartQuery>,
+    request: Request,
 ) -> Response {
+    let _auth_context = match auth::authorize_headers(&state, request.headers(), true).await {
+        Ok(context) => context,
+        Err(response) => {
+            observe_sso(&state, "deny", "admin_auth_required", "none");
+            return response;
+        }
+    };
+
     let provider_id = match parse_uuid(&id, "provider id") {
         Ok(id) => id,
         Err(resp) => return resp,
