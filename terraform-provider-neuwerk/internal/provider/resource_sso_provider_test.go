@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
@@ -82,6 +83,71 @@ func TestSsoProviderStateFromAPIPreservesUnknownSecretWhenConfigured(t *testing.
 	if !state.ClientSecret.IsUnknown() {
 		t.Fatalf("expected unknown client_secret to be preserved when configured")
 	}
+}
+
+func TestGithubSsoProviderSchemaMarksClientSecretSensitive(t *testing.T) {
+	t.Parallel()
+
+	schemaResp := githubSsoProviderSchema(t)
+
+	attr, ok := schemaResp.Schema.Attributes["name"]
+	if !ok {
+		t.Fatalf("expected name attribute in schema")
+	}
+	nameAttr, ok := attr.(resourceschema.StringAttribute)
+	if !ok {
+		t.Fatalf("expected name attribute to be a string attribute")
+	}
+	if !nameAttr.Required {
+		t.Fatalf("expected name attribute to be required")
+	}
+
+	clientSecretAttrRaw, ok := schemaResp.Schema.Attributes["client_secret"]
+	if !ok {
+		t.Fatalf("expected client_secret attribute in schema")
+	}
+	clientSecretAttr, ok := clientSecretAttrRaw.(resourceschema.StringAttribute)
+	if !ok {
+		t.Fatalf("expected client_secret attribute to be a string attribute")
+	}
+	if !clientSecretAttr.Sensitive {
+		t.Fatalf("expected client_secret attribute to be sensitive")
+	}
+	if !clientSecretAttr.Optional {
+		t.Fatalf("expected client_secret attribute to be optional")
+	}
+}
+
+func TestSsoProviderStateFromAPIAcceptsDefaultedEndpoints(t *testing.T) {
+	t.Parallel()
+
+	record := &apiSsoProvider{
+		ID:                     "sso-2",
+		Name:                   "GitHub OIDC",
+		Kind:                   "github",
+		ClientID:               "github-client-id",
+		ClientSecretConfigured: false,
+		AuthorizationURL:       stringPointer("https://github.com/login/oauth/authorize"),
+		TokenURL:               stringPointer("https://github.com/login/oauth/access_token"),
+		UserinfoURL:            stringPointer("https://api.github.com/user"),
+		Scopes:                 nil,
+		AdminGroups:            nil,
+	}
+
+	state := ssoProviderStateFromAPI(ssoProviderResourceModel{}, record)
+
+	if state.AuthorizationURL.ValueString() != "https://github.com/login/oauth/authorize" {
+		t.Fatalf("expected authorization_url from API, got %q", state.AuthorizationURL.ValueString())
+	}
+	if state.TokenURL.ValueString() != "https://github.com/login/oauth/access_token" {
+		t.Fatalf("expected token_url from API, got %q", state.TokenURL.ValueString())
+	}
+	if state.UserinfoURL.ValueString() != "https://api.github.com/user" {
+		t.Fatalf("expected userinfo_url from API, got %q", state.UserinfoURL.ValueString())
+	}
+
+	assertStringSetElements(t, state.Scopes, []string{})
+	assertStringSetElements(t, state.AdminGroups, []string{})
 }
 
 func TestSsoProviderSetToSortedStringsSortsAndDedupes(t *testing.T) {
@@ -770,6 +836,7 @@ func TestProviderResourcesIncludeGoogleSsoProvider(t *testing.T) {
 	}
 
 	var foundGoogle bool
+	var foundGithub bool
 	var foundServiceAccount bool
 	var foundServiceAccountToken bool
 
@@ -780,6 +847,8 @@ func TestProviderResourcesIncludeGoogleSsoProvider(t *testing.T) {
 		switch {
 		case strings.HasSuffix(resp.TypeName, "_sso_provider_google"):
 			foundGoogle = true
+		case strings.HasSuffix(resp.TypeName, "_sso_provider_github"):
+			foundGithub = true
 		case strings.HasSuffix(resp.TypeName, "_service_account"):
 			foundServiceAccount = true
 		case strings.HasSuffix(resp.TypeName, "_service_account_token"):
@@ -789,6 +858,9 @@ func TestProviderResourcesIncludeGoogleSsoProvider(t *testing.T) {
 
 	if !foundGoogle {
 		t.Fatalf("expected google sso provider resource registration")
+	}
+	if !foundGithub {
+		t.Fatalf("expected github sso provider resource registration")
 	}
 	if !foundServiceAccount {
 		t.Fatalf("expected service account resource registration to remain")
@@ -802,6 +874,15 @@ func googleSsoProviderSchema(t *testing.T) resource.SchemaResponse {
 	t.Helper()
 
 	res := newGoogleSsoProviderResource()
+	var resp resource.SchemaResponse
+	res.Schema(context.Background(), resource.SchemaRequest{}, &resp)
+	return resp
+}
+
+func githubSsoProviderSchema(t *testing.T) resource.SchemaResponse {
+	t.Helper()
+
+	res := newGithubSsoProviderResource()
 	var resp resource.SchemaResponse
 	res.Schema(context.Background(), resource.SchemaRequest{}, &resp)
 	return resp
@@ -855,4 +936,8 @@ func assertStringSetElements(t *testing.T, got types.Set, want []string) {
 	if !reflect.DeepEqual(flattened, expect) {
 		t.Fatalf("unexpected set values: got %#v want %#v", flattened, expect)
 	}
+}
+
+func stringPointer(value string) *string {
+	return &value
 }

@@ -168,6 +168,7 @@ func (p *neuwerkProvider) Resources(_ context.Context) []func() resource.Resourc
 		newServiceAccountResource,
 		newServiceAccountTokenResource,
 		newGoogleSsoProviderResource,
+		newGithubSsoProviderResource,
 	}
 }
 

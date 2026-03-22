@@ -464,9 +464,9 @@ func ssoProviderStateFromAPI(prior ssoProviderResourceModel, record *apiSsoProvi
 	state.ReadonlyGroups = ssoProviderStringSetFromSlice(record.ReadonlyGroups)
 	state.ReadonlyEmailDomains = ssoProviderStringSetFromSlice(record.ReadonlyEmailDomains)
 	state.AllowedEmailDomains = ssoProviderStringSetFromSlice(record.AllowedEmailDomains)
-	state.AuthorizationURL = optionalStringValue(record.AuthorizationURL)
-	state.TokenURL = optionalStringValue(record.TokenURL)
-	state.UserinfoURL = optionalStringValue(record.UserinfoURL)
+	state.AuthorizationURL = optionalTrimmedStringValue(record.AuthorizationURL)
+	state.TokenURL = optionalTrimmedStringValue(record.TokenURL)
+	state.UserinfoURL = optionalTrimmedStringValue(record.UserinfoURL)
 	state.SessionTTLSecs = types.Int64Value(record.SessionTTLSecs)
 	state.ID = types.StringValue(record.ID)
 	state.CreatedAt = types.StringValue(record.CreatedAt)
@@ -557,6 +557,18 @@ func configuredClientSecret(configClientSecret types.String) *string {
 		return nil
 	}
 	return &secret
+}
+
+func optionalTrimmedStringValue(value *string) types.String {
+	if value == nil {
+		return types.StringNull()
+	}
+
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return types.StringNull()
+	}
+	return types.StringValue(trimmed)
 }
 
 func validateSsoProviderKind(expected string, record *apiSsoProvider) error {
