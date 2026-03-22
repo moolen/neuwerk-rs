@@ -62,6 +62,107 @@ fn stage_release_fixture(root: &Path, target: &str, include_image_sbom: bool, in
     qcow2_bytes
 }
 
+fn generate_test_signing_env(public_key_output: &Path) -> Vec<(String, String)> {
+    let gnupg_home = TempDir::new().expect("create gnupg home");
+    let passphrase = "neuwerk-ci-passphrase";
+    fs::set_permissions(
+        gnupg_home.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("chmod gnupg home");
+    let config_path = gnupg_home.path().join("key.conf");
+    fs::write(
+        &config_path,
+        "\
+Key-Type: RSA
+Key-Length: 3072
+Name-Real: Neuwerk Appliance CI
+Name-Email: ci-appliance@neuwerk.invalid
+Expire-Date: 0
+Passphrase: neuwerk-ci-passphrase
+%commit
+",
+    )
+    .expect("write gpg key config");
+
+    let status = Command::new("gpg")
+        .env("GNUPGHOME", gnupg_home.path())
+        .args(["--batch", "--pinentry-mode", "loopback", "--passphrase", passphrase])
+        .arg("--generate-key")
+        .arg(&config_path)
+        .status()
+        .expect("generate ephemeral gpg key");
+    assert!(status.success(), "generate-key failed: {status}");
+
+    let key_id_output = Command::new("gpg")
+        .env("GNUPGHOME", gnupg_home.path())
+        .args([
+            "--batch",
+            "--list-secret-keys",
+            "--with-colons",
+            "ci-appliance@neuwerk.invalid",
+        ])
+        .output()
+        .expect("list secret keys");
+    assert!(
+        key_id_output.status.success(),
+        "list-secret-keys failed: {}",
+        String::from_utf8_lossy(&key_id_output.stderr)
+    );
+    let key_id = String::from_utf8_lossy(&key_id_output.stdout)
+        .lines()
+        .find_map(|line| {
+            let parts = line.split(':').collect::<Vec<_>>();
+            if parts.first() == Some(&"sec") {
+                parts.get(4).map(|value| value.to_string())
+            } else {
+                None
+            }
+        })
+        .expect("extract gpg key id");
+
+    let private_key_output = Command::new("gpg")
+        .env("GNUPGHOME", gnupg_home.path())
+        .args([
+            "--batch",
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase",
+            passphrase,
+            "--armor",
+            "--export-secret-keys",
+            &key_id,
+        ])
+        .output()
+        .expect("export secret key");
+    assert!(
+        private_key_output.status.success(),
+        "export-secret-keys failed: {}",
+        String::from_utf8_lossy(&private_key_output.stderr)
+    );
+
+    let public_key_export = Command::new("gpg")
+        .env("GNUPGHOME", gnupg_home.path())
+        .args(["--batch", "--armor", "--export", &key_id])
+        .output()
+        .expect("export public key");
+    assert!(
+        public_key_export.status.success(),
+        "export public key failed: {}",
+        String::from_utf8_lossy(&public_key_export.stderr)
+    );
+    fs::write(public_key_output, public_key_export.stdout).expect("write public key output");
+
+    vec![
+        (
+            "GPG_PRIVATE_KEY".to_string(),
+            String::from_utf8(private_key_output.stdout).expect("secret key utf8"),
+        ),
+        ("GPG_PASSPHRASE".to_string(), passphrase.to_string()),
+        ("GPG_KEY_ID".to_string(), key_id),
+    ]
+}
+
 #[test]
 #[ignore = "requires release packaging toolchain"]
 fn prepare_github_release_emits_verified_appliance_contract() {
@@ -253,5 +354,85 @@ fn prepare_github_release_fails_when_required_provenance_artifacts_are_missing()
         stderr.contains(&format!("{target}-image.spdx.json"))
             || stderr.contains(&format!("source/{target}.tar.gz")),
         "expected stderr to identify the missing provenance artifact, got stderr: {stderr}"
+    );
+}
+
+#[test]
+#[ignore = "requires release packaging toolchain"]
+fn sign_appliance_release_checksums_emits_signature_and_public_key() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let artifact_dir = TempDir::new().expect("create artifact tempdir");
+    let output_dir = TempDir::new().expect("create output tempdir");
+    let verify_home = TempDir::new().expect("create verify gnupg home");
+    fs::set_permissions(
+        verify_home.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("chmod verify gnupg home");
+    let target = "ubuntu-24.04-minimal-amd64";
+    let _ = stage_release_fixture(artifact_dir.path(), target, true, true);
+    let signing_key_path = artifact_dir.path().join("neuwerk-release-signing-key.asc");
+
+    assert_exists(&repo_root.join("packaging/release-signing/neuwerk-release-signing-key.asc"));
+
+    let prepare_status = Command::new("bash")
+        .current_dir(repo_root)
+        .arg("packaging/scripts/prepare_github_release.sh")
+        .arg("--target")
+        .arg(target)
+        .arg("--artifact-dir")
+        .arg(artifact_dir.path())
+        .arg("--release-version")
+        .arg("v0.0.0-test")
+        .arg("--git-revision")
+        .arg("deadbeefcafe")
+        .arg("--output-dir")
+        .arg(output_dir.path())
+        .status()
+        .expect("prepare release assets");
+    assert!(prepare_status.success(), "prepare_github_release.sh failed: {prepare_status}");
+
+    let mut command = Command::new("bash");
+    command
+        .current_dir(repo_root)
+        .arg("packaging/scripts/sign_github_release_checksums.sh")
+        .arg("--artifact-dir")
+        .arg(output_dir.path())
+        .arg("--signing-key")
+        .arg(&signing_key_path);
+    for (name, value) in generate_test_signing_env(&signing_key_path) {
+        command.env(name, value);
+    }
+    let sign_output = command.output().expect("run signing helper");
+    assert!(
+        sign_output.status.success(),
+        "expected signing helper to succeed, stderr: {}",
+        String::from_utf8_lossy(&sign_output.stderr)
+    );
+
+    let signature_path = output_dir.path().join("SHA256SUMS.sig");
+    let public_key_path = output_dir.path().join("neuwerk-release-signing-key.asc");
+    assert_exists(&signature_path);
+    assert_exists(&public_key_path);
+
+    let import_status = Command::new("gpg")
+        .env("GNUPGHOME", verify_home.path())
+        .args(["--batch", "--import"])
+        .arg(&public_key_path)
+        .status()
+        .expect("import public key");
+    assert!(import_status.success(), "gpg import failed: {import_status}");
+
+    let verify_output = Command::new("gpg")
+        .env("GNUPGHOME", verify_home.path())
+        .args(["--batch", "--verify"])
+        .arg(&signature_path)
+        .arg(output_dir.path().join("SHA256SUMS"))
+        .output()
+        .expect("verify signature");
+    assert!(
+        verify_output.status.success(),
+        "expected signature verification to succeed, stderr: {}",
+        String::from_utf8_lossy(&verify_output.stderr)
     );
 }

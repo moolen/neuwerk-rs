@@ -58,9 +58,21 @@ jobs:
       TARGET: ${{ inputs.target }}
       RELEASE_VERSION: ${{ inputs.release_version }}
       PACKER_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/image-build
+      GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+      GPG_KEY_ID: ${{ secrets.RELEASE_GPG_KEY_ID }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+
+      - name: Verify appliance release signing configuration
+        run: |
+          for name in GPG_PRIVATE_KEY GPG_PASSPHRASE GPG_KEY_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "missing required appliance release signing secret: $name" >&2
+              exit 1
+            fi
+          done
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -95,6 +107,7 @@ jobs:
         run: |
           packages=(
             genisoimage
+            gpg
             libclang-dev
             libnuma-dev
             llvm-dev
@@ -164,6 +177,12 @@ jobs:
             TARGET="$TARGET" \
             RELEASE_VERSION="$RELEASE_VERSION" \
             GIT_REVISION="${{ steps.git.outputs.revision }}"
+
+      - name: Sign appliance release checksums
+        run: |
+          bash packaging/scripts/sign_github_release_checksums.sh \
+            --artifact-dir "artifacts/image-build/github-release/${TARGET}" \
+            --signing-key "packaging/release-signing/neuwerk-release-signing-key.asc"
 
       - name: Publish GitHub appliance release
         uses: softprops/action-gh-release@v2
