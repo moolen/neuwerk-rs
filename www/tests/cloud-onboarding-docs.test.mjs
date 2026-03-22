@@ -76,6 +76,16 @@ test('docs index links to cloud-first onboarding and rollout concepts pages', ()
     '/docs/architecture/cloud-rollout-integration',
     'expected docs index to reference /docs/architecture/cloud-rollout-integration',
   );
+  assert.doesNotMatch(
+    docsIndex,
+    /href\s*=\s*"\/docs\/tutorials\/deploy-a-single-node"/,
+    'expected docs index to exclude /docs/tutorials/deploy-a-single-node',
+  );
+  assert.doesNotMatch(
+    docsIndex,
+    /href\s*=\s*"\/docs\/tutorials\/build-a-two-node-cluster"/,
+    'expected docs index to exclude /docs/tutorials/build-a-two-node-cluster',
+  );
 });
 
 test('footer links to cloud-first onboarding path', () => {
@@ -116,6 +126,11 @@ test('legacy tutorials are kept as compatibility pages and point to the cloud-fi
     twoNode,
     '/docs/tutorials/launch-from-released-cloud-image',
     'expected build-a-two-node-cluster tutorial to reference /docs/tutorials/launch-from-released-cloud-image',
+  );
+  assertMdxLink(
+    twoNode,
+    '/docs/tutorials/create-your-first-policy',
+    'expected build-a-two-node-cluster tutorial to reference /docs/tutorials/create-your-first-policy',
   );
 });
 
