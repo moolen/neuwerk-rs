@@ -556,7 +556,7 @@ async fn ui_route_serves_local_assets_without_remote_script_origins() {
 }
 
 #[tokio::test]
-async fn sso_start_requires_authenticated_admin_before_provider_metadata_fetch() {
+async fn sso_start_allows_public_oidc_discovery_for_login() {
     let dir = TempDir::new().unwrap();
     let (addr, hits, server) = spawn_oidc_discovery_server().await;
     let issuer_url = format!("http://{addr}");
@@ -573,45 +573,6 @@ async fn sso_start_requires_authenticated_admin_before_provider_metadata_fetch()
         .oneshot(
             Request::builder()
                 .uri(format!("/api/v1/auth/sso/{}/start", provider.id))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(hits.load(Ordering::SeqCst), 0);
-    server.abort();
-}
-
-#[tokio::test]
-async fn sso_start_allows_authenticated_admin_to_use_private_provider_metadata() {
-    let dir = TempDir::new().unwrap();
-    let tls_dir = dir.path().join("http-tls");
-    std::fs::create_dir_all(&tls_dir).unwrap();
-    api_auth::ensure_local_keyset(&tls_dir).unwrap();
-    let keyset_path = api_auth::local_keyset_path(&tls_dir);
-    let keyset = api_auth::load_keyset_from_file(&keyset_path)
-        .unwrap()
-        .expect("missing keyset");
-    let token = api_auth::mint_token(&keyset, "admin-user", Some(300), None).unwrap();
-
-    let (addr, hits, server) = spawn_oidc_discovery_server().await;
-    let issuer_url = format!("http://{addr}");
-    let provider = generic_oidc_provider(issuer_url);
-
-    let state = test_api_state(&dir, ApiAuthSource::Local(keyset_path));
-    state.sso.write_provider(&provider).await.unwrap();
-
-    let app = Router::new()
-        .route("/api/v1/auth/sso/:id/start", get(auth_sso_start))
-        .with_state(state);
-
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/auth/sso/{}/start", provider.id))
-                .header(AUTHORIZATION, format!("Bearer {}", token.token))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1131,7 +1092,6 @@ async fn sso_public_providers_only_returns_enabled() {
 async fn sso_start_sets_state_cookie_and_redirects() {
     let dir = TempDir::new().unwrap();
     let keyset_path = test_auth_setup(&dir);
-    let admin_token = mint_admin_token(&keyset_path);
     let state = test_state(&dir, keyset_path, Metrics::new().unwrap());
 
     let mut provider = SsoProvider::new(
@@ -1157,7 +1117,6 @@ async fn sso_start_sets_state_cookie_and_redirects() {
                     "/api/v1/auth/sso/{}/start?next=%2Fpolicies",
                     provider.id
                 ))
-                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
