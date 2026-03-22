@@ -210,8 +210,8 @@ sudo journalctl -u neuwerk.service -n 200 --no-pager
 Then verify service health and readiness:
 
 ```bash
-curl -sk https://127.0.0.1:8443/health
-curl -sk https://127.0.0.1:8443/ready
+curl -skf https://127.0.0.1:8443/health
+curl -skf https://127.0.0.1:8443/ready
 ```
 
 For first admin access, follow [Get Admin Access](/docs/how-to/get-admin-access) after the node reports ready.
