@@ -1,0 +1,51 @@
+terraform {
+  required_providers {
+    neuwerk = {
+      source  = "moolen/neuwerk"
+      version = "{{PROVIDER_VERSION}}"
+    }
+  }
+}
+
+provider "neuwerk" {
+  endpoints       = ["{{ENDPOINT}}"]
+  token           = "{{TOKEN}}"
+  ca_cert_file    = "{{CA_CERT_FILE}}"
+  request_timeout = "30s"
+  retry_timeout   = "5s"
+}
+
+resource "neuwerk_service_account" "identity" {
+  name        = "terraform-identity"
+  description = "terraform contract coverage"
+  role        = "admin"
+}
+
+resource "neuwerk_service_account_token" "identity" {
+  service_account_id = neuwerk_service_account.identity.id
+  name               = "terraform-admin"
+  role               = "admin"
+  eternal            = true
+}
+
+resource "neuwerk_sso_provider_google" "google" {
+  name          = "Terraform Google"
+  client_id     = "google-client-id"
+  client_secret = "google-client-secret"
+  scopes        = ["openid", "email", "profile"]
+}
+
+resource "neuwerk_sso_provider_github" "github" {
+  name          = "Terraform GitHub"
+  client_id     = "github-client-id"
+  client_secret = "github-client-secret"
+}
+
+resource "neuwerk_sso_provider_generic_oidc" "oidc" {
+  name              = "Terraform OIDC"
+  client_id         = "oidc-client-id"
+  client_secret     = "oidc-client-secret"
+  authorization_url = "https://idp.example.com/oauth2/authorize"
+  token_url         = "https://idp.example.com/oauth2/token"
+  userinfo_url      = "https://idp.example.com/oauth2/userinfo"
+}

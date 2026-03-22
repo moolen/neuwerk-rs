@@ -8,6 +8,7 @@ Neuwerk includes a Terraform provider under:
 
 - `terraform-provider-neuwerk/`
 
+
 Use it when you want to manage Neuwerk configuration through infrastructure-as-code instead of
 calling the HTTP API directly.
 
@@ -16,7 +17,7 @@ calling the HTTP API directly.
 The provider is intentionally small and currently exposes:
 
 - provider configuration for HTTPS API access
-- three managed resources
+- eight managed resources
 - no data sources
 
 Implemented resources today are:
@@ -24,6 +25,11 @@ Implemented resources today are:
 - `neuwerk_policy`
 - `neuwerk_kubernetes_integration`
 - `neuwerk_tls_intercept_ca`
+- `neuwerk_service_account`
+- `neuwerk_service_account_token`
+- `neuwerk_sso_provider_google`
+- `neuwerk_sso_provider_github`
+- `neuwerk_sso_provider_generic_oidc`
 
 ## Provider Configuration
 
@@ -141,12 +147,59 @@ Current resource fields are:
 
 The provider imports this resource as a singleton binding rather than by a user-chosen name.
 
+### `neuwerk_service_account`
+
+This resource manages service-account identities for Terraform and other automation.
+
+Current resource fields are:
+
+- `name`
+- `description`
+- `role`
+- computed `id`
+- computed `created_at`
+- computed `updated_at`
+
+The provider imports this resource by UUID.
+
+### `neuwerk_service_account_token`
+
+This resource mints service-account bearer tokens.
+
+Current resource fields are:
+
+- `service_account_id`
+- `name`
+- `ttl`
+- `role`
+- `eternal`
+- computed `id`
+- computed `token`
+- computed `created_at`
+- computed `updated_at`
+
+The provider imports this resource by `<service_account_id>/<token_id>`.
+The resource is immutable after creation; changing its inputs replaces it and mints a new token.
+
+### SSO Provider Resources
+
+The provider exposes three first-class SSO resources rather than one generic catch-all:
+
+- `neuwerk_sso_provider_google`
+- `neuwerk_sso_provider_github`
+- `neuwerk_sso_provider_generic_oidc`
+
+All three share the same core identity and claim-mapping fields. The generic OIDC resource also
+requires explicit `authorization_url`, `token_url`, and `userinfo_url` values.
+
+The provider imports all SSO resources by provider UUID.
+
 ## What Is Not Implemented Yet
 
 A few limitations are explicit in the current provider code:
 
 - no Terraform data sources
-- no resources for service accounts, SSO providers, performance mode, audit, or DNS cache
+- no resources for performance mode, audit, or DNS cache
 - no provider code generation from OpenAPI
 - no generic “all settings” resource
 - no partial policy-subobject resources; policy is managed as one aggregate document
@@ -175,6 +228,14 @@ Because of that:
 - state continuity depends on Terraform state and input variables, not on round-tripping the secret
   from the API
 
+### Service Account Tokens And SSO Secrets Are Mint-Once Or Write-Only
+
+Two other resources follow the same broad pattern:
+
+- `neuwerk_service_account_token` returns raw token material only at create time
+- SSO resources require `client_secret` on create, store it as a sensitive Terraform value, and
+  cannot recover it from the API during import
+
 ## Import Behavior
 
 Current import identifiers are:
@@ -185,6 +246,16 @@ Current import identifiers are:
   import by integration name
 - `neuwerk_tls_intercept_ca`
   import with any placeholder ID; the resource binds to the singleton setting
+- `neuwerk_service_account`
+  import by UUID
+- `neuwerk_service_account_token`
+  import by `<service_account_id>/<token_id>`
+- `neuwerk_sso_provider_google`
+  import by provider UUID
+- `neuwerk_sso_provider_github`
+  import by provider UUID
+- `neuwerk_sso_provider_generic_oidc`
+  import by provider UUID
 
 For the integration resource, import is best paired with configuration that re-supplies the service
 account token, because the API does not return it.
@@ -197,6 +268,8 @@ The repository includes a concrete example under:
 
 That example shows the provider wired to:
 
+- one service account
+- one service-account token
 - one Kubernetes integration
 - one generated TLS intercept CA resource
 - one named policy resource
