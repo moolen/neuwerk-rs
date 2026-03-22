@@ -12,8 +12,9 @@ terraform {
 }
 ```
 
-Use these docs as the provider reference for the current signed GitHub Releases distribution path.
-The intended provider source address remains `moolen/neuwerk`.
+Use these docs as the provider reference for the current signed GitHub Releases distribution path
+from `moolen/terraform-provider-neuwerk`. The intended provider source address remains
+`moolen/neuwerk`.
 
 ## Install
 
@@ -27,8 +28,8 @@ Current distribution path:
 6. place the unpacked provider binary under the local Terraform filesystem mirror path for `registry.terraform.io/moolen/neuwerk`
 
 Unsigned provider releases are intentionally unsupported.
-Terraform Registry publication is follow-up work once the provider is published from a
-registry-detectable public repository.
+Terraform Registry publication is follow-up work. Until onboarding is complete, install from the
+signed GitHub Releases in `moolen/terraform-provider-neuwerk`.
 
 ## References
 

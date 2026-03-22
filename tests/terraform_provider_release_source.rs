@@ -35,6 +35,7 @@ fn export_creates_flat_provider_release_source_tree() {
     assert_exists(&exported_root.join("README.md"));
     assert_exists(&exported_root.join("LICENSE"));
     assert_exists(&exported_root.join("terraform-provider-neuwerk-signing-key.asc"));
+    assert_exists(&exported_root.join("terraform-registry-manifest.json"));
     assert_exists(&exported_root.join(".gitignore"));
     assert_exists(&exported_root.join(".github/workflows/ci.yml"));
     assert_exists(&exported_root.join(".github/workflows/release.yml"));
@@ -77,6 +78,15 @@ fn export_creates_flat_provider_release_source_tree() {
     assert!(
         exported_public_key.contains("DC34EB84D498D1445B68CB405E6B936CF37928C3"),
         "expected exported signing key to contain the tracked release signing fingerprint"
+    );
+
+    let exported_registry_manifest = fs::read_to_string(
+        exported_root.join("terraform-registry-manifest.json"),
+    )
+    .expect("read exported registry manifest");
+    assert!(
+        exported_registry_manifest.contains("\"protocol_versions\": [\"6.0\"]"),
+        "expected exported registry manifest to advertise Terraform plugin protocol 6.0"
     );
 
     let exported_release_workflow = fs::read_to_string(

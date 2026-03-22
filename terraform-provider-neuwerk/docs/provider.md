@@ -45,7 +45,8 @@ provider "neuwerk" {
 
 ## Manual Install
 
-The current supported install path is signed GitHub Releases:
+The current supported install path is signed GitHub Releases from
+`moolen/terraform-provider-neuwerk`:
 
 1. download the archive for your platform
 2. download `terraform-provider-neuwerk-signing-key.asc`

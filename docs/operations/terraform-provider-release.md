@@ -1,6 +1,6 @@
 # Terraform Provider Release
 
-This repository publishes the Terraform provider from the monorepo with:
+This repository keeps the Terraform provider release contract under test with:
 
 - `.github/workflows/terraform-provider-release.yml`
 
@@ -10,10 +10,12 @@ The provider source address is:
 
 Current publication model:
 
-- signed GitHub Release assets are published from this monorepo
+- public provider releases are published from `moolen/terraform-provider-neuwerk`
+- this monorepo workflow remains the packaging and contract-validation source of truth
 - public Terraform Registry onboarding remains follow-up work
 
-For the public Registry publication path, see `docs/operations/terraform-provider-registry-publication.md`.
+For the public release-source repository and Registry publication path, see
+`docs/operations/terraform-provider-registry-publication.md`.
 
 ## Prerequisites
 
@@ -28,9 +30,9 @@ any signing secret is missing.
 
 ## Registry Status
 
-This monorepo release workflow is enough for signed GitHub Release assets and manual installation.
-Public Terraform Registry publication still requires a registry-detectable public repository for
-the provider release source. Until that exists, treat GitHub Releases as the supported provider
+The public release-source repository exists and signed GitHub Releases are live from
+`moolen/terraform-provider-neuwerk`. Public Terraform Registry publication is still a separate,
+manual onboarding step. Until that happens, treat signed GitHub Releases as the supported
 distribution channel.
 
 ## Workflow Inputs
@@ -76,4 +78,6 @@ Signing fingerprint:
 - `DC34EB84D498D1445B68CB405E6B936CF37928C3`
 
 These assets are attached to the GitHub Release for the requested tag. They are separate from the
-appliance image release workflow.
+appliance image release workflow. Public releases should come from
+`moolen/terraform-provider-neuwerk`; this monorepo workflow exists to keep the asset contract
+verified and reproducible.

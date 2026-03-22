@@ -88,3 +88,31 @@ Treat GitHub Releases and Registry publication as separate concerns:
 
 - GitHub Releases provides the signed provider artifacts
 - Terraform Registry provides provider discovery and installation metadata
+
+## Current State
+
+- `moolen/terraform-provider-neuwerk` is public
+- signed provider release `v0.1.0` exists there
+- `moolen/neuwerk` is not onboarded in the public Terraform Registry yet
+
+The quickest status check is:
+
+```bash
+curl -fsSL https://registry.terraform.io/v1/providers/moolen/neuwerk
+```
+
+If that returns `404`, Registry onboarding has not happened yet.
+
+## One-Time Registry Publish Step
+
+Once the public repository and signed releases are in place:
+
+1. sign in to Terraform Registry with the GitHub account that owns `moolen/terraform-provider-neuwerk`
+2. add the public GPG key under Registry signing keys
+3. open `Publish -> Provider`
+4. choose namespace `moolen`
+5. choose repository `terraform-provider-neuwerk`
+6. confirm publication
+
+That publish flow installs the Registry webhook on the GitHub repository. Future GitHub Releases in
+that repository should then be ingested by Registry without repeating the initial onboarding flow.
