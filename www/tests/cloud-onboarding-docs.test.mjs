@@ -4,17 +4,33 @@ import { existsSync, readFileSync } from 'node:fs';
 
 test('docs navigation promotes cloud onboarding and removes obsolete getting started entries', () => {
   const navSource = readFileSync(new URL('../src/data/docsNavigation.ts', import.meta.url), 'utf8');
+  const gettingStartedStart = navSource.indexOf("title: 'Getting Started'");
+  const howToStart = navSource.indexOf("title: 'How-To Guides'");
+  const conceptsStart = navSource.indexOf("title: 'Concepts'");
+  const referenceStart = navSource.indexOf("title: 'Reference'");
+
+  assert.notEqual(gettingStartedStart, -1, 'expected Getting Started section');
+  assert.notEqual(howToStart, -1, 'expected How-To Guides section');
+  assert.notEqual(conceptsStart, -1, 'expected Concepts section');
+  assert.notEqual(referenceStart, -1, 'expected Reference section');
+  assert.ok(gettingStartedStart < howToStart, 'expected Getting Started before How-To Guides');
+  assert.ok(conceptsStart < referenceStart, 'expected Concepts before Reference');
+
+  const gettingStartedSection = navSource.slice(gettingStartedStart, howToStart);
+  const conceptsSection = navSource.slice(conceptsStart, referenceStart);
 
   assert.match(
-    navSource,
-    /href: '\/docs\/tutorials\/launch-from-released-cloud-image', label: 'Launch Neuwerk From The Released Cloud Image'/,
+    gettingStartedSection,
+    /href: '\/docs\/tutorials\/launch-from-released-cloud-image'/,
+    'expected Getting Started section to include /docs/tutorials/launch-from-released-cloud-image',
   );
   assert.match(
-    navSource,
-    /href: '\/docs\/architecture\/cloud-rollout-integration', label: 'Cloud Rollout Integration'/,
+    conceptsSection,
+    /href: '\/docs\/architecture\/cloud-rollout-integration'/,
+    'expected Concepts section to include /docs/architecture/cloud-rollout-integration',
   );
-  assert.doesNotMatch(navSource, /label: 'Deploy A Single Node'/);
-  assert.doesNotMatch(navSource, /label: 'Build A Two-Node Cluster'/);
+  assert.doesNotMatch(navSource, /href: '\/docs\/tutorials\/deploy-a-single-node'/);
+  assert.doesNotMatch(navSource, /href: '\/docs\/tutorials\/build-a-two-node-cluster'/);
 });
 
 test('site entry points and docs pages link to the cloud-first onboarding path', () => {
