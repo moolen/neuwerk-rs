@@ -1,6 +1,7 @@
 ---
 title: Cloud Rollout Integration
 description: Understand how Neuwerk integrates with AWS ASGs, Azure VMSS, and GCP MIG-style replacements, including drain, readiness, and upgrade behavior.
+order: 6
 ---
 
 Cloud rollout integration lets Neuwerk participate in cloud-managed replacement behavior while still enforcing traffic locally on each node.
@@ -42,6 +43,12 @@ Use `NEUWERK_INTEGRATION_MODE` to select provider semantics:
 - `NEUWERK_INTEGRATION_MODE=gcp-mig`
 
 Pair that mode with provider-specific `NEUWERK_*` fields (for example region/project/group identifiers) in `/etc/neuwerk/appliance.env`.
+
+Provider requirements for managed-group modes:
+
+- `aws-asg`: `NEUWERK_AWS_REGION`, `NEUWERK_AWS_VPC_ID`, `NEUWERK_AWS_ASG_NAME`
+- `azure-vmss`: `NEUWERK_AZURE_SUBSCRIPTION_ID`, `NEUWERK_AZURE_RESOURCE_GROUP`, `NEUWERK_AZURE_VMSS_NAME`
+- `gcp-mig`: `NEUWERK_GCP_PROJECT`, `NEUWERK_GCP_REGION`, `NEUWERK_GCP_IG_NAME`
 
 ## Bootstrap Configuration Model
 

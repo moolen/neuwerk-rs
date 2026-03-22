@@ -6,6 +6,8 @@ order: 1
 
 Use this guide to launch Neuwerk from the published cloud appliance release instead of building a custom image first.
 
+Before importing or booting the image, plan for separate management and dataplane NICs. Neuwerk expects distinct management and dataplane interfaces, and startup can fail if only one usable NIC is present.
+
 ## Download And Verify The Release
 
 Download one release into a dedicated working directory. The minimum asset set is:
@@ -26,9 +28,18 @@ curl -fLO "${BASE_URL}/restore-qcow2.sh"
 curl -fLO "${BASE_URL}/SHA256SUMS"
 curl -fLO "${BASE_URL}/SHA256SUMS.sig"
 curl -fLO "${BASE_URL}/neuwerk-release-signing-key.asc"
-curl -fLO "${BASE_URL}/neuwerk-ubuntu-24.04-minimal-amd64.qcow2.zst.part-aa"
-curl -fLO "${BASE_URL}/neuwerk-ubuntu-24.04-minimal-amd64.qcow2.zst.part-ab"
+
+# Split image parts use numeric 3-digit suffixes (part-000, part-001, ...).
+# Increase the upper bound if a release contains many parts.
+for i in $(seq 0 63); do
+  part="$(printf '%03d' "${i}")"
+  curl -fLO "${BASE_URL}/neuwerk-ubuntu-24.04-minimal-amd64.qcow2.zst.part-${part}" || break
+done
 ```
+
+Expected Neuwerk release-signing fingerprint:
+
+- `DC34EB84D498D1445B68CB405E6B936CF37928C3`
 
 Then verify signature and checksums:
 
@@ -144,6 +155,8 @@ gcloud compute images create neuwerk-ubuntu-24-04-minimal-amd64 \
   --source-uri=gs://<bucket>/neuwerk-ubuntu-24.04-minimal-amd64-disk.raw.tar.gz
 ```
 
+For manually imported images, install or validate the GCP guest environment on first boot before relying on normal Compute Engine guest integration, metadata handling, or guest-agent behavior.
+
 ## Configure First Boot
 
 The supported override file is:
@@ -153,6 +166,12 @@ The supported override file is:
 Use `NEUWERK_BOOTSTRAP_*` keys to express operator intent. The bootstrap script resolves interfaces, metadata, and defaults into generated runtime values.
 
 Use plain `NEUWERK_*` keys only for runtime pass-through settings that should be forwarded directly to Neuwerk launch arguments (for example integration identifiers, cloud account fields, worker tuning, or extra advanced args).
+
+If the dataplane NIC is unstable by interface name, prefer an explicit selector:
+
+```text
+NEUWERK_BOOTSTRAP_DATA_PLANE_SELECTOR=mac:aa:bb:cc:dd:ee:ff
+```
 
 In cloud environments, prefer writing `/etc/neuwerk/appliance.env` from cloud-init (or equivalent startup metadata) rather than injecting a fully expanded Neuwerk command line. Keep first boot declarative: intent in `appliance.env`, resolved runtime in generated `neuwerk.env`.
 
@@ -173,6 +192,7 @@ write_files:
       NEUWERK_BOOTSTRAP_DEFAULT_POLICY=deny
       NEUWERK_INTEGRATION_MODE=aws-asg
       NEUWERK_AWS_REGION=eu-central-1
+      NEUWERK_AWS_VPC_ID=vpc-0123456789abcdef0
       NEUWERK_AWS_ASG_NAME=neuwerk-prod-asg
 runcmd:
   - systemctl restart neuwerk.service
@@ -190,8 +210,8 @@ sudo journalctl -u neuwerk.service -n 200 --no-pager
 Then verify service health and readiness:
 
 ```bash
-curl -fsS http://127.0.0.1:8443/health
-curl -fsS http://127.0.0.1:8443/ready
+curl -sk https://127.0.0.1:8443/health
+curl -sk https://127.0.0.1:8443/ready
 ```
 
 For first admin access, follow [Get Admin Access](/docs/how-to/get-admin-access) after the node reports ready.
