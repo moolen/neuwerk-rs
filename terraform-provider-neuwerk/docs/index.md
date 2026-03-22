@@ -21,7 +21,7 @@ from `moolen/terraform-provider-neuwerk`. The intended provider source address r
 Current distribution path:
 
 1. download the matching provider archive for your platform from GitHub Releases
-2. download `terraform-provider-neuwerk-signing-key.asc`
+2. download `terraform-provider-neuwerk-signing-key.asc` from the repository root
 3. verify the signing key fingerprint `DC34EB84D498D1445B68CB405E6B936CF37928C3`
 4. verify `terraform-provider-neuwerk_<version>_SHA256SUMS`
 5. verify the detached checksum signature

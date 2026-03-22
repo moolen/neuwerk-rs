@@ -68,7 +68,9 @@ make package.terraform-provider.release-source.sync \
 4. provide a tag such as `v0.1.0`
 
 The public repository workflow builds signed provider archives, publishes `SHA256SUMS`, and uploads
-the detached checksum signature plus the armored public signing key. It uses the same provider source address:
+the detached checksum signature. The armored public signing key stays tracked in the repository root
+as `terraform-provider-neuwerk-signing-key.asc` and should also be added under Terraform Registry
+signing keys. It uses the same provider source address:
 
 - `moolen/neuwerk`
 

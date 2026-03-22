@@ -157,10 +157,6 @@ jobs:
           Attached assets include the platform archives, SHA256SUMS file, and detached SHA256SUMS signature.
           EOF
 
-      - name: Stage signing public key
-        run: |
-          cp terraform-provider-neuwerk-signing-key.asc artifacts/terraform-provider-release/
-
       - name: Ensure Git tag ref exists
         env:
           GH_TOKEN: ${{ github.token }}
@@ -196,4 +192,9 @@ jobs:
       - name: Upload GitHub Terraform provider release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE_VERSION" artifacts/terraform-provider-release/* --clobber
+        run: |
+          gh release upload "$RELEASE_VERSION" \
+            artifacts/terraform-provider-release/*.zip \
+            artifacts/terraform-provider-release/*_SHA256SUMS \
+            artifacts/terraform-provider-release/*_SHA256SUMS.sig \
+            --clobber

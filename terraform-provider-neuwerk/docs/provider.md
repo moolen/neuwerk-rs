@@ -49,7 +49,7 @@ The current supported install path is signed GitHub Releases from
 `moolen/terraform-provider-neuwerk`:
 
 1. download the archive for your platform
-2. download `terraform-provider-neuwerk-signing-key.asc`
+2. download `terraform-provider-neuwerk-signing-key.asc` from the repository root
 3. verify the signing key fingerprint `DC34EB84D498D1445B68CB405E6B936CF37928C3`
 4. verify the SHA256SUMS file
 5. verify the detached SHA256SUMS signature

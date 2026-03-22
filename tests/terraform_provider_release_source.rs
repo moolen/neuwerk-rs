@@ -98,8 +98,51 @@ fn export_creates_flat_provider_release_source_tree() {
         "expected exported release workflow to create the release tag ref"
     );
     assert!(
-        exported_release_workflow.contains("terraform-provider-neuwerk-signing-key.asc"),
-        "expected exported release workflow to publish the signing public key"
+        exported_release_workflow.contains("--notes-file artifacts/terraform-provider-release/release-notes.md"),
+        "expected exported release workflow to use release-notes.md as the GitHub release body"
+    );
+    assert!(
+        !exported_release_workflow.contains("terraform-provider-neuwerk-signing-key.asc artifacts/terraform-provider-release/"),
+        "expected exported release workflow not to stage the signing key as a release asset"
+    );
+    assert!(
+        !exported_release_workflow.contains(
+            "gh release upload \"$RELEASE_VERSION\" artifacts/terraform-provider-release/* --clobber"
+        ),
+        "expected exported release workflow not to upload every staged artifact blindly"
+    );
+    assert!(
+        !exported_release_workflow.contains("artifacts/terraform-provider-release/release-notes.md --clobber"),
+        "expected exported release workflow not to upload release-notes.md as a release asset"
+    );
+    assert!(
+        exported_release_workflow.contains("artifacts/terraform-provider-release/*.zip")
+            && exported_release_workflow.contains("artifacts/terraform-provider-release/*_SHA256SUMS")
+            && exported_release_workflow.contains("artifacts/terraform-provider-release/*_SHA256SUMS.sig"),
+        "expected exported release workflow to upload only provider archives and checksum artifacts"
+    );
+
+    let monorepo_release_workflow = fs::read_to_string(
+        repo_root.join(".github/workflows/terraform-provider-release.yml"),
+    )
+    .expect("read monorepo release workflow");
+    assert!(
+        monorepo_release_workflow.contains("--notes-file artifacts/terraform-provider-release/release-notes.md"),
+        "expected monorepo release workflow to use release-notes.md as the GitHub release body"
+    );
+    assert!(
+        !monorepo_release_workflow.contains("terraform-provider-neuwerk-signing-key.asc \\\n            artifacts/terraform-provider-release/"),
+        "expected monorepo release workflow not to stage the signing key as a release asset"
+    );
+    assert!(
+        !monorepo_release_workflow.contains("gh release upload \"$RELEASE_VERSION\" artifacts/terraform-provider-release/* --clobber"),
+        "expected monorepo release workflow not to upload every staged artifact blindly"
+    );
+    assert!(
+        monorepo_release_workflow.contains("artifacts/terraform-provider-release/*.zip")
+            && monorepo_release_workflow.contains("artifacts/terraform-provider-release/*_SHA256SUMS")
+            && monorepo_release_workflow.contains("artifacts/terraform-provider-release/*_SHA256SUMS.sig"),
+        "expected monorepo release workflow to upload only provider archives and checksum artifacts"
     );
 
     assert_missing(&exported_root.join("src"));
