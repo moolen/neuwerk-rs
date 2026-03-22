@@ -40,12 +40,18 @@ test('docs navigation promotes cloud onboarding and removes obsolete getting sta
   assert.ok(conceptsStart < referenceStart, 'expected Concepts before Reference');
 
   const gettingStartedSection = navSource.slice(gettingStartedStart, howToStart);
+  const howToSection = navSource.slice(howToStart, conceptsStart);
   const conceptsSection = navSource.slice(conceptsStart, referenceStart);
 
   assert.match(
     gettingStartedSection,
     /href: '\/docs\/tutorials\/launch-from-released-cloud-image'/,
     'expected Getting Started section to include /docs/tutorials/launch-from-released-cloud-image',
+  );
+  assert.match(
+    howToSection,
+    /href: '\/docs\/how-to\/customize-the-appliance-image-at-first-boot'/,
+    'expected How-To Guides section to include /docs/how-to/customize-the-appliance-image-at-first-boot',
   );
   assert.match(
     conceptsSection,
@@ -142,6 +148,59 @@ test('launch-from-released-cloud-image docs page exists', () => {
 test('cloud-rollout-integration docs page exists', () => {
   const fileUrl = new URL('../src/content/docs/architecture/cloud-rollout-integration.mdx', import.meta.url);
   assert.equal(existsSync(fileUrl), true, 'expected architecture/cloud-rollout-integration.mdx to exist');
+});
+
+test('quickstart and rollout docs cross-link to appliance customization how-to', () => {
+  const quickstart = readFileSync(
+    new URL('../src/content/docs/tutorials/launch-from-released-cloud-image.mdx', import.meta.url),
+    'utf8',
+  );
+  const rollout = readFileSync(
+    new URL('../src/content/docs/architecture/cloud-rollout-integration.mdx', import.meta.url),
+    'utf8',
+  );
+
+  assertMdxLink(
+    quickstart,
+    '/docs/how-to/customize-the-appliance-image-at-first-boot',
+    'expected launch-from-released-cloud-image to reference /docs/how-to/customize-the-appliance-image-at-first-boot',
+  );
+  assertMdxLink(
+    rollout,
+    '/docs/how-to/customize-the-appliance-image-at-first-boot',
+    'expected cloud-rollout-integration to reference /docs/how-to/customize-the-appliance-image-at-first-boot',
+  );
+});
+
+test('appliance customization how-to exists with first-boot customization examples', () => {
+  const fileUrl = new URL(
+    '../src/content/docs/how-to/customize-the-appliance-image-at-first-boot.mdx',
+    import.meta.url,
+  );
+  assert.equal(
+    existsSync(fileUrl),
+    true,
+    'expected how-to/customize-the-appliance-image-at-first-boot.mdx to exist',
+  );
+
+  const customizationGuide = readFileSync(fileUrl, 'utf8');
+  assert.match(
+    customizationGuide,
+    /\/etc\/neuwerk\/appliance\.env/,
+    'expected customization guide to mention /etc/neuwerk/appliance.env',
+  );
+  assert.match(
+    customizationGuide,
+    /NEUWERK_BOOTSTRAP_/,
+    'expected customization guide to mention NEUWERK_BOOTSTRAP_ variables',
+  );
+  assert.match(
+    customizationGuide,
+    /NEUWERK_INTEGRATION_MODE/,
+    'expected customization guide to mention NEUWERK_INTEGRATION_MODE',
+  );
+  assert.match(customizationGuide, /packages:/, 'expected customization guide to mention packages:');
+  assert.match(customizationGuide, /write_files:/, 'expected customization guide to mention write_files:');
 });
 
 test('related docs cross-link to cloud-first onboarding and rollout guidance', () => {
