@@ -113,6 +113,59 @@ type updateIntegrationRequest struct {
 	ServiceAccountToken string `json:"service_account_token"`
 }
 
+type createSsoProviderRequest struct {
+	Name                 string   `json:"name"`
+	Kind                 string   `json:"kind"`
+	Enabled              *bool    `json:"enabled,omitempty"`
+	DisplayOrder         *int64   `json:"display_order,omitempty"`
+	IssuerURL            *string  `json:"issuer_url,omitempty"`
+	AuthorizationURL     *string  `json:"authorization_url,omitempty"`
+	TokenURL             *string  `json:"token_url,omitempty"`
+	UserinfoURL          *string  `json:"userinfo_url,omitempty"`
+	ClientID             string   `json:"client_id"`
+	ClientSecret         *string  `json:"client_secret,omitempty"`
+	Scopes               []string `json:"scopes,omitempty"`
+	PKCERequired         *bool    `json:"pkce_required,omitempty"`
+	SubjectClaim         *string  `json:"subject_claim,omitempty"`
+	EmailClaim           *string  `json:"email_claim,omitempty"`
+	GroupsClaim          *string  `json:"groups_claim,omitempty"`
+	DefaultRole          *string  `json:"default_role,omitempty"`
+	AdminSubjects        []string `json:"admin_subjects,omitempty"`
+	AdminGroups          []string `json:"admin_groups,omitempty"`
+	AdminEmailDomains    []string `json:"admin_email_domains,omitempty"`
+	ReadonlySubjects     []string `json:"readonly_subjects,omitempty"`
+	ReadonlyGroups       []string `json:"readonly_groups,omitempty"`
+	ReadonlyEmailDomains []string `json:"readonly_email_domains,omitempty"`
+	AllowedEmailDomains  []string `json:"allowed_email_domains,omitempty"`
+	SessionTTLSecs       *int64   `json:"session_ttl_secs,omitempty"`
+}
+
+type updateSsoProviderRequest struct {
+	Name                 *string  `json:"name,omitempty"`
+	Enabled              *bool    `json:"enabled,omitempty"`
+	DisplayOrder         *int64   `json:"display_order,omitempty"`
+	IssuerURL            *string  `json:"issuer_url,omitempty"`
+	AuthorizationURL     *string  `json:"authorization_url,omitempty"`
+	TokenURL             *string  `json:"token_url,omitempty"`
+	UserinfoURL          *string  `json:"userinfo_url,omitempty"`
+	ClientID             *string  `json:"client_id,omitempty"`
+	ClientSecret         *string  `json:"client_secret,omitempty"`
+	Scopes               []string `json:"scopes,omitempty"`
+	PKCERequired         *bool    `json:"pkce_required,omitempty"`
+	SubjectClaim         *string  `json:"subject_claim,omitempty"`
+	EmailClaim           *string  `json:"email_claim,omitempty"`
+	GroupsClaim          *string  `json:"groups_claim,omitempty"`
+	DefaultRole          *string  `json:"default_role,omitempty"`
+	AdminSubjects        []string `json:"admin_subjects,omitempty"`
+	AdminGroups          []string `json:"admin_groups,omitempty"`
+	AdminEmailDomains    []string `json:"admin_email_domains,omitempty"`
+	ReadonlySubjects     []string `json:"readonly_subjects,omitempty"`
+	ReadonlyGroups       []string `json:"readonly_groups,omitempty"`
+	ReadonlyEmailDomains []string `json:"readonly_email_domains,omitempty"`
+	AllowedEmailDomains  []string `json:"allowed_email_domains,omitempty"`
+	SessionTTLSecs       *int64   `json:"session_ttl_secs,omitempty"`
+}
+
 type createServiceAccountRequest struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description,omitempty"`
@@ -203,6 +256,34 @@ func (c *apiClient) UpdateIntegration(ctx context.Context, name string, req upda
 
 func (c *apiClient) DeleteIntegration(ctx context.Context, name string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/integrations/"+url.PathEscape(name), nil, nil)
+}
+
+func (c *apiClient) CreateSsoProvider(ctx context.Context, req createSsoProviderRequest) (*apiSsoProvider, error) {
+	var out apiSsoProvider
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/settings/sso/providers", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) GetSsoProvider(ctx context.Context, id string) (*apiSsoProvider, error) {
+	var out apiSsoProvider
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/settings/sso/providers/"+url.PathEscape(id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) UpdateSsoProvider(ctx context.Context, id string, req updateSsoProviderRequest) (*apiSsoProvider, error) {
+	var out apiSsoProvider
+	if err := c.doJSON(ctx, http.MethodPut, "/api/v1/settings/sso/providers/"+url.PathEscape(id), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *apiClient) DeleteSsoProvider(ctx context.Context, id string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/settings/sso/providers/"+url.PathEscape(id), nil, nil)
 }
 
 func (c *apiClient) GetTLSInterceptCA(ctx context.Context) (*apiTLSInterceptCAStatus, error) {

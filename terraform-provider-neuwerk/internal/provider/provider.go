@@ -167,6 +167,7 @@ func (p *neuwerkProvider) Resources(_ context.Context) []func() resource.Resourc
 		newTLSInterceptCAResource,
 		newServiceAccountResource,
 		newServiceAccountTokenResource,
+		newGoogleSsoProviderResource,
 	}
 }
 
