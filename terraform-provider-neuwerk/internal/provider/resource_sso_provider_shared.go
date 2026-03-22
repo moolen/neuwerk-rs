@@ -21,9 +21,10 @@ var (
 )
 
 type ssoProviderKindConfig struct {
-	kind               string
-	resourceTypeSuffix string
-	description        string
+	kind                     string
+	resourceTypeSuffix       string
+	description              string
+	requireExplicitEndpoints bool
 }
 
 type ssoProviderResource struct {
@@ -103,6 +104,16 @@ func (r *ssoProviderResource) Metadata(_ context.Context, req resource.MetadataR
 }
 
 func (r *ssoProviderResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	endpointAttribute := resourceschema.StringAttribute{
+		Optional: true,
+		Computed: true,
+	}
+	if r.kindConfig.requireExplicitEndpoints {
+		endpointAttribute = resourceschema.StringAttribute{
+			Required: true,
+		}
+	}
+
 	resp.Schema = resourceschema.Schema{
 		Description: r.kindConfig.description,
 		Attributes: map[string]resourceschema.Attribute{
@@ -188,18 +199,9 @@ func (r *ssoProviderResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Computed:    true,
 				ElementType: types.StringType,
 			},
-			"authorization_url": resourceschema.StringAttribute{
-				Optional: true,
-				Computed: true,
-			},
-			"token_url": resourceschema.StringAttribute{
-				Optional: true,
-				Computed: true,
-			},
-			"userinfo_url": resourceschema.StringAttribute{
-				Optional: true,
-				Computed: true,
-			},
+			"authorization_url": endpointAttribute,
+			"token_url":         endpointAttribute,
+			"userinfo_url":      endpointAttribute,
 			"session_ttl_secs": resourceschema.Int64Attribute{
 				Optional: true,
 				Computed: true,

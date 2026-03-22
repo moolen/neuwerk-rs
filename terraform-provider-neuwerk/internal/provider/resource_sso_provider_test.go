@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
 func TestSsoProviderStateFromAPIPreservesSecretAndNormalizesSets(t *testing.T) {
@@ -115,6 +116,33 @@ func TestGithubSsoProviderSchemaMarksClientSecretSensitive(t *testing.T) {
 	}
 	if !clientSecretAttr.Optional {
 		t.Fatalf("expected client_secret attribute to be optional")
+	}
+}
+
+func TestGenericOidcSchemaRequiresExplicitEndpoints(t *testing.T) {
+	t.Parallel()
+
+	schemaResp := genericOidcSsoProviderSchema(t)
+
+	for _, name := range []string{"authorization_url", "token_url", "userinfo_url"} {
+		attrRaw, ok := schemaResp.Schema.Attributes[name]
+		if !ok {
+			t.Fatalf("expected %s attribute in schema", name)
+		}
+
+		attr, ok := attrRaw.(resourceschema.StringAttribute)
+		if !ok {
+			t.Fatalf("expected %s to be string attribute", name)
+		}
+		if !attr.Required {
+			t.Fatalf("expected %s to be required for generic oidc", name)
+		}
+		if attr.Optional {
+			t.Fatalf("expected %s to be non-optional for generic oidc", name)
+		}
+		if attr.Computed {
+			t.Fatalf("expected %s to be non-computed for generic oidc", name)
+		}
 	}
 }
 
@@ -648,6 +676,76 @@ func TestGoogleSsoProviderReadRejectsKindMismatch(t *testing.T) {
 	}
 }
 
+func TestSsoProviderReadFailsOnKindMismatch(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
+			"name":"Google Provider",
+			"kind":"google",
+			"enabled":true,
+			"display_order":0,
+			"client_id":"client-id",
+			"client_secret_configured":true,
+			"scopes":[],
+			"pkce_required":true,
+			"subject_claim":"sub",
+			"admin_subjects":[],
+			"admin_groups":[],
+			"admin_email_domains":[],
+			"readonly_subjects":[],
+			"readonly_groups":[],
+			"readonly_email_domains":[],
+			"allowed_email_domains":[],
+			"session_ttl_secs":3600,
+			"created_at":"2026-03-22T00:00:00Z",
+			"updated_at":"2026-03-22T00:00:00Z"
+		}`))
+	}))
+	defer server.Close()
+
+	res := newProviderResourceByTypeSuffix(t, "_sso_provider_generic_oidc")
+	configurable, ok := res.(resource.ResourceWithConfigure)
+	if !ok {
+		t.Fatalf("resource does not implement configure")
+	}
+	configurable.Configure(context.Background(), resource.ConfigureRequest{ProviderData: newTestAPIClient(t, server)}, &resource.ConfigureResponse{})
+
+	ctx := context.Background()
+	schemaResp := genericOidcSsoProviderSchema(t)
+	state := tfsdk.State{Schema: schemaResp.Schema}
+	stateValue := emptyGenericOidcSsoProviderModel()
+	stateValue.ID = types.StringValue("26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6")
+	stateValue.Name = types.StringValue("OIDC Provider")
+	stateValue.ClientID = types.StringValue("client-id")
+	stateValue.AuthorizationURL = types.StringValue("https://oidc.example.com/auth")
+	stateValue.TokenURL = types.StringValue("https://oidc.example.com/token")
+	stateValue.UserinfoURL = types.StringValue("https://oidc.example.com/userinfo")
+	diags := state.Set(ctx, stateValue)
+	if diags.HasError() {
+		t.Fatalf("unexpected state diagnostics: %#v", diags)
+	}
+
+	req := resource.ReadRequest{State: state}
+	resp := resource.ReadResponse{State: tfsdk.State{Schema: schemaResp.Schema}}
+	res.Read(ctx, req, &resp)
+
+	if !resp.Diagnostics.HasError() {
+		t.Fatalf("expected diagnostics on kind mismatch")
+	}
+	if !strings.Contains(resp.Diagnostics.Errors()[0].Detail(), `expected "generic-oidc", got "google"`) {
+		t.Fatalf("unexpected diagnostics detail: %q", resp.Diagnostics.Errors()[0].Detail())
+	}
+}
+
 func TestGoogleSsoProviderUpdateRejectsKindMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -826,6 +924,41 @@ func TestGoogleSsoProviderDeleteUsesProviderID(t *testing.T) {
 	}
 }
 
+func TestSsoProviderImportStateStartsWithoutSecret(t *testing.T) {
+	t.Parallel()
+
+	res := newProviderResourceByTypeSuffix(t, "_sso_provider_generic_oidc")
+	importable, ok := res.(resource.ResourceWithImportState)
+	if !ok {
+		t.Fatalf("resource does not implement import state")
+	}
+	ctx := context.Background()
+	schemaResp := genericOidcSsoProviderSchema(t)
+
+	resp := resource.ImportStateResponse{
+		State: tfsdk.State{Schema: schemaResp.Schema},
+	}
+	resp.State.Raw = tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil)
+	req := resource.ImportStateRequest{ID: "26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6"}
+	importable.ImportState(ctx, req, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %#v", resp.Diagnostics)
+	}
+
+	var state ssoProviderResourceModel
+	resp.Diagnostics.Append(resp.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics after state read: %#v", resp.Diagnostics)
+	}
+	if state.ID.ValueString() != "26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6" {
+		t.Fatalf("unexpected imported id %q", state.ID.ValueString())
+	}
+	if !state.ClientSecret.IsNull() {
+		t.Fatalf("expected imported client_secret to be null")
+	}
+}
+
 func TestProviderResourcesIncludeGoogleSsoProvider(t *testing.T) {
 	t.Parallel()
 
@@ -879,6 +1012,15 @@ func googleSsoProviderSchema(t *testing.T) resource.SchemaResponse {
 	return resp
 }
 
+func genericOidcSsoProviderSchema(t *testing.T) resource.SchemaResponse {
+	t.Helper()
+
+	res := newProviderResourceByTypeSuffix(t, "_sso_provider_generic_oidc")
+	var resp resource.SchemaResponse
+	res.Schema(context.Background(), resource.SchemaRequest{}, &resp)
+	return resp
+}
+
 func githubSsoProviderSchema(t *testing.T) resource.SchemaResponse {
 	t.Helper()
 
@@ -886,6 +1028,23 @@ func githubSsoProviderSchema(t *testing.T) resource.SchemaResponse {
 	var resp resource.SchemaResponse
 	res.Schema(context.Background(), resource.SchemaRequest{}, &resp)
 	return resp
+}
+
+func newProviderResourceByTypeSuffix(t *testing.T, suffix string) resource.Resource {
+	t.Helper()
+
+	provider := New("test")()
+	for _, factory := range provider.Resources(context.Background()) {
+		res := factory()
+		var metadataResp resource.MetadataResponse
+		res.Metadata(context.Background(), resource.MetadataRequest{ProviderTypeName: "neuwerk"}, &metadataResp)
+		if strings.HasSuffix(metadataResp.TypeName, suffix) {
+			return res
+		}
+	}
+
+	t.Fatalf("resource with suffix %q not registered", suffix)
+	return nil
 }
 
 func emptyGoogleSsoProviderModel() ssoProviderResourceModel {
@@ -899,6 +1058,10 @@ func emptyGoogleSsoProviderModel() ssoProviderResourceModel {
 		ReadonlyEmailDomains: types.SetNull(types.StringType),
 		AllowedEmailDomains:  types.SetNull(types.StringType),
 	}
+}
+
+func emptyGenericOidcSsoProviderModel() ssoProviderResourceModel {
+	return emptyGoogleSsoProviderModel()
 }
 
 func setStringValues(values ...types.String) types.Set {
