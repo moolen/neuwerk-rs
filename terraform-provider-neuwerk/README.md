@@ -21,6 +21,9 @@ Additional examples live under:
 - `terraform-provider-neuwerk/examples/service-accounts/main.tf`
 - `terraform-provider-neuwerk/examples/sso/main.tf`
 
+Maintainers publishing provider releases from this monorepo should see
+[`docs/operations/terraform-provider-release.md`](../docs/operations/terraform-provider-release.md).
+
 Implemented resources:
 
 - `neuwerk_policy`
