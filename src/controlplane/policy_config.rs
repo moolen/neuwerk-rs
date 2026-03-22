@@ -10,6 +10,7 @@ use crate::dataplane::policy::{
     RuleAction, RuleMatch, RuleMode as DataplaneRuleMode, SourceGroup, Tls13Uninspectable,
     TlsInterceptHttpPolicy, TlsMatch, TlsMode, TlsNameMatch,
 };
+use crate::dataplane::tls::normalize_distinguished_name;
 use x509_parser::pem::parse_x509_pem;
 
 mod parse;
@@ -233,7 +234,9 @@ impl SourceGroupConfig {
         let mut dns_rules = Vec::with_capacity(self.rules.len());
         for (idx, rule) in self.rules.into_iter().enumerate() {
             let (rule, dns_rule) = rule.compile(idx as u32)?;
-            rules.push(rule);
+            if let Some(rule) = rule {
+                rules.push(rule);
+            }
             if let Some(dns_rule) = dns_rule {
                 dns_rules.push(dns_rule);
             }
@@ -423,7 +426,7 @@ pub struct RuleConfig {
 }
 
 impl RuleConfig {
-    fn compile(self, fallback_priority: u32) -> Result<(Rule, Option<DnsRule>), String> {
+    fn compile(self, fallback_priority: u32) -> Result<(Option<Rule>, Option<DnsRule>), String> {
         let priority = self.priority.unwrap_or(fallback_priority);
         let action = parse_rule_action(self.action)?;
         let mode: DataplaneRuleMode = self.mode.into();
@@ -436,12 +439,24 @@ impl RuleConfig {
         )?;
         let matcher = self.matcher.compile(&self.id)?;
 
-        let rule = Rule {
-            id: self.id,
-            priority,
-            matcher,
-            action,
-            mode,
+        let rule = if dns_rule.is_some()
+            && matcher.dst_ips.is_none()
+            && matches!(matcher.proto, Proto::Any)
+            && matcher.src_ports.is_empty()
+            && matcher.dst_ports.is_empty()
+            && matcher.icmp_types.is_empty()
+            && matcher.icmp_codes.is_empty()
+            && matcher.tls.is_none()
+        {
+            None
+        } else {
+            Some(Rule {
+                id: self.id,
+                priority,
+                matcher,
+                action,
+                mode,
+            })
         };
 
         Ok((rule, dns_rule))

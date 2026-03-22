@@ -75,7 +75,7 @@ impl Packet {
             return None;
         }
         let l4_off = ip_off + ihl;
-        if l4_off + 4 > self.buf.len() {
+        if !self.ipv4_range_within(ip_off, self.buf.len(), l4_off, 4) {
             return None;
         }
         let src = u16::from_be_bytes([self.buf[l4_off], self.buf[l4_off + 1]]);
@@ -84,8 +84,9 @@ impl Packet {
     }
 
     pub fn tcp_seq(&self) -> Option<u32> {
+        let ip_off = self.ipv4_offset()?;
         let (l4_off, _) = self.tcp_offsets()?;
-        if l4_off + 8 > self.buf.len() {
+        if !self.ipv4_range_within(ip_off, self.buf.len(), l4_off, 8) {
             return None;
         }
         Some(u32::from_be_bytes([
@@ -97,8 +98,9 @@ impl Packet {
     }
 
     pub fn tcp_ack(&self) -> Option<u32> {
+        let ip_off = self.ipv4_offset()?;
         let (l4_off, _) = self.tcp_offsets()?;
-        if l4_off + 12 > self.buf.len() {
+        if !self.ipv4_range_within(ip_off, self.buf.len(), l4_off, 12) {
             return None;
         }
         Some(u32::from_be_bytes([
@@ -110,8 +112,9 @@ impl Packet {
     }
 
     pub fn tcp_flags(&self) -> Option<u8> {
+        let ip_off = self.ipv4_offset()?;
         let (l4_off, _) = self.tcp_offsets()?;
-        if l4_off + 14 > self.buf.len() {
+        if !self.ipv4_range_within(ip_off, self.buf.len(), l4_off, 14) {
             return None;
         }
         Some(self.buf[l4_off + 13])
@@ -120,9 +123,8 @@ impl Packet {
     pub fn tcp_payload(&self) -> Option<&[u8]> {
         let (l4_off, data_off) = self.tcp_offsets()?;
         let ip_off = self.ipv4_offset()?;
-        let total_len = self.ipv4_total_len(ip_off)?;
         let start = l4_off + data_off;
-        let end = ip_off + total_len;
+        let end = self.ipv4_logical_end(ip_off)?;
         if start > end || end > self.buf.len() {
             return None;
         }
@@ -137,11 +139,11 @@ impl Packet {
             return None;
         }
         let l4_off = ip_off + ihl;
-        if l4_off + 13 > self.buf.len() {
+        if !self.ipv4_range_within(ip_off, self.buf.len(), l4_off, 13) {
             return None;
         }
         let data_off = ((self.buf[l4_off + 12] >> 4) as usize) * 4;
-        if data_off < 20 || l4_off + data_off > self.buf.len() {
+        if data_off < 20 || !self.ipv4_range_within(ip_off, self.buf.len(), l4_off, data_off) {
             return None;
         }
         Some((l4_off, data_off))

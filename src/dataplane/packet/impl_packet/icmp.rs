@@ -90,19 +90,18 @@ impl Packet {
         if self.buf[ip_off + 9] != 1 {
             return None;
         }
+        let outer_end = self.ipv4_logical_end(ip_off)?;
         let icmp_off = ip_off + ihl;
         let inner_ip_off = icmp_off + 8;
-        if self.buf.len() < inner_ip_off + 20 {
+        if outer_end < inner_ip_off + 20 {
             return None;
         }
         let ver = self.buf[inner_ip_off] >> 4;
         if ver != 4 {
             return None;
         }
-        let inner_ihl = (self.buf[inner_ip_off] & 0x0f) as usize * 4;
-        if inner_ihl < 20 || self.buf.len() < inner_ip_off + inner_ihl {
-            return None;
-        }
+        let inner_ihl = self.ipv4_header_len_within(inner_ip_off, outer_end)?;
+        let inner_end = self.ipv4_logical_end_within(inner_ip_off, outer_end)?;
         let proto = self.buf[inner_ip_off + 9];
         let src_ip = Ipv4Addr::new(
             self.buf[inner_ip_off + 12],
@@ -117,12 +116,9 @@ impl Packet {
             self.buf[inner_ip_off + 19],
         );
         let l4_off = inner_ip_off + inner_ihl;
-        if self.buf.len() < l4_off + 8 {
-            return None;
-        }
         let (src_port, dst_port, icmp_identifier) = match proto {
             6 | 17 => {
-                if self.buf.len() < l4_off + 4 {
+                if inner_end < l4_off + 4 {
                     return None;
                 }
                 let src_port = u16::from_be_bytes([self.buf[l4_off], self.buf[l4_off + 1]]);
@@ -130,7 +126,7 @@ impl Packet {
                 (src_port, dst_port, None)
             }
             1 => {
-                if self.buf.len() < l4_off + 6 {
+                if inner_end < l4_off + 6 {
                     return None;
                 }
                 let identifier = u16::from_be_bytes([self.buf[l4_off + 4], self.buf[l4_off + 5]]);

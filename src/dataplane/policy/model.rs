@@ -64,6 +64,7 @@ impl PortRange {
 pub struct TlsMatch {
     pub mode: TlsMode,
     pub sni: Option<TlsNameMatch>,
+    pub server_dn: Option<String>,
     pub server_san: Option<TlsNameMatch>,
     pub server_cn: Option<TlsNameMatch>,
     pub fingerprints_sha256: Vec<[u8; 32]>,

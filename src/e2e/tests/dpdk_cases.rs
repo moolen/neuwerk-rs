@@ -338,6 +338,7 @@ pub(super) fn dpdk_tls_intercept_service_lane_round_trip(
             tls: Some(TlsMatch {
                 mode: TlsMode::Intercept,
                 sni: None,
+                server_dn: None,
                 server_san: None,
                 server_cn: None,
                 fingerprints_sha256: Vec::new(),
