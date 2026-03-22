@@ -132,7 +132,7 @@ func ssoProviderSecretState(prior types.String, configured bool) types.String {
 
 func ssoProviderSetToSortedStrings(value types.Set, diags *diag.Diagnostics) []string {
 	if value.IsNull() || value.IsUnknown() {
-		return []string{}
+		return nil
 	}
 
 	var elems []types.String

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
@@ -74,6 +75,74 @@ func TestSsoProviderStateFromAPIPreservesUnknownSecretWhenConfigured(t *testing.
 	state := ssoProviderStateFromAPI(prior, record)
 	if !state.ClientSecret.IsUnknown() {
 		t.Fatalf("expected unknown client_secret to be preserved when configured")
+	}
+}
+
+func TestSsoProviderSetToSortedStringsSortsAndDedupes(t *testing.T) {
+	t.Parallel()
+
+	input := setStringValues(
+		types.StringValue("z"),
+		types.StringValue("a"),
+		types.StringValue("m"),
+	)
+
+	var diags diag.Diagnostics
+	got := ssoProviderSetToSortedStrings(input, &diags)
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %#v", diags)
+	}
+
+	want := []string{"a", "m", "z"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected result: got %#v want %#v", got, want)
+	}
+}
+
+func TestSsoProviderSetToSortedStringsNullReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	var diags diag.Diagnostics
+	got := ssoProviderSetToSortedStrings(types.SetNull(types.StringType), &diags)
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %#v", diags)
+	}
+	if got != nil {
+		t.Fatalf("expected nil for null set, got %#v", got)
+	}
+}
+
+func TestSsoProviderSetToSortedStringsUnknownReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	var diags diag.Diagnostics
+	got := ssoProviderSetToSortedStrings(types.SetUnknown(types.StringType), &diags)
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %#v", diags)
+	}
+	if got != nil {
+		t.Fatalf("expected nil for unknown set, got %#v", got)
+	}
+}
+
+func TestSsoProviderSetToSortedStringsKnownEmptyReturnsEmptySlice(t *testing.T) {
+	t.Parallel()
+
+	empty, diags := types.SetValue(types.StringType, []attr.Value{})
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics creating empty set: %#v", diags)
+	}
+
+	var runDiags diag.Diagnostics
+	got := ssoProviderSetToSortedStrings(empty, &runDiags)
+	if runDiags.HasError() {
+		t.Fatalf("unexpected diagnostics: %#v", runDiags)
+	}
+	if got == nil {
+		t.Fatalf("expected empty slice for known empty set, got nil")
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice, got %#v", got)
 	}
 }
 
