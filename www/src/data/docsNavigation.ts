@@ -65,6 +65,7 @@ export const docsNavigation: DocsNavSection[] = [
   {
     title: 'Community',
     items: [
+      { href: '/docs/community/launch-checklist', label: 'Launch Checklist' },
       { href: '/docs/community/release-process', label: 'Release Process' },
       { href: '/docs/community/release-readiness', label: 'OSS Release Readiness' },
       { href: '/docs/community/contributing', label: 'Contributing' },

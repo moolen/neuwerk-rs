@@ -6,6 +6,7 @@ test('docs navigation includes a bottom community section with release and commu
   const navSource = readFileSync(new URL('../src/data/docsNavigation.ts', import.meta.url), 'utf8');
 
   assert.match(navSource, /title: 'Community'/);
+  assert.match(navSource, /href: '\/docs\/community\/launch-checklist', label: 'Launch Checklist'/);
   assert.match(navSource, /href: '\/docs\/community\/release-process', label: 'Release Process'/);
   assert.match(navSource, /href: '\/docs\/community\/release-readiness', label: 'OSS Release Readiness'/);
   assert.match(navSource, /href: '\/docs\/community\/contributing', label: 'Contributing'/);
@@ -20,6 +21,7 @@ test('docs navigation includes a bottom community section with release and commu
 
 test('community docs pages exist and repo markdown points to canonical docs pages', () => {
   const communityPages = [
+    '../src/content/docs/community/launch-checklist.mdx',
     '../src/content/docs/community/release-process.mdx',
     '../src/content/docs/community/release-readiness.mdx',
     '../src/content/docs/community/contributing.mdx',
