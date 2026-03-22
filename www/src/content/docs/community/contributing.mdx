@@ -1,11 +1,20 @@
 ---
 title: Contributing
 description: Minimal contribution expectations for the Neuwerk OSS repository.
-order: 3
+order: 2
 ---
+
+Keep contributions focused and reviewable.
 
 For significant changes, open an issue first so the direction is clear before implementation.
 
-Security issues should go to `security@neuwerk.io`, not public issues.
+When behavior, APIs, or operator workflows change:
 
-If you need the current OSS launch and release surface, see [OSS Release Readiness](/docs/community/release-readiness).
+- include tests when practical
+- update the relevant docs
+- avoid unrelated refactors in the same pull request
+
+Neuwerk keeps a strict separation between dataplane and control plane responsibilities. Contributions
+should preserve that boundary.
+
+Security issues should go to `security@neuwerk.io`, not public issues.
