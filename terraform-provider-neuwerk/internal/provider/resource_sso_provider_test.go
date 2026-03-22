@@ -258,6 +258,111 @@ func TestGoogleSsoProviderUpdateOmitsSecretWhenUnset(t *testing.T) {
 	}
 }
 
+func TestGoogleSsoProviderUpdatePreservesPriorSecretWhenConfigOmitsIt(t *testing.T) {
+	t.Parallel()
+
+	var sawClientSecretInPayload bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, sawClientSecretInPayload = payload["client_secret"]
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
+			"name":"Google Workspace",
+			"kind":"google",
+			"enabled":true,
+			"display_order":0,
+			"issuer_url":"https://accounts.google.com",
+			"client_id":"google-client-id",
+			"client_secret_configured":true,
+			"scopes":["openid","email","profile"],
+			"pkce_required":true,
+			"subject_claim":"sub",
+			"admin_subjects":[],
+			"admin_groups":[],
+			"admin_email_domains":[],
+			"readonly_subjects":[],
+			"readonly_groups":[],
+			"readonly_email_domains":[],
+			"allowed_email_domains":[],
+			"session_ttl_secs":3600,
+			"created_at":"2026-03-22T00:00:00Z",
+			"updated_at":"2026-03-22T00:00:01Z"
+		}`))
+	}))
+	defer server.Close()
+
+	res := newGoogleSsoProviderResource()
+	configurable, ok := res.(resource.ResourceWithConfigure)
+	if !ok {
+		t.Fatalf("resource does not implement configure")
+	}
+	configurable.Configure(context.Background(), resource.ConfigureRequest{ProviderData: newTestAPIClient(t, server)}, &resource.ConfigureResponse{})
+
+	ctx := context.Background()
+	schemaResp := googleSsoProviderSchema(t)
+
+	planValue := emptyGoogleSsoProviderModel()
+	planValue.ID = types.StringValue("26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6")
+	planValue.Name = types.StringValue("Google Workspace")
+	planValue.ClientID = types.StringValue("google-client-id")
+	planValue.ClientSecret = types.StringNull()
+	plan := tfsdk.Plan{Schema: schemaResp.Schema}
+	diags := plan.Set(ctx, planValue)
+	if diags.HasError() {
+		t.Fatalf("unexpected plan diagnostics: %#v", diags)
+	}
+
+	priorStateValue := emptyGoogleSsoProviderModel()
+	priorStateValue.ID = types.StringValue("26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6")
+	priorStateValue.Name = types.StringValue("Google Workspace")
+	priorStateValue.ClientID = types.StringValue("google-client-id")
+	priorStateValue.ClientSecret = types.StringValue("super-secret")
+	priorState := tfsdk.State{Schema: schemaResp.Schema}
+	diags = priorState.Set(ctx, priorStateValue)
+	if diags.HasError() {
+		t.Fatalf("unexpected state diagnostics: %#v", diags)
+	}
+
+	req := resource.UpdateRequest{
+		Plan:  plan,
+		State: priorState,
+		Config: tfsdk.Config{
+			Schema: schemaResp.Schema,
+			Raw:    plan.Raw,
+		},
+	}
+	resp := resource.UpdateResponse{State: tfsdk.State{Schema: schemaResp.Schema}}
+	res.Update(ctx, req, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %#v", resp.Diagnostics)
+	}
+	if sawClientSecretInPayload {
+		t.Fatalf("expected update request to omit client_secret when config omits it")
+	}
+
+	var nextState ssoProviderResourceModel
+	resp.Diagnostics.Append(resp.State.Get(ctx, &nextState)...)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected state diagnostics: %#v", resp.Diagnostics)
+	}
+	if nextState.ClientSecret.ValueString() != "super-secret" {
+		t.Fatalf("expected prior client_secret to be preserved, got %q", nextState.ClientSecret.ValueString())
+	}
+}
+
 func TestGoogleSsoProviderReadRemovesStateWhenNotFound(t *testing.T) {
 	t.Parallel()
 

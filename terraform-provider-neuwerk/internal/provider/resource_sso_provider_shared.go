@@ -273,6 +273,12 @@ func (r *ssoProviderResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
+	var prior ssoProviderResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	var configClientSecret types.String
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("client_secret"), &configClientSecret)...)
 	if resp.Diagnostics.HasError() {
@@ -285,7 +291,7 @@ func (r *ssoProviderResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	state := ssoProviderStateFromAPI(plan, record)
+	state := ssoProviderStateFromAPI(prior, record)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
