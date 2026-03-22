@@ -162,8 +162,8 @@ test('related docs cross-link to cloud-first onboarding and rollout guidance', (
   );
   assert.doesNotMatch(
     requirements,
-    /\[Deploy A Single Node\]\(\/docs\/tutorials\/deploy-a-single-node\)/,
-    'expected deployment requirements related pages to remove /docs/tutorials/deploy-a-single-node',
+    /\/docs\/tutorials\/deploy-a-single-node/,
+    'expected deployment requirements doc to remove /docs/tutorials/deploy-a-single-node in any link form',
   );
   assertMdxLink(
     upgrade,
