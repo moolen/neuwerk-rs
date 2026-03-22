@@ -150,13 +150,9 @@ test('cloud-rollout-integration docs page exists', () => {
   assert.equal(existsSync(fileUrl), true, 'expected architecture/cloud-rollout-integration.mdx to exist');
 });
 
-test('quickstart and rollout docs cross-link to appliance customization how-to', () => {
+test('quickstart docs cross-link to appliance customization how-to', () => {
   const quickstart = readFileSync(
     new URL('../src/content/docs/tutorials/launch-from-released-cloud-image.mdx', import.meta.url),
-    'utf8',
-  );
-  const rollout = readFileSync(
-    new URL('../src/content/docs/architecture/cloud-rollout-integration.mdx', import.meta.url),
     'utf8',
   );
 
@@ -165,6 +161,14 @@ test('quickstart and rollout docs cross-link to appliance customization how-to',
     '/docs/how-to/customize-the-appliance-image-at-first-boot',
     'expected launch-from-released-cloud-image to reference /docs/how-to/customize-the-appliance-image-at-first-boot',
   );
+});
+
+test('rollout docs cross-link to appliance customization how-to', () => {
+  const rollout = readFileSync(
+    new URL('../src/content/docs/architecture/cloud-rollout-integration.mdx', import.meta.url),
+    'utf8',
+  );
+
   assertMdxLink(
     rollout,
     '/docs/how-to/customize-the-appliance-image-at-first-boot',
@@ -199,8 +203,21 @@ test('appliance customization how-to exists with first-boot customization exampl
     /NEUWERK_INTEGRATION_MODE/,
     'expected customization guide to mention NEUWERK_INTEGRATION_MODE',
   );
-  assert.match(customizationGuide, /packages:/, 'expected customization guide to mention packages:');
-  assert.match(customizationGuide, /write_files:/, 'expected customization guide to mention write_files:');
+  assert.match(
+    customizationGuide,
+    /```yaml[\s\S]*^packages:\s*[\s\S]*^```/m,
+    'expected customization guide to include a fenced YAML block containing a top-level packages: key',
+  );
+  assert.match(
+    customizationGuide,
+    /```yaml[\s\S]*^write_files:\s*[\s\S]*^```/m,
+    'expected customization guide to include a fenced YAML block containing a top-level write_files: key',
+  );
+  assert.match(
+    customizationGuide,
+    /^runcmd:\s*$/m,
+    'expected customization guide to include a top-level runcmd: key in YAML examples',
+  );
 });
 
 test('related docs cross-link to cloud-first onboarding and rollout guidance', () => {
