@@ -1,5 +1,5 @@
 # Contributing
 
-For significant changes, open an issue first so the direction is clear before implementation.
+The canonical contributing guide lives at:
 
-Security issues should go to `security@neuwerk.io`, not public issues.
+- `https://neuwerk.io/docs/community/contributing`

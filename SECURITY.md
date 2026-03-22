@@ -1,5 +1,7 @@
 # Security Policy
 
-Report security issues to `security@neuwerk.io`.
+The canonical security policy lives at:
 
-Do not open public GitHub issues for suspected vulnerabilities.
+- `https://neuwerk.io/docs/community/security`
+
+Report security issues to `security@neuwerk.io`.
