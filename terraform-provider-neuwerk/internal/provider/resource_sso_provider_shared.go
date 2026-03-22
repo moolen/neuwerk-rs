@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -261,6 +262,10 @@ func (r *ssoProviderResource) Read(ctx context.Context, req resource.ReadRequest
 		resp.Diagnostics.AddError("Read SSO Provider Failed", err.Error())
 		return
 	}
+	if err := validateSsoProviderKind(r.kindConfig.kind, record); err != nil {
+		resp.Diagnostics.AddError("Read SSO Provider Failed", err.Error())
+		return
+	}
 
 	next := ssoProviderStateFromAPI(state, record)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
@@ -290,8 +295,17 @@ func (r *ssoProviderResource) Update(ctx context.Context, req resource.UpdateReq
 		resp.Diagnostics.AddError("Update SSO Provider Failed", err.Error())
 		return
 	}
+	if err := validateSsoProviderKind(r.kindConfig.kind, record); err != nil {
+		resp.Diagnostics.AddError("Update SSO Provider Failed", err.Error())
+		return
+	}
 
-	state := ssoProviderStateFromAPI(prior, record)
+	stateInput := prior
+	if nextSecret := configuredClientSecret(configClientSecret); nextSecret != nil {
+		stateInput.ClientSecret = types.StringValue(*nextSecret)
+	}
+
+	state := ssoProviderStateFromAPI(stateInput, record)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -522,4 +536,23 @@ func optionalInt64Pointer(value types.Int64) *int64 {
 	}
 	out := value.ValueInt64()
 	return &out
+}
+
+func configuredClientSecret(configClientSecret types.String) *string {
+	if configClientSecret.IsNull() || configClientSecret.IsUnknown() {
+		return nil
+	}
+	secret := strings.TrimSpace(configClientSecret.ValueString())
+	if secret == "" {
+		return nil
+	}
+	return &secret
+}
+
+func validateSsoProviderKind(expected string, record *apiSsoProvider) error {
+	got := strings.TrimSpace(record.Kind)
+	if got == expected {
+		return nil
+	}
+	return fmt.Errorf("kind mismatch for SSO provider %q: expected %q, got %q", record.ID, expected, got)
 }
