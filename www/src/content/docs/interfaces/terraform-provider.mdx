@@ -8,6 +8,17 @@ Neuwerk includes a Terraform provider under:
 
 - `terraform-provider-neuwerk/`
 
+Use the provider source:
+
+```hcl
+terraform {
+  required_providers {
+    neuwerk = {
+      source = "neuwerk/neuwerk"
+    }
+  }
+}
+```
 
 Use it when you want to manage Neuwerk configuration through infrastructure-as-code instead of
 calling the HTTP API directly.
@@ -286,3 +297,7 @@ That means:
 
 For now, the provider should be treated as a curated automation surface for the implemented API
 subset above.
+
+Release artifacts are distributed through GitHub Releases. Provider release publication is blocked
+until checksum signing is configured, and manual installs are expected to verify both the checksum
+file and its detached signature.

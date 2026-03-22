@@ -2,6 +2,20 @@
 
 This module contains the initial Terraform provider implementation for the Neuwerk HTTP API.
 
+Provider source:
+
+```hcl
+terraform {
+  required_providers {
+    neuwerk = {
+      source = "neuwerk/neuwerk"
+    }
+  }
+}
+```
+
+Additional provider reference docs live under `terraform-provider-neuwerk/docs/`.
+
 Implemented resources:
 
 - `neuwerk_policy`
@@ -18,6 +32,14 @@ Provider authentication uses the existing bearer-token HTTP API. Admin-capable s
 ## Example
 
 ```hcl
+terraform {
+  required_providers {
+    neuwerk = {
+      source = "neuwerk/neuwerk"
+    }
+  }
+}
+
 provider "neuwerk" {
   endpoints       = ["https://fw-a.example.com", "https://fw-b.example.com"]
   token           = var.neuwerk_bootstrap_token

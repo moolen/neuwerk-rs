@@ -58,9 +58,21 @@ jobs:
       TARGET: ${{ inputs.target }}
       RELEASE_VERSION: ${{ inputs.release_version }}
       PACKER_ARTIFACT_DIR: ${{ github.workspace }}/artifacts/image-build
+      GPG_PRIVATE_KEY: ${{ secrets.TERRAFORM_PROVIDER_GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.TERRAFORM_PROVIDER_GPG_PASSPHRASE }}
+      GPG_KEY_ID: ${{ secrets.TERRAFORM_PROVIDER_GPG_KEY_ID }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+
+      - name: Verify Terraform provider signing configuration
+        run: |
+          for name in GPG_PRIVATE_KEY GPG_PASSPHRASE GPG_KEY_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "missing required Terraform provider signing secret: $name" >&2
+              exit 1
+            fi
+          done
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -135,6 +147,9 @@ jobs:
         env:
           PROVIDER_DIR: terraform-provider-neuwerk
           PROVIDER_NAME: terraform-provider-neuwerk
+          GPG_PRIVATE_KEY: ${{ secrets.TERRAFORM_PROVIDER_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.TERRAFORM_PROVIDER_GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.TERRAFORM_PROVIDER_GPG_KEY_ID }}
         run: |
           bash packaging/scripts/build_terraform_provider_release_assets.sh \
             --provider-dir "$PROVIDER_DIR" \
