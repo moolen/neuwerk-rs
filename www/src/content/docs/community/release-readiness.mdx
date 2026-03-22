@@ -1,0 +1,41 @@
+---
+title: Release Readiness
+description: Current OSS launch-readiness status for the Neuwerk public repository surface.
+order: 4
+---
+
+This page tracks the current OSS launch surface for Neuwerk.
+
+## Ready
+
+- Apache 2.0 licensing and the public repository policy surface are present.
+- CI runs the OSS launch surface preflight on pull requests.
+- The OSS launch surface preflight verifies the expected public release and community files stay in
+  the repository.
+- Appliance image release docs and Terraform provider release docs are published in the repo.
+
+## Current Checks
+
+The OSS launch surface preflight is the lightweight repository-level guardrail for launch-facing
+assets.
+
+Today it verifies that the repository still contains the expected:
+
+- license and policy documents
+- community docs pages
+- release workflows
+- release-signing assets and helper scripts
+
+That check is complemented by the docs-site test/build steps in CI so community pages stay present
+and renderable.
+
+## Pending
+
+- Public Terraform Registry onboarding for `moolen/neuwerk` is still manual.
+- The signed appliance-image release workflow still depends on the configured release GPG secrets.
+
+## Related
+
+- [Release Process](/docs/community/release-process)
+- [Contributing](/docs/community/contributing)
+- [Security](/docs/community/security)
