@@ -16,6 +16,20 @@ Download one release into a dedicated working directory. The minimum asset set i
 - `SHA256SUMS.sig`
 - `neuwerk-release-signing-key.asc`
 
+Example download flow from GitHub Releases (replace `<release-tag>` with the published tag you are deploying, for example `v0.15.2`):
+
+```bash
+RELEASE_TAG="<release-tag>"
+BASE_URL="https://github.com/moolen/neuwerk/releases/download/${RELEASE_TAG}"
+
+curl -fLO "${BASE_URL}/restore-qcow2.sh"
+curl -fLO "${BASE_URL}/SHA256SUMS"
+curl -fLO "${BASE_URL}/SHA256SUMS.sig"
+curl -fLO "${BASE_URL}/neuwerk-release-signing-key.asc"
+curl -fLO "${BASE_URL}/neuwerk-ubuntu-24.04-minimal-amd64.qcow2.zst.part-aa"
+curl -fLO "${BASE_URL}/neuwerk-ubuntu-24.04-minimal-amd64.qcow2.zst.part-ab"
+```
+
 Then verify signature and checksums:
 
 ```bash
