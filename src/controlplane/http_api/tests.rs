@@ -35,6 +35,7 @@ fn test_api_state(dir: &TempDir, auth_source: ApiAuthSource) -> ApiState {
         external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
+        leader_local_policy_apply_count: None,
         dns_map: None,
         readiness: None,
     }
