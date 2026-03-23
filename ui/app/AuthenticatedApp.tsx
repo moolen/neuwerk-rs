@@ -2,10 +2,7 @@ import React, { useState } from 'react';
 
 import { useAuth } from '../components/auth/AuthProvider';
 import { LoginPage } from '../components/auth/LoginPage';
-import { Sidebar } from '../components/Sidebar';
-import { ThemeToggle } from '../components/ThemeToggle';
-import { deriveUserRole } from './authenticatedHelpers';
-import { AppHeader } from './AppHeader';
+import { AuthenticatedShell } from './AuthenticatedShell';
 import { renderAppPage } from './renderPage';
 import { useAppNavigation } from './useAppNavigation';
 
@@ -13,6 +10,7 @@ export const AuthenticatedApp: React.FC = () => {
   const { user, loading, logout } = useAuth();
   const { currentPage, navigateTo } = useAppNavigation();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
 
   if (loading) {
     return (
@@ -28,35 +26,18 @@ export const AuthenticatedApp: React.FC = () => {
     return <LoginPage />;
   }
 
-  const userRole = deriveUserRole(user);
-
   return (
-    <div
-      className="flex h-screen overflow-hidden"
-      style={{
-        background: 'var(--bg)',
-        fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
-        position: 'relative',
-        zIndex: 1,
-      }}
+    <AuthenticatedShell
+      user={user}
+      currentPage={currentPage}
+      sidebarCollapsed={sidebarCollapsed}
+      mobileNavigationOpen={mobileNavigationOpen}
+      onNavigate={navigateTo}
+      onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
+      onToggleMobileNavigation={() => setMobileNavigationOpen((open) => !open)}
+      onLogout={logout}
     >
-      <Sidebar
-        currentPage={currentPage}
-        onNavigate={navigateTo}
-        collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        userRole={userRole}
-      />
-
-      <main className="flex-1 flex flex-col h-full overflow-hidden relative">
-        <AppHeader user={user} onLogout={logout}>
-          <ThemeToggle />
-        </AppHeader>
-
-        <div className="flex-1 overflow-auto p-6" style={{ color: 'var(--text)' }}>
-          {renderAppPage(currentPage)}
-        </div>
-      </main>
-    </div>
+      {renderAppPage(currentPage)}
+    </AuthenticatedShell>
   );
 };

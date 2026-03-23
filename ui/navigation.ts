@@ -29,6 +29,10 @@ export const NAV_ITEMS: ReadonlyArray<NavItemDefinition> = [
 
 const APP_PAGE_SET = new Set<AppPage>(NAV_ITEMS.map((item) => item.id));
 
+export function getPageLabel(page: AppPage): string {
+  return NAV_ITEMS.find((item) => item.id === page)?.label ?? 'Dashboard';
+}
+
 export function getPageFromPathname(pathname: string): AppPage {
   const path = pathname.replace(/^\//, '').replace(/\/$/, '');
   if (path === 'threat-intel') {

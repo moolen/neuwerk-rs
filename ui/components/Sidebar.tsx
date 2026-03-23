@@ -30,6 +30,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         backdropFilter: 'blur(20px) saturate(1.5)',
         WebkitBackdropFilter: 'blur(20px) saturate(1.5)',
         borderRight: '1px solid var(--border-glass)',
+        boxShadow: 'var(--shadow-glass)',
       }}
     >
       <SidebarHeader collapsed={collapsed} onToggleCollapse={onToggleCollapse} />

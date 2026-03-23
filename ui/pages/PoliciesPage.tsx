@@ -1,5 +1,6 @@
 import React from 'react';
 
+import { PageLayout } from '../components/layout/PageLayout';
 import { PoliciesPageHeader } from './policies/components/PoliciesPageHeader';
 import { PolicyEditorActions } from './policies/components/PolicyEditorActions';
 import { PolicyEditorCard } from './policies/components/PolicyEditorCard';
@@ -40,8 +41,11 @@ export const PoliciesPage: React.FC = () => {
   } = actions;
 
   return (
-    <div className="space-y-6">
-      <PoliciesPageHeader onRefresh={loadAll} onCreate={handleCreate} />
+    <PageLayout
+      title="Policies"
+      description="Form-driven policy builder with live validation."
+      actions={<PoliciesPageHeader onRefresh={loadAll} onCreate={handleCreate} />}
+    >
 
       {error && (
         <div className="rounded-lg p-4" style={{ background: 'var(--red-bg)', border: '1px solid var(--red-border)', color: 'var(--red)' }}>
@@ -49,8 +53,8 @@ export const PoliciesPage: React.FC = () => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <div className="xl:col-span-1">
+      <div className="grid gap-6 xl:grid-cols-[minmax(16rem,20rem)_minmax(0,1fr)] xl:items-start">
+        <aside className="xl:sticky xl:top-24">
           <PolicySnapshotsPanel
             loading={loading}
             policies={policies}
@@ -62,9 +66,9 @@ export const PoliciesPage: React.FC = () => {
               void handleDelete(id);
             }}
           />
-        </div>
+        </aside>
 
-        <div className="xl:col-span-2 space-y-4">
+        <div className="space-y-4">
           <PolicyEditorCard
             editorMode={editorMode}
             editorTargetId={editorTargetId}
@@ -97,6 +101,6 @@ export const PoliciesPage: React.FC = () => {
           />
         </div>
       </div>
-    </div>
+    </PageLayout>
   );
 };

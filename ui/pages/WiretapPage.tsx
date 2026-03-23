@@ -1,4 +1,5 @@
 import React from 'react';
+import { PageLayout } from '../components/layout/PageLayout';
 import { WiretapFilters } from '../components/WiretapFilters';
 import { WiretapAggregatedTable } from './wiretap/components/WiretapAggregatedTable';
 import { WiretapLiveTable } from './wiretap/components/WiretapLiveTable';
@@ -26,17 +27,17 @@ export const WiretapPage: React.FC = () => {
   } = useWiretapPage();
 
   return (
-    <div className="space-y-4" style={{ color: 'var(--text)' }}>
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold" style={{ color: 'var(--text)' }}>
-          Wiretap
-        </h1>
+    <PageLayout
+      title="Wiretap"
+      description="Inspect live and aggregated traffic samples, with controls gated by performance mode."
+      actions={
         <WiretapViewModeToggle
           viewMode={viewMode}
           onChange={setViewMode}
           disabled={!performanceModeEnabled}
         />
-      </div>
+      }
+    >
 
       {performanceModeError && (
         <div
@@ -78,6 +79,6 @@ export const WiretapPage: React.FC = () => {
       ) : (
         <WiretapAggregatedTable flows={aggregated} />
       )}
-    </div>
+    </PageLayout>
   );
 };

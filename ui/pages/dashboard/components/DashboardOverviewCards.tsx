@@ -14,6 +14,7 @@ export const DashboardOverviewCards: React.FC<DashboardOverviewCardsProps> = ({ 
     <StatCard
       title="Active Flows"
       value={formatNumber(dataplane.active_flows)}
+      detail="Current dataplane concurrency across allowed and pending sessions."
       icon={Activity}
       colorBg="var(--accent-light)"
       colorFg="var(--accent)"
@@ -22,6 +23,7 @@ export const DashboardOverviewCards: React.FC<DashboardOverviewCardsProps> = ({ 
     <StatCard
       title="Active NAT"
       value={formatNumber(dataplane.active_nat_entries)}
+      detail={`${(dataplane.nat_port_utilization * 100).toFixed(1)}% port utilization`}
       icon={Shield}
       colorBg="var(--purple-light)"
       colorFg="var(--purple)"
@@ -30,6 +32,7 @@ export const DashboardOverviewCards: React.FC<DashboardOverviewCardsProps> = ({ 
     <StatCard
       title="DNS Allowed"
       value={formatNumber(dns.queries_allow)}
+      detail="Queries resolved or permitted by the current control-plane path."
       icon={Globe}
       colorBg="var(--green-bg)"
       colorFg="var(--green)"
@@ -38,6 +41,7 @@ export const DashboardOverviewCards: React.FC<DashboardOverviewCardsProps> = ({ 
     <StatCard
       title="DNS Denied"
       value={formatNumber(dns.queries_deny)}
+      detail="Queries blocked by policy and surfaced for operator review."
       icon={AlertTriangle}
       colorBg="var(--red-bg)"
       colorFg="var(--red)"

@@ -25,4 +25,21 @@ describe('ThreatFiltersPanel', () => {
     expect(html).toContain('Time range');
     expect(html).toContain('threatfox');
   });
+
+  it('groups filters into desktop investigation lanes', () => {
+    const html = renderToStaticMarkup(
+      <ThreatFiltersPanel
+        filters={createDefaultThreatFilters('')}
+        availableFeeds={['threatfox', 'urlhaus']}
+        availableSourceGroups={['workstations']}
+        loading={false}
+        onRefresh={vi.fn()}
+        onUpdateFilters={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Refine by feed and severity');
+    expect(html).toContain('Scope and timing');
+    expect(html).toContain('2xl:grid-cols-[minmax(0,1.5fr)_minmax(20rem,0.9fr)]');
+  });
 });

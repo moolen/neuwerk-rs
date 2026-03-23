@@ -9,7 +9,10 @@ interface DashboardBytesSectionProps {
 }
 
 export const DashboardBytesSection: React.FC<DashboardBytesSectionProps> = ({ dataplane }) => (
-  <DashboardSectionCard title="Bytes">
+  <DashboardSectionCard
+    title="Bytes"
+    description="Traffic volume split by allow, deny, and pending TLS decision paths."
+  >
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
       <Metric label="Allowed" value={formatBytes(dataplane.bytes.allow)} />
       <Metric label="Denied" value={formatBytes(dataplane.bytes.deny)} />

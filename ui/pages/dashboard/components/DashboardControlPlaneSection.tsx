@@ -17,7 +17,10 @@ export const DashboardControlPlaneSection: React.FC<DashboardControlPlaneSection
   dhcp,
   cluster,
 }) => (
-  <DashboardSectionCard title="Control Plane">
+  <DashboardSectionCard
+    title="Control Plane"
+    description="DNS, TLS, DHCP, and leadership signals that shape cluster-wide control behavior."
+  >
     <div className="grid grid-cols-2 gap-4 text-sm">
       <Metric label="DNS NXDOMAIN (policy)" value={formatNumber(dns.nxdomain_policy)} />
       <Metric label="DNS NXDOMAIN (upstream)" value={formatNumber(dns.nxdomain_upstream)} />

@@ -11,9 +11,9 @@ export const SourceGroupSourcesSection: React.FC<SourceGroupContextProps> = ({
   updateDraft,
 }) => (
   <>
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+    <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
       <div>
-        <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
+        <label className="block text-xs mb-1 uppercase tracking-[0.22em]" style={{ color: 'var(--text-muted)' }}>
           Source CIDRs (line/comma separated)
         </label>
         <textarea
@@ -24,16 +24,16 @@ export const SourceGroupSourcesSection: React.FC<SourceGroupContextProps> = ({
             })
           }
           rows={3}
-          className="w-full px-2 py-1 rounded text-sm"
+          className="w-full px-3 py-2 rounded-xl text-sm"
           style={{
-            background: 'var(--bg)',
+            background: 'var(--bg-glass-subtle)',
             border: '1px solid var(--border-subtle)',
             color: 'var(--text)',
           }}
         />
       </div>
       <div>
-        <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
+        <label className="block text-xs mb-1 uppercase tracking-[0.22em]" style={{ color: 'var(--text-muted)' }}>
           Source IPv4s (line/comma separated)
         </label>
         <textarea
@@ -44,9 +44,9 @@ export const SourceGroupSourcesSection: React.FC<SourceGroupContextProps> = ({
             })
           }
           rows={3}
-          className="w-full px-2 py-1 rounded text-sm"
+          className="w-full px-3 py-2 rounded-xl text-sm"
           style={{
-            background: 'var(--bg)',
+            background: 'var(--bg-glass-subtle)',
             border: '1px solid var(--border-subtle)',
             color: 'var(--text)',
           }}

@@ -10,7 +10,10 @@ interface DashboardRaftCatchupSectionProps {
 export const DashboardRaftCatchupSection: React.FC<DashboardRaftCatchupSectionProps> = ({
   cluster,
 }) => (
-  <DashboardSectionCard title="Raft Catch-up">
+  <DashboardSectionCard
+    title="Raft Catch-up"
+    description="Follower replication lag and catch-up status across the cluster."
+  >
     {!cluster.nodes.length ? (
       <div className="text-sm" style={{ color: 'var(--text-muted)' }}>
         Cluster node details unavailable.
@@ -30,8 +33,14 @@ export const DashboardRaftCatchupSection: React.FC<DashboardRaftCatchupSectionPr
           </thead>
           <tbody>
             {cluster.nodes.map((node) => (
-              <tr key={node.node_id} style={{ color: 'var(--text)' }}>
-                <td className="py-2 pr-3 font-mono">{node.node_id}</td>
+              <tr
+                key={node.node_id}
+                style={{
+                  color: 'var(--text)',
+                  borderTop: '1px solid var(--border-glass-subtle, var(--border-glass))',
+                }}
+              >
+                <td className="py-3 pr-3 font-mono">{node.node_id}</td>
                 <td className="py-2 pr-3">{node.role}</td>
                 <td className="py-2 pr-3 font-mono">{node.addr}</td>
                 <td className="py-2 pr-3">
@@ -42,9 +51,19 @@ export const DashboardRaftCatchupSection: React.FC<DashboardRaftCatchupSectionPr
                 </td>
                 <td className="py-2">
                   {node.caught_up ? (
-                    <span style={{ color: 'var(--green)' }}>caught up</span>
+                    <span
+                      className="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold"
+                      style={{ color: 'var(--green)', background: 'var(--green-bg)', border: '1px solid var(--green-border)' }}
+                    >
+                      caught up
+                    </span>
                   ) : (
-                    <span style={{ color: 'var(--red)' }}>lagging</span>
+                    <span
+                      className="inline-flex px-2.5 py-1 rounded-full text-xs font-semibold"
+                      style={{ color: 'var(--red)', background: 'var(--red-bg)', border: '1px solid var(--red-border)' }}
+                    >
+                      lagging
+                    </span>
                   )}
                 </td>
               </tr>

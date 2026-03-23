@@ -13,7 +13,7 @@ export const RuleHeaderFields: React.FC<RuleHeaderFieldsProps> = ({
 }) => {
   return (
     <div className="space-y-2 flex-1">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+      <div className="grid grid-cols-1 2xl:grid-cols-2 gap-2">
         <div className="space-y-1">
           <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
             Rule ID

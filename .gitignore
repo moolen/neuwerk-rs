@@ -18,4 +18,5 @@
 /.packer.d/
 /packer_cache/
 /.bin/
+/docs/superpowers/
 **/__pycache__/

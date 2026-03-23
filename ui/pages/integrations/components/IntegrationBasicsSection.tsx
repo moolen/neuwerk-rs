@@ -12,8 +12,8 @@ export const IntegrationBasicsSection: React.FC<IntegrationBasicsSectionProps> =
   form,
   onFormChange,
 }) => (
-  <>
-    <div>
+  <div className="grid gap-4 md:grid-cols-2">
+    <div className="md:col-span-1">
       <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>
         Name
       </label>
@@ -31,7 +31,7 @@ export const IntegrationBasicsSection: React.FC<IntegrationBasicsSectionProps> =
       />
     </div>
 
-    <div>
+    <div className="md:col-span-1">
       <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>
         Integration Type
       </label>
@@ -47,7 +47,7 @@ export const IntegrationBasicsSection: React.FC<IntegrationBasicsSectionProps> =
       />
     </div>
 
-    <div>
+    <div className="md:col-span-2">
       <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>
         kube-apiserver URL
       </label>
@@ -62,6 +62,9 @@ export const IntegrationBasicsSection: React.FC<IntegrationBasicsSectionProps> =
         }}
         placeholder="https://10.0.0.1:6443"
       />
+      <p className="mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+        Point this at the control-plane endpoint reachable from the Neuwerk node running the selector sync.
+      </p>
     </div>
-  </>
+  </div>
 );

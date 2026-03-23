@@ -12,6 +12,10 @@ const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 const STORAGE_KEY = 'neuwerk-theme';
 
 function getInitialTheme(): Theme {
+  if (typeof localStorage === 'undefined') {
+    return 'light';
+  }
+
   const stored = localStorage.getItem(STORAGE_KEY);
   if (stored === 'light' || stored === 'dark') return stored;
   return 'light';
@@ -21,6 +25,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
 
   useEffect(() => {
+    if (typeof document === 'undefined' || typeof localStorage === 'undefined') {
+      return;
+    }
+
     const root = document.documentElement;
     if (theme === 'dark') {
       root.classList.add('dark');
