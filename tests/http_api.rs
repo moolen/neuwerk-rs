@@ -10,6 +10,7 @@ use futures::StreamExt;
 use neuwerk::controlplane::api_auth;
 use neuwerk::controlplane::audit::{AuditEvent, AuditFindingType, AuditQueryResponse, AuditStore};
 use neuwerk::controlplane::cluster::config::ClusterConfig;
+use neuwerk::controlplane::cluster::types::NodeId;
 use neuwerk::controlplane::http_api::{HttpApiCluster, HttpApiConfig};
 use neuwerk::controlplane::intercept_tls::local_intercept_ca_paths;
 use neuwerk::controlplane::metrics::Metrics;
@@ -159,6 +160,96 @@ fn api_auth_token_from_store(
             return Err("timed out waiting for api auth keyset".to_string());
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn cluster_http_roles(
+    leader_id: NodeId,
+    seed_id: NodeId,
+    seed_http_addr: SocketAddr,
+    join_http_addr: SocketAddr,
+    seed_tls_dir: &Path,
+    join_tls_dir: &Path,
+) -> (SocketAddr, std::path::PathBuf, SocketAddr, &'static str) {
+    if leader_id == seed_id {
+        (
+            seed_http_addr,
+            seed_tls_dir.to_path_buf(),
+            join_http_addr,
+            "join",
+        )
+    } else {
+        (
+            join_http_addr,
+            join_tls_dir.to_path_buf(),
+            seed_http_addr,
+            "seed",
+        )
+    }
+}
+
+async fn send_to_current_leader_until_success<F>(
+    raft: &openraft::Raft<neuwerk::controlplane::cluster::types::ClusterTypeConfig>,
+    seed_id: NodeId,
+    seed_http_addr: SocketAddr,
+    join_http_addr: SocketAddr,
+    seed_tls_dir: &Path,
+    join_tls_dir: &Path,
+    timeout: Duration,
+    mut build_request: F,
+) -> Result<(NodeId, reqwest::Response), String>
+where
+    F: FnMut(&reqwest::Client, SocketAddr) -> reqwest::RequestBuilder,
+{
+    let deadline = Instant::now() + timeout;
+    let mut last_error = "request not attempted".to_string();
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "timed out waiting for successful leader request: {last_error}"
+            ));
+        }
+
+        let leader_id = wait_for_leader(raft, deadline - now).await?;
+        let (leader_addr, leader_tls_dir, _, _) = cluster_http_roles(
+            leader_id,
+            seed_id,
+            seed_http_addr,
+            join_http_addr,
+            seed_tls_dir,
+            join_tls_dir,
+        );
+        let client = match http_api_client(&leader_tls_dir) {
+            Ok(client) => client,
+            Err(err) => {
+                last_error = err;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+
+        match build_request(&client, leader_addr).send().await {
+            Ok(response) if response.status().is_success() => return Ok((leader_id, response)),
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                last_error = format!("status={status} body={body}");
+                if matches!(
+                    status,
+                    reqwest::StatusCode::BAD_GATEWAY | reqwest::StatusCode::SERVICE_UNAVAILABLE
+                ) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                return Err(last_error);
+            }
+            Err(err) => {
+                last_error = format!("request failed: {err}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
     }
 }
 

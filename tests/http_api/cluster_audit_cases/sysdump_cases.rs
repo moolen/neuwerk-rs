@@ -193,18 +193,18 @@ async fn http_api_cluster_sysdump_proxies_and_reports_partial_failures() {
         .unwrap();
 
     let token = api_auth_token_from_store(&seed_runtime.store).unwrap();
-    let leader_id_string = leader_id.to_string();
-
-    let follower_addr = if leader_id == seed_id {
-        join_http_addr
-    } else {
-        seed_http_addr
-    };
-    let leader_addr = if leader_id == seed_id {
-        seed_http_addr
-    } else {
-        join_http_addr
-    };
+    let leader_id = wait_for_leader(&seed_runtime.raft, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let initial_leader_id_string = leader_id.to_string();
+    let (_, _, follower_addr, _) = cluster_http_roles(
+        leader_id,
+        seed_id,
+        seed_http_addr,
+        join_http_addr,
+        &seed_dir.path().join("http-tls"),
+        &join_dir.path().join("http-tls"),
+    );
 
     let full_response = client
         .post(format!(
@@ -245,7 +245,7 @@ async fn http_api_cluster_sysdump_proxies_and_reports_partial_failures() {
         full_overview
             .get("leader_node_id")
             .and_then(serde_json::Value::as_str),
-        Some(leader_id_string.as_str())
+        Some(initial_leader_id_string.as_str())
     );
     assert_eq!(
         full_overview
@@ -293,12 +293,24 @@ async fn http_api_cluster_sysdump_proxies_and_reports_partial_failures() {
     assert_nested_sysdump(&full_entries, &seed_id.to_string());
     assert_nested_sysdump(&full_entries, &join_id.to_string());
 
-    let failed_node_id = if leader_id == seed_id {
+    let leader_id = wait_for_leader(&seed_runtime.raft, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let (_, _, follower_addr, stop_follower) = cluster_http_roles(
+        leader_id,
+        seed_id,
+        seed_http_addr,
+        join_http_addr,
+        &seed_dir.path().join("http-tls"),
+        &join_dir.path().join("http-tls"),
+    );
+    let failed_node_id = if stop_follower == "join" {
         join_id.to_string()
     } else {
         seed_id.to_string()
     };
-    if leader_id == seed_id {
+    if stop_follower == "join" {
+        join_runtime.raft.runtime_config().elect(false);
         join_http_shutdown.shutdown();
         let task = join_http_task.take().unwrap();
         tokio::time::timeout(Duration::from_secs(5), task)
@@ -307,6 +319,7 @@ async fn http_api_cluster_sysdump_proxies_and_reports_partial_failures() {
             .expect("join http task join")
             .expect("join http shutdown result");
     } else {
+        seed_runtime.raft.runtime_config().elect(false);
         seed_http_shutdown.shutdown();
         let task = seed_http_task.take().unwrap();
         tokio::time::timeout(Duration::from_secs(5), task)
@@ -319,28 +332,34 @@ async fn http_api_cluster_sysdump_proxies_and_reports_partial_failures() {
         .await
         .unwrap();
 
-    let partial_response = client
-        .post(format!(
-            "https://{leader_addr}/api/v1/support/sysdump/cluster"
-        ))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        partial_response.status().is_success(),
-        "partial cluster sysdump via leader failed: status={}",
-        partial_response.status()
-    );
+    let (partial_leader_id, partial_response) = send_to_current_leader_until_success(
+        &seed_runtime.raft,
+        seed_id,
+        seed_http_addr,
+        join_http_addr,
+        &seed_dir.path().join("http-tls"),
+        &join_dir.path().join("http-tls"),
+        Duration::from_secs(5),
+        |client, leader_addr| {
+            client
+                .post(format!(
+                    "https://{leader_addr}/api/v1/support/sysdump/cluster"
+                ))
+                .bearer_auth(&token)
+        },
+    )
+    .await
+    .unwrap();
     let partial_archive = partial_response.bytes().await.unwrap();
     let partial_entries = tar_gz_entries(&partial_archive);
+    let partial_leader_id_string = partial_leader_id.to_string();
 
     let partial_overview = json_entry(&partial_entries, "cluster/overview.json");
     assert_eq!(
         partial_overview
             .get("leader_node_id")
             .and_then(serde_json::Value::as_str),
-        Some(leader_id_string.as_str())
+        Some(partial_leader_id_string.as_str())
     );
     assert_eq!(
         partial_overview
@@ -398,7 +417,7 @@ async fn http_api_cluster_sysdump_proxies_and_reports_partial_failures() {
                 >= 2
         );
     }
-    assert!(partial_entries.contains_key(&format!("nodes/{}/sysdump.tar.gz", leader_id)));
+    assert!(partial_entries.contains_key(&format!("nodes/{}/sysdump.tar.gz", partial_leader_id)));
     assert!(!partial_entries.contains_key(&format!("nodes/{}/sysdump.tar.gz", failed_node_id)));
 
     if let Some(task) = seed_http_task.take() {

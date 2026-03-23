@@ -738,25 +738,27 @@ pub async fn http_stream_path(
         .map_err(|e| format!("http stream write failed: {e}"))?;
 
     let start = std::time::Instant::now();
-    let read_result = tokio::time::timeout(max_duration, async {
-        let mut buf = [0u8; 512];
-        let mut total = 0usize;
-        loop {
-            let n = stream.read(&mut buf).await.map_err(|e| e.to_string())?;
-            if n == 0 {
-                break;
+    // Bound idle gaps between reads instead of the total transfer length so
+    // long-lived streams can exceed the timeout as long as they keep moving.
+    let mut buf = [0u8; 512];
+    let mut total = 0usize;
+    loop {
+        let read_result = tokio::time::timeout(max_duration, stream.read(&mut buf)).await;
+        let n = match read_result {
+            Ok(Ok(n)) => n,
+            Ok(Err(err)) => return Err(format!("http stream read failed: {err}")),
+            Err(_) => {
+                return Err(format!(
+                    "http stream timed out after {:?} with {total} bytes read",
+                    start.elapsed()
+                ))
             }
-            total += n;
+        };
+        if n == 0 {
+            break;
         }
-        Ok::<usize, String>(total)
-    })
-    .await;
-
-    let total = match read_result {
-        Ok(Ok(total)) => total,
-        Ok(Err(err)) => return Err(format!("http stream read failed: {err}")),
-        Err(_) => return Err("http stream timed out".to_string()),
-    };
+        total += n;
+    }
 
     if start.elapsed() < min_duration {
         return Err(format!(

@@ -154,7 +154,7 @@ async fn http_api_audit_findings_cluster_aggregates_and_returns_partial() {
     .unwrap()
     .unwrap();
 
-    let leader_id = wait_for_leader(&seed_runtime.raft, Duration::from_secs(5))
+    wait_for_leader(&seed_runtime.raft, Duration::from_secs(5))
         .await
         .unwrap();
     let seed_id = seed_runtime.raft.metrics().borrow().id;
@@ -269,21 +269,17 @@ async fn http_api_audit_findings_cluster_aggregates_and_returns_partial() {
         .unwrap();
 
     let token = api_auth_token_from_store(&join_runtime.store).unwrap();
-    let (leader_addr, leader_tls_dir, follower_addr, stop_follower) = if leader_id == seed_id {
-        (
-            seed_http_addr,
-            seed_dir.path().join("http-tls"),
-            join_http_addr,
-            "join",
-        )
-    } else {
-        (
-            join_http_addr,
-            join_dir.path().join("http-tls"),
-            seed_http_addr,
-            "seed",
-        )
-    };
+    let leader_id = wait_for_leader(&seed_runtime.raft, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let (leader_addr, leader_tls_dir, _, _) = cluster_http_roles(
+        leader_id,
+        seed_id,
+        seed_http_addr,
+        join_http_addr,
+        &seed_dir.path().join("http-tls"),
+        &join_dir.path().join("http-tls"),
+    );
     let client = http_api_client(&leader_tls_dir).unwrap();
 
     let response = client
@@ -305,12 +301,26 @@ async fn http_api_audit_findings_cluster_aggregates_and_returns_partial() {
     assert_eq!(payload.items[0].count, 2);
     assert_eq!(payload.items[0].node_ids.len(), 2);
 
+    let leader_id = wait_for_leader(&seed_runtime.raft, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let (_, _, follower_addr, stop_follower) = cluster_http_roles(
+        leader_id,
+        seed_id,
+        seed_http_addr,
+        join_http_addr,
+        &seed_dir.path().join("http-tls"),
+        &join_dir.path().join("http-tls"),
+    );
+
     if stop_follower == "join" {
+        join_runtime.raft.runtime_config().elect(false);
         if let Some(task) = join_http_task.take() {
             task.abort();
             let _ = task.await;
         }
     } else {
+        seed_runtime.raft.runtime_config().elect(false);
         if let Some(task) = seed_http_task.take() {
             task.abort();
             let _ = task.await;
@@ -320,14 +330,24 @@ async fn http_api_audit_findings_cluster_aggregates_and_returns_partial() {
         .await
         .unwrap();
 
-    let response = client
-        .get(format!(
-            "https://{leader_addr}/api/v1/audit/findings?finding_type=l4_deny"
-        ))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .unwrap();
+    let (_, response) = send_to_current_leader_until_success(
+        &seed_runtime.raft,
+        seed_id,
+        seed_http_addr,
+        join_http_addr,
+        &seed_dir.path().join("http-tls"),
+        &join_dir.path().join("http-tls"),
+        Duration::from_secs(5),
+        |client, leader_addr| {
+            client
+                .get(format!(
+                    "https://{leader_addr}/api/v1/audit/findings?finding_type=l4_deny"
+                ))
+                .bearer_auth(&token)
+        },
+    )
+    .await
+    .unwrap();
     let status = response.status();
     let body = response.text().await.unwrap();
     assert!(status.is_success(), "status={status} body={body}");
