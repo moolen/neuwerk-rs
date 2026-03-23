@@ -41,17 +41,18 @@ pub fn spawn_integration_manager_task(
             None
         },
     };
-    let ready_client = match ReadyClient::new(http_advertise.port(), load_http_ca(cfg)) {
+    let ca_pem = match load_http_ca(cfg) {
+        Ok(ca_pem) => ca_pem,
+        Err(err) => {
+            warn!(error = %err, "integration ready client init failed");
+            return Err("integration ready client init failed: missing http ca".to_string());
+        }
+    };
+    let ready_client = match ReadyClient::new(http_advertise.port(), Some(ca_pem)) {
         Ok(client) => Arc::new(client) as Arc<dyn ReadyChecker>,
         Err(err) => {
-            warn!(error = %err, "integration ready client init failed; falling back to insecure client");
-            match ReadyClient::new(http_advertise.port(), None) {
-                Ok(client) => Arc::new(client) as Arc<dyn ReadyChecker>,
-                Err(fallback_err) => {
-                    error!(error = %fallback_err, "integration ready client fallback init failed");
-                    return Err("integration ready client init failed".to_string());
-                }
-            }
+            error!(error = %err, "integration ready client init failed");
+            return Err("integration ready client init failed".to_string());
         }
     };
     let metrics_for_integration = metrics;
@@ -85,4 +86,182 @@ pub fn spawn_integration_manager_task(
             }
         }
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use async_trait::async_trait;
+    use neuwerk::controlplane::cloud::provider::CloudError;
+    use neuwerk::controlplane::cloud::types::{
+        CapabilityResult, DiscoveryFilter, InstanceRef, IntegrationCapabilities, RouteChange,
+        RouteRef, SubnetRef, TerminationEvent,
+    };
+    use neuwerk::controlplane::cluster::config::ClusterConfig;
+    use neuwerk::dataplane::{EncapMode, SnatMode, SoftMode};
+    use tempfile::TempDir;
+
+    use crate::runtime::cli::{CloudProviderKind, DataPlaneMode};
+
+    #[derive(Clone)]
+    struct TestProvider;
+
+    #[async_trait]
+    impl CloudProviderTrait for TestProvider {
+        async fn self_identity(&self) -> Result<InstanceRef, CloudError> {
+            Ok(InstanceRef {
+                id: "node-1".to_string(),
+                name: "node-1".to_string(),
+                zone: "test-zone".to_string(),
+                created_at_epoch: 0,
+                mgmt_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                dataplane_ip: Ipv4Addr::new(10, 0, 0, 1),
+                tags: HashMap::new(),
+                active: true,
+            })
+        }
+
+        async fn discover_instances(
+            &self,
+            _filter: &DiscoveryFilter,
+        ) -> Result<Vec<InstanceRef>, CloudError> {
+            Ok(Vec::new())
+        }
+
+        async fn discover_subnets(
+            &self,
+            _filter: &DiscoveryFilter,
+        ) -> Result<Vec<SubnetRef>, CloudError> {
+            Ok(Vec::new())
+        }
+
+        async fn get_route(
+            &self,
+            _subnet: &SubnetRef,
+            _route_name: &str,
+        ) -> Result<Option<RouteRef>, CloudError> {
+            Ok(None)
+        }
+
+        async fn ensure_default_route(
+            &self,
+            _subnet: &SubnetRef,
+            _route_name: &str,
+            _next_hop: Ipv4Addr,
+        ) -> Result<RouteChange, CloudError> {
+            Ok(RouteChange::Unchanged)
+        }
+
+        async fn set_instance_protection(
+            &self,
+            _instance: &InstanceRef,
+            _enabled: bool,
+        ) -> Result<CapabilityResult, CloudError> {
+            Ok(CapabilityResult::Unsupported)
+        }
+
+        async fn poll_termination_notice(
+            &self,
+            _instance: &InstanceRef,
+        ) -> Result<Option<TerminationEvent>, CloudError> {
+            Ok(None)
+        }
+
+        async fn complete_termination_action(
+            &self,
+            _event: &TerminationEvent,
+        ) -> Result<CapabilityResult, CloudError> {
+            Ok(CapabilityResult::Unsupported)
+        }
+
+        fn capabilities(&self) -> IntegrationCapabilities {
+            IntegrationCapabilities::default()
+        }
+    }
+
+    fn test_cli_config(dir: &TempDir) -> CliConfig {
+        CliConfig {
+            management_iface: "mgmt0".to_string(),
+            data_plane_iface: "data0".to_string(),
+            dns_target_ips: Vec::new(),
+            dns_upstreams: Vec::new(),
+            data_plane_mode: DataPlaneMode::Soft(SoftMode::Tap),
+            idle_timeout_secs: 60,
+            dns_allowlist_idle_secs: 60,
+            dns_allowlist_gc_interval_secs: 30,
+            default_policy: neuwerk::dataplane::policy::DefaultPolicy::Deny,
+            dhcp_timeout_secs: 5,
+            dhcp_retry_max: 5,
+            dhcp_lease_min_secs: 60,
+            internal_cidr: None,
+            snat_mode: SnatMode::None,
+            encap_mode: EncapMode::None,
+            encap_vni: None,
+            encap_vni_internal: None,
+            encap_vni_external: None,
+            encap_udp_port: None,
+            encap_udp_port_internal: None,
+            encap_udp_port_external: None,
+            encap_mtu: 1500,
+            http_bind: None,
+            http_advertise: None,
+            http_external_url: None,
+            http_tls_dir: dir.path().join("http-tls"),
+            http_cert_path: None,
+            http_key_path: None,
+            http_ca_path: Some(dir.path().join("missing-ca.crt")),
+            http_tls_san: Vec::new(),
+            metrics_bind: None,
+            cloud_provider: CloudProviderKind::Azure,
+            cluster: ClusterConfig::disabled(),
+            cluster_migrate_from_local: false,
+            cluster_migrate_force: false,
+            cluster_migrate_verify: false,
+            integration_mode: IntegrationMode::AzureVmss,
+            integration_route_name: "neuwerk-default".to_string(),
+            integration_drain_timeout_secs: 300,
+            integration_reconcile_interval_secs: 15,
+            integration_cluster_name: "neuwerk".to_string(),
+            azure_subscription_id: None,
+            azure_resource_group: None,
+            azure_vmss_name: None,
+            aws_region: None,
+            aws_vpc_id: None,
+            aws_asg_name: None,
+            gcp_project: None,
+            gcp_region: None,
+            gcp_ig_name: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_manager_fails_closed_when_http_ca_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cli_config(&dir);
+
+        let result = spawn_integration_manager_task(
+            &cfg,
+            Some(Arc::new(TestProvider)),
+            None,
+            SocketAddr::from(([127, 0, 0, 1], 8443)),
+            Metrics::new().unwrap(),
+            DrainControl::new(),
+        );
+
+        match result {
+            Err(err) => assert!(
+                err.contains("http ca") || err.contains("ready client"),
+                "unexpected error: {err}"
+            ),
+            Ok(Some(handle)) => {
+                handle.abort();
+                panic!("expected missing HTTP CA to fail closed before spawning integration task");
+            }
+            Ok(None) => panic!("expected missing HTTP CA to produce an error"),
+        }
+    }
 }

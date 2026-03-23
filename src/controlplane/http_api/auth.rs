@@ -172,14 +172,37 @@ pub(super) async fn auth_middleware(
         return next.run(request).await;
     }
 
-    let token = match extract_bearer_token(request.headers().get(AUTHORIZATION)) {
+    let auth_context = match authorize_headers(
+        &state,
+        request.headers(),
+        requires_admin_role(request.method(), path),
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let mut request = request;
+    request.extensions_mut().insert(auth_context);
+    next.run(request).await
+}
+
+pub(super) async fn authorize_headers(
+    state: &ApiState,
+    headers: &HeaderMap,
+    require_admin: bool,
+) -> Result<AuthContext, Response> {
+    let token = match extract_bearer_token(headers.get(AUTHORIZATION)) {
         Ok(token) => token,
         Err(reason) => {
-            if let Some(token) = extract_cookie_token(request.headers()) {
+            if let Some(token) = extract_cookie_token(headers) {
                 token
             } else {
                 state.metrics.observe_http_auth("deny", reason.as_label());
-                return error_response(axum::http::StatusCode::UNAUTHORIZED, reason.message());
+                return Err(error_response(
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    reason.message(),
+                ));
             }
         }
     };
@@ -190,7 +213,7 @@ pub(super) async fn auth_middleware(
             state
                 .metrics
                 .observe_http_auth("deny", AuthFailureReason::KeysetError.as_label());
-            return error_response(axum::http::StatusCode::UNAUTHORIZED, err);
+            return Err(error_response(axum::http::StatusCode::UNAUTHORIZED, err));
         }
     };
 
@@ -201,7 +224,7 @@ pub(super) async fn auth_middleware(
             state
                 .metrics
                 .observe_http_auth("deny", AuthFailureReason::InvalidToken.as_label());
-            return error_response(axum::http::StatusCode::UNAUTHORIZED, err);
+            return Err(error_response(axum::http::StatusCode::UNAUTHORIZED, err));
         }
     };
 
@@ -209,14 +232,14 @@ pub(super) async fn auth_middleware(
         state
             .metrics
             .observe_http_auth("deny", AuthFailureReason::InvalidToken.as_label());
-        return error_response(
+        return Err(error_response(
             axum::http::StatusCode::UNAUTHORIZED,
             "missing jwt exp".to_string(),
-        );
+        ));
     }
 
     if let Some(sa_id) = &claims.sa_id {
-        match validate_service_account_claims(&state, &claims, sa_id, now).await {
+        match validate_service_account_claims(state, &claims, sa_id, now).await {
             Ok(role) => {
                 claims.roles = Some(vec![role.as_str().to_string()]);
             }
@@ -224,30 +247,25 @@ pub(super) async fn auth_middleware(
                 state
                     .metrics
                     .observe_http_auth("deny", AuthFailureReason::InvalidToken.as_label());
-                return error_response(axum::http::StatusCode::UNAUTHORIZED, err);
+                return Err(error_response(axum::http::StatusCode::UNAUTHORIZED, err));
             }
         }
     }
 
-    if requires_admin_role(request.method(), path) && !has_admin_role(&claims) {
+    if require_admin && !has_admin_role(&claims) {
         state
             .metrics
             .observe_http_auth("deny", AuthFailureReason::InsufficientRole.as_label());
-        return error_response(
+        return Err(error_response(
             axum::http::StatusCode::FORBIDDEN,
             "admin role required".to_string(),
-        );
+        ));
     }
-
-    let mut request = request;
-    request.extensions_mut().insert(AuthContext {
-        claims: claims.clone(),
-    });
 
     state
         .metrics
         .observe_http_auth("allow", AuthFailureReason::ValidToken.as_label());
-    next.run(request).await
+    Ok(AuthContext { claims })
 }
 
 fn requires_admin_role(method: &Method, _path: &str) -> bool {

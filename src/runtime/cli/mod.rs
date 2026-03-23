@@ -22,10 +22,10 @@ const INTEGRATION_DRAIN_TIMEOUT_SECS: u64 = 300;
 const INTEGRATION_RECONCILE_INTERVAL_SECS: u64 = 15;
 const INTEGRATION_CLUSTER_NAME: &str = "neuwerk";
 
-pub fn load_http_ca(cfg: &CliConfig) -> Option<Vec<u8>> {
+pub fn load_http_ca(cfg: &CliConfig) -> Result<Vec<u8>, String> {
     let path = cfg
         .http_ca_path
         .clone()
         .unwrap_or_else(|| cfg.http_tls_dir.join("ca.crt"));
-    std::fs::read(path).ok()
+    std::fs::read(&path).map_err(|err| format!("read http ca {}: {err}", path.display()))
 }
