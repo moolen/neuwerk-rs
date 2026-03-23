@@ -6,7 +6,7 @@ import type { PolicyRecord } from '../../../types';
 import { PolicySnapshotRow } from './PolicySnapshotRow';
 
 describe('PolicySnapshotRow', () => {
-  it('renders structured snapshot summaries instead of only chip metadata', () => {
+  it('renders a compact snapshot row without secondary summary cards or action buttons', () => {
     const policy: PolicyRecord = {
       id: 'abcdef123456',
       name: 'Office Egress',
@@ -51,13 +51,16 @@ describe('PolicySnapshotRow', () => {
         policy={policy}
         selectedId={null}
         onSelect={vi.fn()}
-        onDelete={vi.fn()}
       />,
     );
 
-    expect(html).toContain('Source scope');
-    expect(html).toContain('Target profile');
-    expect(html).toContain('grid grid-cols-3 gap-2');
-    expect(html).toContain('Open');
+    expect(html).toContain('Office Egress');
+    expect(html).toContain('Snapshot abcdef12');
+    expect(html).toContain('audit');
+    expect(html).not.toContain('Source scope');
+    expect(html).not.toContain('Target profile');
+    expect(html).not.toContain('grid grid-cols-3 gap-2');
+    expect(html).not.toContain('Open');
+    expect(html).not.toContain('Delete');
   });
 });

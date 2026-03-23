@@ -17,8 +17,11 @@ export interface PolicyBuilderFormMutations {
 }
 
 export interface PolicyBuilderFormSharedProps extends PolicyBuilderFormMutations {
+  editorMode: 'create' | 'edit';
+  editorTargetId: string | null;
   draft: PolicyCreateRequest;
   integrations: IntegrationView[];
   setDraft: SetDraft;
   updateDraft: UpdateDraft;
+  onDelete: (policyId: string) => void;
 }

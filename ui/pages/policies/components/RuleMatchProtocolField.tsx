@@ -7,6 +7,7 @@ import {
   applyRuleMatchProtoSelection,
   type RuleMatchProtocolSelection,
 } from './ruleMatchProtocolDraft';
+import { StyledSelect } from './StyledSelect';
 
 export const RuleMatchProtocolField: React.FC<RuleEditorContextProps> = ({
   groupIndex,
@@ -22,30 +23,26 @@ export const RuleMatchProtocolField: React.FC<RuleEditorContextProps> = ({
         Protocol
       </label>
       <div className="flex gap-2">
-        <select
+        <StyledSelect
           value={proto.kind}
-          onChange={(e) =>
+          onChange={(value) =>
             mutateRuleMatch(updateDraft, groupIndex, ruleIndex, (match) => {
               applyRuleMatchProtoSelection(
                 match,
-                e.target.value as RuleMatchProtocolSelection,
+                value as RuleMatchProtocolSelection,
                 proto.custom
               );
             })
           }
-          className="px-2 py-1 rounded text-sm"
-          style={{
-            background: 'var(--bg)',
-            border: '1px solid var(--border-subtle)',
-            color: 'var(--text)',
-          }}
-        >
-          <option value="any">any</option>
-          <option value="tcp">tcp</option>
-          <option value="udp">udp</option>
-          <option value="icmp">icmp</option>
-          <option value="custom">custom numeric</option>
-        </select>
+          options={[
+            { value: 'any', label: 'any' },
+            { value: 'tcp', label: 'tcp' },
+            { value: 'udp', label: 'udp' },
+            { value: 'icmp', label: 'icmp' },
+            { value: 'custom', label: 'custom numeric' },
+          ]}
+          buttonClassName="min-w-[10rem]"
+        />
         {proto.kind === 'custom' && (
           <input
             type="text"

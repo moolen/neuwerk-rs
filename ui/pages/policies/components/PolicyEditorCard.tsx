@@ -23,6 +23,7 @@ interface PolicyEditorCardProps {
   deleteRule: (groupIndex: number, ruleIndex: number) => void;
   validationIssues: PolicyValidationIssue[];
   editorError: string | null;
+  onDelete: (policyId: string) => void;
 }
 
 export const PolicyEditorCard: React.FC<PolicyEditorCardProps> = ({
@@ -42,6 +43,7 @@ export const PolicyEditorCard: React.FC<PolicyEditorCardProps> = ({
   deleteRule,
   validationIssues,
   editorError,
+  onDelete,
 }) => (
   <>
     <div
@@ -58,6 +60,8 @@ export const PolicyEditorCard: React.FC<PolicyEditorCardProps> = ({
       />
 
       <PolicyBuilderForm
+        editorMode={editorMode}
+        editorTargetId={editorTargetId}
         draft={draft}
         integrations={integrations}
         setDraft={setDraft}
@@ -70,6 +74,7 @@ export const PolicyEditorCard: React.FC<PolicyEditorCardProps> = ({
         duplicateRule={duplicateRule}
         moveRule={moveRule}
         deleteRule={deleteRule}
+        onDelete={onDelete}
       />
     </div>
 

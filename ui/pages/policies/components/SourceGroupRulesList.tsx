@@ -24,7 +24,7 @@ export const SourceGroupRulesList: React.FC<SourceGroupRulesListProps> = ({
   <>
     {group.rules.map((rule, ruleIndex) => (
       <RuleEditor
-        key={`${rule.id}-${ruleIndex}`}
+        key={ruleIndex}
         groupIndex={groupIndex}
         ruleIndex={ruleIndex}
         rule={rule}

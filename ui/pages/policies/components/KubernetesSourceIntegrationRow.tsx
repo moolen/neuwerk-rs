@@ -4,6 +4,7 @@ import { Trash2 } from 'lucide-react';
 import type { IntegrationView, PolicyKubernetesSource } from '../../../types';
 import type { UpdateDraft } from './formTypes';
 import { mutateKubernetesSource } from './kubernetesSourceDraft';
+import { StyledSelect } from './StyledSelect';
 
 interface KubernetesSourceIntegrationRowProps {
   groupIndex: number;
@@ -21,27 +22,20 @@ export const KubernetesSourceIntegrationRow: React.FC<KubernetesSourceIntegratio
   updateDraft,
 }) => (
   <div className="flex items-center gap-2">
-    <select
+    <StyledSelect
       value={source.integration}
-      onChange={(e) =>
+      onChange={(value) =>
         mutateKubernetesSource(updateDraft, groupIndex, sourceIndex, (nextSource) => {
-          nextSource.integration = e.target.value;
+          nextSource.integration = value;
         })
       }
-      className="px-2 py-1 rounded text-sm min-w-56"
-      style={{
-        background: 'var(--bg)',
-        border: '1px solid var(--border-subtle)',
-        color: 'var(--text)',
-      }}
-    >
-      <option value="">Select integration</option>
-      {integrations.map((integration) => (
-        <option key={integration.name} value={integration.name}>
-          {integration.name}
-        </option>
-      ))}
-    </select>
+      placeholder="Select integration"
+      options={integrations.map((integration) => ({
+        value: integration.name,
+        label: integration.name,
+      }))}
+      buttonClassName="min-w-56"
+    />
     <input
       type="text"
       value={source.integration}

@@ -8,7 +8,6 @@ interface PolicySnapshotsPanelProps {
   policies: PolicyRecord[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onDelete: (id: string) => void;
 }
 
 export const PolicySnapshotsPanel: React.FC<PolicySnapshotsPanelProps> = ({
@@ -16,10 +15,9 @@ export const PolicySnapshotsPanel: React.FC<PolicySnapshotsPanelProps> = ({
   policies,
   selectedId,
   onSelect,
-  onDelete,
 }) => (
   <div
-    className="rounded-[1.5rem] overflow-hidden"
+    className="rounded-[1.5rem] overflow-hidden xl:max-h-[calc(100vh-7rem)] xl:flex xl:flex-col"
     style={{
       background: 'linear-gradient(180deg, var(--bg-glass-strong), rgba(255,255,255,0.04))',
       border: '1px solid var(--border-glass)',
@@ -37,29 +35,32 @@ export const PolicySnapshotsPanel: React.FC<PolicySnapshotsPanelProps> = ({
         Snapshot rail
       </div>
       <div className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
-        Jump between saved policies and reopen an editor target without losing context.
+        Jump between saved policies without losing your current editing context.
       </div>
     </div>
-    {loading ? (
-      <div className="p-6 text-sm" style={{ color: 'var(--text-muted)' }}>
-        Loading policies...
-      </div>
-    ) : policies.length === 0 ? (
-      <div className="p-6 text-sm" style={{ color: 'var(--text-muted)' }}>
-        No policies found.
-      </div>
-    ) : (
-      <div className="divide-y" style={{ borderColor: 'var(--border-glass)' }}>
+    <div
+      className="xl:flex-1 xl:min-h-0 overflow-y-auto overscroll-contain scrollbar-none"
+    >
+      {loading ? (
+        <div className="p-6 text-sm" style={{ color: 'var(--text-muted)' }}>
+          Loading policies...
+        </div>
+      ) : policies.length === 0 ? (
+        <div className="p-6 text-sm" style={{ color: 'var(--text-muted)' }}>
+          No policies found.
+        </div>
+      ) : (
+        <div className="divide-y" style={{ borderColor: 'var(--border-glass)' }}>
         {policies.map((policy) => (
           <PolicySnapshotRow
             key={policy.id}
             policy={policy}
             selectedId={selectedId}
             onSelect={onSelect}
-            onDelete={onDelete}
           />
         ))}
-      </div>
-    )}
+        </div>
+      )}
+    </div>
   </div>
 );

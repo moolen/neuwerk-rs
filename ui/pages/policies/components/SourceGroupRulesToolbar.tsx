@@ -11,7 +11,7 @@ export const SourceGroupRulesToolbar: React.FC<SourceGroupRulesToolbarProps> = (
   ruleCount,
   addRule,
 }) => (
-  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+  <div className="space-y-3">
     <div className="space-y-1">
       <div className="text-xs uppercase tracking-[0.22em]" style={{ color: 'var(--text-muted)' }}>
         Configured rules
