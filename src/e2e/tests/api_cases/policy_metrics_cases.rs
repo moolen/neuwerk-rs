@@ -27,12 +27,8 @@ pub(super) fn api_policy_persisted_local(cfg: &TopologyConfig) -> Result<(), Str
         let store_dir = std::path::PathBuf::from("/var/lib/neuwerk/local-policy-store");
         let active_path = store_dir.join("active.json");
         wait_for_path(&active_path, Duration::from_secs(5))?;
-        let active: PolicyActive =
-            serde_json::from_slice(&std::fs::read(&active_path).map_err(|e| e.to_string())?)
-                .map_err(|e| format!("active json error: {e}"))?;
-        if active.id != record.id {
-            return Err("local active policy id mismatch".to_string());
-        }
+        wait_for_active_id(&active_path, record.id, Duration::from_secs(5))
+            .map_err(|_| "local active policy id mismatch".to_string())?;
         let record_path = store_dir
             .join("policies")
             .join(format!("{}.json", record.id));
@@ -80,10 +76,8 @@ pub(super) fn api_policy_active_semantics(cfg: &TopologyConfig) -> Result<(), St
             Some(&token),
         )
         .await?;
-        let after_audit = read_active_id(&active_path)?;
-        if after_audit != audited.id {
-            return Err("audit policy did not become active".to_string());
-        }
+        wait_for_active_id(&active_path, audited.id, Duration::from_secs(5))
+            .map_err(|_| "audit policy did not become active".to_string())?;
         let enforced = http_set_policy(
             api_addr,
             &tls_dir,
@@ -92,10 +86,8 @@ pub(super) fn api_policy_active_semantics(cfg: &TopologyConfig) -> Result<(), St
             Some(&token),
         )
         .await?;
-        let after_enforce = read_active_id(&active_path)?;
-        if after_enforce != enforced.id {
-            return Err("enforce policy did not update active id".to_string());
-        }
+        let after_enforce = wait_for_active_id(&active_path, enforced.id, Duration::from_secs(5))
+            .map_err(|_| "enforce policy did not update active id".to_string())?;
         if after_enforce == baseline {
             return Err("enforce policy did not replace baseline active id".to_string());
         }
@@ -208,7 +200,8 @@ pub(super) fn api_policy_upsert_by_name(cfg: &TopologyConfig) -> Result<(), Stri
             return Err("policy upsert by-name returned wrong name".to_string());
         }
 
-        let fetched = http_get_policy_by_name(api_addr, &tls_dir, policy_name, Some(&token)).await?;
+        let fetched =
+            http_get_policy_by_name(api_addr, &tls_dir, policy_name, Some(&token)).await?;
         if fetched.id != created.id {
             return Err("policy get by-name returned wrong record".to_string());
         }
