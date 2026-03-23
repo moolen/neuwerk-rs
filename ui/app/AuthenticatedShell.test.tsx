@@ -36,4 +36,25 @@ describe('AuthenticatedShell', () => {
     expect(html).toContain('Open navigation');
     expect(html).toContain('fixed inset-0');
   });
+
+  it('uses the child label in the shell header', () => {
+    const html = renderToStaticMarkup(
+      <ThemeProvider>
+        <AuthenticatedShell
+          user={USER}
+          currentPage="threat-findings"
+          sidebarCollapsed={false}
+          mobileNavigationOpen={false}
+          onNavigate={() => {}}
+          onToggleSidebar={() => {}}
+          onToggleMobileNavigation={() => {}}
+          onLogout={async () => {}}
+        >
+          <div>Findings body</div>
+        </AuthenticatedShell>
+      </ThemeProvider>,
+    );
+
+    expect(html).toContain('Findings');
+  });
 });

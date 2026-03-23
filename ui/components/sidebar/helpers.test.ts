@@ -16,22 +16,44 @@ describe('sidebar helpers', () => {
       { id: 'settings', label: 'Settings', adminOnly: true },
     ];
 
-    expect(filterSidebarNavItems('readonly', items).map((item) => item.id)).toEqual(['dashboard']);
-    expect(filterSidebarNavItems('admin', items).map((item) => item.id)).toEqual([
+    expect(filterSidebarNavItems('readonly', 'dashboard', items).map((item) => item.id)).toEqual([
+      'dashboard',
+    ]);
+    expect(filterSidebarNavItems('admin', 'dashboard', items).map((item) => item.id)).toEqual([
       'dashboard',
       'settings',
     ]);
   });
 
-  it('hides child nav items until section-aware sidebar rendering exists', () => {
+  it('hides child nav items when the current page is outside the section', () => {
     const items: NavItemDefinition[] = [
       { id: 'threats', label: 'Threats' },
       { id: 'threat-findings', label: 'Findings', parentId: 'threats' },
       { id: 'threat-silences', label: 'Silences', parentId: 'threats' },
     ];
 
-    expect(filterSidebarNavItems('readonly', items).map((item) => item.id)).toEqual(['threats']);
-    expect(filterSidebarNavItems('admin', items).map((item) => item.id)).toEqual(['threats']);
+    expect(filterSidebarNavItems('readonly', 'dashboard', items).map((item) => item.id)).toEqual([
+      'threats',
+    ]);
+    expect(filterSidebarNavItems('admin', 'dashboard', items).map((item) => item.id)).toEqual([
+      'threats',
+    ]);
+  });
+
+  it('shows threat children only while the current page is inside the threat section', () => {
+    expect(filterSidebarNavItems('admin', 'policies').map((item) => item.id)).not.toContain(
+      'threat-findings',
+    );
+    expect(filterSidebarNavItems('admin', 'policies').map((item) => item.id)).not.toContain(
+      'threat-silences',
+    );
+
+    expect(filterSidebarNavItems('admin', 'threat-findings').map((item) => item.id)).toContain(
+      'threat-findings',
+    );
+    expect(filterSidebarNavItems('admin', 'threat-findings').map((item) => item.id)).toContain(
+      'threat-silences',
+    );
   });
 
   it('derives active vs inactive nav item styles', () => {
