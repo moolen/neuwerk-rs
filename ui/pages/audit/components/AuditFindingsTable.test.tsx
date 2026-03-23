@@ -46,4 +46,32 @@ describe('AuditFindingsTable', () => {
     expect(html).toContain('critical');
     expect(html).toContain('/threats?audit_key=dns%3Anone%3Aworkstations%3Abad.example.com');
   });
+
+  it('renders responsive mobile cards alongside desktop table markup', () => {
+    const html = renderToStaticMarkup(<AuditFindingsTable items={[auditFinding()]} />);
+
+    expect(html).toContain('hidden md:block');
+    expect(html).toContain('md:hidden');
+    expect(html).toContain('Review queue');
+    expect(html).toContain('Finding volume');
+    expect(html).toContain('Source group');
+    expect(html).toContain('Last seen');
+  });
+
+  it('marks threat-linked findings with explicit review cues', () => {
+    const html = renderToStaticMarkup(
+      <AuditFindingsTable
+        items={[auditFinding()]}
+        threatAnnotations={{
+          'dns:none:workstations:bad.example.com': {
+            severity: 'critical',
+            matchCount: 2,
+            href: '/threats?audit_key=dns%3Anone%3Aworkstations%3Abad.example.com',
+          },
+        }}
+      />,
+    );
+
+    expect(html).toContain('Threat linked');
+  });
 });

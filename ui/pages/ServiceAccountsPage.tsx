@@ -1,5 +1,6 @@
 import React from 'react';
 import { Plus } from 'lucide-react';
+import { PageLayout } from '../components/layout/PageLayout';
 import { CreateServiceAccountModal } from '../components/service-accounts/CreateServiceAccountModal';
 import { EditServiceAccountModal } from '../components/service-accounts/EditServiceAccountModal';
 import { ServiceAccountTable } from '../components/service-accounts/ServiceAccountTable';
@@ -37,16 +38,10 @@ export const ServiceAccountsPage: React.FC = () => {
   } = useServiceAccountsPage();
 
   return (
-    <div className="p-6">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-2xl font-bold mb-1" style={{ color: 'var(--text)' }}>
-            Service Accounts
-          </h1>
-          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-            Create service accounts and mint JWTs for API access.
-          </p>
-        </div>
+    <PageLayout
+      title="Service Accounts"
+      description="Create service accounts and mint JWTs for API access."
+      actions={
         <button
           onClick={() => setShowCreateModal(true)}
           className="px-4 py-2 text-white rounded-lg flex items-center space-x-2 transition-colors"
@@ -55,7 +50,8 @@ export const ServiceAccountsPage: React.FC = () => {
           <Plus className="w-4 h-4" />
           <span>Create Service Account</span>
         </button>
-      </div>
+      }
+    >
 
       {error && (
         <div
@@ -126,6 +122,6 @@ export const ServiceAccountsPage: React.FC = () => {
           onClose={closeTokenDialog}
         />
       )}
-    </div>
+    </PageLayout>
   );
 };

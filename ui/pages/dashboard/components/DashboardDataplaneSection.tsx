@@ -9,7 +9,10 @@ interface DashboardDataplaneSectionProps {
 }
 
 export const DashboardDataplaneSection: React.FC<DashboardDataplaneSectionProps> = ({ dataplane }) => (
-  <DashboardSectionCard title="Dataplane">
+  <DashboardSectionCard
+    title="Dataplane"
+    description="Packet decisions, flow churn, and transport pressure across the forwarding path."
+  >
     <div className="grid grid-cols-2 gap-4 text-sm">
       <Metric label="Packets Allowed" value={formatNumber(dataplane.packets.allow)} />
       <Metric label="Packets Denied" value={formatNumber(dataplane.packets.deny)} />

@@ -29,6 +29,7 @@ export const SourceGroupRulesSection: React.FC<SourceGroupRulesSectionProps> = (
   <div className="space-y-3">
     <SourceGroupRulesToolbar
       groupIndex={groupIndex}
+      ruleCount={group.rules.length}
       addRule={addRule}
     />
 

@@ -19,14 +19,26 @@ export const PolicySnapshotsPanel: React.FC<PolicySnapshotsPanelProps> = ({
   onDelete,
 }) => (
   <div
-    className="rounded-xl overflow-hidden"
-    style={{ background: 'var(--bg-glass)', border: '1px solid var(--border-glass)' }}
+    className="rounded-[1.5rem] overflow-hidden"
+    style={{
+      background: 'linear-gradient(180deg, var(--bg-glass-strong), rgba(255,255,255,0.04))',
+      border: '1px solid var(--border-glass)',
+      boxShadow: 'var(--shadow-glass)',
+    }}
   >
     <div
-      className="px-4 py-3 text-sm font-semibold"
+      className="px-4 py-4"
       style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-glass)' }}
     >
-      Policies
+      <div className="text-xs uppercase tracking-[0.24em]" style={{ color: 'var(--text-muted)' }}>
+        Policies
+      </div>
+      <div className="mt-1 text-sm font-semibold" style={{ color: 'var(--text)' }}>
+        Snapshot rail
+      </div>
+      <div className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
+        Jump between saved policies and reopen an editor target without losing context.
+      </div>
     </div>
     {loading ? (
       <div className="p-6 text-sm" style={{ color: 'var(--text-muted)' }}>

@@ -18,18 +18,23 @@ export const SourceGroupsSection: React.FC<PolicyBuilderFormSharedProps> = ({
   deleteRule,
 }) => (
   <div className="space-y-4">
-    <div className="flex items-center justify-between">
-      <h3 className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>
-        Source Groups
-      </h3>
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold uppercase tracking-[0.24em]" style={{ color: 'var(--text-muted)' }}>
+          Source Groups
+        </h3>
+        <p className="text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>
+          Arrange source scopes in priority order, then attach per-group rules and integration selectors.
+        </p>
+      </div>
       <button
         type="button"
         onClick={addGroup}
-        className="px-3 py-1.5 rounded text-xs"
+        className="px-3 py-2 rounded-xl text-xs font-medium self-start"
         style={{
           background: 'var(--bg-input)',
           border: '1px solid var(--border-subtle)',
-          color: 'var(--text-secondary)',
+          color: 'var(--text)',
         }}
       >
         <span className="inline-flex items-center gap-1">
@@ -57,8 +62,12 @@ export const SourceGroupsSection: React.FC<PolicyBuilderFormSharedProps> = ({
 
     {!draft.policy.source_groups.length && (
       <div
-        className="text-xs py-3 px-3 rounded"
-        style={{ color: 'var(--text-muted)', border: '1px dashed var(--border-subtle)' }}
+        className="text-sm py-4 px-4 rounded-xl"
+        style={{
+          color: 'var(--text-muted)',
+          border: '1px dashed var(--border-subtle)',
+          background: 'var(--bg-glass-subtle)',
+        }}
       >
         No source groups configured.
       </div>

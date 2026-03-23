@@ -34,91 +34,117 @@ export const PolicySnapshotRow: React.FC<PolicySnapshotRowProps> = ({
   const sourceSummary = summarizePolicySources(policy);
   const targetSummary = summarizePolicyDestinations(policy);
   const hasDpi = policyHasDpi(policy);
+  const selected = selectedId === policy.id;
+  const statStyle: React.CSSProperties = {
+    background: 'var(--bg-glass-subtle)',
+    border: '1px solid var(--border-subtle)',
+  };
 
   return (
     <div
-      className="p-4 cursor-pointer"
+      className="p-4 cursor-pointer space-y-4"
       style={{
-        background: selectedId === policy.id ? 'var(--bg-glass-strong)' : 'transparent',
+        background: selected ? 'var(--bg-glass-strong)' : 'transparent',
       }}
       onClick={() => onSelect(policy.id)}
     >
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1 min-w-0">
+          <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
             {policyDisplayName(policy)}
           </div>
-          <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            id {snapshotShortId(policy.id)}
+          <div className="text-xs uppercase tracking-[0.2em]" style={{ color: 'var(--text-muted)' }}>
+            Snapshot {snapshotShortId(policy.id)}
           </div>
         </div>
         <div
-          className="text-xs px-2.5 py-1 rounded-full font-semibold capitalize border"
+          className="text-xs px-2.5 py-1 rounded-full font-semibold capitalize border shrink-0"
           style={modeBadgeStyle}
         >
           {policy.mode}
         </div>
       </div>
-      <div className="mt-3 flex flex-wrap gap-2 text-xs">
+
+      <div className="grid grid-cols-3 gap-2 text-xs">
         <div
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border"
-          style={{ background: 'var(--accent-light)', color: 'var(--accent)', borderColor: 'var(--border-subtle)' }}
+          className="rounded-xl px-3 py-2 space-y-1"
+          style={{ ...statStyle, background: 'var(--accent-light)', color: 'var(--accent)' }}
         >
-          <span className="font-semibold">Groups</span>
-          <span>{sourceGroupCount}</span>
+          <div className="uppercase tracking-[0.16em]" style={{ color: 'var(--text-muted)' }}>
+            Groups
+          </div>
+          <div className="text-sm font-semibold">{sourceGroupCount}</div>
         </div>
         <div
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border"
-          style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)', borderColor: 'var(--border-subtle)' }}
+          className="rounded-xl px-3 py-2 space-y-1"
+          style={{ ...statStyle, color: 'var(--text-secondary)' }}
         >
-          <span className="font-semibold">Rules</span>
-          <span>{ruleCount}</span>
+          <div className="uppercase tracking-[0.16em]" style={{ color: 'var(--text-muted)' }}>
+            Rules
+          </div>
+          <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
+            {ruleCount}
+          </div>
         </div>
         <div
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border"
+          className="rounded-xl px-3 py-2 space-y-1"
           style={
             hasDpi
-              ? { background: 'var(--green-bg)', color: 'var(--green)', borderColor: 'var(--green-border)' }
-              : { background: 'var(--red-bg)', color: 'var(--red)', borderColor: 'var(--red-border)' }
+              ? { ...statStyle, background: 'var(--green-bg)', color: 'var(--green)' }
+              : { ...statStyle, background: 'var(--red-bg)', color: 'var(--red)' }
           }
         >
-          <span className="font-semibold">DPI</span>
-          <span>{hasDpi ? 'on' : 'off'}</span>
-        </div>
-        <div
-          className="inline-flex min-w-0 max-w-full items-center gap-1 px-2.5 py-1 rounded-full border"
-          style={{ background: 'var(--purple-light)', color: 'var(--purple)', borderColor: 'var(--border-subtle)' }}
-          title={sourceSummary}
-        >
-          <span className="font-semibold shrink-0">Sources</span>
-          <span className="truncate">{sourceSummary}</span>
-        </div>
-        <div
-          className="inline-flex min-w-0 max-w-full items-center gap-1 px-2.5 py-1 rounded-full border"
-          style={{ background: 'var(--amber-bg)', color: 'var(--amber)', borderColor: 'var(--amber-border)' }}
-          title={targetSummary}
-        >
-          <span className="font-semibold shrink-0">Targets</span>
-          <span className="truncate">{targetSummary}</span>
+          <div className="uppercase tracking-[0.16em]" style={{ color: 'var(--text-muted)' }}>
+            DPI
+          </div>
+          <div className="text-sm font-semibold">{hasDpi ? 'on' : 'off'}</div>
         </div>
       </div>
-      <div className="mt-3 flex items-center gap-2">
+
+      <div className="space-y-3">
+        <div
+          className="rounded-xl px-3 py-2 space-y-1"
+          style={{ background: 'var(--purple-light)', border: '1px solid var(--border-subtle)' }}
+          title={sourceSummary}
+        >
+          <div className="text-xs uppercase tracking-[0.18em]" style={{ color: 'var(--text-muted)' }}>
+            Source scope
+          </div>
+          <div className="text-sm truncate" style={{ color: 'var(--purple)' }}>
+            {sourceSummary}
+          </div>
+        </div>
+        <div
+          className="rounded-xl px-3 py-2 space-y-1"
+          style={{ background: 'var(--amber-bg)', border: '1px solid var(--amber-border)' }}
+          title={targetSummary}
+        >
+          <div className="text-xs uppercase tracking-[0.18em]" style={{ color: 'var(--text-muted)' }}>
+            Target profile
+          </div>
+          <div className="text-sm truncate" style={{ color: 'var(--amber)' }}>
+            {targetSummary}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
         <button
           onClick={(e) => {
             e.stopPropagation();
             onSelect(policy.id);
           }}
-          className="px-2 py-1 text-xs rounded-lg"
+          className="px-3 py-1.5 text-xs rounded-lg"
           style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)' }}
         >
-          Edit
+          Open
         </button>
         <button
           onClick={(e) => {
             e.stopPropagation();
             onDelete(policy.id);
           }}
-          className="px-2 py-1 text-xs rounded-lg"
+          className="px-3 py-1.5 text-xs rounded-lg"
           style={{ background: 'var(--red-bg)', color: 'var(--red)' }}
         >
           Delete

@@ -12,7 +12,7 @@ export const IntegrationCredentialsSection: React.FC<IntegrationCredentialsSecti
   form,
   onFormChange,
 }) => (
-  <>
+  <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
     <div>
       <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>
         kube-apiserver CA Certificate (PEM)
@@ -29,6 +29,9 @@ export const IntegrationCredentialsSection: React.FC<IntegrationCredentialsSecti
         }}
         placeholder="-----BEGIN CERTIFICATE-----"
       />
+      <p className="mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+        Paste the cluster CA chain Neuwerk should trust when connecting to the API server.
+      </p>
     </div>
 
     <div>
@@ -53,5 +56,5 @@ export const IntegrationCredentialsSection: React.FC<IntegrationCredentialsSecti
         </p>
       )}
     </div>
-  </>
+  </div>
 );

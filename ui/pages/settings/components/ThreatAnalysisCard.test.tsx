@@ -30,6 +30,8 @@ describe('ThreatAnalysisCard', () => {
 
     expect(html).toContain('Threat Analysis');
     expect(html).toContain('Disabled');
-    expect(html).toContain('cluster-wide');
+    expect(html).toContain('Cluster-wide');
+    expect(html).toContain('Alert threshold: high');
+    expect(html).toContain('Remote enrichment: Off');
   });
 });

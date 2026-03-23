@@ -44,7 +44,14 @@ export const PolicyEditorCard: React.FC<PolicyEditorCardProps> = ({
   editorError,
 }) => (
   <>
-    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-glass)', border: '1px solid var(--border-glass)' }}>
+    <div
+      className="rounded-[1.5rem] overflow-hidden"
+      style={{
+        background: 'linear-gradient(180deg, var(--bg-glass-strong), rgba(255,255,255,0.04))',
+        border: '1px solid var(--border-glass)',
+        boxShadow: 'var(--shadow-glass)',
+      }}
+    >
       <PolicyEditorHeader
         editorMode={editorMode}
         editorTargetId={editorTargetId}

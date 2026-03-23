@@ -2,30 +2,35 @@ import React from 'react';
 
 interface SourceGroupRulesToolbarProps {
   groupIndex: number;
+  ruleCount: number;
   addRule: (groupIndex: number) => void;
 }
 
 export const SourceGroupRulesToolbar: React.FC<SourceGroupRulesToolbarProps> = ({
   groupIndex,
+  ruleCount,
   addRule,
 }) => (
-  <div className="flex items-center justify-between">
-    <h4 className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
-      Rules
-    </h4>
-    <div className="flex items-center gap-2">
-      <button
-        type="button"
-        onClick={() => addRule(groupIndex)}
-        className="px-2 py-1 rounded text-xs"
-        style={{
-          background: 'var(--bg)',
-          border: '1px solid var(--border-subtle)',
-          color: 'var(--text-secondary)',
-        }}
-      >
-        Add Rule
-      </button>
+  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="space-y-1">
+      <div className="text-xs uppercase tracking-[0.22em]" style={{ color: 'var(--text-muted)' }}>
+        Configured rules
+      </div>
+      <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+        {ruleCount} {ruleCount === 1 ? 'rule' : 'rules'} in evaluation order.
+      </div>
     </div>
+    <button
+      type="button"
+      onClick={() => addRule(groupIndex)}
+      className="px-3 py-2 rounded-xl text-xs font-medium self-start"
+      style={{
+        background: 'var(--bg-glass-subtle)',
+        border: '1px solid var(--border-subtle)',
+        color: 'var(--text)',
+      }}
+    >
+      Add Rule
+    </button>
   </div>
 );

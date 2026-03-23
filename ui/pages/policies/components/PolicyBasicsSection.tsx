@@ -9,35 +9,9 @@ interface PolicyBasicsSectionProps {
 }
 
 export const PolicyBasicsSection: React.FC<PolicyBasicsSectionProps> = ({ draft, setDraft }) => (
-  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-    <div className="md:col-span-2">
-      <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
-        Policy Name
-      </label>
-      <input
-        type="text"
-        value={draft.name ?? ''}
-        onChange={(e) =>
-          setDraft((prev) => ({
-            ...prev,
-            name: e.target.value,
-          }))
-        }
-        placeholder="e.g. Office Egress Baseline"
-        className="w-full px-3 py-2 rounded text-sm"
-        style={{
-          background: 'var(--bg-input)',
-          border: '1px solid var(--border-subtle)',
-          color: 'var(--text)',
-        }}
-      />
-      <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-        Optional label for internal organization.
-      </p>
-    </div>
-
+  <div className="grid grid-cols-1 gap-4">
     <div>
-      <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
+      <label className="block text-xs mb-1 uppercase tracking-[0.22em]" style={{ color: 'var(--text-muted)' }}>
         Enforcement Mode
       </label>
       <select
@@ -48,7 +22,7 @@ export const PolicyBasicsSection: React.FC<PolicyBasicsSectionProps> = ({ draft,
             mode: e.target.value as PolicyCreateRequest['mode'],
           }))
         }
-        className="w-full px-3 py-2 rounded text-sm"
+        className="w-full px-3.5 py-3 rounded-xl text-sm"
         style={{
           background: 'var(--bg-input)',
           border: '1px solid var(--border-subtle)',
@@ -64,7 +38,7 @@ export const PolicyBasicsSection: React.FC<PolicyBasicsSectionProps> = ({ draft,
       </p>
     </div>
     <div>
-      <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
+      <label className="block text-xs mb-1 uppercase tracking-[0.22em]" style={{ color: 'var(--text-muted)' }}>
         Global Fallback Action
       </label>
       <select
@@ -78,7 +52,7 @@ export const PolicyBasicsSection: React.FC<PolicyBasicsSectionProps> = ({ draft,
             },
           }))
         }
-        className="w-full px-3 py-2 rounded text-sm"
+        className="w-full px-3.5 py-3 rounded-xl text-sm"
         style={{
           background: 'var(--bg-input)',
           border: '1px solid var(--border-subtle)',
@@ -93,11 +67,11 @@ export const PolicyBasicsSection: React.FC<PolicyBasicsSectionProps> = ({ draft,
       </p>
     </div>
     <div
-      className="md:col-span-2 rounded p-2 text-xs"
+      className="rounded-xl p-3 text-xs leading-6"
       style={{
         border: '1px solid var(--border-subtle)',
         color: 'var(--text-muted)',
-        background: 'var(--bg)',
+        background: 'var(--bg-glass-subtle)',
       }}
     >
       Effective decision path: rule action -&gt; group fallback -&gt; global fallback -&gt; audit override

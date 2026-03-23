@@ -42,6 +42,13 @@ function inputStyle(): React.CSSProperties {
   };
 }
 
+function laneStyle(): React.CSSProperties {
+  return {
+    background: 'rgba(255,255,255,0.04)',
+    border: '1px solid var(--border-glass)',
+  };
+}
+
 function toggleArrayValue<T extends string>(values: T[], value: T): T[] {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
@@ -123,159 +130,189 @@ export const ThreatFiltersPanel: React.FC<ThreatFiltersPanelProps> = ({
       </button>
     </div>
 
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-      <label className="space-y-2">
-        <span className="text-sm font-medium" style={{ color: 'var(--text)' }}>
-          Hostname or IP
-        </span>
-        <input
-          type="search"
-          placeholder="bad.example.com or 203.0.113.10"
-          value={filters.indicatorQuery}
-          onChange={(event) => onUpdateFilters({ indicatorQuery: event.target.value })}
-          style={inputStyle()}
-        />
-      </label>
+    <div className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(19rem,0.95fr)] 2xl:grid-cols-[minmax(0,1.5fr)_minmax(20rem,0.9fr)]">
+      <div className="space-y-5">
+        <section className="rounded-[1.2rem] p-4 space-y-4" style={laneStyle()}>
+          <div>
+            <h3 className="text-base font-semibold" style={{ color: 'var(--text)' }}>
+              Refine by feed and severity
+            </h3>
+            <p className="mt-1 text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>
+              Start with the indicator and feed mix, then tighten the visible findings by severity.
+            </p>
+          </div>
 
-      <label className="space-y-2">
-        <span className="text-sm font-medium" style={{ color: 'var(--text)' }}>
-          Source group
-        </span>
-        <input
-          type="text"
-          list="threat-source-groups"
-          placeholder="All source groups"
-          value={filters.sourceGroup}
-          onChange={(event) => onUpdateFilters({ sourceGroup: event.target.value })}
-          style={inputStyle()}
-        />
-        <datalist id="threat-source-groups">
-          {availableSourceGroups.map((item) => (
-            <option key={item} value={item} />
-          ))}
-        </datalist>
-      </label>
-    </div>
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+            <label className="space-y-2">
+              <span className="text-sm font-medium" style={{ color: 'var(--text)' }}>
+                Hostname or IP
+              </span>
+              <input
+                type="search"
+                placeholder="bad.example.com or 203.0.113.10"
+                value={filters.indicatorQuery}
+                onChange={(event) => onUpdateFilters({ indicatorQuery: event.target.value })}
+                style={inputStyle()}
+              />
+            </label>
 
-    <div className="grid gap-5 xl:grid-cols-2">
-      <FilterSection label="Feed">
-        {availableFeeds.map((feed) => (
-          <FilterChip
-            key={feed}
-            active={filters.selectedFeeds.includes(feed)}
-            onClick={() =>
-              onUpdateFilters({
-                selectedFeeds: toggleArrayValue(filters.selectedFeeds, feed),
-              })
-            }
-          >
-            {feed}
-          </FilterChip>
-        ))}
-      </FilterSection>
+            <label className="space-y-2">
+              <span className="text-sm font-medium" style={{ color: 'var(--text)' }}>
+                Source group
+              </span>
+              <input
+                type="text"
+                list="threat-source-groups"
+                placeholder="All source groups"
+                value={filters.sourceGroup}
+                onChange={(event) => onUpdateFilters({ sourceGroup: event.target.value })}
+                style={inputStyle()}
+              />
+              <datalist id="threat-source-groups">
+                {availableSourceGroups.map((item) => (
+                  <option key={item} value={item} />
+                ))}
+              </datalist>
+            </label>
+          </div>
 
-      <FilterSection label="Severity">
-        {SEVERITY_OPTIONS.map((severity) => (
-          <FilterChip
-            key={severity}
-            active={filters.selectedSeverities.includes(severity)}
-            onClick={() =>
-              onUpdateFilters({
-                selectedSeverities: toggleArrayValue(filters.selectedSeverities, severity),
-              })
-            }
-          >
-            {severity}
-          </FilterChip>
-        ))}
-      </FilterSection>
+          <div className="grid gap-5 xl:grid-cols-2">
+            <FilterSection label="Feed">
+              {availableFeeds.map((feed) => (
+                <FilterChip
+                  key={feed}
+                  active={filters.selectedFeeds.includes(feed)}
+                  onClick={() =>
+                    onUpdateFilters({
+                      selectedFeeds: toggleArrayValue(filters.selectedFeeds, feed),
+                    })
+                  }
+                >
+                  {feed}
+                </FilterChip>
+              ))}
+            </FilterSection>
 
-      <FilterSection label="Observation layer">
-        {LAYER_OPTIONS.map((layer) => (
-          <FilterChip
-            key={layer}
-            active={filters.selectedLayers.includes(layer)}
-            onClick={() =>
-              onUpdateFilters({
-                selectedLayers: toggleArrayValue(filters.selectedLayers, layer),
-              })
-            }
-          >
-            {layer}
-          </FilterChip>
-        ))}
-      </FilterSection>
+            <FilterSection label="Severity">
+              {SEVERITY_OPTIONS.map((severity) => (
+                <FilterChip
+                  key={severity}
+                  active={filters.selectedSeverities.includes(severity)}
+                  onClick={() =>
+                    onUpdateFilters({
+                      selectedSeverities: toggleArrayValue(filters.selectedSeverities, severity),
+                    })
+                  }
+                >
+                  {severity}
+                </FilterChip>
+              ))}
+            </FilterSection>
 
-      <FilterSection label="Time range">
-        {TIME_RANGE_OPTIONS.map((option) => (
-          <FilterChip
-            key={option.value}
-            active={filters.timeRange === option.value}
-            onClick={() => onUpdateFilters({ timeRange: option.value })}
-          >
-            {option.label}
-          </FilterChip>
-        ))}
-      </FilterSection>
+            <FilterSection label="Indicator type">
+              {INDICATOR_TYPE_OPTIONS.map((type) => (
+                <FilterChip
+                  key={type}
+                  active={filters.selectedIndicatorTypes.includes(type)}
+                  onClick={() =>
+                    onUpdateFilters({
+                      selectedIndicatorTypes: toggleArrayValue(filters.selectedIndicatorTypes, type),
+                    })
+                  }
+                >
+                  {type}
+                </FilterChip>
+              ))}
+            </FilterSection>
+          </div>
+        </section>
+      </div>
 
-      <FilterSection label="Indicator type">
-        {INDICATOR_TYPE_OPTIONS.map((type) => (
-          <FilterChip
-            key={type}
-            active={filters.selectedIndicatorTypes.includes(type)}
-            onClick={() =>
-              onUpdateFilters({
-                selectedIndicatorTypes: toggleArrayValue(filters.selectedIndicatorTypes, type),
-              })
-            }
-          >
-            {type}
-          </FilterChip>
-        ))}
-      </FilterSection>
+      <div className="space-y-5">
+        <section className="rounded-[1.2rem] p-4 space-y-4" style={laneStyle()}>
+          <div>
+            <h3 className="text-base font-semibold" style={{ color: 'var(--text)' }}>
+              Scope and timing
+            </h3>
+            <p className="mt-1 text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>
+              Narrow the operational context by network layer, ingestion timing, and alert posture.
+            </p>
+          </div>
 
-      <FilterSection label="Match source">
-        {MATCH_SOURCE_OPTIONS.map((source) => (
-          <FilterChip
-            key={source}
-            active={filters.selectedMatchSources.includes(source)}
-            onClick={() =>
-              onUpdateFilters({
-                selectedMatchSources: toggleArrayValue(filters.selectedMatchSources, source),
-              })
-            }
-          >
-            {source}
-          </FilterChip>
-        ))}
-      </FilterSection>
-    </div>
+          <div className="space-y-5">
+            <FilterSection label="Observation layer">
+              {LAYER_OPTIONS.map((layer) => (
+                <FilterChip
+                  key={layer}
+                  active={filters.selectedLayers.includes(layer)}
+                  onClick={() =>
+                    onUpdateFilters({
+                      selectedLayers: toggleArrayValue(filters.selectedLayers, layer),
+                    })
+                  }
+                >
+                  {layer}
+                </FilterChip>
+              ))}
+            </FilterSection>
 
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <label
-        className="inline-flex items-center gap-3 rounded-full px-4 py-2"
-        style={{ background: 'var(--bg-glass-subtle)' }}
-      >
-        <input
-          type="checkbox"
-          checked={filters.alertableOnly}
-          onChange={(event) => onUpdateFilters({ alertableOnly: event.target.checked })}
-        />
-        <span className="text-sm font-medium" style={{ color: 'var(--text)' }}>
-          Alertable only
-        </span>
-      </label>
+            <FilterSection label="Time range">
+              {TIME_RANGE_OPTIONS.map((option) => (
+                <FilterChip
+                  key={option.value}
+                  active={filters.timeRange === option.value}
+                  onClick={() => onUpdateFilters({ timeRange: option.value })}
+                >
+                  {option.label}
+                </FilterChip>
+              ))}
+            </FilterSection>
 
-      {filters.auditKey && (
-        <button
-          type="button"
-          className="text-sm font-medium underline underline-offset-4"
-          style={{ color: 'var(--accent)' }}
-          onClick={() => onUpdateFilters({ auditKey: null, alertableOnly: true })}
-        >
-          Clear audit focus
-        </button>
-      )}
+            <FilterSection label="Match source">
+              {MATCH_SOURCE_OPTIONS.map((source) => (
+                <FilterChip
+                  key={source}
+                  active={filters.selectedMatchSources.includes(source)}
+                  onClick={() =>
+                    onUpdateFilters({
+                      selectedMatchSources: toggleArrayValue(filters.selectedMatchSources, source),
+                    })
+                  }
+                >
+                  {source}
+                </FilterChip>
+              ))}
+            </FilterSection>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4" style={{ borderColor: 'var(--border-glass)' }}>
+            <label
+              className="inline-flex items-center gap-3 rounded-full px-4 py-2"
+              style={{ background: 'var(--bg-glass-subtle)' }}
+            >
+              <input
+                type="checkbox"
+                checked={filters.alertableOnly}
+                onChange={(event) => onUpdateFilters({ alertableOnly: event.target.checked })}
+              />
+              <span className="text-sm font-medium" style={{ color: 'var(--text)' }}>
+                Alertable only
+              </span>
+            </label>
+
+            {filters.auditKey && (
+              <button
+                type="button"
+                className="text-sm font-medium underline underline-offset-4"
+                style={{ color: 'var(--accent)' }}
+                onClick={() => onUpdateFilters({ auditKey: null, alertableOnly: true })}
+              >
+                Clear audit focus
+              </button>
+            )}
+          </div>
+        </section>
+      </div>
     </div>
   </section>
 );

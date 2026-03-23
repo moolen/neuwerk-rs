@@ -15,7 +15,7 @@ export const RuleHeaderSection: React.FC<RuleHeaderSectionProps> = ({
   duplicateRule,
   deleteRule,
 }) => (
-  <div className="flex items-start justify-between gap-3">
+  <div className="flex flex-col gap-3">
     <RuleHeaderFields
       groupIndex={groupIndex}
       ruleIndex={ruleIndex}

@@ -1,5 +1,6 @@
 import React from 'react';
 
+import { PageLayout } from '../components/layout/PageLayout';
 import type { ThreatFinding, ThreatIndicatorType, ThreatSilenceKind } from '../types';
 import { CreateThreatSilenceModal } from './threat-intel/components/CreateThreatSilenceModal';
 import { ThreatDisableBanner } from './threat-intel/components/ThreatDisableBanner';
@@ -107,18 +108,10 @@ export const ThreatIntelPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold" style={{ color: 'var(--text)' }}>
-            Threats
-          </h1>
-          <p className="text-sm mt-2 max-w-2xl" style={{ color: 'var(--text-muted)' }}>
-            Cluster-wide intelligence matches, feed freshness, and audit pivots from the merged
-            threat pipeline.
-          </p>
-        </div>
-
+    <PageLayout
+      title="Threats"
+      description="Cluster-wide intelligence matches, feed freshness, and audit pivots from the merged threat pipeline."
+      actions={
         <div
           className="rounded-[1.3rem] p-4 min-w-[240px]"
           style={{
@@ -137,7 +130,8 @@ export const ThreatIntelPage: React.FC = () => {
             {rawItems.length} fetched before local indicator and audit filters
           </div>
         </div>
-      </div>
+      }
+    >
 
       {error && (
         <div
@@ -310,6 +304,6 @@ export const ThreatIntelPage: React.FC = () => {
         onClose={() => setSilenceDraft(null)}
         onSubmit={() => void submitSilence()}
       />
-    </div>
+    </PageLayout>
   );
 };

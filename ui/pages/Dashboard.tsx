@@ -1,4 +1,6 @@
 import React from 'react';
+import { PageLayout } from '../components/layout/PageLayout';
+import { DashboardHeader } from './dashboard/components/DashboardHeader';
 import { DashboardStatsView } from './dashboard/components/DashboardStatsView';
 import { useDashboardStats } from './dashboard/useDashboardStats';
 
@@ -24,5 +26,13 @@ export const Dashboard: React.FC = () => {
     );
   }
 
-  return <DashboardStatsView stats={stats} />;
+  return (
+    <PageLayout
+      title="Dashboard"
+      description="Cluster dataplane, DNS, and control-plane health at a glance."
+      actions={<DashboardHeader />}
+    >
+      <DashboardStatsView stats={stats} />
+    </PageLayout>
+  );
 };
