@@ -18,6 +18,8 @@ export const PAGE_ICONS: Record<AppPage, LucideIcon> = {
   policies: Shield,
   integrations: Link,
   threats: ShieldAlert,
+  'threat-findings': ShieldAlert,
+  'threat-silences': ShieldAlert,
   wiretap: Radio,
   audit: Search,
   dns: Globe,

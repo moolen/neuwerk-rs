@@ -8,7 +8,12 @@ export function filterSidebarNavItems(
   userRole: UserRole,
   items: ReadonlyArray<NavItemDefinition> = NAV_ITEMS,
 ): NavItemDefinition[] {
-  return items.filter((item) => !item.adminOnly || userRole === 'admin');
+  return items.filter((item) => {
+    if (item.parentId) {
+      return false;
+    }
+    return !item.adminOnly || userRole === 'admin';
+  });
 }
 
 export function sidebarNavItemBaseStyle(isActive: boolean): CSSProperties {

@@ -23,6 +23,17 @@ describe('sidebar helpers', () => {
     ]);
   });
 
+  it('hides child nav items until section-aware sidebar rendering exists', () => {
+    const items: NavItemDefinition[] = [
+      { id: 'threats', label: 'Threats' },
+      { id: 'threat-findings', label: 'Findings', parentId: 'threats' },
+      { id: 'threat-silences', label: 'Silences', parentId: 'threats' },
+    ];
+
+    expect(filterSidebarNavItems('readonly', items).map((item) => item.id)).toEqual(['threats']);
+    expect(filterSidebarNavItems('admin', items).map((item) => item.id)).toEqual(['threats']);
+  });
+
   it('derives active vs inactive nav item styles', () => {
     expect(sidebarNavItemBaseStyle(true)).toMatchObject({
       color: 'var(--accent)',

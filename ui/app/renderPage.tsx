@@ -15,6 +15,8 @@ const PAGE_COMPONENTS: Record<AppPage, React.ComponentType> = {
   policies: PoliciesPage,
   integrations: IntegrationsPage,
   threats: ThreatIntelPage,
+  'threat-findings': ThreatIntelPage,
+  'threat-silences': ThreatIntelPage,
   wiretap: WiretapPage,
   audit: AuditPage,
   dns: DNSCachePage,
