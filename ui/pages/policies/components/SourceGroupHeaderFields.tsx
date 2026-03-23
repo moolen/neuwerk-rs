@@ -4,7 +4,6 @@ import type { PolicySourceGroup } from '../../../types';
 import {
   setSourceGroupDefaultAction,
   setSourceGroupId,
-  setSourceGroupPriority,
 } from './sourceGroupHeaderDraft';
 import type { UpdateDraft } from './formTypes';
 
@@ -14,6 +13,18 @@ interface SourceGroupHeaderFieldsProps {
   updateDraft: UpdateDraft;
 }
 
+const inputStyle: React.CSSProperties = {
+  background: 'var(--bg)',
+  border: '1px solid var(--border-subtle)',
+  color: 'var(--text)',
+};
+
+const chipBase: React.CSSProperties = {
+  background: 'var(--bg)',
+  color: 'var(--text-muted)',
+  border: '1px solid var(--border-subtle)',
+};
+
 export const SourceGroupHeaderFields: React.FC<SourceGroupHeaderFieldsProps> = ({
   group,
   groupIndex,
@@ -22,71 +33,79 @@ export const SourceGroupHeaderFields: React.FC<SourceGroupHeaderFieldsProps> = (
   const fallbackAction = group.default_action ?? 'deny';
 
   return (
-    <div className="space-y-2 flex-1">
-      <div className="grid grid-cols-1 2xl:grid-cols-3 gap-3">
-        <div>
-          <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
-            Group ID
-          </label>
-          <input
-            type="text"
-            value={group.id}
-            onChange={(e) =>
+    <div className="space-y-3">
+      {/* Group name / ID */}
+      <div className="space-y-1">
+        <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+          Group name
+        </label>
+        <input
+          type="text"
+          value={group.id}
+          onChange={(e) =>
+            updateDraft((next) => {
+              setSourceGroupId(next, groupIndex, e.target.value);
+            })
+          }
+          placeholder="e.g. corporate-vpn, office-egress"
+          className="w-full px-2 py-1.5 rounded text-sm"
+          style={inputStyle}
+        />
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Unique identifier — also used as the display name.
+        </p>
+      </div>
+
+      {/* Fallback action chips */}
+      <div className="space-y-1">
+        <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+          Group fallback
+        </label>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() =>
               updateDraft((next) => {
-                setSourceGroupId(next, groupIndex, e.target.value);
+                setSourceGroupDefaultAction(next, groupIndex, 'allow');
               })
             }
-            className="w-full px-2 py-1 rounded text-sm"
-            style={{
-              background: 'var(--bg)',
-              border: '1px solid var(--border-subtle)',
-              color: 'var(--text)',
-            }}
-          />
-        </div>
-        <div>
-          <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
-            Priority
-          </label>
-          <input
-            type="number"
-            min={0}
-            value={group.priority ?? ''}
-            onChange={(e) =>
-              updateDraft((next) => {
-                setSourceGroupPriority(next, groupIndex, e.target.value);
-              })
+            className="px-3 py-1.5 rounded text-xs font-bold"
+            style={
+              fallbackAction === 'allow'
+                ? {
+                    background: 'var(--green-bg)',
+                    color: 'var(--green)',
+                    border: '1px solid var(--green-border)',
+                  }
+                : chipBase
             }
-            className="w-full px-2 py-1 rounded text-sm"
-            style={{
-              background: 'var(--bg)',
-              border: '1px solid var(--border-subtle)',
-              color: 'var(--text)',
-            }}
-          />
-        </div>
-        <div>
-          <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
-            Group Fallback Action
-          </label>
-          <select
-            value={fallbackAction}
-            onChange={(e) =>
-              updateDraft((next) => {
-                setSourceGroupDefaultAction(next, groupIndex, e.target.value as 'allow' | 'deny');
-              })
-            }
-            className="w-full px-2 py-1 rounded text-sm"
-            style={{
-              background: 'var(--bg)',
-              border: '1px solid var(--border-subtle)',
-              color: 'var(--text)',
-            }}
           >
-            <option value="deny">deny</option>
-            <option value="allow">allow</option>
-          </select>
+            ALLOW
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              updateDraft((next) => {
+                setSourceGroupDefaultAction(next, groupIndex, 'deny');
+              })
+            }
+            className="px-3 py-1.5 rounded text-xs font-bold"
+            style={
+              fallbackAction === 'deny'
+                ? {
+                    background: 'var(--red-bg)',
+                    color: 'var(--red)',
+                    border: '1px solid var(--red-border)',
+                  }
+                : chipBase
+            }
+          >
+            DENY
+          </button>
         </div>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Applied when no rule in this group yields a decision.
+        </p>
       </div>
     </div>
   );

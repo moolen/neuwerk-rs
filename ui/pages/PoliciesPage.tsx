@@ -62,9 +62,6 @@ export const PoliciesPage: React.FC = () => {
             onSelect={(id) => {
               void loadEditorForPolicy(id);
             }}
-            onDelete={(id) => {
-              void handleDelete(id);
-            }}
           />
         </aside>
 
@@ -86,6 +83,9 @@ export const PoliciesPage: React.FC = () => {
             deleteRule={deleteRule}
             validationIssues={validationIssues}
             editorError={editorError}
+            onDelete={(id) => {
+              void handleDelete(id);
+            }}
           />
 
           <PolicyEditorActions

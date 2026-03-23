@@ -554,6 +554,12 @@ async fn ui_route_serves_local_assets_without_remote_script_origins() {
     let css = String::from_utf8(css.to_vec()).unwrap();
     assert!(!css.contains("fonts.googleapis.com"));
     assert!(!css.contains("fonts.gstatic.com"));
+    assert!(
+        css.contains(".flex{display:flex")
+            || css.contains(".h-screen{height:100vh")
+            || css.contains(".min-h-screen{min-height:100vh"),
+        "expected bundled UI stylesheet to contain generated utility classes"
+    );
 }
 
 #[tokio::test]

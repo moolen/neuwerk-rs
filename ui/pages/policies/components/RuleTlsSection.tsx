@@ -22,10 +22,7 @@ export const RuleTlsSection: React.FC<RuleEditorContextProps> = ({
   const tls13Uninspectable = tls?.tls13_uninspectable ?? 'deny';
 
   return (
-    <div
-      className="rounded p-3 space-y-3"
-      style={{ border: '1px solid var(--border-subtle)', background: 'var(--bg)' }}
-    >
+    <div className="space-y-4">
       <RuleTlsHeader
         enabled={Boolean(tls)}
         onToggle={() => {
