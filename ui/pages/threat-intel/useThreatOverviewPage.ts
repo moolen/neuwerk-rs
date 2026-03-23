@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { getThreatFeedStatus, getThreatFindings } from '../../services/api';
 import type { ThreatFeedStatusResponse, ThreatFinding, ThreatNodeError } from '../../types';
+import { buildThreatFindingsParams, createDefaultThreatFilters } from './helpers';
 
 export function useThreatOverviewPage() {
   const [feedStatus, setFeedStatus] = useState<ThreatFeedStatusResponse | null>(null);
@@ -13,6 +14,7 @@ export function useThreatOverviewPage() {
   const [nodesQueried, setNodesQueried] = useState(0);
   const [nodesResponded, setNodesResponded] = useState(0);
   const [disabled, setDisabled] = useState(false);
+  const defaultFilters = createDefaultThreatFilters('');
 
   const refresh = async () => {
     setLoading(true);
@@ -21,7 +23,7 @@ export function useThreatOverviewPage() {
     try {
       const [feeds, findings] = await Promise.all([
         getThreatFeedStatus(),
-        getThreatFindings({ limit: 1000, alertable: true }),
+        getThreatFindings(buildThreatFindingsParams(defaultFilters, Date.now())),
       ]);
       setFeedStatus(feeds);
       setRawItems(findings.items);

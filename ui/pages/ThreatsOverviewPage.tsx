@@ -14,8 +14,10 @@ export const ThreatsOverviewPage: React.FC = () => {
     nodesQueried,
     nodesResponded,
     findingsCount,
+    loading,
     error,
   } = useThreatOverviewPage();
+  const findingsSummary = loading ? 'Loading' : error ? 'Unavailable' : findingsCount;
 
   return (
     <PageLayout
@@ -34,7 +36,7 @@ export const ThreatsOverviewPage: React.FC = () => {
             Visible findings
           </div>
           <div className="mt-2 text-3xl font-bold" style={{ color: 'var(--text)' }}>
-            {findingsCount}
+            {findingsSummary}
           </div>
         </div>
       }
@@ -82,6 +84,13 @@ export const ThreatsOverviewPage: React.FC = () => {
           }}
         >
           <h2 className="text-sm font-semibold">Node query errors</h2>
+          <ul className="space-y-1 text-sm" style={{ color: 'var(--text-muted)' }}>
+            {nodeErrors.map((nodeError) => (
+              <li key={`${nodeError.node_id}:${nodeError.error}`}>
+                <span style={{ color: 'var(--text)' }}>{nodeError.node_id}</span>: {nodeError.error}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
