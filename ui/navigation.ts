@@ -3,6 +3,8 @@ export type AppPage =
   | 'policies'
   | 'integrations'
   | 'threats'
+  | 'threat-findings'
+  | 'threat-silences'
   | 'wiretap'
   | 'audit'
   | 'dns'
@@ -12,14 +14,31 @@ export type AppPage =
 export interface NavItemDefinition {
   id: AppPage;
   label: string;
+  parentId?: AppPage;
   adminOnly?: boolean;
 }
+
+const PAGE_PATHS: Record<AppPage, string> = {
+  dashboard: '/',
+  policies: '/policies',
+  integrations: '/integrations',
+  threats: '/threats',
+  'threat-findings': '/threats/findings',
+  'threat-silences': '/threats/silences',
+  wiretap: '/wiretap',
+  audit: '/audit',
+  dns: '/dns',
+  'service-accounts': '/service-accounts',
+  settings: '/settings',
+};
 
 export const NAV_ITEMS: ReadonlyArray<NavItemDefinition> = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'policies', label: 'Policies' },
   { id: 'integrations', label: 'Integrations' },
   { id: 'threats', label: 'Threats' },
+  { id: 'threat-findings', label: 'Findings', parentId: 'threats' },
+  { id: 'threat-silences', label: 'Silences', parentId: 'threats' },
   { id: 'wiretap', label: 'Wiretap' },
   { id: 'audit', label: 'Audit' },
   { id: 'dns', label: 'DNS Cache' },
@@ -27,23 +46,19 @@ export const NAV_ITEMS: ReadonlyArray<NavItemDefinition> = [
   { id: 'settings', label: 'Settings' },
 ];
 
-const APP_PAGE_SET = new Set<AppPage>(NAV_ITEMS.map((item) => item.id));
-
 export function getPageLabel(page: AppPage): string {
   return NAV_ITEMS.find((item) => item.id === page)?.label ?? 'Dashboard';
 }
 
 export function getPageFromPathname(pathname: string): AppPage {
-  const path = pathname.replace(/^\//, '').replace(/\/$/, '');
-  if (path === 'threat-intel') {
-    return 'threats';
-  }
-  if (path === '' || !APP_PAGE_SET.has(path as AppPage)) {
-    return 'dashboard';
-  }
-  return path as AppPage;
+  const path = pathname.replace(/\/+$/, '') || '/';
+  if (path === '/threat-intel') return 'threats';
+  return (
+    (Object.entries(PAGE_PATHS).find(([, candidate]) => candidate === path)?.[0] as AppPage) ??
+    'dashboard'
+  );
 }
 
 export function pageToPath(page: AppPage): string {
-  return page === 'dashboard' ? '/' : `/${page}`;
+  return PAGE_PATHS[page] ?? '/';
 }
