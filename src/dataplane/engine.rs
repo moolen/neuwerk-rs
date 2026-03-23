@@ -87,7 +87,7 @@ pub struct EngineState {
     pub overlay: OverlayConfig,
     pub snat_mode: SnatMode,
     dns_target_ips: Vec<Ipv4Addr>,
-    dns_allowlist: Option<DynamicIpSetV4>,
+    dns_allowlist_override: Option<DynamicIpSetV4>,
     wiretap: Option<WiretapEmitter>,
     audit: Option<AuditEmitter>,
     now_override_secs: Option<u64>,
@@ -170,7 +170,7 @@ impl EngineState {
             overlay: OverlayConfig::none(),
             snat_mode: SnatMode::Auto,
             dns_target_ips: Vec::new(),
-            dns_allowlist: None,
+            dns_allowlist_override: None,
             wiretap: None,
             audit: None,
             now_override_secs: None,
@@ -227,7 +227,7 @@ impl EngineState {
     }
 
     pub fn set_dns_allowlist(&mut self, allowlist: DynamicIpSetV4) {
-        self.dns_allowlist = Some(allowlist);
+        self.dns_allowlist_override = Some(allowlist);
     }
 
     pub fn set_dns_target_ips(&mut self, targets: Vec<Ipv4Addr>) {
@@ -299,7 +299,7 @@ impl EngineState {
             overlay: self.overlay.clone(),
             snat_mode: self.snat_mode,
             dns_target_ips: self.dns_target_ips.clone(),
-            dns_allowlist: self.dns_allowlist.clone(),
+            dns_allowlist_override: self.dns_allowlist_override.clone(),
             wiretap: self.wiretap.clone(),
             audit: self.audit.clone(),
             now_override_secs: self.now_override_secs,
@@ -563,10 +563,8 @@ impl EngineState {
             self.note_flow_lifecycle_event("close", "idle_timeout", expired_syn_only.len() as u64);
             for flow in &expired_syn_only {
                 self.record_recent_syn_only_close(&flow.key, "idle_timeout", now);
-                if let Some(allowlist) = &self.dns_allowlist {
-                    allowlist.flow_close(flow.key.dst_ip, flow.last_seen);
-                }
                 let source_group = flow.source_group.as_deref().unwrap_or(DEFAULT_SOURCE_GROUP);
+                self.note_dns_grant_flow_close(source_group, flow.key.dst_ip, flow.last_seen);
                 self.observe_flow_close(
                     source_group,
                     "idle_timeout",
@@ -610,9 +608,7 @@ impl EngineState {
         reason: &str,
         now: u64,
     ) {
-        if let Some(allowlist) = &self.dns_allowlist {
-            allowlist.flow_open(flow.dst_ip, now);
-        }
+        self.note_dns_grant_flow_open(source_group, flow.dst_ip, now);
         self.note_flow_lifecycle_event("open", reason, 1);
         if let Some(metrics) = &self.metrics {
             metrics.inc_dp_flow_open(proto_label(proto), source_group);
@@ -672,15 +668,35 @@ impl EngineState {
         self.policy_snapshot.load()
     }
 
+    fn dns_grant_allowlist_for_group(&self, source_group: &str) -> Option<DynamicIpSetV4> {
+        if let Some(allowlist) = &self.dns_allowlist_override {
+            return Some(allowlist.clone());
+        }
+        if source_group == DEFAULT_SOURCE_GROUP {
+            return None;
+        }
+        self.policy_snapshot
+            .load()
+            .dns_allowlist_for_group(source_group)
+    }
+
+    fn note_dns_grant_flow_open(&self, source_group: &str, dst_ip: Ipv4Addr, now: u64) {
+        if let Some(allowlist) = self.dns_grant_allowlist_for_group(source_group) {
+            allowlist.flow_open(dst_ip, now);
+        }
+    }
+
+    fn note_dns_grant_flow_close(&self, source_group: &str, dst_ip: Ipv4Addr, last_seen: u64) {
+        if let Some(allowlist) = self.dns_grant_allowlist_for_group(source_group) {
+            allowlist.flow_close(dst_ip, last_seen);
+        }
+    }
+
     fn note_flow_expired(&self, expired: Vec<ExpiredFlow>) {
         self.note_flow_lifecycle_event("close", "idle_timeout", expired.len() as u64);
-        if let Some(allowlist) = &self.dns_allowlist {
-            for flow in &expired {
-                allowlist.flow_close(flow.key.dst_ip, flow.last_seen);
-            }
-        }
         for flow in &expired {
             let source_group = flow.source_group.as_deref().unwrap_or(DEFAULT_SOURCE_GROUP);
+            self.note_dns_grant_flow_close(source_group, flow.key.dst_ip, flow.last_seen);
             self.observe_flow_close(
                 source_group,
                 "idle_timeout",
@@ -721,9 +737,6 @@ impl EngineState {
     }
 
     fn note_syn_only_close(&self, flow: &FlowKey, entry: &SynOnlyEntry, reason: &str, now: u64) {
-        if let Some(allowlist) = &self.dns_allowlist {
-            allowlist.flow_close(flow.dst_ip, now);
-        }
         self.note_flow_lifecycle_event("close", reason, 1);
         self.note_tcp_handshake_close_age(
             flow.proto,
@@ -736,6 +749,7 @@ impl EngineState {
             .source_group
             .as_deref()
             .unwrap_or(DEFAULT_SOURCE_GROUP);
+        self.note_dns_grant_flow_close(source_group, flow.dst_ip, now);
         self.observe_flow_close(source_group, reason, entry.first_seen, now);
     }
 
@@ -744,11 +758,9 @@ impl EngineState {
     }
 
     fn note_flow_close(&self, flow: &FlowKey, entry: &FlowEntry, reason: &str, now: u64) {
-        if let Some(allowlist) = &self.dns_allowlist {
-            allowlist.flow_close(flow.dst_ip, now);
-        }
         let handshake_phase = entry.handshake_phase();
         let source_group = entry.source_group();
+        self.note_dns_grant_flow_close(source_group, flow.dst_ip, now);
         self.note_flow_lifecycle_event("close", reason, 1);
         self.note_tcp_handshake_close_age(
             flow.proto,

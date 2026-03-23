@@ -535,7 +535,6 @@ source_groups:
         let seed_dns_task = tokio::spawn(run_dns_proxy(
             seed_dns_addr,
             vec![SocketAddr::new(seed_ip.into(), 9)],
-            DynamicIpSetV4::new(),
             dns_policy.clone(),
             DnsMap::new(),
             Metrics::new().map_err(|err| format!("metrics init failed: {err}"))?,
@@ -556,7 +555,6 @@ source_groups:
         let joiner_dns_task = tokio::spawn(run_dns_proxy(
             joiner_dns_addr,
             vec![SocketAddr::new(joiner_ip.into(), 9)],
-            DynamicIpSetV4::new(),
             dns_policy.clone(),
             DnsMap::new(),
             Metrics::new().map_err(|err| format!("metrics init failed: {err}"))?,

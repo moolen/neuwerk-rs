@@ -1,10 +1,10 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::controlplane::PolicyStore;
 use crate::controlplane::wiretap::DnsMap;
-use crate::dataplane::policy::DynamicIpSetV4;
 
 pub async fn run_allowlist_gc(
-    allowlist: DynamicIpSetV4,
+    policy_store: PolicyStore,
     idle_timeout_secs: u64,
     interval_secs: u64,
     dns_map: Option<DnsMap>,
@@ -15,7 +15,7 @@ pub async fn run_allowlist_gc(
     loop {
         ticker.tick().await;
         let now = now_secs();
-        allowlist.evict_idle(now, idle_timeout_secs);
+        policy_store.evict_dns_grant_caches(now, idle_timeout_secs);
         if let Some(map) = &dns_map {
             map.evict_idle(now, idle_timeout_secs);
         }

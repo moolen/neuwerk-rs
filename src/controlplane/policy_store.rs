@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -6,15 +7,24 @@ use std::sync::{Arc, RwLock};
 use crate::controlplane::policy_config::{
     DnsPolicy, KubernetesSelectorBinding, PolicyConfig, PolicyMode,
 };
+use crate::controlplane::wiretap::DnsMap;
 use crate::dataplane::config::DataplaneConfigStore;
 use crate::dataplane::policy::{
-    new_shared_exact_source_group_index, CidrV4, DefaultPolicy, DynamicIpSetV4, EnforcementMode,
-    ExactSourceGroupIndex, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction, RuleMatch, RuleMode,
-    SharedExactSourceGroupIndex, SharedPolicySnapshot, SourceGroup,
+    new_shared_exact_source_group_index, CidrV4, DefaultPolicy, DynamicIpSetV4,
+    EnforcementMode, ExactSourceGroupIndex, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction,
+    RuleMatch, RuleMode, SharedExactSourceGroupIndex, SharedPolicySnapshot, SourceGroup,
+    DNS_ALLOWLIST_RULE_ID,
 };
 use uuid::Uuid;
 
 const BASE_GROUP_PRIORITY: u32 = u32::MAX;
+const DNS_ALLOWLIST_PRIORITY: u32 = u32::MAX;
+
+#[derive(Debug, Clone)]
+struct DnsGroupGrantState {
+    allowlist: DynamicIpSetV4,
+    dns_map: DnsMap,
+}
 
 #[derive(Debug, Clone)]
 struct PolicyStoreState {
@@ -24,6 +34,7 @@ struct PolicyStoreState {
     enforcement_mode: EnforcementMode,
     extra_groups: Vec<SourceGroup>,
     kubernetes_bindings: Vec<KubernetesSelectorBinding>,
+    dns_group_grants: HashMap<String, DnsGroupGrantState>,
     generation: u64,
     active_policy_id: Option<Uuid>,
 }
@@ -34,7 +45,6 @@ pub struct PolicyStore {
     shared_snapshot: SharedPolicySnapshot,
     exact_source_group_index: SharedExactSourceGroupIndex,
     dns_policy: Arc<RwLock<DnsPolicy>>,
-    dns_allowlist: DynamicIpSetV4,
     dataplane_config: DataplaneConfigStore,
     state: Arc<RwLock<PolicyStoreState>>,
     policy_applied_generation: Arc<AtomicU64>,
@@ -57,13 +67,11 @@ impl PolicyStore {
         internal_prefix: u8,
         dataplane_config: DataplaneConfigStore,
     ) -> Self {
-        let dns_allowlist = DynamicIpSetV4::new();
         let initial_snapshot = Self::build_snapshot(
             default_policy,
             internal_net,
             internal_prefix,
             0,
-            dns_allowlist.clone(),
             Vec::new(),
             EnforcementMode::Enforce,
         );
@@ -82,6 +90,7 @@ impl PolicyStore {
             default_policy,
             enforcement_mode: EnforcementMode::Enforce,
             extra_groups: Vec::new(),
+            dns_group_grants: HashMap::new(),
             generation: 0,
             active_policy_id: None,
             kubernetes_bindings: Vec::new(),
@@ -92,7 +101,6 @@ impl PolicyStore {
             shared_snapshot,
             exact_source_group_index,
             dns_policy,
-            dns_allowlist,
             dataplane_config,
             state,
             policy_applied_generation,
@@ -110,10 +118,6 @@ impl PolicyStore {
 
     pub fn exact_source_group_index(&self) -> SharedExactSourceGroupIndex {
         self.exact_source_group_index.clone()
-    }
-
-    pub fn dns_allowlist(&self) -> DynamicIpSetV4 {
-        self.dns_allowlist.clone()
     }
 
     pub fn dns_policy(&self) -> Arc<RwLock<DnsPolicy>> {
@@ -150,7 +154,54 @@ impl PolicyStore {
 
     pub fn base_group(&self) -> SourceGroup {
         let (internal_net, internal_prefix) = self.internal_cidr();
-        Self::build_base_group(internal_net, internal_prefix, self.dns_allowlist.clone())
+        Self::build_base_group(internal_net, internal_prefix)
+    }
+
+    pub fn record_dns_grants(
+        &self,
+        source_group_id: &str,
+        hostname: &str,
+        ips: &[Ipv4Addr],
+        now: u64,
+    ) -> usize {
+        if ips.is_empty() {
+            return 0;
+        }
+        let grant = match self.state.read() {
+            Ok(state) => state.dns_group_grants.get(source_group_id).cloned(),
+            Err(_) => None,
+        };
+        let Some(grant) = grant else {
+            return 0;
+        };
+        grant.dns_map.insert_many(hostname, ips, now);
+        grant.allowlist.insert_many(ips.iter().copied());
+        ips.len()
+    }
+
+    pub fn revoke_dns_grants(&self, source_group_id: &str, hostname: &str) -> usize {
+        let grant = match self.state.read() {
+            Ok(state) => state.dns_group_grants.get(source_group_id).cloned(),
+            Err(_) => None,
+        };
+        let Some(grant) = grant else {
+            return 0;
+        };
+        let removed = grant.dns_map.remove_hostname(hostname);
+        let removed_len = removed.len();
+        if removed_len > 0 {
+            grant.allowlist.remove_many(removed.into_iter());
+        }
+        removed_len
+    }
+
+    pub fn evict_dns_grant_caches(&self, now: u64, idle_timeout_secs: u64) {
+        if let Ok(state) = self.state.read() {
+            for grant in state.dns_group_grants.values() {
+                grant.allowlist.evict_idle(now, idle_timeout_secs);
+                grant.dns_map.evict_idle(now, idle_timeout_secs);
+            }
+        }
     }
 
     pub fn rebuild(
@@ -171,23 +222,28 @@ impl PolicyStore {
 
     pub fn rebuild_with_kubernetes_bindings(
         &self,
-        mut extra_groups: Vec<SourceGroup>,
+        extra_groups: Vec<SourceGroup>,
         dns_policy: DnsPolicy,
         default_policy: Option<DefaultPolicy>,
         enforcement_mode: EnforcementMode,
         kubernetes_bindings: Vec<KubernetesSelectorBinding>,
     ) -> Result<u64, String> {
-        // Clear DNS allowlist entries so policy changes immediately revoke prior DNS grants.
-        self.dns_allowlist.clear();
+        let dns_group_grants = Self::build_dns_group_grants(&dns_policy);
+        let extra_groups_with_dns =
+            Self::attach_dns_group_allowlists(extra_groups.clone(), &dns_group_grants);
         let (internal_net, internal_prefix, effective_default, effective_mode, generation) =
             match self.state.write() {
                 Ok(mut state) => {
+                    for grant in state.dns_group_grants.values() {
+                        grant.allowlist.clear();
+                    }
                     if let Some(policy) = default_policy {
                         state.default_policy = policy;
                     }
                     state.enforcement_mode = enforcement_mode;
                     state.extra_groups = extra_groups.clone();
                     state.kubernetes_bindings = kubernetes_bindings;
+                    state.dns_group_grants = dns_group_grants.clone();
                     state.generation = state.generation.wrapping_add(1);
                     (
                         state.internal_net,
@@ -200,20 +256,15 @@ impl PolicyStore {
                 Err(_) => return Err("policy store internal state unavailable".to_string()),
             };
 
-        let mut groups = Vec::with_capacity(1 + extra_groups.len());
-        groups.push(Self::build_base_group(
-            internal_net,
-            internal_prefix,
-            self.dns_allowlist.clone(),
-        ));
-        groups.append(&mut extra_groups);
+        let mut groups = Vec::with_capacity(1 + extra_groups_with_dns.len());
+        groups.push(Self::build_base_group(internal_net, internal_prefix));
+        groups.extend(extra_groups_with_dns);
 
         let policy = Self::build_snapshot(
             effective_default,
             internal_net,
             internal_prefix,
             generation,
-            self.dns_allowlist.clone(),
             groups,
             effective_mode,
         );
@@ -355,16 +406,11 @@ impl PolicyStore {
         internal_net: Ipv4Addr,
         internal_prefix: u8,
         generation: u64,
-        dns_allowlist: DynamicIpSetV4,
         mut groups: Vec<SourceGroup>,
         enforcement_mode: EnforcementMode,
     ) -> PolicySnapshot {
         if groups.is_empty() {
-            groups.push(Self::build_base_group(
-                internal_net,
-                internal_prefix,
-                dns_allowlist,
-            ));
+            groups.push(Self::build_base_group(internal_net, internal_prefix));
         }
         let mut snapshot = PolicySnapshot::new_with_generation(default_policy, groups, generation);
         snapshot.set_enforcement_mode(enforcement_mode);
@@ -381,42 +427,69 @@ impl PolicyStore {
     fn build_base_group(
         internal_net: Ipv4Addr,
         internal_prefix: u8,
-        dns_allowlist: DynamicIpSetV4,
     ) -> SourceGroup {
         let mut sources = IpSetV4::new();
         sources.add_cidr(CidrV4::new(internal_net, internal_prefix));
 
-        let rule = Rule {
-            id: "dns-allowlist".to_string(),
-            priority: 0,
-            matcher: RuleMatch {
-                dst_ips: Some(IpSetV4::with_dynamic(dns_allowlist)),
-                proto: Proto::Any,
-                src_ports: Vec::new(),
-                dst_ports: Vec::new(),
-                icmp_types: Vec::new(),
-                icmp_codes: Vec::new(),
-                tls: None,
-            },
-            action: RuleAction::Allow,
-            mode: RuleMode::Enforce,
-        };
-
         SourceGroup {
             id: "internal".to_string(),
-            // Keep the DNS allowlist fallback last so explicit policy groups
-            // (including TLS intercept rules) are evaluated first.
             priority: BASE_GROUP_PRIORITY,
             sources,
-            rules: vec![rule],
+            rules: Vec::new(),
             default_action: None,
         }
+    }
+
+    fn build_dns_group_grants(dns_policy: &DnsPolicy) -> HashMap<String, DnsGroupGrantState> {
+        dns_policy
+            .groups
+            .iter()
+            .filter(|group| !group.rules.is_empty())
+            .map(|group| {
+                (
+                    group.id.clone(),
+                    DnsGroupGrantState {
+                        allowlist: DynamicIpSetV4::new(),
+                        dns_map: DnsMap::new(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn attach_dns_group_allowlists(
+        mut groups: Vec<SourceGroup>,
+        dns_group_grants: &HashMap<String, DnsGroupGrantState>,
+    ) -> Vec<SourceGroup> {
+        for group in &mut groups {
+            let Some(grant) = dns_group_grants.get(&group.id) else {
+                continue;
+            };
+            group.rules.push(Rule {
+                id: DNS_ALLOWLIST_RULE_ID.to_string(),
+                priority: DNS_ALLOWLIST_PRIORITY,
+                matcher: RuleMatch {
+                    dst_ips: Some(IpSetV4::with_dynamic(grant.allowlist.clone())),
+                    proto: Proto::Any,
+                    src_ports: Vec::new(),
+                    dst_ports: Vec::new(),
+                    icmp_types: Vec::new(),
+                    icmp_codes: Vec::new(),
+                    tls: None,
+                },
+                action: RuleAction::Allow,
+                mode: RuleMode::Enforce,
+            });
+            group.rules.sort_by_key(|rule| rule.priority);
+        }
+        groups
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controlplane::policy_config::PolicyConfig;
 
     #[test]
     fn update_internal_cidr_rebuilds_base_group() {
@@ -495,5 +568,77 @@ mod tests {
             lock.groups.last().map(|group| group.id.as_str()),
             Some("internal")
         );
+    }
+
+    #[test]
+    fn dns_grants_are_scoped_to_the_matching_source_group() {
+        let store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+        let cfg: PolicyConfig = serde_yaml::from_str(
+            r#"
+default_policy: deny
+source_groups:
+  - id: "client-primary"
+    priority: 0
+    sources:
+      ips: ["192.0.2.2"]
+    rules:
+      - id: "allow-foo"
+        action: allow
+        match:
+          dns_hostname: '^foo\.allowed$'
+    default_action: deny
+  - id: "client-secondary"
+    priority: 1
+    sources:
+      ips: ["192.0.2.3"]
+    rules: []
+    default_action: deny
+"#,
+        )
+        .unwrap();
+        let compiled = cfg.compile().unwrap();
+        store
+            .rebuild(
+                compiled.groups,
+                compiled.dns_policy,
+                compiled.default_policy,
+                EnforcementMode::Enforce,
+            )
+            .unwrap();
+
+        let granted_ip = Ipv4Addr::new(203, 0, 113, 10);
+        store.record_dns_grants("client-primary", "foo.allowed", &[granted_ip], 10);
+
+        let snapshot = store.snapshot();
+        let lock = snapshot.read().unwrap();
+        let primary = lock.evaluate(
+            &crate::dataplane::policy::PacketMeta {
+                src_ip: Ipv4Addr::new(192, 0, 2, 2),
+                dst_ip: granted_ip,
+                proto: 6,
+                src_port: 40000,
+                dst_port: 443,
+                icmp_type: None,
+                icmp_code: None,
+            },
+            None,
+            None,
+        );
+        let secondary = lock.evaluate(
+            &crate::dataplane::policy::PacketMeta {
+                src_ip: Ipv4Addr::new(192, 0, 2, 3),
+                dst_ip: granted_ip,
+                proto: 6,
+                src_port: 40001,
+                dst_port: 443,
+                icmp_type: None,
+                icmp_code: None,
+            },
+            None,
+            None,
+        );
+
+        assert_eq!(primary, crate::dataplane::policy::PolicyDecision::Allow);
+        assert_eq!(secondary, crate::dataplane::policy::PolicyDecision::Deny);
     }
 }

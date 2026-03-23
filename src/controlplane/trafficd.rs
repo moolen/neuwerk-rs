@@ -16,7 +16,7 @@ use crate::controlplane::PolicyStore;
 #[cfg(test)]
 use crate::dataplane::policy::HttpHeadersMatcher;
 use crate::dataplane::policy::{
-    CidrV4, DynamicIpSetV4, PacketMeta, PolicySnapshot, PortRange, Proto, RuleAction, RuleMode,
+    CidrV4, PacketMeta, PolicySnapshot, PortRange, Proto, RuleAction, RuleMode,
     TlsInterceptHttpPolicy, TlsMode,
 };
 use crate::dataplane::SharedInterceptDemuxState;
@@ -184,7 +184,6 @@ use service_lane::{intercept_reply_mark_rule_args, intercept_tproxy_rule_args, r
 pub struct TrafficdConfig {
     pub dns_bind: std::net::SocketAddr,
     pub dns_upstreams: Vec<std::net::SocketAddr>,
-    pub dns_allowlist: DynamicIpSetV4,
     pub dns_policy: Arc<RwLock<DnsPolicy>>,
     pub dns_map: DnsMap,
     pub metrics: Metrics,
@@ -824,7 +823,6 @@ pub async fn run(cfg: TrafficdConfig) -> Result<(), String> {
     dns_proxy::run_dns_proxy(
         cfg.dns_bind,
         cfg.dns_upstreams,
-        cfg.dns_allowlist,
         cfg.dns_policy,
         cfg.dns_map,
         cfg.metrics,
