@@ -144,6 +144,8 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     use tempfile::TempDir;
 
@@ -151,7 +153,9 @@ mod tests {
     use crate::controlplane::cluster::config::ClusterConfig;
     use crate::controlplane::cluster::types::ClusterTypeConfig;
     use crate::controlplane::policy_config::{PolicyConfig, PolicyMode};
-    use crate::controlplane::policy_replication::run_policy_replication;
+    use crate::controlplane::policy_replication::{
+        run_policy_replication, run_policy_replication_with_local_apply_guard,
+    };
     use crate::controlplane::PolicyStore;
     use crate::dataplane::policy::{DefaultPolicy, EnforcementMode};
 
@@ -351,6 +355,101 @@ default_policy: deny
             Some(replacement.id),
             "cluster persistence should not roll back the leader-local active policy"
         );
+
+        task.abort();
+        let _ = task.await;
+        cluster.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn leader_local_apply_window_is_not_overwritten_before_cluster_persist() {
+        ensure_rustls_provider();
+
+        let cluster_dir = TempDir::new().unwrap();
+        let local_dir = TempDir::new().unwrap();
+        let token_path = cluster_dir.path().join("bootstrap.json");
+        write_token_file(&token_path);
+
+        let bind_addr = next_local_addr();
+        let join_bind_addr = next_local_addr();
+        let mut cfg = base_config(&cluster_dir, &token_path);
+        cfg.bind_addr = bind_addr;
+        cfg.advertise_addr = bind_addr;
+        cfg.join_bind_addr = join_bind_addr;
+
+        let cluster = bootstrap::run_cluster(cfg, None, None).await.unwrap();
+        wait_for_leader(&cluster.raft, Duration::from_secs(5))
+            .await
+            .unwrap();
+        let http_cluster = HttpApiCluster {
+            raft: cluster.raft.clone(),
+            store: cluster.store.clone(),
+        };
+
+        let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::UNSPECIFIED, 32);
+        let local_store = PolicyDiskStore::new(local_dir.path().join("local-policy-store"));
+        let leader_local_policy_apply_count = Arc::new(AtomicU64::new(0));
+        let task = tokio::spawn(run_policy_replication_with_local_apply_guard(
+            cluster.store.clone(),
+            cluster.raft.clone(),
+            policy_store.clone(),
+            local_store.clone(),
+            None,
+            Some(leader_local_policy_apply_count.clone()),
+            Duration::from_millis(200),
+        ));
+
+        // Let the first replication tick observe an empty cluster store so the
+        // next tick still sees the committed baseline with an empty cache.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let baseline = PolicyRecord::new(
+            PolicyMode::Enforce,
+            allow_policy(),
+            Some("baseline".to_string()),
+        )
+        .unwrap();
+        persist_cluster_policy(&http_cluster, &baseline)
+            .await
+            .unwrap();
+
+        let replacement = PolicyRecord::new(
+            PolicyMode::Enforce,
+            deny_policy(),
+            Some("replacement".to_string()),
+        )
+        .unwrap();
+        let compiled = replacement.policy.clone().compile().unwrap();
+        leader_local_policy_apply_count.fetch_add(1, Ordering::AcqRel);
+        policy_store
+            .rebuild_with_kubernetes_bindings(
+                compiled.groups,
+                compiled.dns_policy,
+                compiled.default_policy,
+                EnforcementMode::Enforce,
+                compiled.kubernetes_bindings,
+            )
+            .unwrap();
+        policy_store.set_active_policy_id(Some(replacement.id));
+        local_store.write_record(&replacement).unwrap();
+        local_store.set_active(Some(replacement.id)).unwrap();
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        assert_eq!(
+            local_store.active_id().unwrap(),
+            Some(replacement.id),
+            "leader-local apply should survive replication until cluster persistence completes"
+        );
+
+        persist_cluster_policy(&http_cluster, &replacement)
+            .await
+            .unwrap();
+        leader_local_policy_apply_count.fetch_sub(1, Ordering::AcqRel);
+
+        wait_for_local_active(&local_store, replacement.id, Duration::from_secs(3))
+            .await
+            .unwrap();
 
         task.abort();
         let _ = task.await;

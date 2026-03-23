@@ -1,3 +1,6 @@
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+
 use neuwerk::controlplane;
 use neuwerk::controlplane::audit::AuditStore;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
@@ -36,6 +39,7 @@ pub struct HttpRuntimeThreadConfig {
     pub readiness: Option<ReadinessState>,
     pub metrics: Metrics,
     pub shutdown: controlplane::http_api::HttpApiShutdown,
+    pub leader_local_policy_apply_count: Option<Arc<AtomicU64>>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -96,7 +100,7 @@ pub fn spawn_http_runtime_thread(
                 }
             };
             let res = rt.block_on(async {
-                controlplane::http_api::run_http_api_with_shutdown_and_threat_store(
+                controlplane::http_api::run_http_api_with_shutdown_and_threat_store_with_local_apply_guard(
                     cfg.cfg,
                     cfg.policy_store,
                     cfg.local_store,
@@ -108,6 +112,7 @@ pub fn spawn_http_runtime_thread(
                     cfg.readiness,
                     cfg.metrics,
                     cfg.shutdown,
+                    cfg.leader_local_policy_apply_count,
                 )
                 .await
                 .map_err(|err| format!("http api failed: {err}"))

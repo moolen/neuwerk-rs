@@ -1,9 +1,31 @@
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use super::*;
 use crate::controlplane::policy_config::CompiledPolicy;
 use crate::controlplane::policy_repository::sanitize_policy_name;
 use crate::dataplane::policy::EnforcementMode;
+
+struct LeaderLocalPolicyApplyGuard(Option<Arc<AtomicU64>>);
+
+impl LeaderLocalPolicyApplyGuard {
+    fn begin(counter: Option<&Arc<AtomicU64>>) -> Self {
+        if let Some(counter) = counter {
+            counter.fetch_add(1, Ordering::AcqRel);
+            return Self(Some(counter.clone()));
+        }
+        Self(None)
+    }
+}
+
+impl Drop for LeaderLocalPolicyApplyGuard {
+    fn drop(&mut self) {
+        if let Some(counter) = &self.0 {
+            counter.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct PolicyUpsertRequest {
@@ -385,6 +407,8 @@ pub(super) async fn delete_policy(
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "policy not found".to_string()),
         Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     };
+    let _leader_local_policy_apply_guard =
+        LeaderLocalPolicyApplyGuard::begin(state.leader_local_policy_apply_count.as_ref());
     if let Ok(active_id) = state.local_store.active_id() {
         if active_id == Some(record.id) {
             let _ = state.local_store.set_active(None);
@@ -484,6 +508,8 @@ async fn write_policy_and_apply(
     record: &PolicyRecord,
     compiled: CompiledPolicy,
 ) -> Result<(), Response> {
+    let _leader_local_policy_apply_guard =
+        LeaderLocalPolicyApplyGuard::begin(state.leader_local_policy_apply_count.as_ref());
     if let Err(err) = state.local_store.write_record(record) {
         return Err(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,

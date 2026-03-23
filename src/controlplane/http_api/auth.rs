@@ -420,6 +420,7 @@ mod tests {
             external_url: "https://localhost".to_string(),
             tls_intercept_ca_ready: None,
             tls_intercept_ca_generation: None,
+            leader_local_policy_apply_count: None,
             dns_map: None,
             readiness: None,
         }
