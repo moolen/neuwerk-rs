@@ -215,7 +215,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local_integrations_dir = local_state.local_integrations_dir;
     let policy_applied_generation = policy_store.policy_applied_tracker();
     let service_policy_applied_generation = policy_store.service_policy_applied_tracker();
-    let dns_allowlist_for_dp = policy_store.dns_allowlist();
     let wiretap_hub = WiretapHub::new(1024);
     let metrics = match neuwerk::metrics::Metrics::new() {
         Ok(metrics) => metrics,
@@ -359,7 +358,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         exact_source_group_index: policy_store.exact_source_group_index(),
         policy_applied_generation,
         service_policy_applied_generation,
-        dns_allowlist: dns_allowlist_for_dp,
         dns_target_ips: cfg.dns_target_ips.clone(),
         wiretap_emitter: Some(wiretap_emitter),
         audit_emitter: Some(audit_emitter),

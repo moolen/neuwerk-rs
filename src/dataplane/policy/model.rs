@@ -205,6 +205,7 @@ pub struct PolicySnapshot {
     internal_exact_sources: Box<[u32]>,
     internal_static_sources: Box<[CidrV4]>,
     internal_dynamic_sources: Box<[DynamicIpSetV4]>,
+    dns_group_allowlists: HashMap<String, DynamicIpSetV4>,
     compiled_group_id_arcs: Vec<Arc<str>>,
     compiled_groups: Vec<CompiledSourceGroup>,
 }
@@ -219,6 +220,7 @@ pub struct ExactSourceGroupIndex {
 pub type SharedExactSourceGroupIndex = Arc<ArcSwap<ExactSourceGroupIndex>>;
 pub type SharedPolicySnapshot = Arc<ArcSwap<PolicySnapshot>>;
 type CompiledInternalSourceSets = (Box<[u32]>, Box<[CidrV4]>, Box<[DynamicIpSetV4]>);
+pub(crate) const DNS_ALLOWLIST_RULE_ID: &str = "__dns_allowlist";
 
 const EXACT_SOURCE_GROUP_INDEX_MAX_BUCKET_LEN: usize = 4;
 
@@ -298,6 +300,7 @@ impl PolicySnapshot {
         let compiled_groups = groups.iter().map(CompiledSourceGroup::new).collect();
         let (internal_exact_sources, internal_static_sources, internal_dynamic_sources) =
             compile_internal_source_sets(&groups);
+        let dns_group_allowlists = collect_dns_group_allowlists(&groups);
         Self {
             default_policy,
             groups,
@@ -309,6 +312,7 @@ impl PolicySnapshot {
             internal_exact_sources,
             internal_static_sources,
             internal_dynamic_sources,
+            dns_group_allowlists,
             compiled_group_id_arcs,
             compiled_groups,
         }
@@ -380,6 +384,11 @@ impl PolicySnapshot {
     #[inline(always)]
     pub(crate) fn group_id_arc(&self, group_idx: usize) -> Option<Arc<str>> {
         self.compiled_group_id_arcs.get(group_idx).cloned()
+    }
+
+    #[inline(always)]
+    pub(crate) fn dns_allowlist_for_group(&self, group_id: &str) -> Option<DynamicIpSetV4> {
+        self.dns_group_allowlists.get(group_id).cloned()
     }
 }
 
@@ -648,6 +657,22 @@ fn exact_source_ips(sources: &IpSetV4) -> Option<Vec<Ipv4Addr>> {
         return Some(cidrs.iter().map(|cidr| cidr.addr()).collect());
     }
     None
+}
+
+fn collect_dns_group_allowlists(groups: &[SourceGroup]) -> HashMap<String, DynamicIpSetV4> {
+    let mut out = HashMap::new();
+    for group in groups {
+        let maybe_set = group.rules.iter().find_map(|rule| {
+            if rule.id != DNS_ALLOWLIST_RULE_ID {
+                return None;
+            }
+            rule.matcher.dst_ips.as_ref().and_then(IpSetV4::dynamic_set)
+        });
+        if let Some(set) = maybe_set {
+            out.insert(group.id.clone(), set);
+        }
+    }
+    out
 }
 
 fn collect_any_other_rule_indices(group: &SourceGroup, mode: RuleMode) -> Vec<usize> {

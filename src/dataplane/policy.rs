@@ -13,3 +13,4 @@ pub use model::{
     RuleAction, RuleMatch, RuleMode, SharedExactSourceGroupIndex, SharedPolicySnapshot,
     SourceGroup, Tls13Uninspectable, TlsInterceptHttpPolicy, TlsMatch, TlsMode, TlsNameMatch,
 };
+pub(crate) use model::DNS_ALLOWLIST_RULE_ID;

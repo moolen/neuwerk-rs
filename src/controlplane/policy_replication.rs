@@ -112,13 +112,6 @@ pub async fn run_policy_replication(
             }
             continue;
         }
-        if policy_store.active_policy_id() == Some(record.id) {
-            last_record = Some(record_bytes);
-            if let Some(readiness) = &readiness {
-                readiness.set_policy_ready(true);
-            }
-            continue;
-        }
         let enforcement_mode = if record.mode == PolicyMode::Audit {
             EnforcementMode::Audit
         } else {
@@ -250,6 +243,30 @@ mod tests {
             }
             if Instant::now() >= deadline {
                 return Err("timed out waiting for policy replication".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    async fn wait_for_policy_decision(
+        policy_store: &PolicyStore,
+        meta: crate::dataplane::policy::PacketMeta,
+        expected: crate::dataplane::policy::PolicyDecision,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let matches = policy_store
+                .snapshot()
+                .read()
+                .ok()
+                .map(|snapshot| snapshot.evaluate(&meta, None, None) == expected)
+                .unwrap_or(false);
+            if matches {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("timed out waiting for policy decision".to_string());
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -472,6 +489,114 @@ source_groups:
         );
         assert_eq!(local_store.active_id().unwrap(), Some(record.id));
         assert!(local_store.read_record(record.id).unwrap().is_some());
+
+        task.abort();
+        let _ = task.await;
+        cluster.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn active_policy_updates_replay_even_when_uuid_stays_the_same() {
+        ensure_rustls_provider();
+
+        let cluster_dir = TempDir::new().unwrap();
+        let local_dir = TempDir::new().unwrap();
+        let token_path = cluster_dir.path().join("bootstrap.json");
+        write_token_file(&token_path);
+
+        let bind_addr = next_local_addr();
+        let join_bind_addr = next_local_addr();
+        let mut cfg = base_config(&cluster_dir, &token_path);
+        cfg.bind_addr = bind_addr;
+        cfg.advertise_addr = bind_addr;
+        cfg.join_bind_addr = join_bind_addr;
+
+        let cluster = bootstrap::run_cluster(cfg, None, None).await.unwrap();
+        wait_for_leader(&cluster.raft, Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        let initial_policy: PolicyConfig = serde_yaml::from_str(
+            r#"
+default_policy: allow
+"#,
+        )
+        .unwrap();
+        let mut record = PolicyRecord::new(PolicyMode::Enforce, initial_policy, None).unwrap();
+
+        cluster
+            .raft
+            .client_write(ClusterCommand::Put {
+                key: policy_item_key(record.id),
+                value: serde_json::to_vec(&record).unwrap(),
+            })
+            .await
+            .unwrap();
+        cluster
+            .raft
+            .client_write(ClusterCommand::Put {
+                key: POLICY_ACTIVE_KEY.to_vec(),
+                value: serde_json::to_vec(&PolicyActive { id: record.id }).unwrap(),
+            })
+            .await
+            .unwrap();
+
+        let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::UNSPECIFIED, 32);
+        let local_store = PolicyDiskStore::new(local_dir.path().join("local-policy-store"));
+        let task = tokio::spawn(run_policy_replication(
+            cluster.store.clone(),
+            cluster.raft.clone(),
+            policy_store.clone(),
+            local_store,
+            None,
+            Duration::from_millis(25),
+        ));
+
+        wait_for_active_policy(&policy_store, record.id, Duration::from_secs(3))
+            .await
+            .unwrap();
+
+        let meta = crate::dataplane::policy::PacketMeta {
+            src_ip: Ipv4Addr::new(192, 0, 2, 2),
+            dst_ip: Ipv4Addr::new(203, 0, 113, 10),
+            proto: 6,
+            src_port: 40000,
+            dst_port: 443,
+            icmp_type: None,
+            icmp_code: None,
+        };
+        wait_for_policy_decision(
+            &policy_store,
+            meta,
+            crate::dataplane::policy::PolicyDecision::Allow,
+            Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
+
+        record.policy = serde_yaml::from_str(
+            r#"
+default_policy: deny
+"#,
+        )
+        .unwrap();
+        cluster
+            .raft
+            .client_write(ClusterCommand::Put {
+                key: policy_item_key(record.id),
+                value: serde_json::to_vec(&record).unwrap(),
+            })
+            .await
+            .unwrap();
+
+        wait_for_policy_decision(
+            &policy_store,
+            meta,
+            crate::dataplane::policy::PolicyDecision::Deny,
+            Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
 
         task.abort();
         let _ = task.await;

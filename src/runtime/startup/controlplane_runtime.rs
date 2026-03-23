@@ -24,8 +24,8 @@ use neuwerk::controlplane::threat_intel::manager::{
 use neuwerk::controlplane::threat_intel::runtime::{
     backfill_audit_findings, ThreatRuntimeConfig, ThreatRuntimeHandle, ThreatRuntimeSlot,
 };
-use neuwerk::controlplane::threat_intel::silences::{load_silences, ThreatSilenceList};
 use neuwerk::controlplane::threat_intel::settings::{load_settings, ThreatIntelSettings};
+use neuwerk::controlplane::threat_intel::silences::{load_silences, ThreatSilenceList};
 use neuwerk::controlplane::threat_intel::store::ThreatStore;
 use neuwerk::controlplane::threat_intel::types::ThreatSeverity;
 use neuwerk::controlplane::wiretap::{DnsMap, WiretapHub};
@@ -270,10 +270,7 @@ pub async fn start_controlplane_runtime(
     node_id: String,
     wiretap_hub: WiretapHub,
 ) -> Result<ControlplaneRuntimeHandles, String> {
-    let dns_allowlist = policy_store.dns_allowlist();
     let dns_policy = policy_store.dns_policy();
-    let dns_allowlist_for_dns = dns_allowlist.clone();
-    let dns_allowlist_for_gc = dns_allowlist.clone();
     let dns_upstreams = cfg.dns_upstreams.clone();
     let dns_listen = SocketAddr::new(IpAddr::V4(management_ip), 53);
     let service_lane_iface = "svc0".to_string();
@@ -359,14 +356,14 @@ pub async fn start_controlplane_runtime(
                         continue;
                     }
                 };
-                let silences =
-                    match load_silences(threat_cluster_store.as_ref(), &local_data_root) {
-                        Ok((silences, _)) => silences,
-                        Err(err) => {
-                            warn!(error = %err, "threat intel silences reload failed");
-                            continue;
-                        }
-                    };
+                let silences = match load_silences(threat_cluster_store.as_ref(), &local_data_root)
+                {
+                    Ok((silences, _)) => silences,
+                    Err(err) => {
+                        warn!(error = %err, "threat intel silences reload failed");
+                        continue;
+                    }
+                };
                 let snapshot = match load_effective_snapshot(
                     threat_cluster_store.as_ref(),
                     &local_data_root,
@@ -496,7 +493,6 @@ pub async fn start_controlplane_runtime(
     let dns_cfg = controlplane::trafficd::TrafficdConfig {
         dns_bind: dns_listen,
         dns_upstreams,
-        dns_allowlist: dns_allowlist_for_dns,
         dns_policy,
         dns_map: dns_map_for_dns,
         metrics: metrics.clone(),
@@ -530,9 +526,10 @@ pub async fn start_controlplane_runtime(
 
     let dns_allowlist_idle_secs = cfg.dns_allowlist_idle_secs;
     let dns_allowlist_gc_interval_secs = cfg.dns_allowlist_gc_interval_secs;
+    let policy_store_for_gc = policy_store.clone();
     tokio::spawn(async move {
         controlplane::allowlist_gc::run_allowlist_gc(
-            dns_allowlist_for_gc,
+            policy_store_for_gc,
             dns_allowlist_idle_secs,
             dns_allowlist_gc_interval_secs,
             Some(dns_map_for_gc),
@@ -601,8 +598,8 @@ mod tests {
     };
     use crate::controlplane::threat_intel::feeds::{ThreatIndicatorSnapshotItem, ThreatSnapshot};
     use crate::controlplane::threat_intel::runtime::ThreatRuntimeSlot;
-    use crate::controlplane::threat_intel::silences::ThreatSilenceList;
     use crate::controlplane::threat_intel::settings::ThreatIntelSettings;
+    use crate::controlplane::threat_intel::silences::ThreatSilenceList;
     use crate::controlplane::threat_intel::store::{
         ThreatEnrichmentStatus, ThreatFeedHit, ThreatFinding, ThreatMatchSource, ThreatStore,
     };

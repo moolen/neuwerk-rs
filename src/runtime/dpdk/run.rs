@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_queue::ArrayQueue;
 use neuwerk::dataplane::policy::{
-    DynamicIpSetV4, PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
+    PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
 };
 #[cfg(feature = "dpdk")]
 use neuwerk::dataplane::DpdkTransferredRxPacket;
@@ -586,7 +586,6 @@ pub fn run_dataplane(
     exact_source_group_index: SharedExactSourceGroupIndex,
     policy_applied_generation: Arc<AtomicU64>,
     service_policy_applied_generation: Arc<AtomicU64>,
-    dns_allowlist: DynamicIpSetV4,
     dns_target_ips: Vec<Ipv4Addr>,
     wiretap_emitter: Option<WiretapEmitter>,
     audit_emitter: Option<AuditEmitter>,
@@ -632,7 +631,6 @@ pub fn run_dataplane(
     state.set_exact_source_policy_index(exact_source_group_index);
     state.set_snat_mode(snat_mode);
     state.set_overlay_config(overlay);
-    state.set_dns_allowlist(dns_allowlist);
     state.set_dns_target_ips(dns_target_ips);
     state.set_dataplane_config(dataplane_config);
     state.set_policy_applied_generation(policy_applied_generation.clone());

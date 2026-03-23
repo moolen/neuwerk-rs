@@ -241,20 +241,18 @@ fn evaluate_dns_policy_decision_marks_audit_rule_deny_without_blocking() {
 
 #[test]
 fn revoke_hostname_grants_removes_cached_allowlist_entries() {
-    let allowlist = DynamicIpSetV4::new();
     let dns_map = DnsMap::new();
+    let store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
     let foo_ip = Ipv4Addr::new(203, 0, 113, 10);
     let bar_ip = Ipv4Addr::new(203, 0, 113, 11);
 
     dns_map.insert_many("foo.allowed", &[foo_ip], 10);
     dns_map.insert_many("bar.allowed", &[bar_ip], 10);
-    allowlist.insert(foo_ip);
-    allowlist.insert(bar_ip);
+    store.record_dns_grants("default", "foo.allowed", &[foo_ip], 10);
+    store.record_dns_grants("default", "bar.allowed", &[bar_ip], 10);
 
-    revoke_hostname_grants("Foo.Allowed.", &allowlist, &dns_map);
+    revoke_hostname_grants("Foo.Allowed.", "default", Some(&store), &dns_map);
 
-    assert!(!allowlist.contains(foo_ip));
-    assert!(allowlist.contains(bar_ip));
     assert!(dns_map.lookup(foo_ip).is_none());
     assert_eq!(dns_map.lookup(bar_ip).as_deref(), Some("bar.allowed"));
 }
@@ -323,7 +321,6 @@ async fn startup_status_reports_empty_upstream_error() {
     let result = run_dns_proxy(
         bind_addr,
         Vec::new(),
-        DynamicIpSetV4::new(),
         std::sync::Arc::new(std::sync::RwLock::new(DnsPolicy::new(Vec::new()))),
         DnsMap::new(),
         Metrics::new().unwrap(),
@@ -351,7 +348,6 @@ async fn startup_status_reports_bind_error() {
     let result = run_dns_proxy(
         bind_addr,
         vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 53)],
-        DynamicIpSetV4::new(),
         std::sync::Arc::new(std::sync::RwLock::new(DnsPolicy::new(Vec::new()))),
         DnsMap::new(),
         Metrics::new().unwrap(),

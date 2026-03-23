@@ -15,7 +15,6 @@ use crate::controlplane::policy_config::DnsPolicy;
 use crate::controlplane::threat_intel::runtime::{ThreatObservation, ThreatRuntimeSlot};
 use crate::controlplane::wiretap::DnsMap;
 use crate::controlplane::PolicyStore;
-use crate::dataplane::policy::DynamicIpSetV4;
 
 static DNS_LOGS: AtomicUsize = AtomicUsize::new(0);
 const DNS_UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -24,7 +23,6 @@ const DNS_UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 pub async fn run_dns_proxy(
     bind_addr: SocketAddr,
     upstream_addrs: Vec<SocketAddr>,
-    allowlist: DynamicIpSetV4,
     policy: std::sync::Arc<std::sync::RwLock<DnsPolicy>>,
     dns_map: DnsMap,
     metrics: Metrics,
@@ -74,7 +72,6 @@ pub async fn run_dns_proxy(
     report_startup(&mut startup_status_tx, Ok(()));
 
     let tcp_policy = policy.clone();
-    let tcp_allowlist = allowlist.clone();
     let tcp_dns_map = dns_map.clone();
     let tcp_metrics = metrics.clone();
     let tcp_upstreams = upstream_addrs.clone();
@@ -86,7 +83,6 @@ pub async fn run_dns_proxy(
         if let Err(err) = run_dns_proxy_tcp(
             tcp_listen,
             tcp_upstreams,
-            tcp_allowlist,
             tcp_policy,
             tcp_dns_map,
             tcp_metrics,
@@ -175,7 +171,7 @@ pub async fn run_dns_proxy(
 
         if !allowed {
             if would_deny {
-                revoke_hostname_grants(&question.name, &allowlist, &dns_map);
+                revoke_hostname_grants(&question.name, &source_group, policy_store.as_ref(), &dns_map);
             }
             let reason = if matches!(peer.ip(), IpAddr::V4(_)) {
                 if would_deny {
@@ -237,7 +233,9 @@ pub async fn run_dns_proxy(
                     .unwrap_or_default()
                     .as_secs();
                 dns_map.insert_many(&question.name, &v4s, now);
-                allowlist.insert_many(v4s);
+                if let Some(store) = policy_store.as_ref() {
+                    store.record_dns_grants(&source_group, &question.name, &v4s, now);
+                }
             }
         }
 
@@ -319,7 +317,6 @@ async fn forward_dns_query_udp(
 async fn run_dns_proxy_tcp(
     listener: TcpListener,
     upstream_addrs: std::sync::Arc<Vec<SocketAddr>>,
-    allowlist: DynamicIpSetV4,
     policy: std::sync::Arc<std::sync::RwLock<DnsPolicy>>,
     dns_map: DnsMap,
     metrics: Metrics,
@@ -330,7 +327,6 @@ async fn run_dns_proxy_tcp(
 ) -> io::Result<()> {
     loop {
         let (stream, peer) = listener.accept().await?;
-        let allowlist = allowlist.clone();
         let policy = policy.clone();
         let dns_map = dns_map.clone();
         let metrics = metrics.clone();
@@ -344,7 +340,6 @@ async fn run_dns_proxy_tcp(
                 stream,
                 peer,
                 upstream_addrs,
-                allowlist,
                 policy,
                 dns_map,
                 metrics,
@@ -366,7 +361,6 @@ async fn handle_dns_tcp_client(
     mut stream: TcpStream,
     peer: SocketAddr,
     upstream_addrs: std::sync::Arc<Vec<SocketAddr>>,
-    allowlist: DynamicIpSetV4,
     policy: std::sync::Arc<std::sync::RwLock<DnsPolicy>>,
     dns_map: DnsMap,
     metrics: Metrics,
@@ -460,7 +454,7 @@ async fn handle_dns_tcp_client(
 
         if !allowed {
             if would_deny {
-                revoke_hostname_grants(&question.name, &allowlist, &dns_map);
+                revoke_hostname_grants(&question.name, &source_group, policy_store.as_ref(), &dns_map);
             }
             let reason = if matches!(peer.ip(), IpAddr::V4(_)) {
                 if would_deny {
@@ -521,7 +515,9 @@ async fn handle_dns_tcp_client(
                         .unwrap_or_default()
                         .as_secs();
                     dns_map.insert_many(&question.name, &v4s, now);
-                    allowlist.insert_many(v4s);
+                    if let Some(store) = policy_store.as_ref() {
+                        store.record_dns_grants(&source_group, &question.name, &v4s, now);
+                    }
                 }
             }
         }
@@ -554,11 +550,16 @@ fn evaluate_dns_policy_decision(
     (allowed, would_deny, source_group)
 }
 
-fn revoke_hostname_grants(question_name: &str, allowlist: &DynamicIpSetV4, dns_map: &DnsMap) {
-    let removed = dns_map.remove_hostname(question_name);
-    if !removed.is_empty() {
-        allowlist.remove_many(removed);
+fn revoke_hostname_grants(
+    question_name: &str,
+    source_group: &str,
+    policy_store: Option<&PolicyStore>,
+    dns_map: &DnsMap,
+) {
+    if let Some(store) = policy_store {
+        let _ = store.revoke_dns_grants(source_group, question_name);
     }
+    let _ = dns_map.remove_hostname(question_name);
 }
 
 fn observe_dns_threat(

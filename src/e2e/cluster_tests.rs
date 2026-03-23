@@ -44,7 +44,7 @@ use crate::controlplane::service_accounts::{
 use crate::controlplane::wiretap::DnsMap;
 use crate::controlplane::PolicyStore;
 use crate::dataplane::config::DataplaneConfig;
-use crate::dataplane::policy::{DefaultPolicy, DynamicIpSetV4};
+use crate::dataplane::policy::DefaultPolicy;
 use crate::dataplane::{handle_packet, Action, EngineState, Packet};
 use crate::e2e::services::dns_query_response;
 use crate::e2e::topology::Topology;

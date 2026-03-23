@@ -2,9 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 
-use neuwerk::dataplane::policy::{
-    DynamicIpSetV4, PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
-};
+use neuwerk::dataplane::policy::{PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot};
 use neuwerk::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DrainControl, OverlayConfig,
     SharedInterceptDemuxState, SnatMode, WiretapEmitter,
@@ -24,7 +22,6 @@ pub struct DataplaneRuntimeConfig {
     pub exact_source_group_index: SharedExactSourceGroupIndex,
     pub policy_applied_generation: Arc<AtomicU64>,
     pub service_policy_applied_generation: Arc<AtomicU64>,
-    pub dns_allowlist: DynamicIpSetV4,
     pub dns_target_ips: Vec<Ipv4Addr>,
     pub wiretap_emitter: Option<WiretapEmitter>,
     pub audit_emitter: Option<AuditEmitter>,
@@ -60,7 +57,6 @@ pub fn spawn_dataplane_runtime_thread(
                     cfg.exact_source_group_index,
                     cfg.policy_applied_generation,
                     cfg.service_policy_applied_generation,
-                    cfg.dns_allowlist,
                     cfg.dns_target_ips,
                     cfg.wiretap_emitter,
                     cfg.audit_emitter,
