@@ -142,6 +142,19 @@ pub async fn run_policy_replication_with_local_apply_guard(
             }
             continue;
         }
+        // The leader applies local HTTP API writes synchronously. Reapplying the
+        // identical active record on the next replication tick would rebuild the
+        // policy store and discard in-memory DNS grants for established flows.
+        if snapshot.current_leader == Some(snapshot.id)
+            && policy_store.active_policy_id() == Some(record.id)
+            && local_store.active_id().ok().flatten() == Some(record.id)
+        {
+            last_record = Some(record_bytes);
+            if let Some(readiness) = &readiness {
+                readiness.set_policy_ready(true);
+            }
+            continue;
+        }
         let enforcement_mode = if record.mode == PolicyMode::Audit {
             EnforcementMode::Audit
         } else {
@@ -761,6 +774,115 @@ source_groups:
         assert_eq!(policy_store.active_policy_id(), None);
         assert_eq!(local_store.active_id().unwrap(), None);
         assert!(!policy_ready_check(&readiness));
+
+        task.abort();
+        let _ = task.await;
+        cluster.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn leader_replication_does_not_clear_existing_dns_grants_for_same_active_policy() {
+        ensure_rustls_provider();
+
+        let cluster_dir = TempDir::new().unwrap();
+        let local_dir = TempDir::new().unwrap();
+        let token_path = cluster_dir.path().join("bootstrap.json");
+        write_token_file(&token_path);
+
+        let bind_addr = next_local_addr();
+        let join_bind_addr = next_local_addr();
+        let mut cfg = base_config(&cluster_dir, &token_path);
+        cfg.bind_addr = bind_addr;
+        cfg.advertise_addr = bind_addr;
+        cfg.join_bind_addr = join_bind_addr;
+
+        let cluster = bootstrap::run_cluster(cfg, None, None).await.unwrap();
+        wait_for_leader(&cluster.raft, Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        let policy: PolicyConfig = serde_yaml::from_str(
+            r#"
+default_policy: deny
+source_groups:
+  - id: "client-primary"
+    priority: 0
+    sources:
+      ips: ["192.0.2.2"]
+    rules:
+      - id: "allow-foo"
+        action: allow
+        match:
+          dns_hostname: '^foo\.allowed$'
+    default_action: deny
+"#,
+        )
+        .unwrap();
+        let record = PolicyRecord::new(PolicyMode::Enforce, policy.clone(), None).unwrap();
+
+        cluster
+            .raft
+            .client_write(ClusterCommand::Put {
+                key: policy_item_key(record.id),
+                value: serde_json::to_vec(&record).unwrap(),
+            })
+            .await
+            .unwrap();
+        cluster
+            .raft
+            .client_write(ClusterCommand::Put {
+                key: POLICY_ACTIVE_KEY.to_vec(),
+                value: serde_json::to_vec(&PolicyActive { id: record.id }).unwrap(),
+            })
+            .await
+            .unwrap();
+
+        let compiled = policy.compile().unwrap();
+        let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::UNSPECIFIED, 32);
+        policy_store
+            .rebuild_with_kubernetes_bindings(
+                compiled.groups,
+                compiled.dns_policy,
+                compiled.default_policy,
+                EnforcementMode::Enforce,
+                compiled.kubernetes_bindings,
+            )
+            .unwrap();
+        policy_store.set_active_policy_id(Some(record.id));
+
+        let granted_ip = Ipv4Addr::new(203, 0, 113, 10);
+        policy_store.record_dns_grants("client-primary", "foo.allowed", &[granted_ip], 10);
+
+        let local_store = PolicyDiskStore::new(local_dir.path().join("local-policy-store"));
+        local_store.write_record(&record).unwrap();
+        local_store.set_active(Some(record.id)).unwrap();
+        let readiness = readiness_with_basics(&policy_store);
+        let task = tokio::spawn(run_policy_replication_with_local_apply_guard(
+            cluster.store.clone(),
+            cluster.raft.clone(),
+            policy_store.clone(),
+            local_store,
+            Some(readiness),
+            Some(Arc::new(AtomicU64::new(0))),
+            Duration::from_millis(25),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let decision = policy_store.snapshot().read().unwrap().evaluate(
+            &crate::dataplane::policy::PacketMeta {
+                src_ip: Ipv4Addr::new(192, 0, 2, 2),
+                dst_ip: granted_ip,
+                proto: 6,
+                src_port: 40_000,
+                dst_port: 80,
+                icmp_type: None,
+                icmp_code: None,
+            },
+            None,
+            None,
+        );
+        assert_eq!(decision, crate::dataplane::policy::PolicyDecision::Allow);
 
         task.abort();
         let _ = task.await;
