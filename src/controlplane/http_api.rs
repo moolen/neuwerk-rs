@@ -193,6 +193,7 @@ struct ApiState {
     external_url: String,
     tls_intercept_ca_ready: Option<Arc<AtomicBool>>,
     tls_intercept_ca_generation: Option<Arc<AtomicU64>>,
+    leader_local_policy_apply_count: Option<Arc<AtomicU64>>,
     dns_map: Option<DnsMap>,
     readiness: Option<ReadinessState>,
 }
@@ -318,6 +319,38 @@ pub async fn run_http_api_with_shutdown_and_threat_store(
     metrics: Metrics,
     shutdown: HttpApiShutdown,
 ) -> Result<(), String> {
+    run_http_api_with_shutdown_and_threat_store_with_local_apply_guard(
+        cfg,
+        policy_store,
+        local_store,
+        cluster,
+        audit_store,
+        threat_store,
+        wiretap_hub,
+        dns_map,
+        readiness,
+        metrics,
+        shutdown,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_http_api_with_shutdown_and_threat_store_with_local_apply_guard(
+    cfg: HttpApiConfig,
+    policy_store: PolicyStore,
+    local_store: PolicyDiskStore,
+    cluster: Option<HttpApiCluster>,
+    audit_store: Option<AuditStore>,
+    threat_store: Option<ThreatStore>,
+    wiretap_hub: Option<WiretapHub>,
+    dns_map: Option<DnsMap>,
+    readiness: Option<ReadinessState>,
+    metrics: Metrics,
+    shutdown: HttpApiShutdown,
+    leader_local_policy_apply_count: Option<Arc<AtomicU64>>,
+) -> Result<(), String> {
     run_http_api_with_shutdown_impl(
         cfg,
         policy_store,
@@ -330,6 +363,7 @@ pub async fn run_http_api_with_shutdown_and_threat_store(
         readiness,
         metrics,
         shutdown,
+        leader_local_policy_apply_count,
     )
     .await
 }
@@ -347,6 +381,7 @@ async fn run_http_api_with_shutdown_impl(
     readiness: Option<ReadinessState>,
     metrics: Metrics,
     shutdown: HttpApiShutdown,
+    leader_local_policy_apply_count: Option<Arc<AtomicU64>>,
 ) -> Result<(), String> {
     info!(
         bind = %cfg.bind_addr,
@@ -435,6 +470,7 @@ async fn run_http_api_with_shutdown_impl(
         external_url,
         tls_intercept_ca_ready: cfg.tls_intercept_ca_ready.clone(),
         tls_intercept_ca_generation: cfg.tls_intercept_ca_generation.clone(),
+        leader_local_policy_apply_count,
         dns_map,
         readiness,
     };

@@ -422,19 +422,26 @@ pub async fn start_controlplane_runtime(
         node_id.clone(),
     )?;
 
+    let leader_local_policy_apply_count = cluster_runtime.map(|_| Arc::new(AtomicU64::new(0)));
+
     if let Some(runtime) = cluster_runtime {
         let store = runtime.store.clone();
         let raft = runtime.raft.clone();
         let policy_store = policy_store.clone();
         let local_policy_store = local_policy_store.clone();
         let readiness_for_replication = readiness.clone();
+        let leader_local_policy_apply_count = leader_local_policy_apply_count
+            .as_ref()
+            .expect("cluster runtime should have local apply guard")
+            .clone();
         tokio::spawn(async move {
-            controlplane::policy_replication::run_policy_replication(
+            controlplane::policy_replication::run_policy_replication_with_local_apply_guard(
                 store,
                 raft,
                 policy_store,
                 local_policy_store,
                 Some(readiness_for_replication),
+                Some(leader_local_policy_apply_count),
                 Duration::from_secs(1),
             )
             .await;
@@ -574,6 +581,7 @@ pub async fn start_controlplane_runtime(
         readiness: Some(readiness),
         metrics,
         shutdown: http_shutdown.clone(),
+        leader_local_policy_apply_count,
     })?;
 
     Ok(ControlplaneRuntimeHandles {

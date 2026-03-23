@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::MissedTickBehavior;
@@ -18,6 +20,27 @@ pub async fn run_policy_replication(
     policy_store: PolicyStore,
     local_store: PolicyDiskStore,
     readiness: Option<crate::controlplane::ready::ReadinessState>,
+    interval: Duration,
+) {
+    run_policy_replication_with_local_apply_guard(
+        store,
+        raft,
+        policy_store,
+        local_store,
+        readiness,
+        None,
+        interval,
+    )
+    .await;
+}
+
+pub async fn run_policy_replication_with_local_apply_guard(
+    store: ClusterStore,
+    raft: openraft::Raft<ClusterTypeConfig>,
+    policy_store: PolicyStore,
+    local_store: PolicyDiskStore,
+    readiness: Option<crate::controlplane::ready::ReadinessState>,
+    leader_local_policy_apply_count: Option<Arc<AtomicU64>>,
     interval: Duration,
 ) {
     let mut ticker = tokio::time::interval(interval);
@@ -48,6 +71,13 @@ pub async fn run_policy_replication(
         // must still replay cluster state on every node (including the leader)
         // so in-memory policy/DNS state is restored after restart.
         if snapshot.current_leader.is_none() {
+            continue;
+        }
+        if snapshot.current_leader == Some(snapshot.id)
+            && leader_local_policy_apply_count
+                .as_ref()
+                .is_some_and(|count| count.load(Ordering::Acquire) > 0)
+        {
             continue;
         }
         let active = match store.get_state_value(POLICY_ACTIVE_KEY) {

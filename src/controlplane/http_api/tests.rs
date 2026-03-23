@@ -105,6 +105,7 @@ async fn proxy_stream_forwards_auth_header() {
         external_url: format!("https://{}", addr),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
+        leader_local_policy_apply_count: None,
         dns_map: None,
         readiness: None,
     };
@@ -163,6 +164,7 @@ async fn auth_metrics_record_failures() {
         external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
+        leader_local_policy_apply_count: None,
         dns_map: None,
         readiness: None,
     };
@@ -309,6 +311,7 @@ async fn wiretap_query_token_is_rejected_and_cookie_auth_works() {
         external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
+        leader_local_policy_apply_count: None,
         dns_map: None,
         readiness: None,
     };
@@ -469,6 +472,7 @@ async fn auth_token_login_rate_limits_repeated_failures() {
         external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
+        leader_local_policy_apply_count: None,
         dns_map: None,
         readiness: None,
     };
@@ -536,6 +540,7 @@ async fn auth_token_login_rate_limit_is_scoped_by_client_and_token() {
         external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
+        leader_local_policy_apply_count: None,
         dns_map: None,
         readiness: None,
     };
@@ -635,6 +640,7 @@ async fn auth_token_login_prefers_connect_info_over_forwarded_header() {
         external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
+        leader_local_policy_apply_count: None,
         dns_map: None,
         readiness: None,
     };
@@ -716,6 +722,7 @@ async fn auth_token_login_rejects_oversized_token_field() {
         external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
+        leader_local_policy_apply_count: None,
         dns_map: None,
         readiness: None,
     };
@@ -826,6 +833,7 @@ fn test_state(dir: &TempDir, keyset_path: std::path::PathBuf, metrics: Metrics) 
         external_url: "https://127.0.0.1:8443".to_string(),
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
+        leader_local_policy_apply_count: None,
         dns_map: None,
         readiness: None,
     }
