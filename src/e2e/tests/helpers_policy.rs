@@ -106,6 +106,85 @@ pub(in crate::e2e::tests) fn read_active_id(path: &std::path::Path) -> Result<uu
     Ok(active.id)
 }
 
+pub(in crate::e2e::tests) fn wait_for_active_id(
+    path: &std::path::Path,
+    expected: uuid::Uuid,
+    timeout: Duration,
+) -> Result<uuid::Uuid, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(active) = read_active_id(path) {
+            if active == expected {
+                return Ok(active);
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for active policy {}; path={}",
+                expected,
+                path.display()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_for_active_id_observes_updated_active_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("active.json");
+        let initial = PolicyActive {
+            id: uuid::Uuid::new_v4(),
+        };
+        let expected = uuid::Uuid::new_v4();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&initial).expect("serialize active"),
+        )
+        .expect("write initial active");
+
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            let updated = PolicyActive { id: expected };
+            std::fs::write(
+                &writer_path,
+                serde_json::to_vec(&updated).expect("serialize updated active"),
+            )
+            .expect("write updated active");
+        });
+
+        let observed = wait_for_active_id(&path, expected, Duration::from_secs(1))
+            .expect("wait for active id");
+        writer.join().expect("join writer");
+        assert_eq!(observed, expected);
+    }
+
+    #[test]
+    fn wait_for_active_id_times_out_when_expected_id_never_arrives() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("active.json");
+        let current = PolicyActive {
+            id: uuid::Uuid::new_v4(),
+        };
+        let expected = uuid::Uuid::new_v4();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&current).expect("serialize active"),
+        )
+        .expect("write active");
+
+        let err = wait_for_active_id(&path, expected, Duration::from_millis(100))
+            .expect_err("expected timeout");
+        assert!(err.contains("timed out waiting for active policy"));
+        assert!(err.contains(&expected.to_string()));
+    }
+}
+
 pub(in crate::e2e::tests) fn parse_created_at(
     record: &PolicyRecord,
 ) -> Result<OffsetDateTime, String> {
