@@ -5,6 +5,7 @@ import { PAGE_ICONS } from './constants';
 import {
   applySidebarHoverStyle,
   clearSidebarHoverStyle,
+  shouldRenderSidebarNavItem,
   sidebarNavItemBaseStyle,
   type VisibleNavItem,
 } from './helpers';
@@ -24,6 +25,10 @@ export const SidebarNavItem: React.FC<SidebarNavItemProps> = ({
   collapsed,
   onNavigate,
 }) => {
+  if (!shouldRenderSidebarNavItem(item, collapsed)) {
+    return null;
+  }
+
   const Icon = PAGE_ICONS[item.id];
   const isActive = currentPage === item.id || (depth === 0 && item.sectionActive);
   const paddingClass = depth === 1 ? (collapsed ? '' : 'pl-10') : '';

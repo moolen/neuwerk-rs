@@ -6,6 +6,7 @@ import {
   applySidebarHoverStyle,
   clearSidebarHoverStyle,
   filterSidebarNavItems,
+  shouldRenderSidebarNavItem,
   sidebarNavItemBaseStyle,
 } from './helpers';
 
@@ -54,6 +55,16 @@ describe('sidebar helpers', () => {
     expect(filterSidebarNavItems('admin', 'threat-findings').map((item) => item.id)).toContain(
       'threat-silences',
     );
+  });
+
+  it('hides child nav items when the sidebar is collapsed', () => {
+    const [parent, child] = filterSidebarNavItems('admin', 'threat-findings').filter(
+      (item) => item.id === 'threats' || item.id === 'threat-findings',
+    );
+
+    expect(shouldRenderSidebarNavItem(parent, true)).toBe(true);
+    expect(shouldRenderSidebarNavItem(child, true)).toBe(false);
+    expect(shouldRenderSidebarNavItem(child, false)).toBe(true);
   });
 
   it('derives active vs inactive nav item styles', () => {

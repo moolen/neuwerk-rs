@@ -46,6 +46,10 @@ export function filterSidebarNavItems(
   });
 }
 
+export function shouldRenderSidebarNavItem(item: VisibleNavItem, collapsed: boolean): boolean {
+  return !(collapsed && item.depth === 1);
+}
+
 export function sidebarNavItemBaseStyle(isActive: boolean): CSSProperties {
   return {
     borderRadius: 'var(--radius-sm)',
