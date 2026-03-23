@@ -20,7 +20,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleCollapse,
   userRole,
 }) => {
-  const navItems = filterSidebarNavItems(userRole);
+  const navItems = filterSidebarNavItems(userRole, currentPage);
 
   return (
     <aside

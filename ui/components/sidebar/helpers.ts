@@ -1,14 +1,53 @@
 import type { CSSProperties } from 'react';
 
-import { NAV_ITEMS, type NavItemDefinition } from '../../navigation';
+import { NAV_ITEMS, type AppPage, type NavItemDefinition } from '../../navigation';
 
 type UserRole = 'admin' | 'readonly';
 
+export interface VisibleNavItem extends NavItemDefinition {
+  depth: 0 | 1;
+  sectionActive: boolean;
+}
+
+function isSectionActive(
+  currentPage: AppPage,
+  parentId: AppPage,
+  items: ReadonlyArray<NavItemDefinition>,
+): boolean {
+  return (
+    currentPage === parentId ||
+    items.some((item) => item.id === currentPage && item.parentId === parentId)
+  );
+}
+
 export function filterSidebarNavItems(
   userRole: UserRole,
+  currentPage: AppPage,
   items: ReadonlyArray<NavItemDefinition> = NAV_ITEMS,
-): NavItemDefinition[] {
-  return items.filter((item) => !item.adminOnly || userRole === 'admin');
+): VisibleNavItem[] {
+  const visible = items.filter((item) => !item.adminOnly || userRole === 'admin');
+
+  return visible.flatMap((item) => {
+    if (item.parentId) {
+      return [];
+    }
+
+    const sectionActive = isSectionActive(currentPage, item.id, visible);
+    const parent: VisibleNavItem = { ...item, depth: 0, sectionActive };
+    const children = visible
+      .filter((candidate) => candidate.parentId === item.id && sectionActive)
+      .map((candidate) => ({
+        ...candidate,
+        depth: 1 as const,
+        sectionActive: currentPage === candidate.id,
+      }));
+
+    return [parent, ...children];
+  });
+}
+
+export function shouldRenderSidebarNavItem(item: VisibleNavItem, collapsed: boolean): boolean {
+  return !(collapsed && item.depth === 1);
 }
 
 export function sidebarNavItemBaseStyle(isActive: boolean): CSSProperties {

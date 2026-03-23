@@ -1,10 +1,11 @@
 import React from 'react';
 
-import type { AppPage, NavItemDefinition } from '../../navigation';
+import type { AppPage } from '../../navigation';
+import type { VisibleNavItem } from './helpers';
 import { SidebarNavItem } from './SidebarNavItem';
 
 interface SidebarNavProps {
-  items: NavItemDefinition[];
+  items: VisibleNavItem[];
   currentPage: AppPage;
   collapsed: boolean;
   onNavigate: (page: AppPage) => void;
@@ -21,6 +22,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
       <SidebarNavItem
         key={item.id}
         item={item}
+        depth={item.depth}
         currentPage={currentPage}
         collapsed={collapsed}
         onNavigate={onNavigate}

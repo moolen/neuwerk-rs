@@ -6,6 +6,7 @@ import {
   applySidebarHoverStyle,
   clearSidebarHoverStyle,
   filterSidebarNavItems,
+  shouldRenderSidebarNavItem,
   sidebarNavItemBaseStyle,
 } from './helpers';
 
@@ -16,11 +17,54 @@ describe('sidebar helpers', () => {
       { id: 'settings', label: 'Settings', adminOnly: true },
     ];
 
-    expect(filterSidebarNavItems('readonly', items).map((item) => item.id)).toEqual(['dashboard']);
-    expect(filterSidebarNavItems('admin', items).map((item) => item.id)).toEqual([
+    expect(filterSidebarNavItems('readonly', 'dashboard', items).map((item) => item.id)).toEqual([
+      'dashboard',
+    ]);
+    expect(filterSidebarNavItems('admin', 'dashboard', items).map((item) => item.id)).toEqual([
       'dashboard',
       'settings',
     ]);
+  });
+
+  it('hides child nav items when the current page is outside the section', () => {
+    const items: NavItemDefinition[] = [
+      { id: 'threats', label: 'Threats' },
+      { id: 'threat-findings', label: 'Findings', parentId: 'threats' },
+      { id: 'threat-silences', label: 'Silences', parentId: 'threats' },
+    ];
+
+    expect(filterSidebarNavItems('readonly', 'dashboard', items).map((item) => item.id)).toEqual([
+      'threats',
+    ]);
+    expect(filterSidebarNavItems('admin', 'dashboard', items).map((item) => item.id)).toEqual([
+      'threats',
+    ]);
+  });
+
+  it('shows threat children only while the current page is inside the threat section', () => {
+    expect(filterSidebarNavItems('admin', 'policies').map((item) => item.id)).not.toContain(
+      'threat-findings',
+    );
+    expect(filterSidebarNavItems('admin', 'policies').map((item) => item.id)).not.toContain(
+      'threat-silences',
+    );
+
+    expect(filterSidebarNavItems('admin', 'threat-findings').map((item) => item.id)).toContain(
+      'threat-findings',
+    );
+    expect(filterSidebarNavItems('admin', 'threat-findings').map((item) => item.id)).toContain(
+      'threat-silences',
+    );
+  });
+
+  it('hides child nav items when the sidebar is collapsed', () => {
+    const [parent, child] = filterSidebarNavItems('admin', 'threat-findings').filter(
+      (item) => item.id === 'threats' || item.id === 'threat-findings',
+    );
+
+    expect(shouldRenderSidebarNavItem(parent, true)).toBe(true);
+    expect(shouldRenderSidebarNavItem(child, true)).toBe(false);
+    expect(shouldRenderSidebarNavItem(child, false)).toBe(true);
   });
 
   it('derives active vs inactive nav item styles', () => {

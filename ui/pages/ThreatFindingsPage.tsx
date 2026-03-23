@@ -4,11 +4,9 @@ import { PageLayout } from '../components/layout/PageLayout';
 import type { ThreatFinding, ThreatIndicatorType, ThreatSilenceKind } from '../types';
 import { CreateThreatSilenceModal } from './threat-intel/components/CreateThreatSilenceModal';
 import { ThreatDisableBanner } from './threat-intel/components/ThreatDisableBanner';
-import { ThreatFeedStatusPanel } from './threat-intel/components/ThreatFeedStatusPanel';
 import { ThreatFiltersPanel } from './threat-intel/components/ThreatFiltersPanel';
 import { ThreatFindingsTable } from './threat-intel/components/ThreatFindingsTable';
-import { ThreatSilencesPanel } from './threat-intel/components/ThreatSilencesPanel';
-import { useThreatIntelPage } from './threat-intel/useThreatIntelPage';
+import { useThreatFindingsPage } from './threat-intel/useThreatFindingsPage';
 
 interface SilenceDraftState {
   title: string;
@@ -29,13 +27,10 @@ function hostnameRegexSuggestion(hostname: string): string {
   return `^${escapeRegexLiteral(hostname.toLowerCase())}$`;
 }
 
-export const ThreatIntelPage: React.FC = () => {
+export const ThreatFindingsPage: React.FC = () => {
   const {
     items,
     rawItems,
-    feedStatus,
-    silences,
-    disabled,
     filters,
     availableFeeds,
     availableSourceGroups,
@@ -45,27 +40,13 @@ export const ThreatIntelPage: React.FC = () => {
     nodeErrors,
     nodesQueried,
     nodesResponded,
+    disabled,
     silenceSaving,
-    deletingSilenceId,
     load,
     updateFilters,
     createSilence,
-    deleteSilence,
-  } = useThreatIntelPage();
+  } = useThreatFindingsPage();
   const [silenceDraft, setSilenceDraft] = React.useState<SilenceDraftState | null>(null);
-
-  const openManualSilence = () => {
-    setSilenceDraft({
-      title: 'Add silence',
-      description: 'Create a global silence for an exact indicator or a hostname regex.',
-      kind: 'exact',
-      indicatorType: 'hostname',
-      value: '',
-      reason: '',
-      lockKind: false,
-      lockIndicatorType: false,
-    });
-  };
 
   const openExactSilence = (item: ThreatFinding) => {
     setSilenceDraft({
@@ -109,8 +90,8 @@ export const ThreatIntelPage: React.FC = () => {
 
   return (
     <PageLayout
-      title="Threats"
-      description="Cluster-wide intelligence matches, feed freshness, and audit pivots from the merged threat pipeline."
+      title="Findings"
+      description="Investigate threat matches from the merged threat pipeline."
       actions={
         <div
           className="rounded-[1.3rem] p-4 min-w-[240px]"
@@ -132,7 +113,6 @@ export const ThreatIntelPage: React.FC = () => {
         </div>
       }
     >
-
       {error && (
         <div
           className="rounded-lg p-4"
@@ -225,16 +205,6 @@ export const ThreatIntelPage: React.FC = () => {
         loading={loading}
         onRefresh={() => void load()}
         onUpdateFilters={updateFilters}
-      />
-
-      <ThreatFeedStatusPanel feedStatus={feedStatus} />
-
-      <ThreatSilencesPanel
-        items={silences}
-        loading={loading}
-        deletingId={deletingSilenceId}
-        onDelete={(id) => void deleteSilence(id)}
-        onCreateManual={openManualSilence}
       />
 
       <section className="space-y-3">
