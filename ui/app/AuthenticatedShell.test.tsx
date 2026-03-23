@@ -50,11 +50,11 @@ describe('AuthenticatedShell', () => {
           onToggleMobileNavigation={() => {}}
           onLogout={async () => {}}
         >
-          <div>Findings body</div>
+          <div>Threat details body</div>
         </AuthenticatedShell>
       </ThemeProvider>,
     );
 
-    expect(html).toContain('Findings');
+    expect(html).toMatch(/data-testid="app-header-page-label"[^>]*>Findings</);
   });
 });

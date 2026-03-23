@@ -44,7 +44,11 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
         <PanelLeft className="w-4 h-4" />
       </button>
 
-      <div className="lg:hidden text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
+      <div
+        data-testid="app-header-page-label"
+        className="lg:hidden text-sm font-semibold truncate"
+        style={{ color: 'var(--text)' }}
+      >
         {pageLabel}
       </div>
 
