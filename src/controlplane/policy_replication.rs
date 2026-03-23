@@ -64,6 +64,24 @@ pub async fn run_policy_replication_with_local_apply_guard(
         Ok(())
     }
 
+    fn local_active_record_matches(local_store: &PolicyDiskStore, record: &PolicyRecord) -> bool {
+        if local_store.active_id().ok().flatten() != Some(record.id) {
+            return false;
+        }
+        local_store
+            .read_record(record.id)
+            .ok()
+            .flatten()
+            .is_some_and(|local_record| {
+                local_record.id == record.id
+                    && local_record.created_at == record.created_at
+                    && local_record.name == record.name
+                    && local_record.mode == record.mode
+                    && serde_json::to_value(&local_record.policy).ok()
+                        == serde_json::to_value(&record.policy).ok()
+            })
+    }
+
     loop {
         ticker.tick().await;
         let snapshot = raft.metrics().borrow().clone();
@@ -147,7 +165,7 @@ pub async fn run_policy_replication_with_local_apply_guard(
         // policy store and discard in-memory DNS grants for established flows.
         if snapshot.current_leader == Some(snapshot.id)
             && policy_store.active_policy_id() == Some(record.id)
-            && local_store.active_id().ok().flatten() == Some(record.id)
+            && local_active_record_matches(&local_store, &record)
         {
             last_record = Some(record_bytes);
             if let Some(readiness) = &readiness {
