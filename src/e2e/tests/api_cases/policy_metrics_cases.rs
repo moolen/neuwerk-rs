@@ -750,7 +750,7 @@ pub(super) fn api_metrics_dns_dataplane(cfg: &TopologyConfig) -> Result<(), Stri
                 ("direction", "outbound"),
                 ("proto", "udp"),
                 ("decision", "allow"),
-                ("source_group", "internal"),
+                ("source_group", "client-primary"),
             ],
         )
         .ok_or_else(|| "missing outbound dataplane packet metrics".to_string())?;
@@ -765,7 +765,7 @@ pub(super) fn api_metrics_dns_dataplane(cfg: &TopologyConfig) -> Result<(), Stri
                 ("direction", "inbound"),
                 ("proto", "udp"),
                 ("decision", "allow"),
-                ("source_group", "internal"),
+                ("source_group", "client-primary"),
             ],
         )
         .ok_or_else(|| "missing inbound dataplane packet metrics".to_string())?;
@@ -776,7 +776,7 @@ pub(super) fn api_metrics_dns_dataplane(cfg: &TopologyConfig) -> Result<(), Stri
         let flow_opens = metric_value_with_labels(
             &body,
             "dp_flow_opens_total",
-            &[("proto", "udp"), ("source_group", "internal")],
+            &[("proto", "udp"), ("source_group", "client-primary")],
         )
         .ok_or_else(|| "missing dataplane flow open metrics".to_string())?;
         if flow_opens < 1.0 {
