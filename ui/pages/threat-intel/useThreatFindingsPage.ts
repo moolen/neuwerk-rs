@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { createThreatSilence, getThreatFindings } from '../../services/api';
+import {
+  createThreatSilence,
+  getThreatFeedStatus,
+  getThreatFindings,
+} from '../../services/api';
 import type { CreateThreatSilenceRequest } from '../../services/apiClient/threats';
-import type { ThreatFinding, ThreatNodeError } from '../../types';
+import type { ThreatFeedStatusResponse, ThreatFinding, ThreatNodeError } from '../../types';
 import {
   buildThreatFindingsParams,
   createDefaultThreatFilters,
@@ -13,6 +17,7 @@ import { buildSearchFromFilters, buildServerFilterKey } from './state';
 
 export function useThreatFindingsPage() {
   const [rawItems, setRawItems] = useState<ThreatFinding[]>([]);
+  const [feedStatus, setFeedStatus] = useState<ThreatFeedStatusResponse | null>(null);
   const [filters, setFilters] = useState<ThreatFilters>(() =>
     createDefaultThreatFilters(window.location.search),
   );
@@ -31,13 +36,17 @@ export function useThreatFindingsPage() {
     setError(null);
 
     try {
-      const findings = await getThreatFindings(buildThreatFindingsParams(activeFilters, Date.now()));
+      const [feeds, findings] = await Promise.all([
+        getThreatFeedStatus(),
+        getThreatFindings(buildThreatFindingsParams(activeFilters, Date.now())),
+      ]);
+      setFeedStatus(feeds);
       setRawItems(findings.items);
       setPartial(findings.partial);
       setNodeErrors(findings.node_errors);
       setNodesQueried(findings.nodes_queried);
       setNodesResponded(findings.nodes_responded);
-      setDisabled(Boolean(findings.disabled));
+      setDisabled(Boolean(findings.disabled || feeds.disabled));
     } catch (err) {
       console.error('Failed to load threat findings data:', err);
       setError(err instanceof Error ? err.message : 'Failed to load threat findings data');
@@ -67,8 +76,11 @@ export function useThreatFindingsPage() {
         values.add(hit.feed);
       }
     }
+    for (const feed of feedStatus?.feeds ?? []) {
+      values.add(feed.feed);
+    }
     return Array.from(values).sort();
-  }, [rawItems]);
+  }, [feedStatus, rawItems]);
 
   const availableSourceGroups = useMemo(
     () => Array.from(new Set(rawItems.map((item) => item.source_group))).sort(),
