@@ -10,6 +10,14 @@ test('marketing surface points at the current repo and describes Neuwerk TLS int
     'utf8',
   );
   assert.match(comparison, /approach: 'Neuwerk'[\s\S]*tlsInspection: 'Optional'/);
+  assert.match(
+    comparison,
+    /<th class="pb-4 pl-4 pr-4 text-sm font-medium text-slate-400">Approach<\/th>/,
+  );
+  assert.match(
+    comparison,
+    /approach: 'Neuwerk'[\s\S]*<td class=\{`py-4 pl-4 pr-4 font-medium \$\{row\.highlight \? 'text-brand-400' : 'text-white'\}`\}>/,
+  );
 
   const repoLinkedFiles = [
     '../src/components/common/Header.astro',

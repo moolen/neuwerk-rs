@@ -87,7 +87,7 @@ const differentiators = [
       <table class="w-full text-left">
         <thead>
           <tr class="border-b border-slate-700">
-            <th class="pb-4 pr-4 text-sm font-medium text-slate-400">Approach</th>
+            <th class="pb-4 pl-4 pr-4 text-sm font-medium text-slate-400">Approach</th>
             <th class="pb-4 px-4 text-sm font-medium text-slate-400">Enforcement Location</th>
             <th class="pb-4 px-4 text-sm font-medium text-slate-400">Survives Node Compromise?</th>
             <th class="pb-4 px-4 text-sm font-medium text-slate-400">TLS Inspection</th>
@@ -98,7 +98,7 @@ const differentiators = [
         <tbody class="divide-y divide-slate-800">
           {comparisons.map((row) => (
             <tr class={row.highlight ? 'bg-brand-500/5' : ''}>
-              <td class={`py-4 pr-4 font-medium ${row.highlight ? 'text-brand-400' : 'text-white'}`}>
+              <td class={`py-4 pl-4 pr-4 font-medium ${row.highlight ? 'text-brand-400' : 'text-white'}`}>
                 {row.approach}
               </td>
               <td class="py-4 px-4 text-slate-400">{row.location}</td>
