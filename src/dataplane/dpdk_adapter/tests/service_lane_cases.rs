@@ -301,3 +301,87 @@ fn process_service_lane_egress_uses_shared_intercept_demux_across_adapters() {
         assert_eq!(tcp.src_port, 443);
     });
 }
+
+fn with_intercept_cap_env<R>(
+    demux_max: Option<&str>,
+    host_queue_max: Option<&str>,
+    arp_queue_max: Option<&str>,
+    f: impl FnOnce() -> R,
+) -> R {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let old_demux_max = std::env::var("NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES").ok();
+    let old_host_queue_max = std::env::var("NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX").ok();
+    let old_arp_queue_max = std::env::var("NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX").ok();
+
+    match demux_max {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES", value),
+        None => std::env::remove_var("NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES"),
+    }
+    match host_queue_max {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX", value),
+        None => std::env::remove_var("NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX"),
+    }
+    match arp_queue_max {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX", value),
+        None => std::env::remove_var("NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX"),
+    }
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+    match old_demux_max {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES", value),
+        None => std::env::remove_var("NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES"),
+    }
+    match old_host_queue_max {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX", value),
+        None => std::env::remove_var("NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX"),
+    }
+    match old_arp_queue_max {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX", value),
+        None => std::env::remove_var("NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX"),
+    }
+
+    match result {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+#[test]
+fn intercept_demux_rejects_new_entries_when_cap_is_reached() {
+    with_intercept_cap_env(Some("1"), None, None, || {
+        let demux = SharedInterceptDemuxState::default();
+        demux.upsert(
+            Ipv4Addr::new(10, 0, 0, 10),
+            40000,
+            Ipv4Addr::new(198, 51, 100, 10),
+            443,
+        );
+        demux.upsert(
+            Ipv4Addr::new(10, 0, 0, 11),
+            40001,
+            Ipv4Addr::new(198, 51, 100, 11),
+            443,
+        );
+
+        assert_eq!(
+            demux.lookup(Ipv4Addr::new(10, 0, 0, 10), 40000),
+            Some((Ipv4Addr::new(198, 51, 100, 10), 443))
+        );
+        assert_eq!(demux.lookup(Ipv4Addr::new(10, 0, 0, 11), 40001), None);
+    });
+}
+
+#[test]
+fn host_frame_queue_drops_or_sheds_when_queue_cap_is_reached() {
+    with_intercept_cap_env(None, Some("1"), None, || {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let frame_a = vec![0x11; 64];
+        let frame_b = vec![0x22; 64];
+        adapter.enqueue_host_frame(frame_a);
+        adapter.enqueue_host_frame(frame_b.clone());
+
+        assert_eq!(adapter.next_host_frame(), Some(frame_b));
+        assert!(adapter.next_host_frame().is_none());
+    });
+}

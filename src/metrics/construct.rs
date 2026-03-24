@@ -858,6 +858,36 @@ impl Metrics {
             "DPDK service-lane forward queue utilization ratio",
         ))
         .map_err(|err| err.to_string())?;
+        let dpdk_intercept_demux_size = Gauge::with_opts(Opts::new(
+            "dpdk_intercept_demux_size",
+            "DPDK intercept demux current entry count",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_host_frame_queue_depth = Gauge::with_opts(Opts::new(
+            "dpdk_host_frame_queue_depth",
+            "DPDK service-lane host-frame queue depth",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_pending_arp_queue_depth = Gauge::with_opts(Opts::new(
+            "dpdk_pending_arp_queue_depth",
+            "DPDK pending ARP frame queue depth",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_intercept_demux_insert_dropped = Counter::with_opts(Opts::new(
+            "dpdk_intercept_demux_insert_dropped_total",
+            "DPDK intercept demux inserts dropped due to cap",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_host_frame_dropped = Counter::with_opts(Opts::new(
+            "dpdk_host_frame_dropped_total",
+            "DPDK host frames dropped from queue due to cap",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_pending_arp_frame_dropped = Counter::with_opts(Opts::new(
+            "dpdk_pending_arp_frame_dropped_total",
+            "DPDK queued ARP frames dropped due to cap",
+        ))
+        .map_err(|err| err.to_string())?;
         let dp_tcp_handshake_events = CounterVec::new(
             Opts::new(
                 "dp_tcp_handshake_events_total",
@@ -1458,6 +1488,24 @@ impl Metrics {
             ))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dpdk_intercept_demux_size.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_host_frame_queue_depth.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_pending_arp_queue_depth.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_intercept_demux_insert_dropped.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_host_frame_dropped.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_pending_arp_frame_dropped.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dp_tcp_handshake_events.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -1789,6 +1837,12 @@ impl Metrics {
             .observe(0.0);
         dpdk_service_lane_forward_queue_depth.set(0.0);
         dpdk_service_lane_forward_queue_utilization_ratio.set(0.0);
+        dpdk_intercept_demux_size.set(0.0);
+        dpdk_host_frame_queue_depth.set(0.0);
+        dpdk_pending_arp_queue_depth.set(0.0);
+        dpdk_intercept_demux_insert_dropped.inc_by(0.0);
+        dpdk_host_frame_dropped.inc_by(0.0);
+        dpdk_pending_arp_frame_dropped.inc_by(0.0);
         dp_state_lock_wait_seconds_worker
             .with_label_values(&["0"])
             .observe(0.0);
@@ -2087,6 +2141,12 @@ impl Metrics {
             dpdk_service_lane_forward_queue_wait_seconds,
             dpdk_service_lane_forward_queue_depth,
             dpdk_service_lane_forward_queue_utilization_ratio,
+            dpdk_intercept_demux_size,
+            dpdk_host_frame_queue_depth,
+            dpdk_pending_arp_queue_depth,
+            dpdk_intercept_demux_insert_dropped,
+            dpdk_host_frame_dropped,
+            dpdk_pending_arp_frame_dropped,
             dp_tcp_handshake_events,
             dp_tcp_handshake_events_by_target,
             dp_tcp_handshake_final_ack_in,

@@ -1,5 +1,6 @@
 impl DpdkAdapter {
     pub fn process_frame(&mut self, frame: &[u8], state: &mut EngineState) -> Option<Vec<u8>> {
+        self.set_runtime_metrics(state.metrics());
         if frame.len() < ETH_HDR_LEN {
             return None;
         }
@@ -127,7 +128,7 @@ impl DpdkAdapter {
         match crate::dataplane::engine::handle_packet(&mut pkt, state) {
             Action::Forward { .. } => self.rewrite_l2_for_forward(&mut pkt, state),
             Action::ToHost => {
-                self.queue_intercept_host_frame(pkt.buffer());
+                self.queue_intercept_host_frame(pkt.buffer(), state.metrics());
                 None
             }
             Action::Drop => None,
@@ -139,6 +140,7 @@ impl DpdkAdapter {
         pkt: &'a mut Packet,
         state: &mut EngineState,
     ) -> Option<FrameOut<'a>> {
+        self.set_runtime_metrics(state.metrics());
         let frame = pkt.buffer();
         if frame.len() < ETH_HDR_LEN {
             return None;
@@ -171,7 +173,7 @@ impl DpdkAdapter {
                 }
             }
             Action::ToHost => {
-                self.queue_intercept_host_frame(pkt.buffer());
+                self.queue_intercept_host_frame(pkt.buffer(), state.metrics());
                 None
             }
             Action::Drop => None,
@@ -179,7 +181,11 @@ impl DpdkAdapter {
     }
 
     pub fn next_dhcp_frame(&mut self, state: &EngineState) -> Option<Vec<u8>> {
+        self.set_runtime_metrics(state.metrics());
         if let Some(frame) = self.pending_frames.pop_front() {
+            if let Some(metrics) = state.metrics() {
+                metrics.set_dpdk_pending_arp_queue_depth(self.pending_frames.len());
+            }
             return Some(frame);
         }
         let rx = self.dhcp_rx.as_mut()?;
@@ -351,7 +357,13 @@ impl DpdkAdapter {
         None
     }
 
-    fn maybe_queue_arp_request(&mut self, src_mac: [u8; 6], src_ip: Ipv4Addr, target_ip: Ipv4Addr) {
+    fn maybe_queue_arp_request(
+        &mut self,
+        src_mac: [u8; 6],
+        src_ip: Ipv4Addr,
+        target_ip: Ipv4Addr,
+        metrics: Option<&crate::metrics::Metrics>,
+    ) {
         let now = Instant::now();
         let mut should_send = match self.arp_last_request.get(&target_ip) {
             Some(last) => {
@@ -384,7 +396,17 @@ impl DpdkAdapter {
             );
         }
         let frame = build_arp_request(src_mac, src_ip, target_ip);
+        let queue_max = pending_arp_queue_max();
+        if self.pending_frames.len() >= queue_max {
+            self.pending_frames.pop_front();
+            if let Some(metrics) = metrics {
+                metrics.inc_dpdk_pending_arp_frame_dropped();
+            }
+        }
         self.pending_frames.push_back(frame);
+        if let Some(metrics) = metrics {
+            metrics.set_dpdk_pending_arp_queue_depth(self.pending_frames.len());
+        }
     }
 
     fn rewrite_l2_for_forward(&mut self, pkt: &mut Packet, state: &EngineState) -> Option<Vec<u8>> {
@@ -453,7 +475,7 @@ impl DpdkAdapter {
                                 next_hop, cfg.ip, dst_ip
                             );
                         }
-                        self.maybe_queue_arp_request(src_mac, cfg.ip, next_hop);
+                        self.maybe_queue_arp_request(src_mac, cfg.ip, next_hop, state.metrics());
                         return false;
                     }
                 } else {
@@ -463,7 +485,7 @@ impl DpdkAdapter {
                             next_hop, cfg.ip, dst_ip
                         );
                     }
-                    self.maybe_queue_arp_request(src_mac, cfg.ip, next_hop);
+                    self.maybe_queue_arp_request(src_mac, cfg.ip, next_hop, state.metrics());
                     return false;
                 }
             }

@@ -958,6 +958,30 @@ impl Metrics {
             .set((depth as f64) / 1024.0);
     }
 
+    pub fn set_dpdk_intercept_demux_size(&self, size: usize) {
+        self.dpdk_intercept_demux_size.set(size as f64);
+    }
+
+    pub fn set_dpdk_host_frame_queue_depth(&self, depth: usize) {
+        self.dpdk_host_frame_queue_depth.set(depth as f64);
+    }
+
+    pub fn set_dpdk_pending_arp_queue_depth(&self, depth: usize) {
+        self.dpdk_pending_arp_queue_depth.set(depth as f64);
+    }
+
+    pub fn inc_dpdk_intercept_demux_insert_dropped(&self) {
+        self.dpdk_intercept_demux_insert_dropped.inc();
+    }
+
+    pub fn inc_dpdk_host_frame_dropped(&self) {
+        self.dpdk_host_frame_dropped.inc();
+    }
+
+    pub fn inc_dpdk_pending_arp_frame_dropped(&self) {
+        self.dpdk_pending_arp_frame_dropped.inc();
+    }
+
     pub fn inc_dp_tcp_handshake_event(&self, worker: usize, event: &str) {
         let worker = worker.to_string();
         self.dp_tcp_handshake_events

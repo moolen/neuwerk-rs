@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,9 @@ const ARP_CACHE_TTL_SECS: u64 = 120;
 const ARP_REQUEST_COOLDOWN_MS: u64 = 500;
 const INTERCEPT_DEMUX_IDLE_SECS: u64 = 300;
 const INTERCEPT_DEMUX_GC_INTERVAL_MS_DEFAULT: u64 = 1_000;
+const INTERCEPT_DEMUX_MAX_ENTRIES_DEFAULT: usize = 65_536;
+const HOST_FRAME_QUEUE_MAX_DEFAULT: usize = 8_192;
+const PENDING_ARP_QUEUE_MAX_DEFAULT: usize = 4_096;
 const SERVICE_LANE_TAP_RETRY_MS: u64 = 1_000;
 const INTERCEPT_SERVICE_IP_DEFAULT: Ipv4Addr = Ipv4Addr::new(169, 254, 255, 1);
 const INTERCEPT_SERVICE_PORT_DEFAULT: u16 = 15443;
@@ -86,6 +89,35 @@ fn intercept_demux_gc_interval() -> Duration {
     })
 }
 
+fn parse_env_usize_gt_zero(var_name: &str, default: usize) -> usize {
+    std::env::var(var_name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn intercept_demux_max_entries() -> usize {
+    parse_env_usize_gt_zero(
+        "NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES",
+        INTERCEPT_DEMUX_MAX_ENTRIES_DEFAULT,
+    )
+}
+
+fn host_frame_queue_max() -> usize {
+    parse_env_usize_gt_zero(
+        "NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX",
+        HOST_FRAME_QUEUE_MAX_DEFAULT,
+    )
+}
+
+fn pending_arp_queue_max() -> usize {
+    parse_env_usize_gt_zero(
+        "NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX",
+        PENDING_ARP_QUEUE_MAX_DEFAULT,
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct InterceptDemuxKey {
     client_ip: Ipv4Addr,
@@ -117,6 +149,7 @@ impl Default for InterceptDemuxShard {
 #[derive(Debug)]
 pub struct SharedInterceptDemuxState {
     shards: Vec<Mutex<InterceptDemuxShard>>,
+    size: AtomicUsize,
 }
 
 impl Default for SharedInterceptDemuxState {
@@ -131,11 +164,25 @@ impl Default for SharedInterceptDemuxState {
         for _ in 0..shard_count {
             shards.push(Mutex::new(InterceptDemuxShard::default()));
         }
-        Self { shards }
+        Self {
+            shards,
+            size: AtomicUsize::new(0),
+        }
     }
 }
 
 impl SharedInterceptDemuxState {
+    fn dec_size(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let _ = self
+            .size
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(count))
+            });
+    }
+
     fn shard_index(&self, client_ip: Ipv4Addr, client_port: u16) -> usize {
         if self.shards.len() <= 1 {
             return 0;
@@ -150,18 +197,20 @@ impl SharedInterceptDemuxState {
         (x as usize) % self.shards.len()
     }
 
-    fn gc_expired(shard: &mut InterceptDemuxShard, now: Instant) {
+    fn gc_expired(shard: &mut InterceptDemuxShard, now: Instant) -> usize {
+        let before = shard.map.len();
         shard.map.retain(|_, entry| {
             now.duration_since(entry.last_seen) <= Duration::from_secs(INTERCEPT_DEMUX_IDLE_SECS)
         });
         shard.last_gc = now;
+        before.saturating_sub(shard.map.len())
     }
 
-    fn maybe_gc(shard: &mut InterceptDemuxShard) {
+    fn maybe_gc(shard: &mut InterceptDemuxShard) -> usize {
         if shard.last_gc.elapsed() < intercept_demux_gc_interval() {
-            return;
+            return 0;
         }
-        Self::gc_expired(shard, Instant::now());
+        Self::gc_expired(shard, Instant::now())
     }
 
     pub fn upsert(
@@ -170,23 +219,48 @@ impl SharedInterceptDemuxState {
         client_port: u16,
         upstream_ip: Ipv4Addr,
         upstream_port: u16,
-    ) {
+    ) -> bool {
         let idx = self.shard_index(client_ip, client_port);
         let mut shard = self.shards[idx]
             .lock()
             .expect("shared intercept demux shard lock poisoned");
-        Self::maybe_gc(&mut shard);
+        let gc_removed = Self::maybe_gc(&mut shard);
+        self.dec_size(gc_removed);
+        let key = InterceptDemuxKey {
+            client_ip,
+            client_port,
+        };
+        if let Some(entry) = shard.map.get_mut(&key) {
+            *entry = InterceptDemuxEntry {
+                upstream_ip,
+                upstream_port,
+                last_seen: Instant::now(),
+            };
+            return true;
+        }
+        let max_entries = intercept_demux_max_entries();
+        loop {
+            let current = self.size.load(Ordering::Relaxed);
+            if current >= max_entries {
+                return false;
+            }
+            if self
+                .size
+                .compare_exchange(current, current + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
         shard.map.insert(
-            InterceptDemuxKey {
-                client_ip,
-                client_port,
-            },
+            key,
             InterceptDemuxEntry {
                 upstream_ip,
                 upstream_port,
                 last_seen: Instant::now(),
             },
         );
+        true
     }
 
     pub fn remove(&self, client_ip: Ipv4Addr, client_port: u16) {
@@ -194,10 +268,16 @@ impl SharedInterceptDemuxState {
         let mut shard = self.shards[idx]
             .lock()
             .expect("shared intercept demux shard lock poisoned");
-        shard.map.remove(&InterceptDemuxKey {
-            client_ip,
-            client_port,
-        });
+        if shard
+            .map
+            .remove(&InterceptDemuxKey {
+                client_ip,
+                client_port,
+            })
+            .is_some()
+        {
+            self.dec_size(1);
+        }
     }
 
     pub fn lookup(&self, client_ip: Ipv4Addr, client_port: u16) -> Option<(Ipv4Addr, u16)> {
@@ -205,7 +285,8 @@ impl SharedInterceptDemuxState {
         let mut shard = self.shards[idx]
             .lock()
             .expect("shared intercept demux shard lock poisoned");
-        Self::maybe_gc(&mut shard);
+        let gc_removed = Self::maybe_gc(&mut shard);
+        self.dec_size(gc_removed);
         let key = InterceptDemuxKey {
             client_ip,
             client_port,
@@ -215,6 +296,10 @@ impl SharedInterceptDemuxState {
             return Some((entry.upstream_ip, entry.upstream_port));
         }
         None
+    }
+
+    pub fn len(&self) -> usize {
+        self.size.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -230,6 +315,12 @@ impl SharedInterceptDemuxState {
         let mut shard = self.shards[idx]
             .lock()
             .expect("shared intercept demux shard lock poisoned");
+        if !shard.map.contains_key(&InterceptDemuxKey {
+            client_ip,
+            client_port,
+        }) {
+            self.size.fetch_add(1, Ordering::Relaxed);
+        }
         shard.map.insert(
             InterceptDemuxKey {
                 client_ip,
@@ -271,6 +362,7 @@ pub struct DpdkAdapter {
     data_iface: String,
     dhcp_tx: Option<mpsc::Sender<DhcpRx>>,
     dhcp_rx: Option<mpsc::Receiver<DhcpTx>>,
+    metrics: Option<crate::metrics::Metrics>,
     mac: [u8; 6],
     dhcp_server_hint: Option<DhcpServerHint>,
     mac_publisher: Option<watch::Sender<[u8; 6]>>,
@@ -301,6 +393,7 @@ impl DpdkAdapter {
             data_iface: data_iface.trim().to_string(),
             dhcp_tx: None,
             dhcp_rx: None,
+            metrics: None,
             mac: [0; 6],
             dhcp_server_hint: None,
             mac_publisher: None,
@@ -335,6 +428,14 @@ impl DpdkAdapter {
 
     pub fn set_shared_intercept_demux(&mut self, shared: Arc<SharedInterceptDemuxState>) {
         self.shared_intercept_demux = Some(shared);
+    }
+
+    fn set_runtime_metrics(&mut self, metrics: Option<&crate::metrics::Metrics>) {
+        self.metrics = metrics.cloned();
+    }
+
+    fn runtime_metrics(&self) -> Option<&crate::metrics::Metrics> {
+        self.metrics.as_ref()
     }
 
     pub fn set_dhcp_channels(&mut self, tx: mpsc::Sender<DhcpRx>, rx: mpsc::Receiver<DhcpTx>) {
