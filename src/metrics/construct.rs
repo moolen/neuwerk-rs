@@ -647,6 +647,31 @@ impl Metrics {
             &["outcome"],
         )
         .map_err(|err| err.to_string())?;
+        let dp_pending_tls_flow_count = Gauge::with_opts(Opts::new(
+            "dp_pending_tls_flow_count",
+            "Current number of dataplane flows awaiting TLS policy resolution",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_flow_cap_rejections = Counter::with_opts(Opts::new(
+            "dp_flow_cap_rejections_total",
+            "Dataplane packets dropped because the global flow cap was reached",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_nat_cap_rejections = Counter::with_opts(Opts::new(
+            "dp_nat_cap_rejections_total",
+            "Dataplane packets dropped because the NAT entry cap was reached",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_pending_tls_cap_rejections = Counter::with_opts(Opts::new(
+            "dp_pending_tls_cap_rejections_total",
+            "Dataplane packets dropped because the pending TLS cap was reached",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_source_group_flow_cap_rejections = Counter::with_opts(Opts::new(
+            "dp_source_group_flow_cap_rejections_total",
+            "Dataplane packets dropped because a source group hit its active flow cap",
+        ))
+        .map_err(|err| err.to_string())?;
         let dp_icmp_decisions = CounterVec::new(
             Opts::new("dp_icmp_decisions_total", "Dataplane ICMP decisions"),
             &["direction", "type", "code", "decision", "source_group"],
@@ -1373,6 +1398,21 @@ impl Metrics {
             .register(Box::new(dp_tls_decisions.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dp_pending_tls_flow_count.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_flow_cap_rejections.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_nat_cap_rejections.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_pending_tls_cap_rejections.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_source_group_flow_cap_rejections.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dp_icmp_decisions.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -1723,6 +1763,11 @@ impl Metrics {
             .with_label_values(&["default", "idle_timeout"])
             .observe(0.0);
         dp_tls_decisions.with_label_values(&["pending"]).inc_by(0.0);
+        dp_pending_tls_flow_count.set(0.0);
+        dp_flow_cap_rejections.inc_by(0.0);
+        dp_nat_cap_rejections.inc_by(0.0);
+        dp_pending_tls_cap_rejections.inc_by(0.0);
+        dp_source_group_flow_cap_rejections.inc_by(0.0);
         dp_icmp_decisions
             .with_label_values(&["outbound", "0", "0", "deny", "default"])
             .inc_by(0.0);
@@ -2104,6 +2149,11 @@ impl Metrics {
             dpdk_shared_io_lock_hold_seconds_worker,
             dpdk_shared_io_lock_contended_worker,
             dp_tls_decisions,
+            dp_pending_tls_flow_count,
+            dp_flow_cap_rejections,
+            dp_nat_cap_rejections,
+            dp_pending_tls_cap_rejections,
+            dp_source_group_flow_cap_rejections,
             dp_icmp_decisions,
             dp_ipv4_fragments_dropped,
             dp_ipv4_ttl_exceeded,
