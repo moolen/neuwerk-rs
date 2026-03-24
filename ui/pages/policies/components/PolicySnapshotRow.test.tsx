@@ -49,14 +49,17 @@ describe('PolicySnapshotRow', () => {
     const html = renderToStaticMarkup(
       <PolicySnapshotRow
         policy={policy}
-        selectedId={null}
+        selectedId={policy.id}
         onSelect={vi.fn()}
       />,
     );
 
     expect(html).toContain('Office Egress');
-    expect(html).toContain('Snapshot abcdef12');
+    expect(html).not.toContain('Snapshot abcdef12');
     expect(html).toContain('audit');
+    expect(html).toContain('linear-gradient(145deg, rgba(79,110,247,0.14), rgba(79,110,247,0.05))');
+    expect(html).toContain('border:1px solid rgba(79,110,247,0.22)');
+    expect(html).toContain('box-shadow:var(--shadow-glass)');
     expect(html).not.toContain('Source scope');
     expect(html).not.toContain('Target profile');
     expect(html).not.toContain('grid grid-cols-3 gap-2');

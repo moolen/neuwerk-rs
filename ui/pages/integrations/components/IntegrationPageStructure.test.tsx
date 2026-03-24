@@ -46,11 +46,12 @@ describe('IntegrationsPage structure', () => {
     });
   });
 
-  it('renders summary cues and labeled editor sections', () => {
+  it('renders the editor sections without the top summary cards', () => {
     const html = renderToStaticMarkup(<IntegrationsPage />);
 
-    expect(html).toContain('Configured');
-    expect(html).toContain('Selection');
+    expect(html).not.toContain('Selection');
+    expect(html).not.toContain('inventory source available');
+    expect(html).not.toContain('Token ready · kubernetes');
     expect(html).toContain('Connection Profile');
     expect(html).toContain('Credentials');
     expect(html).toContain('xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]');

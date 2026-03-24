@@ -27,14 +27,14 @@ describe('ThreatsOverviewPage structure', () => {
     const html = renderToStaticMarkup(<ThreatsOverviewPage />);
     expect(html).toContain('Threats');
     expect(html).toContain('Feed Freshness');
-    expect(html).toContain('Visible findings');
+    expect(html).not.toContain('Visible findings');
     expect(html).toContain('node-b');
     expect(html).toContain('timeout');
     expect(html).not.toContain('Investigate');
     expect(html).not.toContain('Add silence');
   });
 
-  it('renders a loading placeholder for visible findings while data is loading', () => {
+  it('does not render the top visible findings card while data is loading', () => {
     vi.mocked(useThreatOverviewPage).mockReturnValue({
       feedStatus: { snapshot_version: 0, feeds: [], disabled: false },
       disabled: false,
@@ -49,7 +49,6 @@ describe('ThreatsOverviewPage structure', () => {
     });
 
     const html = renderToStaticMarkup(<ThreatsOverviewPage />);
-    expect(html).toContain('Visible findings');
-    expect(html).toContain('Loading');
+    expect(html).not.toContain('Visible findings');
   });
 });
