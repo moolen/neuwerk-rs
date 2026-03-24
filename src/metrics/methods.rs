@@ -746,6 +746,26 @@ impl Metrics {
         self.dp_tls_decisions.with_label_values(&[outcome]).inc();
     }
 
+    pub fn set_dp_pending_tls_flow_count(&self, count: usize) {
+        self.dp_pending_tls_flow_count.set(count as f64);
+    }
+
+    pub fn inc_dp_flow_cap_rejection(&self) {
+        self.dp_flow_cap_rejections.inc();
+    }
+
+    pub fn inc_dp_nat_cap_rejection(&self) {
+        self.dp_nat_cap_rejections.inc();
+    }
+
+    pub fn inc_dp_pending_tls_cap_rejection(&self) {
+        self.dp_pending_tls_cap_rejections.inc();
+    }
+
+    pub fn inc_dp_source_group_flow_cap_rejection(&self) {
+        self.dp_source_group_flow_cap_rejections.inc();
+    }
+
     pub fn observe_dp_icmp_decision(
         &self,
         direction: &str,

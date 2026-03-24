@@ -137,6 +137,13 @@ impl FlowEntry {
             TcpHandshakePhase::Unknown
         }
     }
+
+    pub fn pending_tls(&self) -> bool {
+        matches!(
+            self.tls.as_ref().map(|tls| tls.decision),
+            Some(crate::dataplane::tls::TlsFlowDecision::Pending)
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +155,7 @@ pub struct ExpiredFlow {
     pub packets_out: u64,
     pub source_group: Option<Arc<str>>,
     pub handshake_phase: TcpHandshakePhase,
+    pub pending_tls: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -562,6 +570,7 @@ impl FlowTable {
                     packets_out: entry.packets_out,
                     source_group: entry.source_group_arc(),
                     handshake_phase: entry.handshake_phase(),
+                    pending_tls: entry.pending_tls(),
                 });
             }
         }

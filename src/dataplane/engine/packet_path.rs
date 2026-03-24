@@ -163,6 +163,27 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                     if proto == 6 && !outbound_syn {
                         allow_without_flow_state = true;
                     } else {
+                        if let Some(rejection) =
+                            state.admission_rejection(source_group.as_ref(), true, false, true)
+                        {
+                            state.note_admission_rejection(rejection);
+                            if outbound_syn {
+                                state.note_tcp_handshake_drop(
+                                    "syn",
+                                    EngineState::admission_rejection_reason(rejection),
+                                );
+                            }
+                            if let Some(metrics) = &state.metrics {
+                                metrics.observe_dp_packet(
+                                    "outbound",
+                                    proto_label(proto),
+                                    "deny",
+                                    source_group_label,
+                                    pkt.len(),
+                                );
+                            }
+                            return Action::Drop;
+                        }
                         is_new = true;
                     }
                     if outbound_syn && state.syn_only_enabled {
@@ -177,6 +198,12 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                             crate::dataplane::flow::SynOnlyUpsertResult::Inserted => "miss",
                             crate::dataplane::flow::SynOnlyUpsertResult::Updated => "hit",
                         });
+                        if matches!(
+                            upsert,
+                            crate::dataplane::flow::SynOnlyUpsertResult::Inserted
+                        ) {
+                            state.record_new_syn_only_state(source_group.as_ref());
+                        }
                         state.update_syn_only_metrics();
                         syn_only_decision = Some((
                             "allow",
@@ -223,6 +250,27 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                     return Action::Drop;
                 }
                 PolicyDecision::PendingTls => {
+                    if let Some(rejection) =
+                        state.admission_rejection(source_group.as_ref(), true, true, true)
+                    {
+                        state.note_admission_rejection(rejection);
+                        if outbound_syn {
+                            state.note_tcp_handshake_drop(
+                                "syn",
+                                EngineState::admission_rejection_reason(rejection),
+                            );
+                        }
+                        if let Some(metrics) = &state.metrics {
+                            metrics.observe_dp_packet(
+                                "outbound",
+                                proto_label(proto),
+                                "deny",
+                                source_group_label,
+                                pkt.len(),
+                            );
+                        }
+                        return Action::Drop;
+                    }
                     is_new = true;
                     if outbound_syn && state.syn_only_enabled {
                         let upsert = state.syn_only.upsert(
@@ -236,6 +284,12 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                             crate::dataplane::flow::SynOnlyUpsertResult::Inserted => "miss",
                             crate::dataplane::flow::SynOnlyUpsertResult::Updated => "hit",
                         });
+                        if matches!(
+                            upsert,
+                            crate::dataplane::flow::SynOnlyUpsertResult::Inserted
+                        ) {
+                            state.record_new_syn_only_state(source_group.as_ref());
+                        }
                         state.update_syn_only_metrics();
                         syn_only_decision = Some(("pending_tls", source_group.clone(), false));
                     } else {
@@ -255,12 +309,13 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
         }
 
         if is_new && syn_only_decision.is_none() {
-            state.note_flow_open_with_reason(
+            state.record_new_flow_state(
                 flow,
                 proto,
-                source_group_label(source_group.as_ref()),
+                source_group.as_ref(),
                 "outbound_miss",
                 now,
+                pending_entry.as_ref().is_some_and(FlowEntry::pending_tls),
             );
         }
 
@@ -271,9 +326,16 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
         let mut policy_drop = false;
         let mut policy_drop_group: Option<Arc<str>> = None;
         let mut policy_drop_intercept_requires_service = false;
+        let mut source_group_membership = None;
+        let mut pending_tls_membership = None;
+        let mut tls_packet_denied = false;
+        let mut tls_packet_drop_group: Option<Arc<str>> = None;
         let mut mark_handshake_completed = false;
         let mut note_syn_out_first = false;
         let mut note_syn_out_repeat = false;
+        let pending_tls_cap = state.admission_control.max_pending_tls_flows;
+        let current_pending_tls_flow_count = state.pending_tls_flow_count;
+        let mut pending_tls_cap_rejection = None;
         let need_entry_source_group = metrics.is_some();
         let worker_id = state.dpdk_worker_id();
         let detailed_dataplane_observability = state.detailed_dataplane_observability;
@@ -345,6 +407,8 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                         );
                     }
                 }
+                let source_group_before = entry.source_group_arc();
+                let pending_tls_before = entry.pending_tls();
                 if entry.policy_generation != current_generation {
                     let policy_eval_start = Instant::now();
                     let exact_source_policy_index = &state.exact_source_policy_index;
@@ -406,13 +470,33 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                             }
                         }
                         PolicyDecision::PendingTls => {
-                            entry.policy_generation = current_generation;
-                            entry.set_source_group_arc(next_group);
-                            entry.intercept_requires_service = false;
-                            if let Some(tls_state) = &mut entry.tls {
-                                tls_state.decision = TlsFlowDecision::Pending;
+                            if !pending_tls_before {
+                                if pending_tls_cap
+                                    .is_some_and(|max| current_pending_tls_flow_count >= max)
+                                {
+                                    pending_tls_cap_rejection =
+                                        Some(AdmissionRejection::PendingTlsCap);
+                                    policy_drop = true;
+                                    policy_drop_group = next_group;
+                                } else {
+                                    entry.policy_generation = current_generation;
+                                    entry.set_source_group_arc(next_group);
+                                    entry.intercept_requires_service = false;
+                                    if let Some(tls_state) = &mut entry.tls {
+                                        tls_state.decision = TlsFlowDecision::Pending;
+                                    } else {
+                                        entry.tls = Some(TlsFlowState::new());
+                                    }
+                                }
                             } else {
-                                entry.tls = Some(TlsFlowState::new());
+                                entry.policy_generation = current_generation;
+                                entry.set_source_group_arc(next_group);
+                                entry.intercept_requires_service = false;
+                                if let Some(tls_state) = &mut entry.tls {
+                                    tls_state.decision = TlsFlowDecision::Pending;
+                                } else {
+                                    entry.tls = Some(TlsFlowState::new());
+                                }
                             }
                         }
                         PolicyDecision::Deny => {
@@ -476,9 +560,13 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                                         pkt.len(),
                                     );
                                 }
-                                return Action::Drop;
+                                tls_packet_denied = true;
+                                tls_packet_drop_group = tls_source_group.clone();
                             }
                         }
+                        source_group_membership =
+                            Some((source_group_before, entry.source_group_arc()));
+                        pending_tls_membership = Some((pending_tls_before, entry.pending_tls()));
                         (
                             flow_decision_label(entry),
                             if need_entry_source_group {
@@ -493,6 +581,27 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                     ("deny", None, false)
                 }
             };
+        if let Some((previous, next)) = source_group_membership {
+            state.reconcile_source_group_membership(previous, next);
+        }
+        if let Some((was_pending, is_pending)) = pending_tls_membership {
+            state.reconcile_pending_tls_membership(was_pending, is_pending);
+        }
+        if let Some(rejection) = pending_tls_cap_rejection {
+            state.note_admission_rejection(rejection);
+        }
+        if tls_packet_denied {
+            if let Some(metrics) = &metrics {
+                metrics.observe_dp_packet(
+                    "outbound",
+                    proto_label(proto),
+                    "deny",
+                    source_group_label(tls_packet_drop_group.as_ref()),
+                    pkt.len(),
+                );
+            }
+            return Action::Drop;
+        }
         let entry_source_group_label = entry_source_group
             .as_deref()
             .unwrap_or(DEFAULT_SOURCE_GROUP);
@@ -583,6 +692,35 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                 }
             }
         } else {
+            if state.nat.get_entry(&flow).is_none() {
+                if let Some(rejection) =
+                    state.admission_rejection(entry_source_group.as_ref(), false, false, true)
+                {
+                    state.note_tcp_handshake_stage("outbound", "nat_forward", nat_start.elapsed());
+                    state.note_admission_rejection(rejection);
+                    if outbound_syn {
+                        state.note_tcp_handshake_drop(
+                            "syn",
+                            EngineState::admission_rejection_reason(rejection),
+                        );
+                    } else if mark_handshake_completed {
+                        state.note_tcp_handshake_drop(
+                            "ack",
+                            EngineState::admission_rejection_reason(rejection),
+                        );
+                    }
+                    if let Some(metrics) = &metrics {
+                        metrics.observe_dp_packet(
+                            "outbound",
+                            proto_label(proto),
+                            "deny",
+                            entry_source_group_label,
+                            pkt.len(),
+                        );
+                    }
+                    return Action::Drop;
+                }
+            }
             let nat_obs = match state.nat.get_or_create_with_observation(&flow, now) {
                 Ok(result) => result,
                 Err(_) => {
@@ -754,12 +892,14 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                     state
                         .flows
                         .insert_with_probe_and_get_mut(flow, promoted_entry, flow_probe);
-                    state.note_flow_open_with_reason(
+                    state.record_syn_only_promotion(promoted_source_group.as_ref());
+                    state.record_new_flow_state(
                         flow,
                         proto,
-                        source_group_label(promoted_source_group.as_ref()),
+                        promoted_source_group.as_ref(),
                         "inbound_synack_promote",
                         now,
+                        false,
                     );
                     state.update_syn_only_metrics();
                 } else {
@@ -783,9 +923,16 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
             };
             let mut policy_drop = false;
             let mut policy_drop_group: Option<Arc<str>> = None;
+            let mut source_group_membership = None;
+            let mut pending_tls_membership = None;
+            let mut tls_packet_denied = false;
+            let mut tls_packet_drop_group: Option<Arc<str>> = None;
             let mut note_synack_in = false;
             let mut note_synack_in_first = false;
             let mut note_synack_in_repeat = false;
+            let pending_tls_cap = state.admission_control.max_pending_tls_flows;
+            let current_pending_tls_flow_count = state.pending_tls_flow_count;
+            let mut pending_tls_cap_rejection = None;
             let need_entry_source_group = metrics.is_some();
             let worker_id = state.dpdk_worker_id();
             let detailed_dataplane_observability = state.detailed_dataplane_observability;
@@ -823,6 +970,8 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                         );
                     }
                 }
+                let source_group_before = entry.source_group_arc();
+                let pending_tls_before = entry.pending_tls();
                 if entry.policy_generation != current_generation {
                     let policy_eval_start = Instant::now();
                     let exact_source_policy_index = &state.exact_source_policy_index;
@@ -865,12 +1014,31 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                             entry.set_source_group_arc(next_group);
                         }
                         PolicyDecision::PendingTls => {
-                            entry.policy_generation = current_generation;
-                            entry.set_source_group_arc(next_group);
-                            if let Some(tls_state) = &mut entry.tls {
-                                tls_state.decision = TlsFlowDecision::Pending;
+                            if !pending_tls_before {
+                                if pending_tls_cap
+                                    .is_some_and(|max| current_pending_tls_flow_count >= max)
+                                {
+                                    pending_tls_cap_rejection =
+                                        Some(AdmissionRejection::PendingTlsCap);
+                                    policy_drop = true;
+                                    policy_drop_group = next_group;
+                                } else {
+                                    entry.policy_generation = current_generation;
+                                    entry.set_source_group_arc(next_group);
+                                    if let Some(tls_state) = &mut entry.tls {
+                                        tls_state.decision = TlsFlowDecision::Pending;
+                                    } else {
+                                        entry.tls = Some(TlsFlowState::new());
+                                    }
+                                }
                             } else {
-                                entry.tls = Some(TlsFlowState::new());
+                                entry.policy_generation = current_generation;
+                                entry.set_source_group_arc(next_group);
+                                if let Some(tls_state) = &mut entry.tls {
+                                    tls_state.decision = TlsFlowDecision::Pending;
+                                } else {
+                                    entry.tls = Some(TlsFlowState::new());
+                                }
                             }
                         }
                         PolicyDecision::Deny => {
@@ -921,9 +1089,12 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                                     pkt.len(),
                                 );
                             }
-                            return Action::Drop;
+                            tls_packet_denied = true;
+                            tls_packet_drop_group = tls_source_group.clone();
                         }
                     }
+                    source_group_membership = Some((source_group_before, entry.source_group_arc()));
+                    pending_tls_membership = Some((pending_tls_before, entry.pending_tls()));
                     (
                         flow_decision_label(entry),
                         if need_entry_source_group {
@@ -936,6 +1107,27 @@ pub fn handle_packet(pkt: &mut Packet, state: &mut EngineState) -> Action {
                     ("deny", None)
                 }
             };
+            if let Some((previous, next)) = source_group_membership {
+                state.reconcile_source_group_membership(previous, next);
+            }
+            if let Some((was_pending, is_pending)) = pending_tls_membership {
+                state.reconcile_pending_tls_membership(was_pending, is_pending);
+            }
+            if let Some(rejection) = pending_tls_cap_rejection {
+                state.note_admission_rejection(rejection);
+            }
+            if tls_packet_denied {
+                if let Some(metrics) = &metrics {
+                    metrics.observe_dp_packet(
+                        "inbound",
+                        proto_label(proto),
+                        "deny",
+                        source_group_label(tls_packet_drop_group.as_ref()),
+                        pkt.len(),
+                    );
+                }
+                return Action::Drop;
+            }
             let entry_source_group_label = entry_source_group
                 .as_deref()
                 .unwrap_or(DEFAULT_SOURCE_GROUP);
