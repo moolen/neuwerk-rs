@@ -117,12 +117,13 @@ export function summarizeRulePills(group: PolicySourceGroup): string[] {
 }
 
 export function summarizeGroupAction(group: PolicySourceGroup): SourceGroupActionSummary {
-  const hasAllow = group.rules.some((rule) => rule.action === 'allow');
-  const hasDeny = group.rules.some((rule) => rule.action === 'deny');
+  const hasAllow =
+    group.rules.some((rule) => rule.action === 'allow') || group.default_action === 'allow';
+  const hasDeny =
+    group.rules.some((rule) => rule.action === 'deny') || group.default_action === 'deny';
 
   if (hasAllow && hasDeny) return 'mixed';
   if (hasAllow) return 'allow';
   if (hasDeny) return 'deny';
-  if (group.default_action) return group.default_action;
   return 'deny';
 }

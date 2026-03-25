@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { PolicyRecord, PolicySourceGroup } from '../../../types';
-import { summarizePolicySources } from './policySnapshotHelpers';
+import type { PolicySourceGroup } from '../../../types';
 import {
   summarizeGroupAction,
   summarizeRulePills,
@@ -314,37 +313,30 @@ describe('policySourceGroupTableHelpers', () => {
     expect(summarizeGroupAction(group)).toBe('deny');
   });
 
-  it('documents existing snapshot helper policy-centric flattening assumptions', () => {
-    const policy: PolicyRecord = {
-      id: 'policy-1',
-      name: 'Two groups',
-      created_at: '2026-03-05T12:34:56.000Z',
-      mode: 'enforce',
-      policy: {
-        source_groups: [
-          {
-            id: 'apps',
-            sources: {
-              cidrs: ['10.0.0.0/24'],
-              ips: ['192.168.1.10'],
-              kubernetes: [],
-            },
-            rules: [],
+  it('marks action as mixed when rules and default_action produce both outcomes', () => {
+    const group: PolicySourceGroup = {
+      id: 'default-deny-with-allow-exception',
+      default_action: 'deny',
+      sources: { cidrs: [], ips: [], kubernetes: [] },
+      rules: [
+        {
+          id: 'allow-web',
+          action: 'allow',
+          match: {
+            dst_cidrs: [],
+            dst_ips: [],
+            dns_hostname: 'example.com',
+            proto: 'tcp',
+            src_ports: [],
+            dst_ports: ['443'],
+            icmp_types: [],
+            icmp_codes: [],
+            tls: null,
           },
-          {
-            id: 'batch',
-            sources: {
-              cidrs: ['10.0.1.0/24'],
-              ips: ['192.168.2.10'],
-              kubernetes: [],
-            },
-            rules: [],
-          },
-        ],
-      },
+        },
+      ],
     };
 
-    // Existing snapshot helpers flatten policy records and drop non-CIDR source detail.
-    expect(summarizePolicySources(policy)).toBe('10.0.0.0/24, 10.0.1.0/24');
+    expect(summarizeGroupAction(group)).toBe('mixed');
   });
 });
