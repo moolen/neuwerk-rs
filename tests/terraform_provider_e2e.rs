@@ -704,7 +704,9 @@ async fn verify_service_account_token_exists(
     expected_role: &str,
 ) -> Result<ContractServiceAccountToken, String> {
     let tokens: Vec<ContractServiceAccountToken> = harness
-        .get_typed_json(&format!("/api/v1/service-accounts/{service_account_id}/tokens"))
+        .get_typed_json(&format!(
+            "/api/v1/service-accounts/{service_account_id}/tokens"
+        ))
         .await?;
     let token = tokens
         .into_iter()
@@ -737,7 +739,9 @@ async fn verify_service_account_token_revoked(
     token_name: &str,
 ) -> Result<(), String> {
     let tokens: Vec<ContractServiceAccountToken> = harness
-        .get_typed_json(&format!("/api/v1/service-accounts/{service_account_id}/tokens"))
+        .get_typed_json(&format!(
+            "/api/v1/service-accounts/{service_account_id}/tokens"
+        ))
         .await?;
     let token = tokens
         .into_iter()
@@ -916,7 +920,8 @@ async fn run_identity_resources_import_case(
     workspace.apply()?;
     workspace.expect_plan_clean()?;
 
-    let service_account = verify_service_account_exists(harness, "terraform-identity", "admin").await?;
+    let service_account =
+        verify_service_account_exists(harness, "terraform-identity", "admin").await?;
     let token = verify_service_account_token_exists(
         harness,
         &service_account.id,

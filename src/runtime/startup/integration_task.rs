@@ -102,6 +102,8 @@ mod tests {
         RouteRef, SubnetRef, TerminationEvent,
     };
     use neuwerk::controlplane::cluster::config::ClusterConfig;
+    use neuwerk::controlplane::trafficd::TlsInterceptSettings;
+    use neuwerk::dataplane::engine::EngineRuntimeConfig;
     use neuwerk::dataplane::{EncapMode, SnatMode, SoftMode};
     use tempfile::TempDir;
 
@@ -207,15 +209,17 @@ mod tests {
             encap_udp_port_internal: None,
             encap_udp_port_external: None,
             encap_mtu: 1500,
-            http_bind: None,
-            http_advertise: None,
             http_external_url: None,
             http_tls_dir: dir.path().join("http-tls"),
             http_cert_path: None,
             http_key_path: None,
             http_ca_path: Some(dir.path().join("missing-ca.crt")),
             http_tls_san: Vec::new(),
-            metrics_bind: None,
+            allow_public_metrics_bind: false,
+            tls_intercept: TlsInterceptSettings::default(),
+            engine_runtime: EngineRuntimeConfig::default(),
+            runtime: crate::runtime::config::RuntimeBehaviorSettings::default(),
+            dpdk: crate::runtime::config::RuntimeDpdkConfig::default(),
             cloud_provider: CloudProviderKind::Azure,
             cluster: ClusterConfig::disabled(),
             cluster_migrate_from_local: false,

@@ -36,35 +36,35 @@ If you do not use an auto-replacing group, leave integration mode unset and oper
 
 ## Provider Mapping
 
-Use `NEUWERK_INTEGRATION_MODE` to select provider semantics:
+Use `integration.mode` in `/etc/neuwerk/config.yaml` to select provider semantics:
 
-- `NEUWERK_INTEGRATION_MODE=aws-asg`
-- `NEUWERK_INTEGRATION_MODE=azure-vmss`
-- `NEUWERK_INTEGRATION_MODE=gcp-mig`
+- `aws-asg`
+- `azure-vmss`
+- `gcp-mig`
 
-Pair that mode with provider-specific `NEUWERK_*` fields (for example region/project/group identifiers) in `/etc/neuwerk/appliance.env`.
+Pair that mode with provider-specific YAML fields in the matching `integration.<provider>` block.
 
 Provider requirements for managed-group modes:
 
-- `aws-asg`: `NEUWERK_AWS_REGION`, `NEUWERK_AWS_VPC_ID`, `NEUWERK_AWS_ASG_NAME`
-- `azure-vmss`: `NEUWERK_AZURE_SUBSCRIPTION_ID`, `NEUWERK_AZURE_RESOURCE_GROUP`, `NEUWERK_AZURE_VMSS_NAME`
-- `gcp-mig`: `NEUWERK_GCP_PROJECT`, `NEUWERK_GCP_REGION`, `NEUWERK_GCP_IG_NAME`
+- `aws-asg`: `integration.aws.region`, `integration.aws.vpc_id`, `integration.aws.asg_name`
+- `azure-vmss`: `integration.azure.subscription_id`, `integration.azure.resource_group`, `integration.azure.vmss_name`
+- `gcp-mig`: `integration.gcp.project`, `integration.gcp.region`, `integration.gcp.ig_name`
 
-## Bootstrap Configuration Model
+## Configuration Model
 
-The appliance runtime has two layers:
+Neuwerk now uses one primary runtime document:
 
-- `NEUWERK_BOOTSTRAP_*`: intent-level settings the bootstrap step resolves into concrete runtime values
-- plain `NEUWERK_*`: runtime pass-through values forwarded to Neuwerk flags
+- `/etc/neuwerk/config.yaml`
 
-Example split:
+Representative split:
 
-- bootstrap: `NEUWERK_BOOTSTRAP_MANAGEMENT_INTERFACE`, `NEUWERK_BOOTSTRAP_DATA_INTERFACE`, `NEUWERK_BOOTSTRAP_DNS_UPSTREAMS`
-- runtime pass-through: `NEUWERK_INTEGRATION_MODE`, `NEUWERK_AWS_ASG_NAME`, `NEUWERK_AZURE_VMSS_NAME`, `NEUWERK_GCP_IG_NAME`
+- bootstrap topology: `bootstrap.management_interface`, `bootstrap.data_interface`, `bootstrap.cloud_provider`
+- integration lifecycle: `integration.mode`, `integration.aws.*`, `integration.azure.*`, `integration.gcp.*`
+- dataplane/runtime tuning: `dataplane.*`, `dpdk.*`, `tls_intercept.*`
 
-Prefer writing these values through cloud-init or startup metadata into `/etc/neuwerk/appliance.env` so first boot stays declarative and reproducible.
+Prefer writing these values through cloud-init or startup metadata into `/etc/neuwerk/config.yaml` so first boot stays declarative and reproducible.
 
-For first-boot customization patterns that add env vars, files, certificates, helper scripts, or extra packages around that model, see [Customize The Appliance Image At First Boot](/docs/how-to/customize-the-appliance-image-at-first-boot).
+For first-boot customization patterns that add config, files, certificates, helper scripts, or extra packages around that model, see [Customize The Appliance Image At First Boot](/docs/how-to/customize-the-appliance-image-at-first-boot).
 
 ## Recommended Upgrade Model
 
@@ -83,7 +83,7 @@ This keeps binary/runtime coupling aligned and avoids hand-mutating long-lived i
 Avoid these patterns:
 
 - do not treat managed-group replacement as a substitute for readiness checks
-- do not push fully expanded one-off Neuwerk command lines via metadata when `appliance.env` intent keys are sufficient
+- do not push fully expanded one-off Neuwerk command lines via metadata when a stable `config.yaml` is sufficient
 - do not roll the whole group at once without observing drain and readiness signals
 - do not mix unmanaged manual node edits with automated group replacement and expect deterministic outcomes
 

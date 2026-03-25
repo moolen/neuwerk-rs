@@ -15,12 +15,12 @@ use crate::controlplane::threat_intel::manager::{
     load_effective_feed_status, ThreatFeedIndicatorCounts, ThreatFeedRefreshState,
     ThreatFeedStatusItem,
 };
+use crate::controlplane::threat_intel::settings::{
+    load_settings, persist_settings_cluster, persist_settings_local, ThreatIntelSettings,
+};
 use crate::controlplane::threat_intel::silences::{
     load_silences, persist_silences_cluster, persist_silences_local, ThreatSilenceEntry,
     ThreatSilenceKind, ThreatSilenceList,
-};
-use crate::controlplane::threat_intel::settings::{
-    load_settings, persist_settings_cluster, persist_settings_local, ThreatIntelSettings,
 };
 use crate::controlplane::threat_intel::store::{
     ThreatFindingQuery, ThreatFindingQueryResponse, ThreatNodeQueryError, ThreatStore,
@@ -255,7 +255,10 @@ pub(super) async fn delete_threat_silence(
     let before = silences.items.len();
     silences.items.retain(|entry| entry.id != id);
     if silences.items.len() == before {
-        return error_response(StatusCode::NOT_FOUND, "threat silence not found".to_string());
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "threat silence not found".to_string(),
+        );
     }
 
     match persist_threat_silences(&state, &silences).await {

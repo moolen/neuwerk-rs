@@ -12,7 +12,10 @@ fn check_oss_launch_surface_reports_success() {
         .status()
         .expect("run OSS launch surface preflight");
 
-    assert!(status.success(), "OSS launch surface preflight failed: {status}");
+    assert!(
+        status.success(),
+        "OSS launch surface preflight failed: {status}"
+    );
 }
 
 #[test]
@@ -46,8 +49,9 @@ fn ci_workflow_enforces_oss_launch_surface_on_pull_requests() {
 #[test]
 fn release_readiness_docs_call_out_oss_launch_surface_ci() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let release_readiness = fs::read_to_string(repo_root.join("docs/operations/release-readiness.md"))
-        .expect("read release readiness doc");
+    let release_readiness =
+        fs::read_to_string(repo_root.join("docs/operations/release-readiness.md"))
+            .expect("read release readiness doc");
     let community_release_readiness =
         fs::read_to_string(repo_root.join("www/src/content/docs/community/release-process.mdx"))
             .expect("read community release process doc");

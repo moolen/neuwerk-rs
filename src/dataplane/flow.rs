@@ -15,6 +15,23 @@ const FLOW_TABLE_MAX_CAPACITY: usize = 1 << 26;
 const FLOW_TABLE_MAX_LOAD_PERCENT: usize = 70;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowTableRuntimeConfig {
+    pub capacity: usize,
+    pub incomplete_tcp_idle_timeout_secs: Option<u64>,
+    pub incomplete_tcp_syn_sent_idle_timeout_secs: u64,
+}
+
+impl Default for FlowTableRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            capacity: FLOW_TABLE_DEFAULT_CAPACITY,
+            incomplete_tcp_idle_timeout_secs: None,
+            incomplete_tcp_syn_sent_idle_timeout_secs: DEFAULT_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpHandshakePhase {
     Unknown,
     SynOnly,
@@ -383,15 +400,18 @@ impl FlowTable {
     }
 
     pub fn new_with_timeout(idle_timeout_secs: u64) -> Self {
-        let capacity = env_capacity("NEUWERK_FLOW_TABLE_CAPACITY", FLOW_TABLE_DEFAULT_CAPACITY);
-        let incomplete_tcp_idle_timeout_secs = env_timeout_secs(
-            "NEUWERK_FLOW_INCOMPLETE_TCP_IDLE_TIMEOUT_SECS",
-            idle_timeout_secs,
-        );
-        let incomplete_tcp_syn_sent_idle_timeout_secs = env_timeout_secs(
-            "NEUWERK_FLOW_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS",
-            DEFAULT_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS,
-        );
+        Self::new_with_timeout_and_config(idle_timeout_secs, FlowTableRuntimeConfig::default())
+    }
+
+    pub fn new_with_timeout_and_config(
+        idle_timeout_secs: u64,
+        cfg: FlowTableRuntimeConfig,
+    ) -> Self {
+        let capacity = normalize_capacity(cfg.capacity);
+        let incomplete_tcp_idle_timeout_secs =
+            cfg.incomplete_tcp_idle_timeout_secs.unwrap_or(idle_timeout_secs).max(1);
+        let incomplete_tcp_syn_sent_idle_timeout_secs =
+            cfg.incomplete_tcp_syn_sent_idle_timeout_secs.max(1);
         Self {
             slots: empty_slots(capacity),
             len: 0,
@@ -839,22 +859,6 @@ fn prefetch_read<T>(ptr: *const T) {
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     let _ = ptr;
-}
-
-fn env_capacity(name: &str, default: usize) -> usize {
-    let parsed = std::env::var(name)
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .unwrap_or(default);
-    normalize_capacity(parsed)
-}
-
-fn env_timeout_secs(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
 }
 
 fn normalize_capacity(raw: usize) -> usize {

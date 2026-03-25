@@ -3,8 +3,7 @@ use std::net::Ipv4Addr;
 use super::*;
 use crate::controlplane::policy_config::{
     PolicyConfig, PolicyValue, PortSpec, ProtoValue, RuleConfig, RuleMatchConfig,
-    RuleMode as ConfigRuleMode,
-    SourceGroupConfig, SourcesConfig, TlsMatchConfig,
+    RuleMode as ConfigRuleMode, SourceGroupConfig, SourcesConfig, TlsMatchConfig,
 };
 use crate::dataplane::tls::{TlsCertChain, TlsObservation, TlsVerifier};
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyUsagePurpose};
@@ -311,7 +310,9 @@ fn ca_cert(name: &str) -> Certificate {
 
 fn leaf_cert_der(signer: &Certificate, common_name: &str, organization: &str) -> Vec<u8> {
     let mut params = CertificateParams::default();
-    params.distinguished_name.push(DnType::CommonName, common_name);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, common_name);
     params
         .distinguished_name
         .push(DnType::OrganizationName, organization);

@@ -308,43 +308,20 @@ fn with_intercept_cap_env<R>(
     arp_queue_max: Option<&str>,
     f: impl FnOnce() -> R,
 ) -> R {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
-    let old_demux_max = std::env::var("NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES").ok();
-    let old_host_queue_max = std::env::var("NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX").ok();
-    let old_arp_queue_max = std::env::var("NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX").ok();
-
-    match demux_max {
-        Some(value) => std::env::set_var("NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES", value),
-        None => std::env::remove_var("NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES"),
-    }
-    match host_queue_max {
-        Some(value) => std::env::set_var("NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX", value),
-        None => std::env::remove_var("NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX"),
-    }
-    match arp_queue_max {
-        Some(value) => std::env::set_var("NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX", value),
-        None => std::env::remove_var("NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX"),
-    }
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-
-    match old_demux_max {
-        Some(value) => std::env::set_var("NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES", value),
-        None => std::env::remove_var("NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES"),
-    }
-    match old_host_queue_max {
-        Some(value) => std::env::set_var("NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX", value),
-        None => std::env::remove_var("NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX"),
-    }
-    match old_arp_queue_max {
-        Some(value) => std::env::set_var("NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX", value),
-        None => std::env::remove_var("NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX"),
-    }
-
-    match result {
-        Ok(value) => value,
-        Err(payload) => std::panic::resume_unwind(payload),
-    }
+    with_test_runtime_knobs(
+        |knobs| {
+            if let Some(value) = demux_max {
+                knobs.dpdk.intercept_demux_max_entries = value.parse().expect("demux max");
+            }
+            if let Some(value) = host_queue_max {
+                knobs.dpdk.host_frame_queue_max = value.parse().expect("host queue max");
+            }
+            if let Some(value) = arp_queue_max {
+                knobs.dpdk.pending_arp_queue_max = value.parse().expect("arp queue max");
+            }
+        },
+        f,
+    )
 }
 
 #[test]

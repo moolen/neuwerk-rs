@@ -104,6 +104,7 @@ The goal is simple:
 Start with the operator and deployment material in this repository:
 
 - `docs/operations/` for appliance, observability, backup, upgrade, and local demo workflows
+- packaged appliance runtime configuration is documented around `/etc/neuwerk/config.yaml`
 - `demo/vagrant/README.md` for the fastest local evaluation path
 - `terraform-provider-neuwerk/README.md` for Terraform automation coverage
 - `www/src/content/docs/` for the broader structured docs set that backs the project site

@@ -948,11 +948,9 @@ mod tests {
             .await
             .expect("refresh");
 
-        assert!(
-            load_local_feed_status(&root)
-                .expect("load status")
-                .is_none()
-        );
+        assert!(load_local_feed_status(&root)
+            .expect("load status")
+            .is_none());
     }
 
     fn temp_root() -> PathBuf {

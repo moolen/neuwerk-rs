@@ -287,7 +287,7 @@ stop_consumer_traffic() {
 read_target_metrics_local() {
   local ip="$1"
   local out
-  out="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" 2>/dev/null || true)"
+  out="$(fetch_neuwerk_metrics "$JUMPBOX_IP" "$KEY_PATH" "$ip" 2>/dev/null || true)"
   if [ -z "$out" ]; then
     return 1
   fi
@@ -307,28 +307,25 @@ start_target_metric_stream() {
   local ip="$1"
   TARGET_METRIC_STREAM_LOG="${ARTIFACT_DIR}/target_metrics_stream.log"
   : >"$TARGET_METRIC_STREAM_LOG"
-  ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" "bash -s" <<'EOF' >"$TARGET_METRIC_STREAM_LOG" 2>&1 &
-set -euo pipefail
-METRICS_HOST="$(grep "^MGMT_IP=" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2)"
-[ -z "$METRICS_HOST" ] && METRICS_HOST="127.0.0.1"
-while true; do
-  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  metrics="$(curl -fsS http://${METRICS_HOST}:8080/metrics 2>/dev/null || true)"
-  if [ -z "$metrics" ]; then
-    echo "ts=${ts} metrics_unavailable=1"
-    sleep 1
-    continue
-  fi
-  events="$(echo "$metrics" | awk '/^integration_termination_events_total /{print $2; exit}')"
-  complete="$(echo "$metrics" | awk '/^integration_termination_complete_total /{print $2; exit}')"
-  drain_start="$(echo "$metrics" | awk '/^integration_termination_drain_start_seconds_count /{print $2; exit}')"
-  [ -z "$events" ] && events=0
-  [ -z "$complete" ] && complete=0
-  [ -z "$drain_start" ] && drain_start=0
-  echo "ts=${ts} events=${events} complete=${complete} drain_start_count=${drain_start}"
-  sleep 1
-done
-EOF
+  (
+    while true; do
+      ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      metrics="$(fetch_neuwerk_metrics "$JUMPBOX_IP" "$KEY_PATH" "$ip" 2>/dev/null || true)"
+      if [ -z "$metrics" ]; then
+        echo "ts=${ts} metrics_unavailable=1"
+        sleep 1
+        continue
+      fi
+      events="$(echo "$metrics" | awk '/^integration_termination_events_total /{print $2; exit}')"
+      complete="$(echo "$metrics" | awk '/^integration_termination_complete_total /{print $2; exit}')"
+      drain_start="$(echo "$metrics" | awk '/^integration_termination_drain_start_seconds_count /{print $2; exit}')"
+      [ -z "$events" ] && events=0
+      [ -z "$complete" ] && complete=0
+      [ -z "$drain_start" ] && drain_start=0
+      echo "ts=${ts} events=${events} complete=${complete} drain_start_count=${drain_start}"
+      sleep 1
+    done
+  ) >"$TARGET_METRIC_STREAM_LOG" 2>&1 &
   TARGET_METRIC_STREAM_PID="$!"
 }
 

@@ -1,6 +1,6 @@
 ---
 title: Launch Neuwerk From The Released Cloud Image
-description: Download the signed release artifact, convert and import it into AWS, Azure, or GCP, then bootstrap first boot with appliance.env and cloud-init.
+description: Download the signed release artifact, convert and import it into AWS, Azure, or GCP, then configure first boot with config.yaml and cloud-init.
 order: 1
 ---
 
@@ -161,19 +161,19 @@ For manually imported images, install or validate the GCP guest environment on f
 
 The supported override file is:
 
-- `/etc/neuwerk/appliance.env`
+- `/etc/neuwerk/config.yaml`
 
-Use `NEUWERK_BOOTSTRAP_*` keys to express operator intent. The bootstrap script resolves interfaces, metadata, and defaults into generated runtime values.
+Write the same YAML document Neuwerk consumes at steady state. Keep first boot declarative by delivering the final runtime config file directly.
 
-Use plain `NEUWERK_*` keys only for runtime pass-through settings that should be forwarded directly to Neuwerk launch arguments (for example integration identifiers, cloud account fields, worker tuning, or extra advanced args).
+At minimum, set:
 
-If the dataplane NIC is unstable by interface name, prefer an explicit selector:
-
-```text
-NEUWERK_BOOTSTRAP_DATA_PLANE_SELECTOR=mac:aa:bb:cc:dd:ee:ff
-```
-
-In cloud environments, prefer writing `/etc/neuwerk/appliance.env` from cloud-init (or equivalent startup metadata) rather than injecting a fully expanded Neuwerk command line. Keep first boot declarative: intent in `appliance.env`, resolved runtime in generated `neuwerk.env`.
+- `bootstrap.management_interface`
+- `bootstrap.data_interface`
+- `bootstrap.cloud_provider`
+- `dns.target_ips`
+- `dns.upstreams`
+- `policy.default`
+- any `integration.*`, `dpdk.*`, or `tls_intercept.*` settings your rollout requires
 
 If you also need supporting packages, certificates, helper scripts, or a fuller first-boot customization pattern, read [Customize The Appliance Image At First Boot](/docs/how-to/customize-the-appliance-image-at-first-boot).
 
@@ -182,27 +182,37 @@ Cloud-init-friendly example:
 ```yaml
 #cloud-config
 write_files:
-  - path: /etc/neuwerk/appliance.env
+  - path: /etc/neuwerk/config.yaml
     owner: root:root
     permissions: "0644"
     content: |
-      NEUWERK_BOOTSTRAP_CLOUD_PROVIDER=aws
-      NEUWERK_BOOTSTRAP_MANAGEMENT_INTERFACE=eth0
-      NEUWERK_BOOTSTRAP_DATA_INTERFACE=eth1
-      NEUWERK_BOOTSTRAP_DNS_TARGET_IPS=10.20.0.10
-      NEUWERK_BOOTSTRAP_DNS_UPSTREAMS=10.20.0.2:53,10.20.0.3:53
-      NEUWERK_BOOTSTRAP_DEFAULT_POLICY=deny
-      NEUWERK_INTEGRATION_MODE=aws-asg
-      NEUWERK_AWS_REGION=eu-central-1
-      NEUWERK_AWS_VPC_ID=vpc-0123456789abcdef0
-      NEUWERK_AWS_ASG_NAME=neuwerk-prod-asg
+      version: 1
+      bootstrap:
+        management_interface: eth0
+        data_interface: eth1
+        cloud_provider: aws
+        data_plane_mode: dpdk
+      dns:
+        target_ips:
+          - 10.20.0.10
+        upstreams:
+          - 10.20.0.2:53
+          - 10.20.0.3:53
+      policy:
+        default: deny
+      integration:
+        mode: aws-asg
+        aws:
+          region: eu-central-1
+          vpc_id: vpc-0123456789abcdef0
+          asg_name: neuwerk-prod-asg
 runcmd:
   - systemctl restart neuwerk.service
 ```
 
 ## Start And Verify Neuwerk
 
-On first boot (or after updating `appliance.env`), restart the service:
+On first boot (or after updating `config.yaml`), restart the service:
 
 ```bash
 sudo systemctl restart neuwerk.service
@@ -222,7 +232,7 @@ For first admin access, follow [Get Admin Access](/docs/how-to/get-admin-access)
 
 After first launch:
 
-- use [Customize The Appliance Image At First Boot](/docs/how-to/customize-the-appliance-image-at-first-boot) when your cloud rollout needs extra env vars, packages, files, or scripts at first boot
+- use [Customize The Appliance Image At First Boot](/docs/how-to/customize-the-appliance-image-at-first-boot) when your cloud rollout needs extra config, packages, files, or scripts at first boot
 - read [Cloud Rollout Integration](/docs/architecture/cloud-rollout-integration) before using managed replacement groups
 - use [Upgrade A Cluster](/docs/how-to/upgrade-a-cluster) for conservative rolling upgrades
 - use [High Availability](/docs/deployment/high-availability) when moving from one node to replicated control-plane deployments

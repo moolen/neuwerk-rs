@@ -217,6 +217,184 @@ fn flow_steer_payload_copies_borrowed_packet() {
 }
 
 #[test]
+fn runtime_cli_config_maps_typed_runtime_knobs() {
+    let cfg = runtime_cli_config(
+        r#"
+runtime:
+  controlplane_worker_threads: 7
+  http_worker_threads: 3
+  kubernetes:
+    reconcile_interval_secs: 9
+    stale_grace_secs: 301
+metrics:
+  bind: 0.0.0.0:8080
+  allow_public_bind: true
+tls_intercept:
+  upstream_verify: insecure
+  io_timeout_secs: 9
+  listen_backlog: 4096
+  h2:
+    body_timeout_secs: 12
+    max_concurrent_streams: 48
+dataplane:
+  flow_table_capacity: 8192
+  nat_table_capacity: 16384
+  flow_incomplete_tcp_idle_timeout_secs: 21
+  flow_incomplete_tcp_syn_sent_idle_timeout_secs: 6
+  syn_only_enabled: true
+  detailed_observability: true
+  admission:
+    max_active_flows: 111
+    max_active_nat_entries: 222
+    max_pending_tls_flows: 333
+    max_active_flows_per_source_group: 44
+dpdk:
+  workers: 5
+  core_ids: [1, 3, 5]
+  allow_azure_multiworker: true
+  single_queue_mode: single
+  perf_mode: aggressive
+  force_shared_rx_demux: true
+  pin_https_demux_owner: true
+  disable_service_lane: true
+  lockless_queue_per_worker: true
+  shared_rx_owner_only: true
+  housekeeping_interval_packets: 128
+  housekeeping_interval_us: 400
+  pin_state_shard_guard: true
+  pin_state_shard_burst: 96
+  state_shards: 6
+  disable_in_memory: true
+  iova_mode: va
+  force_netvsc: true
+  gcp_auto_probe: true
+  driver_preload:
+    - /opt/neuwerk/lib/custom-pmd.so
+  skip_bus_pci_preload: true
+  prefer_pci: true
+  queue_override: 7
+  port_mtu: 1600
+  mbuf_data_room: 4096
+  mbuf_pool_size: 16384
+  rx_ring_size: 2048
+  tx_ring_size: 4096
+  tx_checksum_offload: false
+  allow_retaless_multi_queue: true
+  service_lane:
+    interface: svc9
+    intercept_service_ip: 169.254.200.10
+    intercept_service_port: 16443
+    multi_queue: true
+  intercept_demux:
+    gc_interval_ms: 2000
+    max_entries: 1234
+    shard_count: 16
+    host_frame_queue_max: 456
+    pending_arp_queue_max: 78
+  gateway_mac: aa:bb:cc:dd:ee:ff
+  dhcp_server_ip: 169.254.10.20
+  dhcp_server_mac: 00:11:22:33:44:55
+  overlay:
+    swap_tunnels: true
+    force_tunnel_src_port: true
+    debug: true
+    health_probe_debug: true
+"#,
+    );
+
+    assert!(cfg.allow_public_metrics_bind);
+    assert_eq!(cfg.runtime.controlplane_worker_threads, 7);
+    assert_eq!(cfg.runtime.http_worker_threads, 3);
+    assert_eq!(cfg.runtime.kubernetes.reconcile_interval_secs, 9);
+    assert_eq!(cfg.runtime.kubernetes.stale_grace_secs, 301);
+    assert!(matches!(
+        cfg.tls_intercept.upstream_verify,
+        neuwerk::controlplane::trafficd::UpstreamTlsVerificationMode::Insecure
+    ));
+    assert_eq!(cfg.tls_intercept.io_timeout, std::time::Duration::from_secs(9));
+    assert_eq!(cfg.tls_intercept.listen_backlog, 4096);
+    assert_eq!(
+        cfg.tls_intercept.h2.body_timeout,
+        std::time::Duration::from_secs(12)
+    );
+    assert_eq!(cfg.tls_intercept.h2.max_concurrent_streams, 48);
+    assert_eq!(cfg.engine_runtime.flow_table_capacity, 8192);
+    assert_eq!(cfg.engine_runtime.nat_table_capacity, 16384);
+    assert_eq!(cfg.engine_runtime.flow_incomplete_tcp_idle_timeout_secs, Some(21));
+    assert_eq!(cfg.engine_runtime.flow_incomplete_tcp_syn_sent_idle_timeout_secs, 6);
+    assert!(cfg.engine_runtime.syn_only_enabled);
+    assert!(cfg.engine_runtime.detailed_observability);
+    assert_eq!(cfg.engine_runtime.admission.max_active_flows, Some(111));
+    assert_eq!(cfg.engine_runtime.admission.max_active_nat_entries, Some(222));
+    assert_eq!(cfg.engine_runtime.admission.max_pending_tls_flows, Some(333));
+    assert_eq!(
+        cfg.engine_runtime.admission.max_active_flows_per_source_group,
+        Some(44)
+    );
+    assert_eq!(cfg.dpdk.workers, Some(5));
+    assert_eq!(cfg.dpdk.core_ids, vec![1, 3, 5]);
+    assert!(cfg.dpdk.allow_azure_multiworker);
+    assert_eq!(
+        cfg.dpdk.single_queue_mode,
+        runtime::cli::DpdkSingleQueueMode::SingleWorker
+    );
+    assert_eq!(cfg.dpdk.perf_mode, runtime::cli::DpdkPerfMode::Aggressive);
+    assert!(cfg.dpdk.force_shared_rx_demux);
+    assert!(cfg.dpdk.pin_https_demux_owner);
+    assert!(cfg.dpdk.disable_service_lane);
+    assert!(cfg.dpdk.lockless_queue_per_worker);
+    assert!(cfg.dpdk.shared_rx_owner_only);
+    assert_eq!(cfg.dpdk.housekeeping_interval_packets, 128);
+    assert_eq!(cfg.dpdk.housekeeping_interval_us, 400);
+    assert!(cfg.dpdk.pin_state_shard_guard);
+    assert_eq!(cfg.dpdk.pin_state_shard_burst, 96);
+    assert_eq!(cfg.dpdk.state_shards, Some(6));
+    assert!(cfg.dpdk.disable_in_memory);
+    assert_eq!(cfg.dpdk.iova_mode, Some(runtime::cli::DpdkIovaMode::Va));
+    assert!(cfg.dpdk.force_netvsc);
+    assert!(cfg.dpdk.gcp_auto_probe);
+    assert_eq!(
+        cfg.dpdk.driver_preload,
+        vec!["/opt/neuwerk/lib/custom-pmd.so".to_string()]
+    );
+    assert!(cfg.dpdk.skip_bus_pci_preload);
+    assert!(cfg.dpdk.prefer_pci);
+    assert_eq!(cfg.dpdk.queue_override, Some(7));
+    assert_eq!(cfg.dpdk.port_mtu, Some(1600));
+    assert_eq!(cfg.dpdk.mbuf_data_room, Some(4096));
+    assert_eq!(cfg.dpdk.mbuf_pool_size, Some(16384));
+    assert_eq!(cfg.dpdk.rx_ring_size, 2048);
+    assert_eq!(cfg.dpdk.tx_ring_size, 4096);
+    assert_eq!(cfg.dpdk.tx_checksum_offload, Some(false));
+    assert!(cfg.dpdk.allow_retaless_multi_queue);
+    assert_eq!(cfg.dpdk.service_lane.interface, "svc9");
+    assert_eq!(
+        cfg.dpdk.service_lane.intercept_service_ip,
+        Ipv4Addr::new(169, 254, 200, 10)
+    );
+    assert_eq!(cfg.dpdk.service_lane.intercept_service_port, 16443);
+    assert!(cfg.dpdk.service_lane.multi_queue);
+    assert_eq!(cfg.dpdk.intercept_demux.gc_interval_ms, 2000);
+    assert_eq!(cfg.dpdk.intercept_demux.max_entries, 1234);
+    assert_eq!(cfg.dpdk.intercept_demux.shard_count, 16);
+    assert_eq!(cfg.dpdk.intercept_demux.host_frame_queue_max, 456);
+    assert_eq!(cfg.dpdk.intercept_demux.pending_arp_queue_max, 78);
+    assert_eq!(
+        cfg.dpdk.gateway_mac.as_deref(),
+        Some("aa:bb:cc:dd:ee:ff")
+    );
+    assert_eq!(cfg.dpdk.dhcp_server_ip, Some(Ipv4Addr::new(169, 254, 10, 20)));
+    assert_eq!(
+        cfg.dpdk.dhcp_server_mac.as_deref(),
+        Some("00:11:22:33:44:55")
+    );
+    assert!(cfg.dpdk.overlay.swap_tunnels);
+    assert!(cfg.dpdk.overlay.force_tunnel_src_port);
+    assert!(cfg.dpdk.overlay.debug);
+    assert!(cfg.dpdk.overlay.health_probe_debug);
+}
+
+#[test]
 fn dpdk_shared_demux_observability_metrics_render() {
     let metrics = neuwerk::metrics::Metrics::new().expect("metrics");
     metrics.inc_dpdk_shared_io_lock_contended();

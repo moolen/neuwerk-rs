@@ -3,8 +3,15 @@ use std::path::PathBuf;
 
 use neuwerk::controlplane;
 use neuwerk::controlplane::cloud::types::IntegrationMode;
+use neuwerk::controlplane::trafficd::TlsInterceptSettings;
+use neuwerk::dataplane::engine::EngineRuntimeConfig;
 use neuwerk::dataplane::policy::DefaultPolicy;
 use neuwerk::dataplane::{EncapMode, SnatMode, SoftMode};
+
+pub use crate::runtime::config::{
+    RuntimeBehaviorSettings as RuntimeBehaviorConfig, RuntimeDpdkConfig as DpdkConfig,
+    RuntimeDpdkIovaMode as DpdkIovaMode,
+};
 
 #[derive(Debug)]
 pub struct CliConfig {
@@ -30,15 +37,17 @@ pub struct CliConfig {
     pub encap_udp_port_internal: Option<u16>,
     pub encap_udp_port_external: Option<u16>,
     pub encap_mtu: u16,
-    pub http_bind: Option<SocketAddr>,
-    pub http_advertise: Option<SocketAddr>,
     pub http_external_url: Option<String>,
     pub http_tls_dir: PathBuf,
     pub http_cert_path: Option<PathBuf>,
     pub http_key_path: Option<PathBuf>,
     pub http_ca_path: Option<PathBuf>,
     pub http_tls_san: Vec<String>,
-    pub metrics_bind: Option<SocketAddr>,
+    pub allow_public_metrics_bind: bool,
+    pub tls_intercept: TlsInterceptSettings,
+    pub engine_runtime: EngineRuntimeConfig,
+    pub runtime: RuntimeBehaviorConfig,
+    pub dpdk: DpdkConfig,
     pub cloud_provider: CloudProviderKind,
     pub cluster: controlplane::cluster::config::ClusterConfig,
     pub cluster_migrate_from_local: bool,
@@ -72,15 +81,4 @@ pub enum CloudProviderKind {
     Azure,
     Aws,
     Gcp,
-}
-
-impl CloudProviderKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            CloudProviderKind::None => "none",
-            CloudProviderKind::Azure => "azure",
-            CloudProviderKind::Aws => "aws",
-            CloudProviderKind::Gcp => "gcp",
-        }
-    }
 }

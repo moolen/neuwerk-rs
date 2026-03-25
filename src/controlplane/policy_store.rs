@@ -10,10 +10,9 @@ use crate::controlplane::policy_config::{
 use crate::controlplane::wiretap::DnsMap;
 use crate::dataplane::config::DataplaneConfigStore;
 use crate::dataplane::policy::{
-    new_shared_exact_source_group_index, CidrV4, DefaultPolicy, DynamicIpSetV4,
-    EnforcementMode, ExactSourceGroupIndex, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction,
-    RuleMatch, RuleMode, SharedExactSourceGroupIndex, SharedPolicySnapshot, SourceGroup,
-    DNS_ALLOWLIST_RULE_ID,
+    new_shared_exact_source_group_index, CidrV4, DefaultPolicy, DynamicIpSetV4, EnforcementMode,
+    ExactSourceGroupIndex, IpSetV4, PolicySnapshot, Proto, Rule, RuleAction, RuleMatch, RuleMode,
+    SharedExactSourceGroupIndex, SharedPolicySnapshot, SourceGroup, DNS_ALLOWLIST_RULE_ID,
 };
 use uuid::Uuid;
 
@@ -424,10 +423,7 @@ impl PolicyStore {
         }
     }
 
-    fn build_base_group(
-        internal_net: Ipv4Addr,
-        internal_prefix: u8,
-    ) -> SourceGroup {
+    fn build_base_group(internal_net: Ipv4Addr, internal_prefix: u8) -> SourceGroup {
         let mut sources = IpSetV4::new();
         sources.add_cidr(CidrV4::new(internal_net, internal_prefix));
 

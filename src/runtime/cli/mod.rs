@@ -5,7 +5,12 @@ mod usage;
 
 pub use args::RUNTIME_STARTUP_UNSUPPORTED_MESSAGE;
 pub use parse_helpers::{parse_mac, parse_socket, take_flag_value};
-pub use types::{CliConfig, CloudProviderKind, DataPlaneMode};
+pub use types::{CliConfig, CloudProviderKind, DataPlaneMode, DpdkIovaMode};
+#[cfg(test)]
+pub use crate::runtime::config::{
+    RuntimeDpdkPerfMode as DpdkPerfMode, RuntimeDpdkSingleQueueMode as DpdkSingleQueueMode,
+};
+#[cfg(test)]
 pub use usage::usage;
 
 pub fn load_http_ca(cfg: &CliConfig) -> Result<Vec<u8>, String> {

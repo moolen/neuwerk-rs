@@ -25,7 +25,7 @@ packages:
   - python3
 
 write_files:
-  - path: /usr/local/bin/neuwerk-bootstrap.sh
+  - path: /usr/local/bin/neuwerk-firstboot.sh
     permissions: "0755"
     content: |
       #!/usr/bin/env bash
@@ -33,15 +33,15 @@ write_files:
 
       STATE_DIR="/var/lib/neuwerk"
       CONFIG_MARKER="$STATE_DIR/bootstrap.configured"
-      BOOTSTRAP_MARKER="$STATE_DIR/bootstrap.complete"
+      FIRSTBOOT_MARKER="$STATE_DIR/firstboot.complete"
       REBOOT_MARKER="$STATE_DIR/bootstrap.reboot"
-      ENV_FILE="/etc/neuwerk/neuwerk.env"
+      CONFIG_FILE="/etc/neuwerk/config.yaml"
 
       mkdir -p "$STATE_DIR"
-      mkdir -p "$(dirname "$ENV_FILE")"
+      mkdir -p "$(dirname "$CONFIG_FILE")"
 
       log() {
-        echo "[neuwerk-bootstrap] $*"
+        echo "[neuwerk-firstboot] $*"
       }
 
       normalize_mac() {
@@ -463,50 +463,81 @@ write_files:
         GCP_IOVA_MODE="pa"
       fi
 
-      cat > "$ENV_FILE" <<EOF_ENV
-      MGMT_IFACE=mgmt0
-      MGMT_IP=$${MGMT_IP}
-      DATA_IFACE=$${DATA_IFACE_SELECTOR}
-      CLOUD_PROVIDER=${cloud_provider}
-      NEUWERK_DPDK_WORKERS=$${DPDK_WORKERS}
-      NEUWERK_DP_MAX_ACTIVE_FLOWS=24576
-      NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES=24576
-      NEUWERK_DP_MAX_PENDING_TLS_FLOWS=2048
-      NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP=16384
-      INTERNAL_CIDR=${internal_cidr}
-      SNAT_MODE=${snat_mode}
-      GCP_PROJECT=${gcp_project}
-      GCP_REGION=${gcp_region}
-      GCP_IG_NAME=${gcp_ig_name}
-      LD_LIBRARY_PATH=/opt/neuwerk/runtime/usr/lib:/opt/neuwerk/runtime/usr/lib/dpdk/pmds-26.0
-      RTE_EAL_PMD_PATH=/opt/neuwerk/runtime/usr/lib/dpdk/pmds-26.0
-      EOF_ENV
-      if [ -n "$GCP_IOVA_MODE" ]; then
-        echo "NEUWERK_DPDK_IOVA=$${GCP_IOVA_MODE}" >> "$ENV_FILE"
-      fi
+      cat > "$CONFIG_FILE" <<EOF_CONFIG
+      version: 1
+      bootstrap:
+        management_interface: "mgmt0"
+        data_interface: "$${DATA_IFACE_SELECTOR}"
+        cloud_provider: ${cloud_provider}
+        data_plane_mode: dpdk
+      dns:
+        target_ips:
+%{ for dns_target in dns_target_ips ~}
+          - ${dns_target}
+%{ endfor ~}
+        upstreams:
+%{ for dns_upstream in dns_upstreams ~}
+          - "${dns_upstream}"
+%{ endfor ~}
+      policy:
+        default: allow
+        internal_cidr: ${internal_cidr}
+      http:
+        bind: "$${MGMT_IP}:8443"
+        advertise: "$${MGMT_IP}:8443"
+        external_url: "https://$${MGMT_IP}:8443"
+      metrics:
+        bind: "0.0.0.0:8080"
+        allow_public_bind: true
+      integration:
+        mode: gcp-mig
+        drain_timeout_secs: 30
+        reconcile_interval_secs: 15
+        gcp:
+          project: ${gcp_project}
+          region: ${gcp_region}
+          ig_name: ${gcp_ig_name}
+      dataplane:
+        snat: ${snat_mode}
+        admission:
+          max_active_flows: 24576
+          max_active_nat_entries: 24576
+          max_pending_tls_flows: 2048
+          max_active_flows_per_source_group: 16384
+      dpdk:
+%{ if dpdk_workers > 0 ~}
+        workers: ${dpdk_workers}
+%{ endif ~}
+%{ if cloud_provider == "gcp" ~}
+        iova_mode: pa
+%{ endif ~}
+      EOF_CONFIG
+
       if [ -n "$DATA_STATIC_IP" ] && [ -n "$DATA_STATIC_PREFIX" ] && [ -n "$DATA_STATIC_GATEWAY" ]; then
-        echo "NEUWERK_DPDK_STATIC_IP=$${DATA_STATIC_IP}" >> "$ENV_FILE"
-        echo "NEUWERK_DPDK_STATIC_PREFIX=$${DATA_STATIC_PREFIX}" >> "$ENV_FILE"
-        echo "NEUWERK_DPDK_STATIC_GATEWAY=$${DATA_STATIC_GATEWAY}" >> "$ENV_FILE"
-        echo "NEUWERK_DPDK_STATIC_MAC=$${DATA_MAC}" >> "$ENV_FILE"
+        cat >> "$CONFIG_FILE" <<EOF_DPDK_STATIC
+        static_ip: $${DATA_STATIC_IP}
+        static_prefix_len: $${DATA_STATIC_PREFIX}
+        static_gateway: $${DATA_STATIC_GATEWAY}
+        static_mac: "$${DATA_MAC}"
+      EOF_DPDK_STATIC
       fi
 
-      touch "$BOOTSTRAP_MARKER"
+      touch "$FIRSTBOOT_MARKER"
       systemctl daemon-reload
       systemctl reset-failed neuwerk.service || true
       systemctl restart neuwerk.service --no-block
 
-  - path: /etc/systemd/system/neuwerk-bootstrap.service
+  - path: /etc/systemd/system/neuwerk-firstboot.service
     permissions: "0644"
     content: |
       [Unit]
-      Description=Neuwerk bootstrap
+      Description=Neuwerk first boot preparation
       After=network-online.target
       Wants=network-online.target
 
       [Service]
       Type=oneshot
-      ExecStart=/usr/local/bin/neuwerk-bootstrap.sh
+      ExecStart=/usr/local/bin/neuwerk-firstboot.sh
       RemainAfterExit=yes
 
       [Install]
@@ -517,36 +548,15 @@ write_files:
     content: |
       [Unit]
       Description=Neuwerk
-      After=network-online.target neuwerk-bootstrap.service
+      After=network-online.target neuwerk-firstboot.service
       Wants=network-online.target
-      Requires=neuwerk-bootstrap.service
+      Requires=neuwerk-firstboot.service
 
       [Service]
       Type=simple
-      EnvironmentFile=/etc/neuwerk/neuwerk.env
-      ExecStart=/usr/local/bin/neuwerk \
-        --management-interface $${MGMT_IFACE} \
-        --data-plane-interface $${DATA_IFACE} \
-        --data-plane-mode dpdk \
-        --encap none \
-        --internal-cidr $${INTERNAL_CIDR} \
-%{ for dns_target in dns_target_ips ~}
-        --dns-target-ip ${dns_target} \
-%{ endfor ~}
-%{ for dns_upstream in dns_upstreams ~}
-        --dns-upstream ${dns_upstream} \
-%{ endfor ~}
-        --http-bind $${MGMT_IP}:8443 \
-        --metrics-bind 0.0.0.0:8080 \
-        --default-policy allow \
-        --snat $${SNAT_MODE} \
-        --cloud-provider $${CLOUD_PROVIDER} \
-        --integration gcp-mig \
-        --integration-drain-timeout-secs 30 \
-        --integration-reconcile-interval-secs 15 \
-        --gcp-project $${GCP_PROJECT} \
-        --gcp-region $${GCP_REGION} \
-        --gcp-ig-name $${GCP_IG_NAME}
+      Environment=LD_LIBRARY_PATH=/opt/neuwerk/runtime/usr/lib:/opt/neuwerk/runtime/usr/lib/dpdk/pmds-26.0
+      Environment=RTE_EAL_PMD_PATH=/opt/neuwerk/runtime/usr/lib/dpdk/pmds-26.0
+      ExecStart=/usr/local/bin/neuwerk
       Restart=on-failure
       LimitMEMLOCK=infinity
 
@@ -555,6 +565,6 @@ write_files:
 
 runcmd:
   - systemctl daemon-reload
-  - systemctl enable neuwerk-bootstrap.service
+  - systemctl enable neuwerk-firstboot.service
   - systemctl enable neuwerk.service
-  - systemctl start neuwerk-bootstrap.service
+  - systemctl start neuwerk-firstboot.service

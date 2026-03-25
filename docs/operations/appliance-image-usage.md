@@ -209,39 +209,67 @@ Continue with [First Boot And Appliance Configuration](#first-boot-and-appliance
 
 ## First Boot And Appliance Configuration
 
-The supported operator override file is:
+The packaged runtime contract is:
 
-- `/etc/neuwerk/appliance.env`
+- `/etc/neuwerk/config.yaml`
 
-Use `NEUWERK_BOOTSTRAP_*` keys when the image should derive final runtime values at service start. Use plain `NEUWERK_*` keys for advanced runtime pass-through settings.
+Edit subsystem YAML paths directly in that file, then restart `neuwerk.service`.
 
 At minimum, verify or set:
 
-- the cloud provider hint when metadata detection is not reliable
-- the management interface
-- the dataplane interface or dataplane selector
-- DNS upstreams reachable from the management network
+- `bootstrap.cloud_provider` when runtime discovery needs an explicit provider hint
+- `bootstrap.management_interface`
+- `bootstrap.data_interface` or `bootstrap.data_plane_selector`
+- `dns.upstreams` reachable from the management network
 
 Example starter configuration:
 
 ```bash
-sudo tee /etc/neuwerk/appliance.env >/dev/null <<'EOF'
-NEUWERK_BOOTSTRAP_CLOUD_PROVIDER=aws
-NEUWERK_BOOTSTRAP_MANAGEMENT_INTERFACE=eth0
-NEUWERK_BOOTSTRAP_DATA_INTERFACE=eth1
-NEUWERK_BOOTSTRAP_DNS_UPSTREAMS=10.0.0.2:53,10.0.0.3:53
-NEUWERK_BOOTSTRAP_DEFAULT_POLICY=deny
-NEUWERK_BOOTSTRAP_SNAT_MODE=auto
+sudo tee /etc/neuwerk/config.yaml >/dev/null <<'EOF'
+version: 1
+bootstrap:
+  cloud_provider: aws
+  management_interface: eth0
+  data_interface: eth1
+  data_plane_mode: dpdk
+dns:
+  upstreams:
+    - 10.0.0.2:53
+    - 10.0.0.3:53
+policy:
+  default: deny
+dataplane:
+  snat: auto
 EOF
 ```
 
 If the dataplane NIC is not stable by interface name, prefer an explicit selector:
 
 ```bash
-sudo tee -a /etc/neuwerk/appliance.env >/dev/null <<'EOF'
-NEUWERK_BOOTSTRAP_DATA_PLANE_SELECTOR=mac:aa:bb:cc:dd:ee:ff
-EOF
+sudo python3 - <<'PY'
+from pathlib import Path
+
+path = Path("/etc/neuwerk/config.yaml")
+text = path.read_text(encoding="utf-8")
+text = text.replace(
+    "  data_interface: eth1\n",
+    "  data_interface: eth1\n  data_plane_selector: mac:aa:bb:cc:dd:ee:ff\n",
+    1,
+)
+path.write_text(text, encoding="utf-8")
+PY
 ```
+
+Other operator-tunable subsystem YAML paths live in the same file, for example:
+
+- `metrics.bind`
+- `metrics.allow_public_bind`
+- `integration.mode`
+- `integration.aws.region`
+- `tls_intercept.upstream_verify`
+- `dataplane.flow_incomplete_tcp_idle_timeout_secs`
+- `dataplane.flow_incomplete_tcp_syn_sent_idle_timeout_secs`
+- `dpdk.service_lane.intercept_service_ip`
 
 Useful discovery commands:
 
@@ -252,7 +280,7 @@ ip -4 -br addr
 
 ## Start And Verify Neuwerk
 
-After editing `/etc/neuwerk/appliance.env`, restart the service:
+After editing `/etc/neuwerk/config.yaml`, restart the service:
 
 ```bash
 sudo systemctl restart neuwerk.service
@@ -274,7 +302,7 @@ Simple post-boot validation flow:
 
 1. Confirm the VM has separate management and dataplane NICs attached to the intended networks.
 2. Confirm `neuwerk.service` is active and not crash-looping.
-3. Confirm the generated runtime settings match your intent by inspecting `/etc/neuwerk/neuwerk.env`.
+3. Confirm `/etc/neuwerk/config.yaml` still matches your intended subsystem YAML paths after any first-boot automation.
 4. Confirm logs show clean startup and no persistent backend initialization errors.
 5. Validate dataplane reachability with a controlled test flow before routing production traffic.
 
@@ -285,9 +313,9 @@ Simple post-boot validation flow:
 - If AWS import fails, verify the `vmimport` role exists and that you uploaded a `raw` image to S3 in the target Region.
 - If Azure import fails, verify you uploaded a fixed-size VHD as a page blob and that you are following the specialized-disk flow documented above.
 - If GCP import fails, verify the tarball contains a single file named `disk.raw`.
-- If `neuwerk.service` fails on first boot, check for bootstrap errors such as:
-  - unresolved management interface
-  - unresolved dataplane interface
-  - management and dataplane resolving to the same NIC
-  - unresolved DNS upstreams
+- If `neuwerk.service` fails on first boot, check for config-file issues such as:
+  - invalid YAML syntax in `/etc/neuwerk/config.yaml`
+  - unknown or misspelled subsystem keys
+  - missing required interface, DNS, or integration fields
+  - semantic validation failures for the selected dataplane or integration mode
 - If GCP boots but metadata-driven integration is missing, install the documented Compute Engine guest environment packages before proceeding.

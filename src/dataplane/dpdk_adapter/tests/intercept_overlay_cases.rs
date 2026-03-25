@@ -120,13 +120,12 @@ fn intercept_demux_removed_on_client_fin_prevents_tuple_restore() {
 
 #[test]
 fn process_frame_overlay_dual_tunnel_swaps_and_forces_src_port() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
-    let old_swap = std::env::var("NEUWERK_GWLB_SWAP_TUNNELS").ok();
-    let old_force = std::env::var("NEUWERK_GWLB_TUNNEL_SRC_PORT").ok();
-    std::env::set_var("NEUWERK_GWLB_SWAP_TUNNELS", "1");
-    std::env::set_var("NEUWERK_GWLB_TUNNEL_SRC_PORT", "1");
-
-    {
+    with_test_runtime_knobs(
+        |knobs| {
+            knobs.dpdk.overlay_swap_tunnels = true;
+            knobs.dpdk.overlay_force_tunnel_src_port = true;
+        },
+        || {
         let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
         adapter.set_mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
 
@@ -183,17 +182,8 @@ fn process_frame_overlay_dual_tunnel_swaps_and_forces_src_port() {
             src_port, 10801,
             "outer src port should be forced to tunnel port"
         );
-    }
-
-    match old_swap {
-        Some(value) => std::env::set_var("NEUWERK_GWLB_SWAP_TUNNELS", value),
-        None => std::env::remove_var("NEUWERK_GWLB_SWAP_TUNNELS"),
-    }
-    match old_force {
-        Some(value) => std::env::set_var("NEUWERK_GWLB_TUNNEL_SRC_PORT", value),
-        None => std::env::remove_var("NEUWERK_GWLB_TUNNEL_SRC_PORT"),
-    }
-
+        },
+    );
 }
 
 #[test]

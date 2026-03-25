@@ -6,6 +6,8 @@ KEY="$ROOT/.secrets/ssh/azure_e2e"
 RESOLVE="$ROOT/azure/scripts/resolve-neuwerk-mgmt-ips.sh"
 SUFFIX="${1:-manual}"
 
+source "$ROOT/common/lib.sh"
+
 JUMP="$(cd "$TF_DIR" && terraform output -raw jumpbox_public_ip)"
 VIP="$(cd "$TF_DIR" && terraform output -raw upstream_vip)"
 CONSUMER="$(cd "$TF_DIR" && terraform output -json consumer_private_ips | jq -r '.[0]')"
@@ -69,7 +71,7 @@ chmod +x "$ART/remote_perf.sh"
 ssh_proxy=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY" -o ProxyCommand="ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i $KEY -W %h:%p ubuntu@$JUMP")
 
 for ip in "${FWS[@]}"; do
-  "${ssh_proxy[@]}" ubuntu@"$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -s http://\${METRICS_HOST}:8080/metrics | grep -E \"^dpdk_(rx|tx)_(packets|bytes)_total \" || true'" > "$ART/$ip.metrics.pre" || true
+  fetch_neuwerk_metrics "$JUMP" "$KEY" "$ip" | grep -E "^dpdk_(rx|tx)_(packets|bytes)_total " > "$ART/$ip.metrics.pre" || true
 done
 
 collector_pids=()
@@ -96,7 +98,7 @@ for ip in "${FWS[@]}"; do
   if [ -s "$ART/raw/$ip.tgz" ]; then
     tar -xzf "$ART/raw/$ip.tgz" -C "$ART/$ip" || true
   fi
-  "${ssh_proxy[@]}" ubuntu@"$ip" "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -s http://\${METRICS_HOST}:8080/metrics | grep -E \"^dpdk_(rx|tx)_(packets|bytes)_total \" || true'" > "$ART/$ip.metrics.post" || true
+  fetch_neuwerk_metrics "$JUMP" "$KEY" "$ip" | grep -E "^dpdk_(rx|tx)_(packets|bytes)_total " > "$ART/$ip.metrics.post" || true
 done
 
 metric_from_file() {

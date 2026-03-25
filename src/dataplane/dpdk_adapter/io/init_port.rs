@@ -81,9 +81,10 @@ fn init_port(iface: &str, queue_count: u16) -> Result<PortSetup, String> {
 
             let mut rss_hf = 0u64;
             let mut use_rss_mq = queue_count > 1;
-            let tx_csum_env_enabled = std::env::var("NEUWERK_DPDK_TX_CSUM_OFFLOAD")
-                .map(|val| !matches!(val.as_str(), "0" | "false" | "FALSE" | "no" | "NO"))
-                .unwrap_or_else(|_| {
+            let tx_csum_env_enabled = crate::support::runtime_knobs::current_runtime_knobs()
+                .dpdk
+                .tx_checksum_offload
+                .unwrap_or_else(|| {
                     let is_ena = driver_name
                         .as_deref()
                         .map(|name| name.to_ascii_lowercase().contains("ena"))

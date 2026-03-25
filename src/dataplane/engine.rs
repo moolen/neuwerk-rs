@@ -8,10 +8,10 @@ use crate::dataplane::audit::{AuditEmitter, AuditEvent as DataplaneAuditEvent, A
 use crate::dataplane::config::DataplaneConfigStore;
 use crate::dataplane::drain::DrainControl;
 use crate::dataplane::flow::{
-    ExpiredFlow, FlowEntry, FlowKey, FlowResizeCounters, FlowTable, SynOnlyEntry, SynOnlyTable,
-    TcpHandshakePhase, DEFAULT_SOURCE_GROUP,
+    ExpiredFlow, FlowEntry, FlowKey, FlowResizeCounters, FlowTable, FlowTableRuntimeConfig,
+    SynOnlyEntry, SynOnlyTable, TcpHandshakePhase, DEFAULT_SOURCE_GROUP,
 };
-use crate::dataplane::nat::{NatTable, ReverseKey};
+use crate::dataplane::nat::{NatTable, NatTableRuntimeConfig, ReverseKey};
 use crate::dataplane::overlay::{OverlayConfig, SnatMode};
 use crate::dataplane::packet::Packet;
 use crate::dataplane::policy::{
@@ -46,6 +46,50 @@ struct AdmissionControl {
     max_active_flows_per_source_group: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmissionControlConfig {
+    pub max_active_flows: Option<usize>,
+    pub max_active_nat_entries: Option<usize>,
+    pub max_pending_tls_flows: Option<usize>,
+    pub max_active_flows_per_source_group: Option<usize>,
+}
+
+impl Default for AdmissionControlConfig {
+    fn default() -> Self {
+        Self {
+            max_active_flows: Some(ADMISSION_DEFAULT_MAX_ACTIVE_FLOWS),
+            max_active_nat_entries: Some(ADMISSION_DEFAULT_MAX_ACTIVE_NAT_ENTRIES),
+            max_pending_tls_flows: Some(ADMISSION_DEFAULT_MAX_PENDING_TLS_FLOWS),
+            max_active_flows_per_source_group: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineRuntimeConfig {
+    pub flow_table_capacity: usize,
+    pub nat_table_capacity: usize,
+    pub flow_incomplete_tcp_idle_timeout_secs: Option<u64>,
+    pub flow_incomplete_tcp_syn_sent_idle_timeout_secs: u64,
+    pub syn_only_enabled: bool,
+    pub detailed_observability: bool,
+    pub admission: AdmissionControlConfig,
+}
+
+impl Default for EngineRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            flow_table_capacity: 1 << 15,
+            nat_table_capacity: 1 << 15,
+            flow_incomplete_tcp_idle_timeout_secs: None,
+            flow_incomplete_tcp_syn_sent_idle_timeout_secs: 3,
+            syn_only_enabled: false,
+            detailed_observability: false,
+            admission: AdmissionControlConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdmissionRejection {
     FlowCap,
@@ -54,44 +98,13 @@ enum AdmissionRejection {
     SourceGroupCap,
 }
 
-fn parse_truthy_flag(raw: &str) -> bool {
-    matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name)
-        .map(|raw| parse_truthy_flag(&raw))
-        .unwrap_or(false)
-}
-
-fn env_optional_usize(name: &str) -> Option<usize> {
-    std::env::var(name)
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-}
-
 impl AdmissionControl {
-    fn from_env() -> Self {
+    fn from_config(cfg: AdmissionControlConfig) -> Self {
         Self {
-            max_active_flows: Some(
-                env_optional_usize("NEUWERK_DP_MAX_ACTIVE_FLOWS")
-                    .unwrap_or(ADMISSION_DEFAULT_MAX_ACTIVE_FLOWS),
-            ),
-            max_active_nat_entries: Some(
-                env_optional_usize("NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES")
-                    .unwrap_or(ADMISSION_DEFAULT_MAX_ACTIVE_NAT_ENTRIES),
-            ),
-            max_pending_tls_flows: Some(
-                env_optional_usize("NEUWERK_DP_MAX_PENDING_TLS_FLOWS")
-                    .unwrap_or(ADMISSION_DEFAULT_MAX_PENDING_TLS_FLOWS),
-            ),
-            max_active_flows_per_source_group: env_optional_usize(
-                "NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP",
-            ),
+            max_active_flows: cfg.max_active_flows,
+            max_active_nat_entries: cfg.max_active_nat_entries,
+            max_pending_tls_flows: cfg.max_pending_tls_flows,
+            max_active_flows_per_source_group: cfg.max_active_flows_per_source_group,
         }
     }
 }
@@ -186,6 +199,26 @@ impl EngineState {
         data_port: u16,
         idle_timeout_secs: u64,
     ) -> Self {
+        Self::new_with_idle_timeout_and_config(
+            policy,
+            internal_net,
+            internal_prefix,
+            public_ip,
+            data_port,
+            idle_timeout_secs,
+            EngineRuntimeConfig::default(),
+        )
+    }
+
+    pub fn new_with_idle_timeout_and_config(
+        policy: Arc<RwLock<PolicySnapshot>>,
+        internal_net: Ipv4Addr,
+        internal_prefix: u8,
+        public_ip: Ipv4Addr,
+        data_port: u16,
+        idle_timeout_secs: u64,
+        runtime_config: EngineRuntimeConfig,
+    ) -> Self {
         let (exact_source_policy_index, policy_snapshot) = match policy.read() {
             Ok(lock) => (
                 new_shared_exact_source_group_index(&lock),
@@ -199,18 +232,31 @@ impl EngineState {
                 ))),
             ),
         };
-        let flows = FlowTable::new_with_timeout(idle_timeout_secs);
+        let flows = FlowTable::new_with_timeout_and_config(
+            idle_timeout_secs,
+            FlowTableRuntimeConfig {
+                capacity: runtime_config.flow_table_capacity,
+                incomplete_tcp_idle_timeout_secs: runtime_config
+                    .flow_incomplete_tcp_idle_timeout_secs,
+                incomplete_tcp_syn_sent_idle_timeout_secs: runtime_config
+                    .flow_incomplete_tcp_syn_sent_idle_timeout_secs,
+            },
+        );
         let syn_only =
             SynOnlyTable::new_with_timeout(flows.incomplete_tcp_syn_sent_idle_timeout_secs());
-        let syn_only_enabled = env_flag_enabled("NEUWERK_DPDK_SYN_ONLY_TABLE");
-        let detailed_dataplane_observability =
-            env_flag_enabled("NEUWERK_DP_DETAILED_OBSERVABILITY");
+        let syn_only_enabled = runtime_config.syn_only_enabled;
+        let detailed_dataplane_observability = runtime_config.detailed_observability;
         Self {
             flows,
             syn_only,
             syn_only_enabled,
             recent_syn_only_closes: HashMap::new(),
-            nat: NatTable::new_with_timeout(idle_timeout_secs),
+            nat: NatTable::new_with_timeout_and_config(
+                idle_timeout_secs,
+                NatTableRuntimeConfig {
+                    capacity: runtime_config.nat_table_capacity,
+                },
+            ),
             policy,
             policy_snapshot,
             internal_net,
@@ -241,7 +287,7 @@ impl EngineState {
             service_policy_applied_generation: None,
             intercept_to_host_steering: false,
             exact_source_policy_index,
-            admission_control: AdmissionControl::from_env(),
+            admission_control: AdmissionControl::from_config(runtime_config.admission),
             pending_tls_flow_count: 0,
             active_flow_counts_by_source_group: HashMap::new(),
             default_source_group_active_flow_count: 0,
@@ -446,7 +492,10 @@ impl EngineState {
 
     fn inc_source_group_active_flow_count(&mut self, source_group: Option<&Arc<str>>) {
         if let Some(group) = source_group.cloned() {
-            *self.active_flow_counts_by_source_group.entry(group).or_insert(0) += 1;
+            *self
+                .active_flow_counts_by_source_group
+                .entry(group)
+                .or_insert(0) += 1;
         } else {
             self.default_source_group_active_flow_count += 1;
         }
@@ -461,8 +510,9 @@ impl EngineState {
                 }
             }
         } else {
-            self.default_source_group_active_flow_count =
-                self.default_source_group_active_flow_count.saturating_sub(1);
+            self.default_source_group_active_flow_count = self
+                .default_source_group_active_flow_count
+                .saturating_sub(1);
         }
     }
 
@@ -506,13 +556,7 @@ impl EngineState {
     ) {
         self.inc_source_group_active_flow_count(source_group);
         self.reconcile_pending_tls_membership(false, pending_tls);
-        self.note_flow_open_with_reason(
-            flow,
-            proto,
-            source_group_label(source_group),
-            reason,
-            now,
-        );
+        self.note_flow_open_with_reason(flow, proto, source_group_label(source_group), reason, now);
     }
 
     fn record_new_syn_only_state(&mut self, source_group: Option<&Arc<str>>) {
@@ -573,9 +617,7 @@ impl EngineState {
             AdmissionRejection::FlowCap => metrics.inc_dp_flow_cap_rejection(),
             AdmissionRejection::NatCap => metrics.inc_dp_nat_cap_rejection(),
             AdmissionRejection::PendingTlsCap => metrics.inc_dp_pending_tls_cap_rejection(),
-            AdmissionRejection::SourceGroupCap => {
-                metrics.inc_dp_source_group_flow_cap_rejection()
-            }
+            AdmissionRejection::SourceGroupCap => metrics.inc_dp_source_group_flow_cap_rejection(),
         }
     }
 
@@ -1161,97 +1203,38 @@ mod tests {
         RuleMatch, RuleMode, SourceGroup, Tls13Uninspectable, TlsMatch, TlsMode, TlsNameMatch,
     };
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn test_state(snat_mode: SnatMode, idle_timeout_secs: u64) -> EngineState {
-        test_state_with_policy_snapshot(
+        test_state_with_runtime_config(
             PolicySnapshot::new(DefaultPolicy::Allow, vec![]),
             snat_mode,
             idle_timeout_secs,
+            EngineRuntimeConfig::default(),
         )
     }
 
-    fn test_state_with_policy_snapshot(
+    fn test_state_with_runtime_config(
         snapshot: PolicySnapshot,
         snat_mode: SnatMode,
         idle_timeout_secs: u64,
+        runtime_config: EngineRuntimeConfig,
     ) -> EngineState {
         let policy = Arc::new(RwLock::new(snapshot));
         let public_ip = match snat_mode {
             SnatMode::None => Ipv4Addr::UNSPECIFIED,
             _ => Ipv4Addr::new(203, 0, 113, 1),
         };
-        let mut state = EngineState::new_with_idle_timeout(
+        let mut state = EngineState::new_with_idle_timeout_and_config(
             policy,
             Ipv4Addr::new(10, 0, 0, 0),
             24,
             public_ip,
             0,
             idle_timeout_secs,
+            runtime_config,
         );
         state.set_snat_mode(snat_mode);
         state.syn_only_enabled = false;
         state
-    }
-
-    fn with_admission_env<R>(
-        max_active_flows: Option<&str>,
-        max_active_nat_entries: Option<&str>,
-        max_pending_tls_flows: Option<&str>,
-        max_active_flows_per_source_group: Option<&str>,
-        f: impl FnOnce() -> R,
-    ) -> R {
-        let _env_guard = ENV_LOCK.lock().expect("env lock");
-        let old_max_active_flows = std::env::var("NEUWERK_DP_MAX_ACTIVE_FLOWS").ok();
-        let old_max_active_nat_entries = std::env::var("NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES").ok();
-        let old_max_pending_tls_flows = std::env::var("NEUWERK_DP_MAX_PENDING_TLS_FLOWS").ok();
-        let old_max_active_flows_per_source_group =
-            std::env::var("NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP").ok();
-
-        match max_active_flows {
-            Some(value) => std::env::set_var("NEUWERK_DP_MAX_ACTIVE_FLOWS", value),
-            None => std::env::remove_var("NEUWERK_DP_MAX_ACTIVE_FLOWS"),
-        }
-        match max_active_nat_entries {
-            Some(value) => std::env::set_var("NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES", value),
-            None => std::env::remove_var("NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES"),
-        }
-        match max_pending_tls_flows {
-            Some(value) => std::env::set_var("NEUWERK_DP_MAX_PENDING_TLS_FLOWS", value),
-            None => std::env::remove_var("NEUWERK_DP_MAX_PENDING_TLS_FLOWS"),
-        }
-        match max_active_flows_per_source_group {
-            Some(value) => {
-                std::env::set_var("NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP", value)
-            }
-            None => std::env::remove_var("NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP"),
-        }
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-
-        match old_max_active_flows {
-            Some(value) => std::env::set_var("NEUWERK_DP_MAX_ACTIVE_FLOWS", value),
-            None => std::env::remove_var("NEUWERK_DP_MAX_ACTIVE_FLOWS"),
-        }
-        match old_max_active_nat_entries {
-            Some(value) => std::env::set_var("NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES", value),
-            None => std::env::remove_var("NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES"),
-        }
-        match old_max_pending_tls_flows {
-            Some(value) => std::env::set_var("NEUWERK_DP_MAX_PENDING_TLS_FLOWS", value),
-            None => std::env::remove_var("NEUWERK_DP_MAX_PENDING_TLS_FLOWS"),
-        }
-        match old_max_active_flows_per_source_group {
-            Some(value) => {
-                std::env::set_var("NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP", value)
-            }
-            None => std::env::remove_var("NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP"),
-        }
-
-        match result {
-            Ok(value) => value,
-            Err(payload) => std::panic::resume_unwind(payload),
-        }
     }
 
     fn allow_tcp_443_rule() -> Rule {
@@ -1294,7 +1277,12 @@ mod tests {
         rule
     }
 
-    fn source_group(id: &str, priority: u32, cidr: (Ipv4Addr, u8), rules: Vec<Rule>) -> SourceGroup {
+    fn source_group(
+        id: &str,
+        priority: u32,
+        cidr: (Ipv4Addr, u8),
+        rules: Vec<Rule>,
+    ) -> SourceGroup {
         let mut sources = IpSetV4::new();
         sources.add_cidr(CidrV4::new(cidr.0, cidr.1));
         SourceGroup {
@@ -1585,205 +1573,262 @@ mod tests {
 
     #[test]
     fn admission_controls_default_to_secure_global_caps() {
-        with_admission_env(None, None, None, None, || {
-            let state = test_state(SnatMode::Auto, 300);
-            assert_eq!(state.admission_control.max_active_flows, Some(24_576));
-            assert_eq!(state.admission_control.max_active_nat_entries, Some(24_576));
-            assert_eq!(state.admission_control.max_pending_tls_flows, Some(2_048));
-            assert_eq!(state.admission_control.max_active_flows_per_source_group, None);
-        });
+        let state = test_state(SnatMode::Auto, 300);
+        assert_eq!(state.admission_control.max_active_flows, Some(24_576));
+        assert_eq!(state.admission_control.max_active_nat_entries, Some(24_576));
+        assert_eq!(state.admission_control.max_pending_tls_flows, Some(2_048));
+        assert_eq!(
+            state.admission_control.max_active_flows_per_source_group,
+            None
+        );
+    }
+
+    #[test]
+    fn dataplane_runtime_config_overrides_admission_and_table_caps() {
+        let state = test_state_with_runtime_config(
+            PolicySnapshot::new(DefaultPolicy::Deny, vec![]),
+            SnatMode::Auto,
+            300,
+            EngineRuntimeConfig {
+                flow_table_capacity: 1024,
+                nat_table_capacity: 2048,
+                admission: AdmissionControlConfig {
+                    max_active_flows: Some(123),
+                    max_active_nat_entries: Some(234),
+                    max_pending_tls_flows: Some(345),
+                    max_active_flows_per_source_group: Some(12),
+                },
+                ..EngineRuntimeConfig::default()
+            },
+        );
+
+        assert_eq!(state.flows.capacity(), 1024);
+        assert_eq!(state.nat.capacity(), 2048);
+        assert_eq!(state.admission_control.max_active_flows, Some(123));
+        assert_eq!(state.admission_control.max_active_nat_entries, Some(234));
+        assert_eq!(state.admission_control.max_pending_tls_flows, Some(345));
+        assert_eq!(
+            state.admission_control.max_active_flows_per_source_group,
+            Some(12)
+        );
     }
 
     #[test]
     fn new_flow_syn_is_dropped_when_global_flow_cap_is_reached() {
-        with_admission_env(Some("1"), None, None, None, || {
-            let mut state = test_state(SnatMode::Auto, 300);
-            let flow_a = FlowKey {
-                src_ip: Ipv4Addr::new(10, 0, 0, 2),
-                dst_ip: Ipv4Addr::new(198, 51, 100, 10),
-                src_port: 40_000,
-                dst_port: 443,
-                proto: 6,
-            };
-            let flow_b = FlowKey {
-                src_ip: Ipv4Addr::new(10, 0, 0, 3),
-                dst_ip: Ipv4Addr::new(198, 51, 100, 11),
-                src_port: 40_001,
-                dst_port: 443,
-                proto: 6,
-            };
+        let mut state = test_state_with_runtime_config(
+            PolicySnapshot::new(DefaultPolicy::Allow, vec![]),
+            SnatMode::Auto,
+            300,
+            EngineRuntimeConfig {
+                admission: AdmissionControlConfig {
+                    max_active_flows: Some(1),
+                    ..AdmissionControlConfig::default()
+                },
+                ..EngineRuntimeConfig::default()
+            },
+        );
+        let flow_a = FlowKey {
+            src_ip: Ipv4Addr::new(10, 0, 0, 2),
+            dst_ip: Ipv4Addr::new(198, 51, 100, 10),
+            src_port: 40_000,
+            dst_port: 443,
+            proto: 6,
+        };
+        let flow_b = FlowKey {
+            src_ip: Ipv4Addr::new(10, 0, 0, 3),
+            dst_ip: Ipv4Addr::new(198, 51, 100, 11),
+            src_port: 40_001,
+            dst_port: 443,
+            proto: 6,
+        };
 
-            state.set_time_override(Some(1));
-            let mut syn_a = build_ipv4_tcp_flags(
-                flow_a.src_ip,
-                flow_a.dst_ip,
-                flow_a.src_port,
-                flow_a.dst_port,
-                0x02,
-            );
-            assert_eq!(
-                handle_packet(&mut syn_a, &mut state),
-                Action::Forward { out_port: 0 }
-            );
-            state.set_time_override(Some(2));
-            let mut syn_b = build_ipv4_tcp_flags(
-                flow_b.src_ip,
-                flow_b.dst_ip,
-                flow_b.src_port,
-                flow_b.dst_port,
-                0x02,
-            );
-            assert_eq!(handle_packet(&mut syn_b, &mut state), Action::Drop);
-            assert!(state.flows.get_entry(&flow_a).is_some());
-            assert!(state.flows.get_entry(&flow_b).is_none());
-        });
+        state.set_time_override(Some(1));
+        let mut syn_a = build_ipv4_tcp_flags(
+            flow_a.src_ip,
+            flow_a.dst_ip,
+            flow_a.src_port,
+            flow_a.dst_port,
+            0x02,
+        );
+        assert_eq!(
+            handle_packet(&mut syn_a, &mut state),
+            Action::Forward { out_port: 0 }
+        );
+        state.set_time_override(Some(2));
+        let mut syn_b = build_ipv4_tcp_flags(
+            flow_b.src_ip,
+            flow_b.dst_ip,
+            flow_b.src_port,
+            flow_b.dst_port,
+            0x02,
+        );
+        assert_eq!(handle_packet(&mut syn_b, &mut state), Action::Drop);
+        assert!(state.flows.get_entry(&flow_a).is_some());
+        assert!(state.flows.get_entry(&flow_b).is_none());
     }
 
     #[test]
     fn pending_tls_flow_is_dropped_when_pending_tls_cap_is_reached() {
-        with_admission_env(None, None, Some("1"), None, || {
-            let policy = PolicySnapshot::new(
-                DefaultPolicy::Deny,
-                vec![source_group(
-                    "tls-metadata",
-                    0,
-                    (Ipv4Addr::new(10, 0, 0, 0), 24),
-                    vec![metadata_tls_allow_tcp_443_rule()],
-                )],
-            );
-            let mut state = test_state_with_policy_snapshot(policy, SnatMode::Auto, 300);
-            let flow_a = FlowKey {
-                src_ip: Ipv4Addr::new(10, 0, 0, 2),
-                dst_ip: Ipv4Addr::new(198, 51, 100, 10),
-                src_port: 40_000,
-                dst_port: 443,
-                proto: 6,
-            };
-            let flow_b = FlowKey {
-                src_ip: Ipv4Addr::new(10, 0, 0, 3),
-                dst_ip: Ipv4Addr::new(198, 51, 100, 11),
-                src_port: 40_001,
-                dst_port: 443,
-                proto: 6,
-            };
+        let policy = PolicySnapshot::new(
+            DefaultPolicy::Deny,
+            vec![source_group(
+                "tls-metadata",
+                0,
+                (Ipv4Addr::new(10, 0, 0, 0), 24),
+                vec![metadata_tls_allow_tcp_443_rule()],
+            )],
+        );
+        let mut state = test_state_with_runtime_config(
+            policy,
+            SnatMode::Auto,
+            300,
+            EngineRuntimeConfig {
+                admission: AdmissionControlConfig {
+                    max_pending_tls_flows: Some(1),
+                    ..AdmissionControlConfig::default()
+                },
+                ..EngineRuntimeConfig::default()
+            },
+        );
+        let flow_a = FlowKey {
+            src_ip: Ipv4Addr::new(10, 0, 0, 2),
+            dst_ip: Ipv4Addr::new(198, 51, 100, 10),
+            src_port: 40_000,
+            dst_port: 443,
+            proto: 6,
+        };
+        let flow_b = FlowKey {
+            src_ip: Ipv4Addr::new(10, 0, 0, 3),
+            dst_ip: Ipv4Addr::new(198, 51, 100, 11),
+            src_port: 40_001,
+            dst_port: 443,
+            proto: 6,
+        };
 
-            state.set_time_override(Some(1));
-            let mut syn_a = build_ipv4_tcp_flags(
-                flow_a.src_ip,
-                flow_a.dst_ip,
-                flow_a.src_port,
-                flow_a.dst_port,
-                0x02,
-            );
-            assert_eq!(
-                handle_packet(&mut syn_a, &mut state),
-                Action::Forward { out_port: 0 }
-            );
-            assert_eq!(state.pending_tls_flow_count, 1);
-            assert!(
-                state
-                    .flows
-                    .get_entry(&flow_a)
-                    .is_some_and(FlowEntry::pending_tls)
-            );
+        state.set_time_override(Some(1));
+        let mut syn_a = build_ipv4_tcp_flags(
+            flow_a.src_ip,
+            flow_a.dst_ip,
+            flow_a.src_port,
+            flow_a.dst_port,
+            0x02,
+        );
+        assert_eq!(
+            handle_packet(&mut syn_a, &mut state),
+            Action::Forward { out_port: 0 }
+        );
+        assert_eq!(state.pending_tls_flow_count, 1);
+        assert!(state
+            .flows
+            .get_entry(&flow_a)
+            .is_some_and(FlowEntry::pending_tls));
 
-            state.set_time_override(Some(2));
-            let mut syn_b = build_ipv4_tcp_flags(
-                flow_b.src_ip,
-                flow_b.dst_ip,
-                flow_b.src_port,
-                flow_b.dst_port,
-                0x02,
-            );
-            assert_eq!(handle_packet(&mut syn_b, &mut state), Action::Drop);
-            assert!(state.flows.get_entry(&flow_a).is_some());
-            assert!(state.flows.get_entry(&flow_b).is_none());
-        });
+        state.set_time_override(Some(2));
+        let mut syn_b = build_ipv4_tcp_flags(
+            flow_b.src_ip,
+            flow_b.dst_ip,
+            flow_b.src_port,
+            flow_b.dst_port,
+            0x02,
+        );
+        assert_eq!(handle_packet(&mut syn_b, &mut state), Action::Drop);
+        assert!(state.flows.get_entry(&flow_a).is_some());
+        assert!(state.flows.get_entry(&flow_b).is_none());
     }
 
     #[test]
     fn source_group_is_throttled_before_global_nat_exhaustion() {
-        with_admission_env(None, Some("2"), None, Some("1"), || {
-            let policy = PolicySnapshot::new(
-                DefaultPolicy::Deny,
-                vec![
-                    source_group(
-                        "group-a",
-                        0,
-                        (Ipv4Addr::new(10, 0, 0, 0), 24),
-                        vec![allow_tcp_443_rule()],
-                    ),
-                    source_group(
-                        "group-b",
-                        1,
-                        (Ipv4Addr::new(10, 0, 1, 0), 24),
-                        vec![allow_tcp_443_rule()],
-                    ),
-                ],
-            );
-            let mut state = test_state_with_policy_snapshot(policy, SnatMode::Auto, 300);
-            let flow_a1 = FlowKey {
-                src_ip: Ipv4Addr::new(10, 0, 0, 2),
-                dst_ip: Ipv4Addr::new(198, 51, 100, 10),
-                src_port: 40_000,
-                dst_port: 443,
-                proto: 6,
-            };
-            let flow_a2 = FlowKey {
-                src_ip: Ipv4Addr::new(10, 0, 0, 3),
-                dst_ip: Ipv4Addr::new(198, 51, 100, 11),
-                src_port: 40_001,
-                dst_port: 443,
-                proto: 6,
-            };
-            let flow_b1 = FlowKey {
-                src_ip: Ipv4Addr::new(10, 0, 1, 2),
-                dst_ip: Ipv4Addr::new(198, 51, 100, 12),
-                src_port: 40_002,
-                dst_port: 443,
-                proto: 6,
-            };
+        let policy = PolicySnapshot::new(
+            DefaultPolicy::Deny,
+            vec![
+                source_group(
+                    "group-a",
+                    0,
+                    (Ipv4Addr::new(10, 0, 0, 0), 24),
+                    vec![allow_tcp_443_rule()],
+                ),
+                source_group(
+                    "group-b",
+                    1,
+                    (Ipv4Addr::new(10, 0, 1, 0), 24),
+                    vec![allow_tcp_443_rule()],
+                ),
+            ],
+        );
+        let mut state = test_state_with_runtime_config(
+            policy,
+            SnatMode::Auto,
+            300,
+            EngineRuntimeConfig {
+                admission: AdmissionControlConfig {
+                    max_active_nat_entries: Some(2),
+                    max_active_flows_per_source_group: Some(1),
+                    ..AdmissionControlConfig::default()
+                },
+                ..EngineRuntimeConfig::default()
+            },
+        );
+        let flow_a1 = FlowKey {
+            src_ip: Ipv4Addr::new(10, 0, 0, 2),
+            dst_ip: Ipv4Addr::new(198, 51, 100, 10),
+            src_port: 40_000,
+            dst_port: 443,
+            proto: 6,
+        };
+        let flow_a2 = FlowKey {
+            src_ip: Ipv4Addr::new(10, 0, 0, 3),
+            dst_ip: Ipv4Addr::new(198, 51, 100, 11),
+            src_port: 40_001,
+            dst_port: 443,
+            proto: 6,
+        };
+        let flow_b1 = FlowKey {
+            src_ip: Ipv4Addr::new(10, 0, 1, 2),
+            dst_ip: Ipv4Addr::new(198, 51, 100, 12),
+            src_port: 40_002,
+            dst_port: 443,
+            proto: 6,
+        };
 
-            state.set_time_override(Some(1));
-            let mut syn_a1 = build_ipv4_tcp_flags(
-                flow_a1.src_ip,
-                flow_a1.dst_ip,
-                flow_a1.src_port,
-                flow_a1.dst_port,
-                0x02,
-            );
-            assert_eq!(
-                handle_packet(&mut syn_a1, &mut state),
-                Action::Forward { out_port: 0 }
-            );
+        state.set_time_override(Some(1));
+        let mut syn_a1 = build_ipv4_tcp_flags(
+            flow_a1.src_ip,
+            flow_a1.dst_ip,
+            flow_a1.src_port,
+            flow_a1.dst_port,
+            0x02,
+        );
+        assert_eq!(
+            handle_packet(&mut syn_a1, &mut state),
+            Action::Forward { out_port: 0 }
+        );
 
-            state.set_time_override(Some(2));
-            let mut syn_a2 = build_ipv4_tcp_flags(
-                flow_a2.src_ip,
-                flow_a2.dst_ip,
-                flow_a2.src_port,
-                flow_a2.dst_port,
-                0x02,
-            );
-            assert_eq!(handle_packet(&mut syn_a2, &mut state), Action::Drop);
+        state.set_time_override(Some(2));
+        let mut syn_a2 = build_ipv4_tcp_flags(
+            flow_a2.src_ip,
+            flow_a2.dst_ip,
+            flow_a2.src_port,
+            flow_a2.dst_port,
+            0x02,
+        );
+        assert_eq!(handle_packet(&mut syn_a2, &mut state), Action::Drop);
 
-            state.set_time_override(Some(3));
-            let mut syn_b1 = build_ipv4_tcp_flags(
-                flow_b1.src_ip,
-                flow_b1.dst_ip,
-                flow_b1.src_port,
-                flow_b1.dst_port,
-                0x02,
-            );
-            assert_eq!(
-                handle_packet(&mut syn_b1, &mut state),
-                Action::Forward { out_port: 0 }
-            );
+        state.set_time_override(Some(3));
+        let mut syn_b1 = build_ipv4_tcp_flags(
+            flow_b1.src_ip,
+            flow_b1.dst_ip,
+            flow_b1.src_port,
+            flow_b1.dst_port,
+            0x02,
+        );
+        assert_eq!(
+            handle_packet(&mut syn_b1, &mut state),
+            Action::Forward { out_port: 0 }
+        );
 
-            assert!(state.flows.get_entry(&flow_a1).is_some());
-            assert!(state.flows.get_entry(&flow_a2).is_none());
-            assert!(state.flows.get_entry(&flow_b1).is_some());
-            assert_eq!(state.nat.len(), 2);
-        });
+        assert!(state.flows.get_entry(&flow_a1).is_some());
+        assert!(state.flows.get_entry(&flow_a2).is_none());
+        assert!(state.flows.get_entry(&flow_b1).is_some());
+        assert_eq!(state.nat.len(), 2);
     }
 }

@@ -309,9 +309,14 @@ fn parse_truthy_flag(raw: &str) -> bool {
 }
 
 fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name)
-        .map(|raw| parse_truthy_flag(&raw))
-        .unwrap_or(false)
+    match name {
+        "NEUWERK_DPDK_ALLOW_RETALESS_MULTI_QUEUE" => {
+            crate::support::runtime_knobs::current_runtime_knobs()
+                .dpdk
+                .allow_retaless_multi_queue
+        }
+        _ => false,
+    }
 }
 
 fn should_force_single_queue_without_reta(
@@ -325,19 +330,12 @@ fn should_force_single_queue_without_reta(
 
 fn parse_mbuf_data_room_size() -> u16 {
     let default_size = RTE_MBUF_DEFAULT_BUF_SIZE as u16;
-    let Some(raw) = std::env::var("NEUWERK_DPDK_MBUF_DATA_ROOM").ok() else {
+    let Some(parsed) = crate::support::runtime_knobs::current_runtime_knobs()
+        .dpdk
+        .mbuf_data_room
+        .map(u32::from)
+    else {
         return default_size;
-    };
-    let parsed = match raw.trim().parse::<u32>() {
-        Ok(value) => value,
-        Err(_) => {
-            tracing::warn!(
-                raw = %raw,
-                default_size,
-                "dpdk invalid NEUWERK_DPDK_MBUF_DATA_ROOM; using default"
-            );
-            return default_size;
-        }
     };
     let min_size = (RTE_PKTMBUF_HEADROOM as u32).saturating_add(256);
     let bounded_u32 = parsed.max(min_size).min(u16::MAX as u32);
@@ -349,13 +347,13 @@ fn parse_mbuf_data_room_size() -> u16 {
 }
 
 fn parse_u16_env(name: &str) -> Option<u16> {
-    let raw = std::env::var(name).ok()?;
-    match raw.trim().parse::<u16>() {
-        Ok(value) => Some(value),
-        Err(_) => {
-            tracing::warn!(env_var = %name, raw = %raw, "dpdk invalid numeric env override; ignoring");
-            None
-        }
+    let knobs = crate::support::runtime_knobs::current_runtime_knobs();
+    match name {
+        "NEUWERK_DPDK_QUEUE_OVERRIDE" => knobs.dpdk.queue_override,
+        "NEUWERK_DPDK_PORT_MTU" => knobs.dpdk.port_mtu,
+        "NEUWERK_DPDK_RX_RING_SIZE" => Some(knobs.dpdk.rx_ring_size),
+        "NEUWERK_DPDK_TX_RING_SIZE" => Some(knobs.dpdk.tx_ring_size),
+        _ => None,
     }
 }
 
@@ -393,17 +391,9 @@ fn parse_ring_size_override(name: &str, default_value: u16) -> u16 {
 }
 
 fn parse_mbuf_pool_size_override() -> Option<u32> {
-    let raw = std::env::var("NEUWERK_DPDK_MBUF_POOL_SIZE").ok()?;
-    let parsed = match raw.trim().parse::<u32>() {
-        Ok(value) => value,
-        Err(_) => {
-            tracing::warn!(
-                raw = %raw,
-                "dpdk invalid NEUWERK_DPDK_MBUF_POOL_SIZE; ignoring"
-            );
-            return None;
-        }
-    };
+    let parsed = crate::support::runtime_knobs::current_runtime_knobs()
+        .dpdk
+        .mbuf_pool_size?;
     if parsed <= MBUF_CACHE_SIZE + 1 {
         tracing::warn!(
             parsed,
@@ -672,6 +662,7 @@ include!("io/tx_checksum.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::support::runtime_knobs::{with_runtime_knobs, RuntimeKnobs};
 
     #[test]
     fn next_pow2_minus_one_rounds_up() {
@@ -702,21 +693,29 @@ mod tests {
 
     #[test]
     fn parse_ring_size_override_uses_default_for_invalid_values() {
-        std::env::remove_var("NEUWERK_DPDK_RX_RING_SIZE");
-        assert_eq!(
-            parse_ring_size_override("NEUWERK_DPDK_RX_RING_SIZE", 1024),
-            1024
-        );
-        std::env::set_var("NEUWERK_DPDK_RX_RING_SIZE", "0");
-        assert_eq!(
-            parse_ring_size_override("NEUWERK_DPDK_RX_RING_SIZE", 1024),
-            1024
-        );
-        std::env::set_var("NEUWERK_DPDK_RX_RING_SIZE", "2048");
-        assert_eq!(
-            parse_ring_size_override("NEUWERK_DPDK_RX_RING_SIZE", 1024),
-            2048
-        );
-        std::env::remove_var("NEUWERK_DPDK_RX_RING_SIZE");
+        with_runtime_knobs(RuntimeKnobs::default(), || {
+            assert_eq!(
+                parse_ring_size_override("NEUWERK_DPDK_RX_RING_SIZE", 1024),
+                1024
+            );
+        });
+
+        let mut zero = RuntimeKnobs::default();
+        zero.dpdk.rx_ring_size = 0;
+        with_runtime_knobs(zero, || {
+            assert_eq!(
+                parse_ring_size_override("NEUWERK_DPDK_RX_RING_SIZE", 1024),
+                1024
+            );
+        });
+
+        let mut override_knobs = RuntimeKnobs::default();
+        override_knobs.dpdk.rx_ring_size = 2048;
+        with_runtime_knobs(override_knobs, || {
+            assert_eq!(
+                parse_ring_size_override("NEUWERK_DPDK_RX_RING_SIZE", 1024),
+                2048
+            );
+        });
     }
 }

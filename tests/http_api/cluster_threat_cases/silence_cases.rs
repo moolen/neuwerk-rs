@@ -83,6 +83,7 @@ async fn http_api_threat_findings_and_feed_status_report_disabled_state() {
         bind_addr,
         advertise_addr: bind_addr,
         metrics_bind: metrics_addr,
+        allow_public_metrics_bind: false,
         tls_dir: tls_dir.clone(),
         cert_path: None,
         key_path: None,
@@ -139,10 +140,7 @@ async fn http_api_threat_findings_and_feed_status_report_disabled_state() {
         .unwrap();
     assert_eq!(disable_resp.status(), reqwest::StatusCode::OK);
 
-    for path in [
-        "/api/v1/threats/findings",
-        "/api/v1/threats/findings/local",
-    ] {
+    for path in ["/api/v1/threats/findings", "/api/v1/threats/findings/local"] {
         let response = client
             .get(format!("https://{bind_addr}{path}"))
             .bearer_auth(&token.token)
@@ -151,7 +149,10 @@ async fn http_api_threat_findings_and_feed_status_report_disabled_state() {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let payload: serde_json::Value = response.json().await.unwrap();
-        assert_eq!(payload.get("disabled").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            payload.get("disabled").and_then(|v| v.as_bool()),
+            Some(true)
+        );
         assert_eq!(
             payload
                 .get("items")
@@ -159,7 +160,10 @@ async fn http_api_threat_findings_and_feed_status_report_disabled_state() {
                 .map(|items| items.len()),
             Some(0)
         );
-        assert_eq!(payload.get("partial").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            payload.get("partial").and_then(|v| v.as_bool()),
+            Some(false)
+        );
         assert_eq!(
             payload
                 .get("nodes_queried")
@@ -183,7 +187,9 @@ async fn http_api_threat_findings_and_feed_status_report_disabled_state() {
     assert_eq!(feed_response.status(), reqwest::StatusCode::OK);
     let feed_payload: serde_json::Value = feed_response.json().await.unwrap();
     assert_eq!(
-        feed_payload.get("disabled").and_then(|value| value.as_bool()),
+        feed_payload
+            .get("disabled")
+            .and_then(|value| value.as_bool()),
         Some(true)
     );
 
@@ -264,6 +270,7 @@ async fn http_api_threat_silences_round_trip_cluster_state_and_replicate_to_foll
         bind_addr: seed_http_addr,
         advertise_addr: seed_http_addr,
         metrics_bind: seed_metrics,
+        allow_public_metrics_bind: false,
         tls_dir: seed_dir.path().join("http-tls"),
         cert_path: None,
         key_path: None,
@@ -280,6 +287,7 @@ async fn http_api_threat_silences_round_trip_cluster_state_and_replicate_to_foll
         bind_addr: join_http_addr,
         advertise_addr: join_http_addr,
         metrics_bind: join_metrics,
+        allow_public_metrics_bind: false,
         tls_dir: join_dir.path().join("http-tls"),
         cert_path: None,
         key_path: None,
@@ -481,6 +489,7 @@ async fn http_api_threat_silences_reject_invalid_hostname_regex() {
         bind_addr,
         advertise_addr: bind_addr,
         metrics_bind: metrics_addr,
+        allow_public_metrics_bind: false,
         tls_dir: tls_dir.clone(),
         cert_path: None,
         key_path: None,

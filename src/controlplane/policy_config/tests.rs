@@ -180,10 +180,9 @@ source_groups:
 "#;
         let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
         let compiled = cfg.compile().unwrap();
-        assert!(compiled.dns_policy.allows(
-            "192.0.2.2".parse().unwrap(),
-            "api.example.com"
-        ));
+        assert!(compiled
+            .dns_policy
+            .allows("192.0.2.2".parse().unwrap(), "api.example.com"));
 
         let policy = crate::dataplane::policy::PolicySnapshot::new(
             crate::dataplane::policy::DefaultPolicy::Deny,

@@ -1,6 +1,6 @@
 ---
 title: Customize The Appliance Image At First Boot
-description: Use cloud-init or equivalent startup metadata to supply env vars, install extra packages, and add supporting files to the released Neuwerk appliance image.
+description: Use cloud-init or equivalent startup metadata to supply Neuwerk YAML config, install extra packages, and add supporting files to the released appliance image.
 order: 4
 ---
 
@@ -8,7 +8,7 @@ Use this guide when you want to adapt the released Neuwerk appliance image at fi
 
 ## When To Customize
 
-Use `/etc/neuwerk/appliance.env` when your change is only runtime intent: interface selection, DNS settings, default policy behavior, cloud provider hinting, or integration identifiers.
+Use `/etc/neuwerk/config.yaml` when your change is runtime configuration: interface selection, DNS settings, default policy behavior, cloud provider hinting, integration identifiers, or dataplane/runtime tuning.
 
 Use cloud-init `write_files` alone when you only need to place declarative config files or small support assets on disk (for example cert material, local config fragments, or helper scripts).
 
@@ -18,32 +18,39 @@ Do not casually replace Neuwerk's packaged runtime contract. The released applia
 
 ## Customize Runtime Settings
 
-`/etc/neuwerk/appliance.env` is the supported first-boot override file.
+`/etc/neuwerk/config.yaml` is the supported first-boot runtime configuration file.
 
-Use `NEUWERK_BOOTSTRAP_*` keys for intent-level settings that the bootstrap step resolves into generated runtime values (`/etc/neuwerk/neuwerk.env`).
-
-Use plain `NEUWERK_*` keys for runtime pass-through values that should go directly to Neuwerk launch flags. This includes integration mode and provider integration identifiers.
+Write the same subsystem YAML that Neuwerk consumes at steady state. Keep the file explicit and complete enough for your rollout instead of generating flags or env vars on first boot.
 
 Example via cloud-init:
 
 ```yaml
 #cloud-config
 write_files:
-  - path: /etc/neuwerk/appliance.env
+  - path: /etc/neuwerk/config.yaml
     owner: root:root
     permissions: "0644"
     content: |
-      NEUWERK_BOOTSTRAP_CLOUD_PROVIDER=aws
-      NEUWERK_BOOTSTRAP_MANAGEMENT_INTERFACE=eth0
-      NEUWERK_BOOTSTRAP_DATA_INTERFACE=eth1
-      NEUWERK_BOOTSTRAP_DATA_PLANE_MODE=dpdk
-      NEUWERK_BOOTSTRAP_DNS_TARGET_IPS=10.20.0.10
-      NEUWERK_BOOTSTRAP_DNS_UPSTREAMS=10.20.0.2:53,10.20.0.3:53
-      NEUWERK_BOOTSTRAP_DEFAULT_POLICY=deny
-      NEUWERK_INTEGRATION_MODE=aws-asg
-      NEUWERK_AWS_REGION=eu-central-1
-      NEUWERK_AWS_VPC_ID=vpc-0123456789abcdef0
-      NEUWERK_AWS_ASG_NAME=neuwerk-prod-asg
+      version: 1
+      bootstrap:
+        management_interface: eth0
+        data_interface: eth1
+        cloud_provider: aws
+        data_plane_mode: dpdk
+      dns:
+        target_ips:
+          - 10.20.0.10
+        upstreams:
+          - 10.20.0.2:53
+          - 10.20.0.3:53
+      policy:
+        default: deny
+      integration:
+        mode: aws-asg
+        aws:
+          region: eu-central-1
+          vpc_id: vpc-0123456789abcdef0
+          asg_name: neuwerk-prod-asg
 runcmd:
   - systemctl restart neuwerk.service
 ```
@@ -95,7 +102,7 @@ runcmd:
 
 ## Customization Boundaries
 
-- do add env vars, files, and supporting packages declaratively
+- do add YAML config, files, and supporting packages declaratively
 - do not replace bundled DPDK/runtime libraries casually
 - do not turn managed fleets into hand-tuned pet VMs
 

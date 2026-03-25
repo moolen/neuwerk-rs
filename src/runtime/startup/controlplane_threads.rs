@@ -11,22 +11,6 @@ use neuwerk::controlplane::PolicyStore;
 use neuwerk::metrics::Metrics;
 use tokio::sync::oneshot;
 
-fn runtime_worker_threads(env_name: &str, default_threads: usize) -> usize {
-    std::env::var(env_name)
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .filter(|threads| *threads > 0)
-        .unwrap_or(default_threads)
-}
-
-fn controlplane_worker_threads() -> usize {
-    runtime_worker_threads("NEUWERK_CONTROLPLANE_WORKER_THREADS", 4)
-}
-
-fn http_runtime_worker_threads() -> usize {
-    runtime_worker_threads("NEUWERK_HTTP_RUNTIME_WORKER_THREADS", 2)
-}
-
 pub struct HttpRuntimeThreadConfig {
     pub cfg: controlplane::http_api::HttpApiConfig,
     pub policy_store: PolicyStore,
@@ -45,6 +29,7 @@ pub struct HttpRuntimeThreadConfig {
 #[allow(clippy::type_complexity)]
 pub fn spawn_dns_runtime_thread(
     mut cfg: controlplane::trafficd::TrafficdConfig,
+    worker_threads: usize,
 ) -> Result<
     (
         oneshot::Receiver<Result<(), String>>,
@@ -60,7 +45,7 @@ pub fn spawn_dns_runtime_thread(
             let mut startup_tx = Some(startup_tx);
             let rt = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .worker_threads(controlplane_worker_threads())
+                .worker_threads(worker_threads)
                 .build()
             {
                 Ok(rt) => rt,
@@ -83,6 +68,7 @@ pub fn spawn_dns_runtime_thread(
 
 pub fn spawn_http_runtime_thread(
     cfg: HttpRuntimeThreadConfig,
+    worker_threads: usize,
 ) -> Result<oneshot::Receiver<Result<(), String>>, String> {
     let (http_tx, http_rx) = oneshot::channel::<Result<(), String>>();
     std::thread::Builder::new()
@@ -90,7 +76,7 @@ pub fn spawn_http_runtime_thread(
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .worker_threads(http_runtime_worker_threads())
+                .worker_threads(worker_threads)
                 .build()
             {
                 Ok(rt) => rt,

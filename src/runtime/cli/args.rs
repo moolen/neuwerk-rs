@@ -1,8 +1,10 @@
+#[cfg(test)]
 use super::{usage, CliConfig};
 
 pub const RUNTIME_STARTUP_UNSUPPORTED_MESSAGE: &str =
     "runtime startup no longer accepts CLI flags; configure /etc/neuwerk/config.yaml instead";
 
+#[cfg(test)]
 fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
     if args.iter().any(|arg| matches!(arg.as_str(), "-h" | "--help")) {
         return Err(usage(bin));

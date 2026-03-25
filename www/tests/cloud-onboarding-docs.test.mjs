@@ -190,18 +190,18 @@ test('appliance customization how-to exists with first-boot customization exampl
   const customizationGuide = readFileSync(fileUrl, 'utf8');
   assert.match(
     customizationGuide,
-    /\/etc\/neuwerk\/appliance\.env/,
-    'expected customization guide to mention /etc/neuwerk/appliance.env',
+    /\/etc\/neuwerk\/config\.yaml/,
+    'expected customization guide to mention /etc/neuwerk/config.yaml',
   );
   assert.match(
     customizationGuide,
-    /NEUWERK_BOOTSTRAP_/,
-    'expected customization guide to mention NEUWERK_BOOTSTRAP_ variables',
+    /bootstrap:\s*[\s\S]*management_interface:/,
+    'expected customization guide to include bootstrap YAML examples',
   );
   assert.match(
     customizationGuide,
-    /NEUWERK_INTEGRATION_MODE/,
-    'expected customization guide to mention NEUWERK_INTEGRATION_MODE',
+    /integration:\s*[\s\S]*mode:/,
+    'expected customization guide to mention integration YAML settings',
   );
   assert.match(
     customizationGuide,

@@ -1,12 +1,15 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use neuwerk::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
 use neuwerk::controlplane::cloud::types::IntegrationMode;
+use neuwerk::controlplane::trafficd::{TlsInterceptH2Settings, TlsInterceptSettings};
 use neuwerk::controlplane::cluster::config::RetryConfig;
 use neuwerk::controlplane::cluster::migration;
 use neuwerk::controlplane::cluster::ClusterRuntime;
+use neuwerk::dataplane::engine::EngineRuntimeConfig;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
 use neuwerk::controlplane::wiretap::WiretapHub;
 use neuwerk::dataplane::{EncapMode, OverlayConfig, SnatMode, SoftMode};
@@ -110,6 +113,23 @@ pub fn build_runtime_cli_config(cfg: &DerivedRuntimeConfig) -> Result<CliConfig,
         token_path: cfg.operator.cluster.token_path.clone(),
         join_retry: RetryConfig::default_join(),
     };
+    let tls_intercept = cfg.operator.tls_intercept.clone().unwrap_or_default();
+    let engine_runtime = EngineRuntimeConfig {
+        flow_table_capacity: cfg.operator.dataplane.flow_table_capacity,
+        nat_table_capacity: cfg.operator.dataplane.nat_table_capacity,
+        flow_incomplete_tcp_idle_timeout_secs: cfg
+            .operator
+            .dataplane
+            .flow_incomplete_tcp_idle_timeout_secs,
+        flow_incomplete_tcp_syn_sent_idle_timeout_secs: cfg
+            .operator
+            .dataplane
+            .flow_incomplete_tcp_syn_sent_idle_timeout_secs,
+        syn_only_enabled: cfg.operator.dataplane.syn_only_enabled,
+        detailed_observability: cfg.operator.dataplane.detailed_observability,
+        admission: cfg.operator.dataplane.admission.clone(),
+        ..EngineRuntimeConfig::default()
+    };
 
     Ok(CliConfig {
         management_iface: cfg.operator.bootstrap.management_interface.clone(),
@@ -134,15 +154,31 @@ pub fn build_runtime_cli_config(cfg: &DerivedRuntimeConfig) -> Result<CliConfig,
         encap_udp_port_internal: cfg.operator.dataplane.encap_udp_port_internal,
         encap_udp_port_external: cfg.operator.dataplane.encap_udp_port_external,
         encap_mtu: cfg.operator.dataplane.encap_mtu,
-        http_bind: cfg.operator.http.bind,
-        http_advertise: cfg.operator.http.advertise,
         http_external_url: cfg.operator.http.external_url.clone(),
         http_tls_dir: cfg.operator.http.tls_dir.clone(),
         http_cert_path: cfg.operator.http.cert_path.clone(),
         http_key_path: cfg.operator.http.key_path.clone(),
         http_ca_path: cfg.operator.http.ca_path.clone(),
         http_tls_san: cfg.operator.http.tls_san.clone(),
-        metrics_bind: cfg.operator.metrics.bind,
+        allow_public_metrics_bind: cfg.operator.metrics.allow_public_bind,
+        tls_intercept: TlsInterceptSettings {
+            upstream_verify: tls_intercept.upstream_verify,
+            io_timeout: Duration::from_secs(tls_intercept.io_timeout_secs),
+            listen_backlog: tls_intercept.listen_backlog,
+            h2: TlsInterceptH2Settings {
+                body_timeout: Duration::from_secs(tls_intercept.h2.body_timeout_secs),
+                max_concurrent_streams: tls_intercept.h2.max_concurrent_streams,
+                max_requests_per_connection: tls_intercept.h2.max_requests_per_connection,
+                pool_shards: tls_intercept.h2.pool_shards,
+                detailed_metrics: tls_intercept.h2.detailed_metrics,
+                selection_inflight_weight: tls_intercept.h2.selection_inflight_weight,
+                reconnect_backoff_base_ms: tls_intercept.h2.reconnect_backoff_base_ms,
+                reconnect_backoff_max_ms: tls_intercept.h2.reconnect_backoff_max_ms,
+            },
+        },
+        engine_runtime,
+        runtime: cfg.operator.runtime.clone(),
+        dpdk: cfg.operator.dpdk.clone().unwrap_or_default(),
         cloud_provider,
         cluster,
         cluster_migrate_from_local: cfg.operator.cluster.migrate_from_local,

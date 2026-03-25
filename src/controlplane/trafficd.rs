@@ -54,120 +54,50 @@ const SERVICE_LANE_REPLY_FWMARK: u32 = 0x2;
 const SERVICE_LANE_PEER_IP: Ipv4Addr = Ipv4Addr::new(169, 254, 255, 2);
 const SERVICE_LANE_PEER_MAC: &str = "02:00:00:00:00:02";
 
-fn env_positive_u64(name: &str) -> Option<u64> {
-    std::env::var(name)
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .filter(|value| *value > 0)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsInterceptH2Settings {
+    pub body_timeout: Duration,
+    pub max_concurrent_streams: u32,
+    pub max_requests_per_connection: usize,
+    pub pool_shards: usize,
+    pub detailed_metrics: bool,
+    pub selection_inflight_weight: u64,
+    pub reconnect_backoff_base_ms: u64,
+    pub reconnect_backoff_max_ms: u64,
 }
 
-fn env_positive_u32(name: &str) -> Option<u32> {
-    std::env::var(name)
-        .ok()
-        .and_then(|raw| raw.parse::<u32>().ok())
-        .filter(|value| *value > 0)
-}
-
-fn env_flag(name: &str) -> Option<bool> {
-    std::env::var(name).ok().and_then(|raw| {
-        let value = raw.trim().to_ascii_lowercase();
-        match value.as_str() {
-            "1" | "true" | "yes" | "on" => Some(true),
-            "0" | "false" | "no" | "off" => Some(false),
-            _ => None,
+impl Default for TlsInterceptH2Settings {
+    fn default() -> Self {
+        Self {
+            body_timeout: TLS_H2_BODY_IDLE_TIMEOUT_DEFAULT,
+            max_concurrent_streams: TLS_H2_MAX_CONCURRENT_STREAMS_DEFAULT,
+            max_requests_per_connection: TLS_H2_MAX_REQUESTS_PER_CONNECTION_DEFAULT as usize,
+            pool_shards: TLS_H2_POOL_SHARDS_DEFAULT as usize,
+            detailed_metrics: false,
+            selection_inflight_weight: TLS_H2_SELECTION_INFLIGHT_WEIGHT_DEFAULT as u64,
+            reconnect_backoff_base_ms: TLS_H2_RECONNECT_BACKOFF_BASE_MS_DEFAULT,
+            reconnect_backoff_max_ms: TLS_H2_RECONNECT_BACKOFF_MAX_MS_DEFAULT,
         }
-    })
+    }
 }
 
-fn tls_io_timeout() -> Duration {
-    static IO_TIMEOUT: OnceLock<Duration> = OnceLock::new();
-    *IO_TIMEOUT.get_or_init(|| {
-        Duration::from_secs(
-            env_positive_u64("NEUWERK_TLS_IO_TIMEOUT_SECS").unwrap_or(TLS_IO_TIMEOUT.as_secs()),
-        )
-    })
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsInterceptSettings {
+    pub upstream_verify: upstream_tls::UpstreamTlsVerificationMode,
+    pub io_timeout: Duration,
+    pub listen_backlog: u32,
+    pub h2: TlsInterceptH2Settings,
 }
 
-fn tls_h2_body_idle_timeout() -> Duration {
-    static H2_BODY_IDLE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
-    *H2_BODY_IDLE_TIMEOUT.get_or_init(|| {
-        let secs = env_positive_u64("NEUWERK_TLS_H2_BODY_TIMEOUT_SECS")
-            .unwrap_or(TLS_H2_BODY_IDLE_TIMEOUT_DEFAULT.as_secs());
-        Duration::from_secs(secs)
-    })
-}
-
-fn tls_h2_max_concurrent_streams() -> u32 {
-    static H2_MAX_CONCURRENT_STREAMS: OnceLock<u32> = OnceLock::new();
-    *H2_MAX_CONCURRENT_STREAMS.get_or_init(|| {
-        env_positive_u32("NEUWERK_TLS_H2_MAX_CONCURRENT_STREAMS")
-            .unwrap_or(TLS_H2_MAX_CONCURRENT_STREAMS_DEFAULT)
-    })
-}
-
-fn tls_intercept_listen_backlog() -> u32 {
-    static TLS_INTERCEPT_LISTEN_BACKLOG: OnceLock<u32> = OnceLock::new();
-    *TLS_INTERCEPT_LISTEN_BACKLOG.get_or_init(|| {
-        env_positive_u32("NEUWERK_TLS_INTERCEPT_LISTEN_BACKLOG")
-            .unwrap_or(TLS_INTERCEPT_LISTEN_BACKLOG_DEFAULT)
-    })
-}
-
-fn tls_h2_max_requests_per_connection() -> usize {
-    static H2_MAX_REQUESTS_PER_CONNECTION: OnceLock<u32> = OnceLock::new();
-    H2_MAX_REQUESTS_PER_CONNECTION
-        .get_or_init(|| {
-            env_positive_u32("NEUWERK_TLS_H2_MAX_REQUESTS_PER_CONNECTION")
-                .unwrap_or(TLS_H2_MAX_REQUESTS_PER_CONNECTION_DEFAULT)
-        })
-        .to_owned() as usize
-}
-
-fn tls_h2_pool_shards() -> usize {
-    static H2_POOL_SHARDS: OnceLock<u32> = OnceLock::new();
-    H2_POOL_SHARDS
-        .get_or_init(|| {
-            env_positive_u32("NEUWERK_TLS_H2_POOL_SHARDS")
-                .unwrap_or(TLS_H2_POOL_SHARDS_DEFAULT)
-                .clamp(1, 64)
-        })
-        .to_owned() as usize
-}
-
-fn tls_h2_detailed_metrics_enabled() -> bool {
-    static H2_DETAILED_METRICS_ENABLED: OnceLock<bool> = OnceLock::new();
-    *H2_DETAILED_METRICS_ENABLED
-        .get_or_init(|| env_flag("NEUWERK_TLS_H2_DETAILED_METRICS").unwrap_or(false))
-}
-
-fn tls_h2_selection_inflight_weight() -> u64 {
-    static H2_SELECTION_INFLIGHT_WEIGHT: OnceLock<u32> = OnceLock::new();
-    H2_SELECTION_INFLIGHT_WEIGHT
-        .get_or_init(|| {
-            env_positive_u32("NEUWERK_TLS_H2_SELECTION_INFLIGHT_WEIGHT")
-                .unwrap_or(TLS_H2_SELECTION_INFLIGHT_WEIGHT_DEFAULT)
-                .max(1)
-        })
-        .to_owned() as u64
-}
-
-fn tls_h2_reconnect_backoff_base_ms() -> u64 {
-    static H2_RECONNECT_BACKOFF_BASE_MS: OnceLock<u64> = OnceLock::new();
-    *H2_RECONNECT_BACKOFF_BASE_MS.get_or_init(|| {
-        env_positive_u64("NEUWERK_TLS_H2_RECONNECT_BACKOFF_BASE_MS")
-            .unwrap_or(TLS_H2_RECONNECT_BACKOFF_BASE_MS_DEFAULT)
-            .clamp(1, 5_000)
-    })
-}
-
-fn tls_h2_reconnect_backoff_max_ms() -> u64 {
-    static H2_RECONNECT_BACKOFF_MAX_MS: OnceLock<u64> = OnceLock::new();
-    *H2_RECONNECT_BACKOFF_MAX_MS.get_or_init(|| {
-        env_positive_u64("NEUWERK_TLS_H2_RECONNECT_BACKOFF_MAX_MS")
-            .unwrap_or(TLS_H2_RECONNECT_BACKOFF_MAX_MS_DEFAULT)
-            .clamp(1, 60_000)
-            .max(tls_h2_reconnect_backoff_base_ms())
-    })
+impl Default for TlsInterceptSettings {
+    fn default() -> Self {
+        Self {
+            upstream_verify: upstream_tls::UpstreamTlsVerificationMode::Strict,
+            io_timeout: TLS_IO_TIMEOUT,
+            listen_backlog: TLS_INTERCEPT_LISTEN_BACKLOG_DEFAULT,
+            h2: TlsInterceptH2Settings::default(),
+        }
+    }
 }
 
 mod certs;
@@ -180,6 +110,7 @@ use certs::build_tls_intercept_acceptor;
 use certs::{build_tls_acceptor, InterceptLeafCertResolver};
 #[cfg(test)]
 use service_lane::{intercept_reply_mark_rule_args, intercept_tproxy_rule_args, rule_line_matches};
+pub use upstream_tls::UpstreamTlsVerificationMode;
 
 pub struct TrafficdConfig {
     pub dns_bind: std::net::SocketAddr,
@@ -193,6 +124,7 @@ pub struct TrafficdConfig {
     pub tls_intercept_ca_generation: Arc<AtomicU64>,
     pub tls_intercept_ca_source: InterceptCaSource,
     pub tls_intercept_listen_port: u16,
+    pub tls_intercept: TlsInterceptSettings,
     pub enable_kernel_intercept_steering: bool,
     pub service_lane_iface: String,
     pub service_lane_ip: Ipv4Addr,
@@ -209,7 +141,7 @@ pub struct TrafficdConfig {
 pub struct TlsInterceptRuntimeConfig {
     pub bind_addr: std::net::SocketAddr,
     pub upstream_override: Option<std::net::SocketAddr>,
-    pub upstream_tls_insecure: bool,
+    pub settings: TlsInterceptSettings,
     pub intercept_ca_cert_pem: Vec<u8>,
     pub intercept_ca_key_der: Vec<u8>,
     pub metrics: Metrics,
@@ -620,13 +552,13 @@ fn spawn_tls_intercept_supervisor(
     tls_intercept_ca_source: InterceptCaSource,
     intercept_ready: Arc<AtomicBool>,
     listen_addr: SocketAddr,
+    settings: TlsInterceptSettings,
     enable_kernel_intercept_steering: bool,
     service_lane_iface: String,
     intercept_demux: Arc<SharedInterceptDemuxState>,
     metrics: Metrics,
 ) {
     tokio::spawn(async move {
-        let verify_mode = upstream_tls::upstream_tls_verify_mode_from_env();
         let mut runtime_task: Option<tokio::task::JoinHandle<Result<(), String>>> = None;
         let mut runtime_ca_generation: Option<u64> = None;
         let mut applied_steering_rules: Option<Vec<InterceptSteeringRule>> = None;
@@ -701,8 +633,7 @@ fn spawn_tls_intercept_supervisor(
                 let task = tokio::spawn(run_tls_intercept_runtime(TlsInterceptRuntimeConfig {
                     bind_addr: listen_addr,
                     upstream_override: None,
-                    upstream_tls_insecure: verify_mode
-                        == upstream_tls::UpstreamTlsVerificationMode::Insecure,
+                    settings: settings.clone(),
                     intercept_ca_cert_pem: signer.cert_pem().to_vec(),
                     intercept_ca_key_der: signer.key_der().to_vec(),
                     metrics: metrics.clone(),
@@ -807,6 +738,7 @@ pub async fn run(cfg: TrafficdConfig) -> Result<(), String> {
         cfg.tls_intercept_ca_source.clone(),
         intercept_ready.clone(),
         intercept_listen_addr,
+        cfg.tls_intercept.clone(),
         cfg.enable_kernel_intercept_steering,
         cfg.service_lane_iface.clone(),
         cfg.intercept_demux.clone(),

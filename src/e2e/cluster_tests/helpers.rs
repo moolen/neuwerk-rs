@@ -555,6 +555,7 @@ pub(super) fn spawn_http_api_with_audit(
         bind_addr,
         advertise_addr: bind_addr,
         metrics_bind,
+        allow_public_metrics_bind: false,
         tls_dir,
         cert_path: None,
         key_path: None,

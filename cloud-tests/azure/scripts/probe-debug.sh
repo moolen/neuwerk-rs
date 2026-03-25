@@ -44,28 +44,29 @@ echo "dataplane_lb_id=${LB_ID}" | tee -a "${ARTIFACT_DIR}/summary.txt"
 
 for ip in $FW_MGMT_IPS; do
   out="${ARTIFACT_DIR}/${ip}.probe.txt"
-  ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
-    "set -euo pipefail
-     echo \"== host ==\"
-     hostname -f || hostname
-     echo \"== timestamp_utc ==\"
-     date -u +%Y-%m-%dT%H:%M:%SZ
-     echo \"== neuwerk_cmdline ==\"
-     tr '\\0' ' ' </proc/\$(pgrep -x neuwerk | head -n1)/cmdline || true
-     echo
-     echo \"== listeners_8080_8443 ==\"
-     ss -lntp | egrep '(:8080|:8443)|State' || true
-     echo \"== route_168_63_129_16 ==\"
-     ip route get 168.63.129.16 || true
-     echo \"== ip_brief ==\"
-     ip -br a || true
-     echo \"== neuwerk_env ==\"
-     sudo cat /etc/neuwerk/neuwerk.env || true
-     echo \"== probe_metrics ==\"
-     METRICS_HOST=\$(grep '^MGMT_IP=' /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2)
-     [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1
-     curl -fsS http://\${METRICS_HOST}:8080/metrics | egrep '^dpdk_health_probe_packets_total|^dpdk_(rx|tx)_(packets|bytes)_total' || true
-    " >"$out"
+  {
+    ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
+      "set -euo pipefail
+       echo \"== host ==\"
+       hostname -f || hostname
+       echo \"== timestamp_utc ==\"
+       date -u +%Y-%m-%dT%H:%M:%SZ
+       echo \"== neuwerk_cmdline ==\"
+       tr '\\0' ' ' </proc/\$(pgrep -x neuwerk | head -n1)/cmdline || true
+       echo
+       echo \"== listeners_8080_8443 ==\"
+       ss -lntp | egrep '(:8080|:8443)|State' || true
+       echo \"== route_168_63_129_16 ==\"
+       ip route get 168.63.129.16 || true
+       echo \"== ip_brief ==\"
+       ip -br a || true
+       echo \"== neuwerk_config ==\"
+       sudo cat /etc/neuwerk/config.yaml || true
+      "
+    echo "== probe_metrics =="
+    fetch_neuwerk_metrics "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
+      | egrep '^dpdk_health_probe_packets_total|^dpdk_(rx|tx)_(packets|bytes)_total' || true
+  } >"$out"
   echo "wrote ${out}"
 done
 

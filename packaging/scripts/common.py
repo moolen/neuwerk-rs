@@ -87,11 +87,8 @@ def validate_target(data: dict[str, Any]) -> list[str]:
             "prefix",
             "binary_dir",
             "ui_dir",
-            "env_file",
-            "appliance_env_file",
-            "bootstrap_path",
+            "config_file",
             "service_file",
-            "launcher_path",
             "link_name",
         ):
             required_string(runtime, key, "runtime", errors)

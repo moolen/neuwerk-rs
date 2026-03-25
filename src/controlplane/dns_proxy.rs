@@ -171,7 +171,12 @@ pub async fn run_dns_proxy(
 
         if !allowed {
             if would_deny {
-                revoke_hostname_grants(&question.name, &source_group, policy_store.as_ref(), &dns_map);
+                revoke_hostname_grants(
+                    &question.name,
+                    &source_group,
+                    policy_store.as_ref(),
+                    &dns_map,
+                );
             }
             let reason = if matches!(peer.ip(), IpAddr::V4(_)) {
                 if would_deny {
@@ -454,7 +459,12 @@ async fn handle_dns_tcp_client(
 
         if !allowed {
             if would_deny {
-                revoke_hostname_grants(&question.name, &source_group, policy_store.as_ref(), &dns_map);
+                revoke_hostname_grants(
+                    &question.name,
+                    &source_group,
+                    policy_store.as_ref(),
+                    &dns_map,
+                );
             }
             let reason = if matches!(peer.ip(), IpAddr::V4(_)) {
                 if would_deny {

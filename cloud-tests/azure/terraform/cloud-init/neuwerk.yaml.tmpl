@@ -25,7 +25,7 @@ packages:
   - python3
 
 write_files:
-  - path: /usr/local/bin/neuwerk-bootstrap.sh
+  - path: /usr/local/bin/neuwerk-firstboot.sh
     permissions: "0755"
     content: |
       #!/usr/bin/env bash
@@ -33,15 +33,16 @@ write_files:
 
       STATE_DIR="/var/lib/neuwerk"
       CONFIG_MARKER="$STATE_DIR/bootstrap.configured"
-      BOOTSTRAP_MARKER="$STATE_DIR/bootstrap.complete"
+      FIRSTBOOT_MARKER="$STATE_DIR/firstboot.complete"
       REBOOT_MARKER="$STATE_DIR/bootstrap.reboot"
-      ENV_FILE="/etc/neuwerk/neuwerk.env"
+      CONFIG_FILE="/etc/neuwerk/config.yaml"
+      HEALTH_ROUTE_STATE="$STATE_DIR/azure-health-route.yaml"
 
       mkdir -p "$STATE_DIR"
-      mkdir -p "$(dirname "$ENV_FILE")"
+      mkdir -p "$(dirname "$CONFIG_FILE")"
 
       log() {
-        echo "[neuwerk-bootstrap] $*"
+        echo "[neuwerk-firstboot] $*"
       }
 
       if ! dpkg -s "linux-modules-extra-$(uname -r)" >/dev/null 2>&1; then
@@ -519,36 +520,73 @@ write_files:
         DPDK_WORKERS=0
       fi
 
-      cat > "$ENV_FILE" <<EOF_ENV
-      MGMT_IFACE=$${MGMT_IFACE}
-      MGMT_IP=$${MGMT_IP}
-      DATA_DEV=$${DATA_DEV}
-      DATA_PCI=$${DATA_PCI}
-      DATA_IFACE=$${DATA_IFACE_SELECTOR}
-      CLOUD_PROVIDER=${cloud_provider}
-      NEUWERK_DPDK_NETVSC=$${USE_NETVSC_PMD}
-      NEUWERK_DPDK_WORKERS=$${DPDK_WORKERS}
-      NEUWERK_DPDK_TX_CSUM_OFFLOAD=0
-      NEUWERK_AZURE_GATEWAY_MAC=12:34:56:78:9a:bc
-      NEUWERK_DPDK_GATEWAY_MAC=12:34:56:78:9a:bc
-      NEUWERK_DP_MAX_ACTIVE_FLOWS=24576
-      NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES=24576
-      NEUWERK_DP_MAX_PENDING_TLS_FLOWS=2048
-      NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP=16384
-      NEUWERK_GWLB_SWAP_TUNNELS=0
-      NEUWERK_GWLB_TUNNEL_SRC_PORT=0
-      VNI_INTERNAL=${gwlb_vni_internal}
-      VNI_EXTERNAL=${gwlb_vni_external}
-      UDP_INTERNAL=${gwlb_udp_port_internal}
-      UDP_EXTERNAL=${gwlb_udp_port_external}
-      INTERNAL_CIDR=${internal_cidr}
-      SNAT_MODE=${snat_mode}
-      AZ_SUBSCRIPTION=$${SUBSCRIPTION_ID}
-      AZ_RESOURCE_GROUP=$${RESOURCE_GROUP}
-      AZ_VMSS_NAME=$${VMSS_NAME}
-      EOF_ENV
+      FORCE_NETVSC=false
+      if [ "$USE_NETVSC_PMD" = "1" ]; then
+        FORCE_NETVSC=true
+      fi
 
-      touch "$BOOTSTRAP_MARKER"
+      cat > "$CONFIG_FILE" <<EOF_CONFIG
+      version: 1
+      bootstrap:
+        management_interface: "$${MGMT_IFACE}"
+        data_interface: "$${DATA_IFACE_SELECTOR}"
+        cloud_provider: ${cloud_provider}
+        data_plane_mode: dpdk
+      dns:
+        target_ips:
+%{ for dns_target in dns_target_ips ~}
+          - ${dns_target}
+%{ endfor ~}
+        upstreams:
+%{ for dns_upstream in dns_upstreams ~}
+          - "${dns_upstream}"
+%{ endfor ~}
+      policy:
+        default: allow
+        internal_cidr: ${internal_cidr}
+      http:
+        bind: "$${MGMT_IP}:8443"
+        advertise: "$${MGMT_IP}:8443"
+        external_url: "https://$${MGMT_IP}:8443"
+      metrics:
+        bind: "$${MGMT_IP}:8080"
+      integration:
+        mode: azure-vmss
+        drain_timeout_secs: 30
+        reconcile_interval_secs: 15
+        azure:
+          subscription_id: "$${SUBSCRIPTION_ID}"
+          resource_group: "$${RESOURCE_GROUP}"
+          vmss_name: "$${VMSS_NAME}"
+      dataplane:
+        snat: ${snat_mode}
+        encap_mode: vxlan
+        encap_vni_internal: ${gwlb_vni_internal}
+        encap_vni_external: ${gwlb_vni_external}
+        encap_udp_port_internal: ${gwlb_udp_port_internal}
+        encap_udp_port_external: ${gwlb_udp_port_external}
+        admission:
+          max_active_flows: 24576
+          max_active_nat_entries: 24576
+          max_pending_tls_flows: 2048
+          max_active_flows_per_source_group: 16384
+      dpdk:
+        tx_checksum_offload: false
+        force_netvsc: $${FORCE_NETVSC}
+        gateway_mac: 12:34:56:78:9a:bc
+        overlay:
+          swap_tunnels: false
+          force_tunnel_src_port: false
+%{ if dpdk_workers > 0 ~}
+        workers: ${dpdk_workers}
+%{ endif ~}
+      EOF_CONFIG
+
+      cat > "$HEALTH_ROUTE_STATE" <<EOF_STATE
+      data_dev: $${DATA_DEV}
+      EOF_STATE
+
+      touch "$FIRSTBOOT_MARKER"
       systemctl daemon-reload
       systemctl enable --now neuwerk-health-route.service
       systemctl reset-failed neuwerk.service || true
@@ -560,13 +598,11 @@ write_files:
       #!/usr/bin/env bash
       set -euo pipefail
 
-      ENV_FILE="/etc/neuwerk/neuwerk.env"
-      if [ ! -f "$ENV_FILE" ]; then
+      STATE_FILE="/var/lib/neuwerk/azure-health-route.yaml"
+      if [ ! -f "$STATE_FILE" ]; then
         exit 0
       fi
-      # shellcheck disable=SC1090
-      source "$ENV_FILE"
-
+      DATA_DEV="$(awk '$1 == "data_dev:" {print $2; exit}' "$STATE_FILE")"
       if [ -z "$${DATA_DEV:-}" ]; then
         exit 0
       fi
@@ -605,17 +641,17 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 
-  - path: /etc/systemd/system/neuwerk-bootstrap.service
+  - path: /etc/systemd/system/neuwerk-firstboot.service
     permissions: "0644"
     content: |
       [Unit]
-      Description=Neuwerk bootstrap
+      Description=Neuwerk first boot preparation
       After=network-online.target
       Wants=network-online.target
 
       [Service]
       Type=oneshot
-      ExecStart=/usr/local/bin/neuwerk-bootstrap.sh
+      ExecStart=/usr/local/bin/neuwerk-firstboot.sh
       RemainAfterExit=yes
 
       [Install]
@@ -626,36 +662,13 @@ write_files:
     content: |
       [Unit]
       Description=Neuwerk
-      After=network-online.target neuwerk-bootstrap.service
+      After=network-online.target neuwerk-firstboot.service
       Wants=network-online.target
-      Requires=neuwerk-bootstrap.service
+      Requires=neuwerk-firstboot.service
 
       [Service]
       Type=simple
-      EnvironmentFile=/etc/neuwerk/neuwerk.env
-      ExecStart=/usr/local/bin/neuwerk \
-        --management-interface $${MGMT_IFACE} \
-        --data-plane-interface $${DATA_IFACE} \
-        --data-plane-mode dpdk \
-        --encap none \
-        --internal-cidr $${INTERNAL_CIDR} \
-%{ for dns_target in dns_target_ips ~}
-        --dns-target-ip ${dns_target} \
-%{ endfor ~}
-%{ for dns_upstream in dns_upstreams ~}
-        --dns-upstream ${dns_upstream} \
-%{ endfor ~}
-        --http-bind $${MGMT_IP}:8443 \
-        --metrics-bind $${MGMT_IP}:8080 \
-        --default-policy allow \
-        --snat $${SNAT_MODE} \
-        --cloud-provider $${CLOUD_PROVIDER} \
-        --integration azure-vmss \
-        --integration-drain-timeout-secs 30 \
-        --integration-reconcile-interval-secs 15 \
-        --azure-subscription-id $${AZ_SUBSCRIPTION} \
-        --azure-resource-group $${AZ_RESOURCE_GROUP} \
-        --azure-vmss-name $${AZ_VMSS_NAME}
+      ExecStart=/usr/local/bin/neuwerk
       Restart=on-failure
       LimitMEMLOCK=infinity
 
@@ -666,6 +679,6 @@ runcmd:
   - systemctl daemon-reload
   - ethtool -K data0 rx off tx off gro off gso off tso off lro off || true
   - systemctl enable neuwerk-health-route.service
-  - systemctl enable neuwerk-bootstrap.service
+  - systemctl enable neuwerk-firstboot.service
   - systemctl enable neuwerk.service
-  - systemctl start neuwerk-bootstrap.service
+  - systemctl start neuwerk-firstboot.service
