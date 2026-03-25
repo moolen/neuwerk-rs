@@ -25,24 +25,27 @@ fn build_test_tcp_packet(src_port: u16, dst_port: u16) -> Packet {
     pkt
 }
 
-fn base_args() -> Vec<String> {
-    vec![
-        "--management-interface".to_string(),
-        "mgmt0".to_string(),
-        "--data-plane-interface".to_string(),
-        "data0".to_string(),
-    ]
-}
-
-fn required_runtime_args() -> Vec<String> {
-    let mut args = base_args();
-    args.extend_from_slice(&[
-        "--dns-target-ip".to_string(),
-        "10.0.0.53".to_string(),
-        "--dns-upstream".to_string(),
-        "1.1.1.1:53".to_string(),
-    ]);
-    args
+fn runtime_cli_config(extra_yaml: &str) -> runtime::cli::CliConfig {
+    let raw = format!(
+        r#"
+version: 1
+bootstrap:
+  management_interface: mgmt0
+  data_interface: data0
+  cloud_provider: none
+  data_plane_mode: tun
+dns:
+  target_ips:
+    - 10.0.0.53
+  upstreams:
+    - 1.1.1.1:53
+{extra_yaml}
+"#
+    );
+    let derived =
+        runtime::config::derive_runtime_config(runtime::config::load_config_str(&raw).unwrap())
+            .unwrap();
+    runtime::bootstrap::startup::build_runtime_cli_config(&derived).unwrap()
 }
 
 fn metric_value_with_labels(rendered: &str, metric: &str, labels: &[(&str, &str)]) -> f64 {
@@ -62,83 +65,6 @@ fn metric_value_with_labels(rendered: &str, metric: &str, labels: &[(&str, &str)
             line.split_whitespace().last()?.parse::<f64>().ok()
         })
         .unwrap_or(0.0)
-}
-
-#[test]
-fn parse_args_accepts_repeated_dns_flags() {
-    let mut args = base_args();
-    args.extend_from_slice(&[
-        "--dns-target-ip".to_string(),
-        "10.0.0.1".to_string(),
-        "--dns-target-ip".to_string(),
-        "10.0.0.2".to_string(),
-        "--dns-upstream".to_string(),
-        "1.1.1.1:53".to_string(),
-        "--dns-upstream".to_string(),
-        "8.8.8.8:53".to_string(),
-    ]);
-    let cfg = parse_args("neuwerk", args).expect("parse args");
-    assert_eq!(cfg.dns_target_ips.len(), 2);
-    assert_eq!(cfg.dns_upstreams.len(), 2);
-}
-
-#[test]
-fn parse_args_accepts_csv_dns_flags() {
-    let mut args = base_args();
-    args.extend_from_slice(&[
-        "--dns-target-ips".to_string(),
-        "10.0.0.1,10.0.0.2".to_string(),
-        "--dns-upstreams".to_string(),
-        "1.1.1.1:53,8.8.8.8:53".to_string(),
-    ]);
-    let cfg = parse_args("neuwerk", args).expect("parse args");
-    assert_eq!(cfg.dns_target_ips.len(), 2);
-    assert_eq!(cfg.dns_upstreams.len(), 2);
-}
-
-#[test]
-fn parse_args_rejects_mixed_dns_target_forms() {
-    let mut args = base_args();
-    args.extend_from_slice(&[
-        "--dns-target-ip".to_string(),
-        "10.0.0.1".to_string(),
-        "--dns-target-ips".to_string(),
-        "10.0.0.2".to_string(),
-        "--dns-upstream".to_string(),
-        "1.1.1.1:53".to_string(),
-    ]);
-    let err = parse_args("neuwerk", args).expect_err("expected parse failure");
-    assert!(err.contains("cannot combine repeated --dns-target-ip"));
-}
-
-#[test]
-fn parse_args_rejects_mixed_dns_upstream_forms() {
-    let mut args = base_args();
-    args.extend_from_slice(&[
-        "--dns-target-ip".to_string(),
-        "10.0.0.1".to_string(),
-        "--dns-upstream".to_string(),
-        "1.1.1.1:53".to_string(),
-        "--dns-upstreams".to_string(),
-        "8.8.8.8:53".to_string(),
-    ]);
-    let err = parse_args("neuwerk", args).expect_err("expected parse failure");
-    assert!(err.contains("cannot combine repeated --dns-upstream"));
-}
-
-#[test]
-fn parse_args_rejects_removed_dns_listen_flag() {
-    let mut args = base_args();
-    args.extend_from_slice(&[
-        "--dns-target-ip".to_string(),
-        "10.0.0.1".to_string(),
-        "--dns-upstream".to_string(),
-        "1.1.1.1:53".to_string(),
-        "--dns-listen".to_string(),
-        "10.0.0.1:53".to_string(),
-    ]);
-    let err = parse_args("neuwerk", args).expect_err("expected parse failure");
-    assert!(err.contains("--dns-listen has been removed"));
 }
 
 #[cfg(target_os = "linux")]
@@ -386,7 +312,7 @@ fn dpdk_shared_demux_observability_metrics_render() {
 
 #[test]
 fn dataplane_runtime_network_config_uses_safe_defaults() {
-    let cfg = parse_args("neuwerk", required_runtime_args()).expect("parse args");
+    let cfg = runtime_cli_config("");
 
     let network = runtime::bootstrap::startup::build_dataplane_runtime_network_config(&cfg);
 
@@ -401,18 +327,16 @@ fn dataplane_runtime_network_config_uses_safe_defaults() {
 
 #[test]
 fn dataplane_runtime_network_config_preserves_cli_overrides() {
-    let mut args = required_runtime_args();
-    args.extend_from_slice(&[
-        "--internal-cidr".to_string(),
-        "10.42.0.0/16".to_string(),
-        "--snat".to_string(),
-        "203.0.113.10".to_string(),
-        "--encap".to_string(),
-        "vxlan".to_string(),
-        "--encap-vni".to_string(),
-        "4242".to_string(),
-    ]);
-    let cfg = parse_args("neuwerk", args).expect("parse args");
+    let cfg = runtime_cli_config(
+        r#"
+policy:
+  internal_cidr: 10.42.0.0/16
+dataplane:
+  snat: 203.0.113.10
+  encap_mode: vxlan
+  encap_vni: 4242
+"#,
+    );
 
     let network = runtime::bootstrap::startup::build_dataplane_runtime_network_config(&cfg);
 

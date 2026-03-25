@@ -75,33 +75,12 @@ pub enum CloudProviderKind {
 }
 
 impl CloudProviderKind {
-    pub fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "none" | "NONE" => Ok(CloudProviderKind::None),
-            "azure" | "AZURE" => Ok(CloudProviderKind::Azure),
-            "aws" | "AWS" => Ok(CloudProviderKind::Aws),
-            "gcp" | "GCP" => Ok(CloudProviderKind::Gcp),
-            _ => Err(format!(
-                "--cloud-provider must be azure, aws, gcp, or none, got {value}"
-            )),
-        }
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             CloudProviderKind::None => "none",
             CloudProviderKind::Azure => "azure",
             CloudProviderKind::Aws => "aws",
             CloudProviderKind::Gcp => "gcp",
-        }
-    }
-}
-
-impl DataPlaneMode {
-    pub fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "dpdk" | "DPDK" => Ok(DataPlaneMode::Dpdk),
-            _ => Ok(DataPlaneMode::Soft(SoftMode::parse(value)?)),
         }
     }
 }

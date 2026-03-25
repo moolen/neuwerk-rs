@@ -26,9 +26,7 @@ use runtime::bootstrap::startup::{
     run_cluster_migration_if_requested, start_cluster_runtime,
 };
 use runtime::bootstrap::task_wait::await_runtime_tasks;
-#[cfg(test)]
-use runtime::cli::parse_args;
-use runtime::cli::CloudProviderKind;
+use runtime::cli::{CloudProviderKind, RUNTIME_STARTUP_UNSUPPORTED_MESSAGE};
 #[cfg(test)]
 use runtime::dpdk::worker_plan::{
     choose_dpdk_worker_plan, flow_steer_payload, parse_truthy_flag,
@@ -82,9 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if !args.is_empty() {
-        eprintln!(
-            "runtime startup no longer accepts CLI flags; configure /etc/neuwerk/config.yaml instead"
-        );
+        eprintln!("{RUNTIME_STARTUP_UNSUPPORTED_MESSAGE}");
         std::process::exit(2);
     }
 
