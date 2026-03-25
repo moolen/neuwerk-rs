@@ -13,7 +13,7 @@ use tracing::{error, info, warn};
 
 use runtime::auth::{auth_usage, parse_auth_args, run_auth_command};
 use runtime::bootstrap::dataplane_config::{
-    dpdk_static_config_from_env, imds_dataplane_from_mgmt_ip,
+    dpdk_static_config_from_runtime, imds_dataplane_from_mgmt_ip,
 };
 use runtime::bootstrap::dataplane_warmup::maybe_spawn_soft_dataplane_autoconfig_task;
 use runtime::bootstrap::integration::build_integration_provider;
@@ -21,11 +21,14 @@ use runtime::bootstrap::network::{dataplane_ipv4_config, internal_ipv4_config};
 use runtime::bootstrap::policy_state::init_local_controlplane_state;
 use runtime::bootstrap::shutdown::spawn_signal_shutdown_task;
 use runtime::bootstrap::startup::{
-    build_dataplane_runtime_network_config, log_startup_summary, maybe_select_cluster_seed,
-    resolve_bindings, run_cluster_migration_if_requested, start_cluster_runtime,
+    build_dataplane_runtime_network_config, build_runtime_cli_config, load_default_runtime_config,
+    log_startup_summary, maybe_select_cluster_seed, resolve_bindings,
+    run_cluster_migration_if_requested, start_cluster_runtime,
 };
 use runtime::bootstrap::task_wait::await_runtime_tasks;
-use runtime::cli::{parse_args, usage, CloudProviderKind, DataPlaneMode};
+#[cfg(test)]
+use runtime::cli::parse_args;
+use runtime::cli::CloudProviderKind;
 #[cfg(test)]
 use runtime::dpdk::worker_plan::{
     choose_dpdk_worker_plan, flow_steer_payload, parse_truthy_flag,
@@ -78,11 +81,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    if !args.is_empty() {
+        eprintln!(
+            "runtime startup no longer accepts CLI flags; configure /etc/neuwerk/config.yaml instead"
+        );
+        std::process::exit(2);
+    }
 
-    let mut cfg = match parse_args(&bin, args) {
+    let runtime_cfg = match load_default_runtime_config() {
         Ok(cfg) => cfg,
         Err(err) => {
-            eprintln!("{err}\n\n{}", usage(&bin));
+            eprintln!("{err}");
+            std::process::exit(2);
+        }
+    };
+    log_startup_summary(&runtime_cfg);
+    let mut cfg = match build_runtime_cli_config(&runtime_cfg) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("{err}");
             std::process::exit(2);
         }
     };
@@ -92,9 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let integration_provider = build_integration_provider(&cfg).map_err(boxed_error)?;
     maybe_select_cluster_seed(&mut cfg, integration_provider.clone()).await;
-    log_startup_summary(&cfg);
-
-    let dpdk_enabled = matches!(cfg.data_plane_mode, DataPlaneMode::Dpdk);
+    let dpdk_enabled = runtime_cfg.runtime.dpdk_enabled;
     if dpdk_enabled && matches!(cfg.snat_mode, SnatMode::Static(_)) {
         eprintln!("--snat <ipv4> is only supported in software dataplane mode");
         std::process::exit(2);
@@ -105,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dataplane_ipv4_config(&cfg.data_plane_iface).await.ok()
     };
 
-    let bindings = match resolve_bindings(&cfg, dpdk_enabled).await {
+    let bindings = match resolve_bindings(&runtime_cfg).await {
         Ok(bindings) => bindings,
         Err(err) => {
             eprintln!("management interface ip error: {err}");
@@ -149,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if dpdk_enabled && dataplane_config.get().is_none() {
-        match dpdk_static_config_from_env() {
+        match dpdk_static_config_from_runtime(&runtime_cfg) {
             Ok(Some(config)) => {
                 info!(
                     dataplane_ip = %config.ip,

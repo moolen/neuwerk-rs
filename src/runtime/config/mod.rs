@@ -11,6 +11,9 @@ pub type ValidatedConfig = types::ValidatedConfig;
 pub type DerivedRuntimeConfig = derived::DerivedRuntimeConfig;
 pub type RuntimeSettings = derived::RuntimeSettings;
 pub type MetricsBindResolution = derived::MetricsBindResolution;
+pub use types::{
+    DefaultPolicy, IntegrationMode as RuntimeIntegrationMode, SnatMode as RuntimeSnatMode,
+};
 
 pub fn load_config(path: &Path) -> Result<LoadedConfig, String> {
     load::load_config(path)
