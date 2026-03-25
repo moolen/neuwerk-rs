@@ -746,6 +746,26 @@ impl Metrics {
         self.dp_tls_decisions.with_label_values(&[outcome]).inc();
     }
 
+    pub fn set_dp_pending_tls_flow_count(&self, count: usize) {
+        self.dp_pending_tls_flow_count.set(count as f64);
+    }
+
+    pub fn inc_dp_flow_cap_rejection(&self) {
+        self.dp_flow_cap_rejections.inc();
+    }
+
+    pub fn inc_dp_nat_cap_rejection(&self) {
+        self.dp_nat_cap_rejections.inc();
+    }
+
+    pub fn inc_dp_pending_tls_cap_rejection(&self) {
+        self.dp_pending_tls_cap_rejections.inc();
+    }
+
+    pub fn inc_dp_source_group_flow_cap_rejection(&self) {
+        self.dp_source_group_flow_cap_rejections.inc();
+    }
+
     pub fn observe_dp_icmp_decision(
         &self,
         direction: &str,
@@ -956,6 +976,30 @@ impl Metrics {
         self.dpdk_service_lane_forward_queue_depth.set(depth as f64);
         self.dpdk_service_lane_forward_queue_utilization_ratio
             .set((depth as f64) / 1024.0);
+    }
+
+    pub fn set_dpdk_intercept_demux_size(&self, size: usize) {
+        self.dpdk_intercept_demux_size.set(size as f64);
+    }
+
+    pub fn set_dpdk_host_frame_queue_depth(&self, depth: usize) {
+        self.dpdk_host_frame_queue_depth.set(depth as f64);
+    }
+
+    pub fn set_dpdk_pending_arp_queue_depth(&self, depth: usize) {
+        self.dpdk_pending_arp_queue_depth.set(depth as f64);
+    }
+
+    pub fn inc_dpdk_intercept_demux_insert_dropped(&self) {
+        self.dpdk_intercept_demux_insert_dropped.inc();
+    }
+
+    pub fn inc_dpdk_host_frame_dropped(&self) {
+        self.dpdk_host_frame_dropped.inc();
+    }
+
+    pub fn inc_dpdk_pending_arp_frame_dropped(&self) {
+        self.dpdk_pending_arp_frame_dropped.inc();
     }
 
     pub fn inc_dp_tcp_handshake_event(&self, worker: usize, event: &str) {

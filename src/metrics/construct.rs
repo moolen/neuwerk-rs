@@ -647,6 +647,31 @@ impl Metrics {
             &["outcome"],
         )
         .map_err(|err| err.to_string())?;
+        let dp_pending_tls_flow_count = Gauge::with_opts(Opts::new(
+            "dp_pending_tls_flow_count",
+            "Current number of dataplane flows awaiting TLS policy resolution",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_flow_cap_rejections = Counter::with_opts(Opts::new(
+            "dp_flow_cap_rejections_total",
+            "Dataplane packets dropped because the global flow cap was reached",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_nat_cap_rejections = Counter::with_opts(Opts::new(
+            "dp_nat_cap_rejections_total",
+            "Dataplane packets dropped because the NAT entry cap was reached",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_pending_tls_cap_rejections = Counter::with_opts(Opts::new(
+            "dp_pending_tls_cap_rejections_total",
+            "Dataplane packets dropped because the pending TLS cap was reached",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dp_source_group_flow_cap_rejections = Counter::with_opts(Opts::new(
+            "dp_source_group_flow_cap_rejections_total",
+            "Dataplane packets dropped because a source group hit its active flow cap",
+        ))
+        .map_err(|err| err.to_string())?;
         let dp_icmp_decisions = CounterVec::new(
             Opts::new("dp_icmp_decisions_total", "Dataplane ICMP decisions"),
             &["direction", "type", "code", "decision", "source_group"],
@@ -856,6 +881,36 @@ impl Metrics {
         let dpdk_service_lane_forward_queue_utilization_ratio = Gauge::with_opts(Opts::new(
             "dpdk_service_lane_forward_queue_utilization_ratio",
             "DPDK service-lane forward queue utilization ratio",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_intercept_demux_size = Gauge::with_opts(Opts::new(
+            "dpdk_intercept_demux_size",
+            "DPDK intercept demux current entry count",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_host_frame_queue_depth = Gauge::with_opts(Opts::new(
+            "dpdk_host_frame_queue_depth",
+            "DPDK service-lane host-frame queue depth",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_pending_arp_queue_depth = Gauge::with_opts(Opts::new(
+            "dpdk_pending_arp_queue_depth",
+            "DPDK pending ARP frame queue depth",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_intercept_demux_insert_dropped = Counter::with_opts(Opts::new(
+            "dpdk_intercept_demux_insert_dropped_total",
+            "DPDK intercept demux inserts dropped due to cap",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_host_frame_dropped = Counter::with_opts(Opts::new(
+            "dpdk_host_frame_dropped_total",
+            "DPDK host frames dropped from queue due to cap",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_pending_arp_frame_dropped = Counter::with_opts(Opts::new(
+            "dpdk_pending_arp_frame_dropped_total",
+            "DPDK queued ARP frames dropped due to cap",
         ))
         .map_err(|err| err.to_string())?;
         let dp_tcp_handshake_events = CounterVec::new(
@@ -1343,6 +1398,21 @@ impl Metrics {
             .register(Box::new(dp_tls_decisions.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dp_pending_tls_flow_count.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_flow_cap_rejections.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_nat_cap_rejections.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_pending_tls_cap_rejections.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dp_source_group_flow_cap_rejections.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dp_icmp_decisions.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -1456,6 +1526,24 @@ impl Metrics {
             .register(Box::new(
                 dpdk_service_lane_forward_queue_utilization_ratio.clone(),
             ))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_intercept_demux_size.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_host_frame_queue_depth.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_pending_arp_queue_depth.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_intercept_demux_insert_dropped.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_host_frame_dropped.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_pending_arp_frame_dropped.clone()))
             .map_err(|err| err.to_string())?;
         registry
             .register(Box::new(dp_tcp_handshake_events.clone()))
@@ -1675,6 +1763,11 @@ impl Metrics {
             .with_label_values(&["default", "idle_timeout"])
             .observe(0.0);
         dp_tls_decisions.with_label_values(&["pending"]).inc_by(0.0);
+        dp_pending_tls_flow_count.set(0.0);
+        dp_flow_cap_rejections.inc_by(0.0);
+        dp_nat_cap_rejections.inc_by(0.0);
+        dp_pending_tls_cap_rejections.inc_by(0.0);
+        dp_source_group_flow_cap_rejections.inc_by(0.0);
         dp_icmp_decisions
             .with_label_values(&["outbound", "0", "0", "deny", "default"])
             .inc_by(0.0);
@@ -1789,6 +1882,12 @@ impl Metrics {
             .observe(0.0);
         dpdk_service_lane_forward_queue_depth.set(0.0);
         dpdk_service_lane_forward_queue_utilization_ratio.set(0.0);
+        dpdk_intercept_demux_size.set(0.0);
+        dpdk_host_frame_queue_depth.set(0.0);
+        dpdk_pending_arp_queue_depth.set(0.0);
+        dpdk_intercept_demux_insert_dropped.inc_by(0.0);
+        dpdk_host_frame_dropped.inc_by(0.0);
+        dpdk_pending_arp_frame_dropped.inc_by(0.0);
         dp_state_lock_wait_seconds_worker
             .with_label_values(&["0"])
             .observe(0.0);
@@ -2050,6 +2149,11 @@ impl Metrics {
             dpdk_shared_io_lock_hold_seconds_worker,
             dpdk_shared_io_lock_contended_worker,
             dp_tls_decisions,
+            dp_pending_tls_flow_count,
+            dp_flow_cap_rejections,
+            dp_nat_cap_rejections,
+            dp_pending_tls_cap_rejections,
+            dp_source_group_flow_cap_rejections,
             dp_icmp_decisions,
             dp_ipv4_fragments_dropped,
             dp_ipv4_ttl_exceeded,
@@ -2087,6 +2191,12 @@ impl Metrics {
             dpdk_service_lane_forward_queue_wait_seconds,
             dpdk_service_lane_forward_queue_depth,
             dpdk_service_lane_forward_queue_utilization_ratio,
+            dpdk_intercept_demux_size,
+            dpdk_host_frame_queue_depth,
+            dpdk_pending_arp_queue_depth,
+            dpdk_intercept_demux_insert_dropped,
+            dpdk_host_frame_dropped,
+            dpdk_pending_arp_frame_dropped,
             dp_tcp_handshake_events,
             dp_tcp_handshake_events_by_target,
             dp_tcp_handshake_final_ack_in,

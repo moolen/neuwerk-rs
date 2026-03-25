@@ -1,4 +1,22 @@
 impl DpdkAdapter {
+    fn observe_intercept_demux_size(&self, metrics: Option<&crate::metrics::Metrics>) {
+        let Some(metrics) = metrics else {
+            return;
+        };
+        let size = if let Some(shared) = &self.shared_intercept_demux {
+            shared.len()
+        } else {
+            self.intercept_demux.len()
+        };
+        metrics.set_dpdk_intercept_demux_size(size);
+    }
+
+    fn observe_host_frame_queue_depth(&self, metrics: Option<&crate::metrics::Metrics>) {
+        if let Some(metrics) = metrics {
+            metrics.set_dpdk_host_frame_queue_depth(self.pending_host_frames.len());
+        }
+    }
+
     pub fn service_lane_ready(&mut self) -> bool {
         if self.service_lane_tap.is_some() {
             return true;
@@ -38,10 +56,27 @@ impl DpdkAdapter {
     }
 
     pub fn refresh_service_lane_steering(&mut self, state: &mut EngineState) {
+        self.set_runtime_metrics(state.metrics());
         state.set_intercept_to_host_steering(self.service_lane_ready());
     }
 
-    fn queue_host_frame(&mut self, frame: &[u8]) {
+    fn enqueue_host_frame_internal(
+        &mut self,
+        frame: Vec<u8>,
+        metrics: Option<&crate::metrics::Metrics>,
+    ) {
+        let queue_max = host_frame_queue_max();
+        if self.pending_host_frames.len() >= queue_max {
+            self.pending_host_frames.pop_front();
+            if let Some(metrics) = metrics {
+                metrics.inc_dpdk_host_frame_dropped();
+            }
+        }
+        self.pending_host_frames.push_back(frame);
+        self.observe_host_frame_queue_depth(metrics);
+    }
+
+    fn queue_host_frame(&mut self, frame: &[u8], metrics: Option<&crate::metrics::Metrics>) {
         if frame.len() < ETH_HDR_LEN {
             return;
         }
@@ -51,25 +86,30 @@ impl DpdkAdapter {
                 .service_lane_mac
                 .unwrap_or([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
         );
-        self.pending_host_frames.push_back(host_frame);
+        self.enqueue_host_frame_internal(host_frame, metrics);
     }
 
     fn gc_intercept_demux_map(
         map: &mut HashMap<InterceptDemuxKey, InterceptDemuxEntry>,
         now: Instant,
-    ) {
+    ) -> usize {
+        let before = map.len();
         map.retain(|_, entry| {
             now.duration_since(entry.last_seen) <= Duration::from_secs(INTERCEPT_DEMUX_IDLE_SECS)
         });
+        before.saturating_sub(map.len())
     }
 
-    fn maybe_gc_local_intercept_demux(&mut self) {
+    fn maybe_gc_local_intercept_demux(&mut self, metrics: Option<&crate::metrics::Metrics>) {
         if self.intercept_demux_last_gc.elapsed() < intercept_demux_gc_interval() {
             return;
         }
         let now = Instant::now();
-        Self::gc_intercept_demux_map(&mut self.intercept_demux, now);
+        let removed = Self::gc_intercept_demux_map(&mut self.intercept_demux, now);
         self.intercept_demux_last_gc = now;
+        if removed > 0 {
+            self.observe_intercept_demux_size(metrics);
+        }
     }
 
     fn upsert_intercept_demux_entry(
@@ -78,51 +118,87 @@ impl DpdkAdapter {
         client_port: u16,
         upstream_ip: Ipv4Addr,
         upstream_port: u16,
-    ) {
+        metrics: Option<&crate::metrics::Metrics>,
+    ) -> bool {
         if let Some(shared) = &self.shared_intercept_demux {
-            shared.upsert(client_ip, client_port, upstream_ip, upstream_port);
-            return;
+            let inserted = shared.upsert(client_ip, client_port, upstream_ip, upstream_port);
+            if !inserted {
+                if let Some(metrics) = metrics {
+                    metrics.inc_dpdk_intercept_demux_insert_dropped();
+                }
+            }
+            self.observe_intercept_demux_size(metrics);
+            return inserted;
         }
-        self.maybe_gc_local_intercept_demux();
+        self.maybe_gc_local_intercept_demux(metrics);
+        let key = InterceptDemuxKey {
+            client_ip,
+            client_port,
+        };
+        if let Some(entry) = self.intercept_demux.get_mut(&key) {
+            *entry = InterceptDemuxEntry {
+                upstream_ip,
+                upstream_port,
+                last_seen: Instant::now(),
+            };
+            self.observe_intercept_demux_size(metrics);
+            return true;
+        }
+        if self.intercept_demux.len() >= intercept_demux_max_entries() {
+            if let Some(metrics) = metrics {
+                metrics.inc_dpdk_intercept_demux_insert_dropped();
+            }
+            self.observe_intercept_demux_size(metrics);
+            return false;
+        }
         self.intercept_demux.insert(
-            InterceptDemuxKey {
-                client_ip,
-                client_port,
-            },
+            key,
             InterceptDemuxEntry {
                 upstream_ip,
                 upstream_port,
                 last_seen: Instant::now(),
             },
         );
+        self.observe_intercept_demux_size(metrics);
+        true
     }
 
-    fn remove_intercept_demux_entry(&mut self, client_ip: Ipv4Addr, client_port: u16) {
+    fn remove_intercept_demux_entry(
+        &mut self,
+        client_ip: Ipv4Addr,
+        client_port: u16,
+        metrics: Option<&crate::metrics::Metrics>,
+    ) {
         if let Some(shared) = &self.shared_intercept_demux {
             shared.remove(client_ip, client_port);
+            self.observe_intercept_demux_size(metrics);
             return;
         }
-        self.intercept_demux.remove(&InterceptDemuxKey {
+        let _ = self.intercept_demux.remove(&InterceptDemuxKey {
             client_ip,
             client_port,
         });
+        self.observe_intercept_demux_size(metrics);
     }
 
     fn lookup_intercept_demux_entry(
         &mut self,
         client_ip: Ipv4Addr,
         client_port: u16,
+        metrics: Option<&crate::metrics::Metrics>,
     ) -> Option<InterceptDemuxEntry> {
         if let Some(shared) = &self.shared_intercept_demux {
-            return shared.lookup(client_ip, client_port).map(|(upstream_ip, upstream_port)| {
-                InterceptDemuxEntry {
+            let out = shared
+                .lookup(client_ip, client_port)
+                .map(|(upstream_ip, upstream_port)| InterceptDemuxEntry {
                     upstream_ip,
                     upstream_port,
                     last_seen: Instant::now(),
-                }
-            });
+                });
+            self.observe_intercept_demux_size(metrics);
+            return out;
         }
-        self.maybe_gc_local_intercept_demux();
+        self.maybe_gc_local_intercept_demux(metrics);
         let key = InterceptDemuxKey {
             client_ip,
             client_port,
@@ -135,7 +211,7 @@ impl DpdkAdapter {
         }
     }
 
-    fn queue_intercept_host_frame(&mut self, frame: &[u8]) {
+    fn queue_intercept_host_frame(&mut self, frame: &[u8], metrics: Option<&crate::metrics::Metrics>) {
         if frame.len() < ETH_HDR_LEN {
             return;
         }
@@ -143,30 +219,32 @@ impl DpdkAdapter {
         let (src_port, dst_port) = match pkt.ports() {
             Some(ports) => ports,
             None => {
-                self.queue_host_frame(frame);
+                self.queue_host_frame(frame, metrics);
                 return;
             }
         };
         let src_ip = match pkt.src_ip() {
             Some(ip) => ip,
             None => {
-                self.queue_host_frame(frame);
+                self.queue_host_frame(frame, metrics);
                 return;
             }
         };
         let dst_ip = match pkt.dst_ip() {
             Some(ip) => ip,
             None => {
-                self.queue_host_frame(frame);
+                self.queue_host_frame(frame, metrics);
                 return;
             }
         };
         if pkt.protocol() != Some(6) {
-            self.queue_host_frame(frame);
+            self.queue_host_frame(frame, metrics);
             return;
         }
 
-        self.upsert_intercept_demux_entry(src_ip, src_port, dst_ip, dst_port);
+        if !self.upsert_intercept_demux_entry(src_ip, src_port, dst_ip, dst_port, metrics) {
+            return;
+        }
         if !pkt.set_dst_ip(intercept_service_ip())
             || !pkt.set_dst_port(intercept_service_port())
             || !pkt.recalc_checksums()
@@ -175,13 +253,17 @@ impl DpdkAdapter {
         }
         if let Some(flags) = pkt.tcp_flags() {
             if flags & (0x01 | 0x04) != 0 {
-                self.remove_intercept_demux_entry(src_ip, src_port);
+                self.remove_intercept_demux_entry(src_ip, src_port, metrics);
             }
         }
-        self.queue_host_frame(pkt.buffer());
+        self.queue_host_frame(pkt.buffer(), metrics);
     }
 
-    fn rewrite_intercept_service_lane_egress(&mut self, pkt: &mut Packet) {
+    fn rewrite_intercept_service_lane_egress(
+        &mut self,
+        pkt: &mut Packet,
+        metrics: Option<&crate::metrics::Metrics>,
+    ) {
         if pkt.protocol() != Some(6) {
             return;
         }
@@ -203,7 +285,7 @@ impl DpdkAdapter {
             Some(ip) => ip,
             None => return,
         };
-        let Some(entry) = self.lookup_intercept_demux_entry(client_ip, dst_port) else {
+        let Some(entry) = self.lookup_intercept_demux_entry(client_ip, dst_port, metrics) else {
             return;
         };
 
@@ -215,21 +297,30 @@ impl DpdkAdapter {
         }
         if let Some(flags) = pkt.tcp_flags() {
             if flags & (0x01 | 0x04) != 0 {
-                self.remove_intercept_demux_entry(client_ip, dst_port);
+                self.remove_intercept_demux_entry(client_ip, dst_port, metrics);
             }
         }
     }
 
     pub fn next_host_frame(&mut self) -> Option<Vec<u8>> {
-        self.pending_host_frames.pop_front()
+        let frame = self.pending_host_frames.pop_front();
+        if frame.is_some() {
+            self.observe_host_frame_queue_depth(self.runtime_metrics());
+        }
+        frame
     }
 
     pub fn enqueue_host_frame(&mut self, frame: Vec<u8>) {
-        self.pending_host_frames.push_back(frame);
+        let metrics = self.runtime_metrics().cloned();
+        self.enqueue_host_frame_internal(frame, metrics.as_ref());
     }
 
     pub fn take_pending_host_frames(&mut self) -> Vec<Vec<u8>> {
-        self.pending_host_frames.drain(..).collect()
+        let frames: Vec<Vec<u8>> = self.pending_host_frames.drain(..).collect();
+        if !frames.is_empty() {
+            self.observe_host_frame_queue_depth(self.runtime_metrics());
+        }
+        frames
     }
 
     pub fn flush_host_frames<I: FrameIo>(&mut self, io: &mut I) -> Result<(), String> {
@@ -243,6 +334,7 @@ impl DpdkAdapter {
             tap.write_all(&frame)
                 .map_err(|err| format!("dpdk: service lane write failed: {err}"))?;
         }
+        self.observe_host_frame_queue_depth(self.runtime_metrics());
         io.flush()
     }
 
@@ -255,7 +347,7 @@ impl DpdkAdapter {
             return None;
         }
         let mut pkt = Packet::from_bytes(frame);
-        self.rewrite_intercept_service_lane_egress(&mut pkt);
+        self.rewrite_intercept_service_lane_egress(&mut pkt, state.metrics());
         self.rewrite_l2_for_forward(&mut pkt, state)
     }
 

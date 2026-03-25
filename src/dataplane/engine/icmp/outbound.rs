@@ -173,6 +173,28 @@ pub(super) fn handle_outbound_icmp(
         }
         match evaluation.effective {
             PolicyDecision::Allow => {
+                if let Some(rejection) =
+                    state.admission_rejection(source_group.as_ref(), true, false, true)
+                {
+                    state.note_admission_rejection(rejection);
+                    if let Some(metrics) = &state.metrics {
+                        metrics.observe_dp_packet(
+                            "outbound",
+                            proto_label(1),
+                            "deny",
+                            source_group_name,
+                            pkt.len(),
+                        );
+                        metrics.observe_dp_icmp_decision(
+                            "outbound",
+                            icmp_type,
+                            icmp_code,
+                            "deny",
+                            source_group_name,
+                        );
+                    }
+                    return Action::Drop;
+                }
                 is_new = true;
                 let mut entry = FlowEntry::with_source_group_arc(now, source_group.clone());
                 entry.policy_generation = current_generation;
@@ -201,12 +223,13 @@ pub(super) fn handle_outbound_icmp(
     }
 
     if is_new {
-        state.note_flow_open_with_reason(
+        state.record_new_flow_state(
             flow,
             1,
-            source_group_label(source_group.as_ref()),
+            source_group.as_ref(),
             "outbound_new",
             now,
+            false,
         );
     }
 
@@ -214,11 +237,13 @@ pub(super) fn handle_outbound_icmp(
     let metrics = state.metrics.clone();
     let mut policy_drop = false;
     let mut policy_drop_group: Option<Arc<str>> = None;
+    let mut source_group_membership = None;
     let (decision_label, entry_source_group) = {
         let entry = match state.flows.get_entry_mut(&flow) {
             Some(entry) => entry,
             None => return Action::Drop,
         };
+        let source_group_before = entry.source_group_arc();
         if entry.policy_generation != current_generation {
             let exact_source_policy_index = &state.exact_source_policy_index;
             let evaluation = match state.policy.read() {
@@ -257,11 +282,15 @@ pub(super) fn handle_outbound_icmp(
             entry.last_seen = now;
             entry.packets_out = entry.packets_out.saturating_add(1);
             maybe_emit_wiretap(&wiretap, &flow, entry, now);
+            source_group_membership = Some((source_group_before, entry.source_group_arc()));
             (flow_decision_label(entry), entry.source_group_arc())
         } else {
             ("deny", entry.source_group_arc())
         }
     };
+    if let Some((previous, next)) = source_group_membership {
+        state.reconcile_source_group_membership(previous, next);
+    }
     let entry_source_group_name = source_group_label(entry_source_group.as_ref());
 
     if policy_drop {
@@ -290,6 +319,30 @@ pub(super) fn handle_outbound_icmp(
     }
 
     state.nat.prefetch_flow_key(&flow);
+    if state.nat.get_entry(&flow).is_none() {
+        if let Some(rejection) =
+            state.admission_rejection(entry_source_group.as_ref(), false, false, true)
+        {
+            state.note_admission_rejection(rejection);
+            if let Some(metrics) = &metrics {
+                metrics.observe_dp_packet(
+                    "outbound",
+                    proto_label(1),
+                    "deny",
+                    entry_source_group_name,
+                    pkt.len(),
+                );
+                metrics.observe_dp_icmp_decision(
+                    "outbound",
+                    icmp_type,
+                    icmp_code,
+                    "deny",
+                    entry_source_group_name,
+                );
+            }
+            return Action::Drop;
+        }
+    }
     let (external_port, nat_created) = match state.nat.get_or_create_with_status(&flow, now) {
         Ok(result) => result,
         Err(_) => return Action::Drop,
