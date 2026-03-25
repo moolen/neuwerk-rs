@@ -366,6 +366,7 @@ async fn cluster_ready_degrades_on_quorum_loss_and_recovers() {
         bind_addr: api_bind,
         advertise_addr: api_bind,
         metrics_bind,
+        allow_public_metrics_bind: false,
         tls_dir: tls_dir.clone(),
         cert_path: None,
         key_path: None,
