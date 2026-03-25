@@ -58,6 +58,7 @@
       "libpam-pwquality",
       "libnuma1",
       "pciutils",
+      "python3-yaml",
       "rsyslog"
     ]
   },

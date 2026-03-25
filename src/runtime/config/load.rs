@@ -179,6 +179,15 @@ dns:
     }
 
     #[test]
+    fn load_config_accepts_packaged_runtime_fixture() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let fixture_path = repo_root.join("packaging/runtime/config.yaml");
+
+        let cfg = load_config(&fixture_path).expect("packaged runtime config should parse");
+        assert_eq!(cfg.version, 1);
+    }
+
+    #[test]
     fn load_config_accepts_startup_representative_fixture() {
         let cfg = load_config_str(STARTUP_REPRESENTATIVE_CONFIG).expect("config should parse");
         assert_eq!(cfg.bootstrap.management_interface, "mgmt0");

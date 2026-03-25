@@ -14,8 +14,11 @@ version: 1
 bootstrap:
   management_interface: eth0
   data_interface: eth1
+  cloud_provider: none
   data_plane_mode: dpdk
 
 dns:
+  target_ips:
+    - 10.0.0.53
   upstreams:
     - 10.0.0.2:53
