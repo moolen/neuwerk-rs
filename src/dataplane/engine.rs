@@ -28,6 +28,9 @@ static NAT_MISS_LOGS: AtomicUsize = AtomicUsize::new(0);
 const FLOW_RATIO_UPDATE_INTERVAL: u64 = 64;
 const NAT_RATIO_UPDATE_INTERVAL: u64 = 64;
 const RECENT_SYN_ONLY_CLOSE_WINDOW_SECS: u64 = 30;
+const ADMISSION_DEFAULT_MAX_ACTIVE_FLOWS: usize = 24_576;
+const ADMISSION_DEFAULT_MAX_ACTIVE_NAT_ENTRIES: usize = 24_576;
+const ADMISSION_DEFAULT_MAX_PENDING_TLS_FLOWS: usize = 2_048;
 
 #[derive(Debug, Clone)]
 struct RecentSynOnlyClose {
@@ -74,9 +77,18 @@ fn env_optional_usize(name: &str) -> Option<usize> {
 impl AdmissionControl {
     fn from_env() -> Self {
         Self {
-            max_active_flows: env_optional_usize("NEUWERK_DP_MAX_ACTIVE_FLOWS"),
-            max_active_nat_entries: env_optional_usize("NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES"),
-            max_pending_tls_flows: env_optional_usize("NEUWERK_DP_MAX_PENDING_TLS_FLOWS"),
+            max_active_flows: Some(
+                env_optional_usize("NEUWERK_DP_MAX_ACTIVE_FLOWS")
+                    .unwrap_or(ADMISSION_DEFAULT_MAX_ACTIVE_FLOWS),
+            ),
+            max_active_nat_entries: Some(
+                env_optional_usize("NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES")
+                    .unwrap_or(ADMISSION_DEFAULT_MAX_ACTIVE_NAT_ENTRIES),
+            ),
+            max_pending_tls_flows: Some(
+                env_optional_usize("NEUWERK_DP_MAX_PENDING_TLS_FLOWS")
+                    .unwrap_or(ADMISSION_DEFAULT_MAX_PENDING_TLS_FLOWS),
+            ),
             max_active_flows_per_source_group: env_optional_usize(
                 "NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP",
             ),
@@ -1569,6 +1581,17 @@ mod tests {
         assert!(entry.syn_outbound_seen());
         assert!(entry.synack_inbound_seen());
         assert!(state.syn_only.is_empty());
+    }
+
+    #[test]
+    fn admission_controls_default_to_secure_global_caps() {
+        with_admission_env(None, None, None, None, || {
+            let state = test_state(SnatMode::Auto, 300);
+            assert_eq!(state.admission_control.max_active_flows, Some(24_576));
+            assert_eq!(state.admission_control.max_active_nat_entries, Some(24_576));
+            assert_eq!(state.admission_control.max_pending_tls_flows, Some(2_048));
+            assert_eq!(state.admission_control.max_active_flows_per_source_group, None);
+        });
     }
 
     #[test]

@@ -990,6 +990,14 @@ impl Metrics {
         self.dpdk_pending_arp_queue_depth.set(depth as f64);
     }
 
+    pub fn inc_dpdk_gateway_arp_rejected(&self) {
+        self.dpdk_gateway_arp_rejected.inc();
+    }
+
+    pub fn inc_dpdk_dhcp_server_hint_rejected(&self) {
+        self.dpdk_dhcp_server_hint_rejected.inc();
+    }
+
     pub fn inc_dpdk_intercept_demux_insert_dropped(&self) {
         self.dpdk_intercept_demux_insert_dropped.inc();
     }

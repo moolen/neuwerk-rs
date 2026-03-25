@@ -80,12 +80,19 @@ ensure_neuwerk_dpdk_runtime_overrides() {
   local flow_table_capacity="${NEUWERK_FLOW_TABLE_CAPACITY:-}"
   local flow_incomplete_tcp_idle_timeout_secs="${NEUWERK_FLOW_INCOMPLETE_TCP_IDLE_TIMEOUT_SECS:-}"
   local flow_incomplete_tcp_syn_sent_idle_timeout_secs="${NEUWERK_FLOW_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS:-}"
+  local dp_max_active_flows="${NEUWERK_DP_MAX_ACTIVE_FLOWS:-}"
+  local dp_max_active_nat_entries="${NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES:-}"
+  local dp_max_pending_tls_flows="${NEUWERK_DP_MAX_PENDING_TLS_FLOWS:-}"
+  local dp_max_active_flows_per_source_group="${NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP:-}"
+  local dpdk_gateway_mac="${NEUWERK_DPDK_GATEWAY_MAC:-}"
+  local dpdk_dhcp_server_ip="${NEUWERK_DPDK_DHCP_SERVER_IP:-}"
+  local dpdk_dhcp_server_mac="${NEUWERK_DPDK_DHCP_SERVER_MAC:-}"
 
   local ip env_dump
   for ip in $fw_mgmt_ips; do
     echo "ensuring DPDK runtime overrides on ${ip}"
     ssh_jump "$jump_host" "$key_path" "$ip" \
-      "env DPDK_WORKERS='${dpdk_workers}' DPDK_ALLOW_AZURE_MULTIWORKER='${dpdk_allow_azure_multiworker}' DPDK_ALLOW_RETALESS_MULTI_QUEUE='${dpdk_allow_retaless_multi_queue}' DPDK_SINGLE_QUEUE_MODE='${dpdk_single_queue_mode}' DPDK_FORCE_SHARED_RX_DEMUX='${dpdk_force_shared_rx_demux}' DPDK_HOUSEKEEPING_INTERVAL_PACKETS='${dpdk_housekeeping_interval_packets}' DPDK_HOUSEKEEPING_INTERVAL_US='${dpdk_housekeeping_interval_us}' DPDK_PERF_MODE='${dpdk_perf_mode}' DPDK_DISABLE_SERVICE_LANE='${dpdk_disable_service_lane}' DPDK_PIN_HTTPS_OWNER='${dpdk_pin_https_owner}' DPDK_PIN_STATE_SHARD_GUARD='${dpdk_pin_state_shard_guard}' DPDK_PIN_STATE_SHARD_BURST='${dpdk_pin_state_shard_burst}' DPDK_SHARED_RX_OWNER_ONLY='${dpdk_shared_rx_owner_only}' DPDK_LOCKLESS_QPW='${dpdk_lockless_qpw}' DPDK_RX_RING_SIZE='${dpdk_rx_ring_size}' DPDK_TX_RING_SIZE='${dpdk_tx_ring_size}' DPDK_MBUF_POOL_SIZE='${dpdk_mbuf_pool_size}' DPDK_SYN_ONLY_TABLE='${dpdk_syn_only_table}' NEUWERK_FLOW_TABLE_CAPACITY='${flow_table_capacity}' NEUWERK_FLOW_INCOMPLETE_TCP_IDLE_TIMEOUT_SECS='${flow_incomplete_tcp_idle_timeout_secs}' NEUWERK_FLOW_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS='${flow_incomplete_tcp_syn_sent_idle_timeout_secs}' bash -s" <<'EOS'
+      "env DPDK_WORKERS='${dpdk_workers}' DPDK_ALLOW_AZURE_MULTIWORKER='${dpdk_allow_azure_multiworker}' DPDK_ALLOW_RETALESS_MULTI_QUEUE='${dpdk_allow_retaless_multi_queue}' DPDK_SINGLE_QUEUE_MODE='${dpdk_single_queue_mode}' DPDK_FORCE_SHARED_RX_DEMUX='${dpdk_force_shared_rx_demux}' DPDK_HOUSEKEEPING_INTERVAL_PACKETS='${dpdk_housekeeping_interval_packets}' DPDK_HOUSEKEEPING_INTERVAL_US='${dpdk_housekeeping_interval_us}' DPDK_PERF_MODE='${dpdk_perf_mode}' DPDK_DISABLE_SERVICE_LANE='${dpdk_disable_service_lane}' DPDK_PIN_HTTPS_OWNER='${dpdk_pin_https_owner}' DPDK_PIN_STATE_SHARD_GUARD='${dpdk_pin_state_shard_guard}' DPDK_PIN_STATE_SHARD_BURST='${dpdk_pin_state_shard_burst}' DPDK_SHARED_RX_OWNER_ONLY='${dpdk_shared_rx_owner_only}' DPDK_LOCKLESS_QPW='${dpdk_lockless_qpw}' DPDK_RX_RING_SIZE='${dpdk_rx_ring_size}' DPDK_TX_RING_SIZE='${dpdk_tx_ring_size}' DPDK_MBUF_POOL_SIZE='${dpdk_mbuf_pool_size}' DPDK_SYN_ONLY_TABLE='${dpdk_syn_only_table}' NEUWERK_FLOW_TABLE_CAPACITY='${flow_table_capacity}' NEUWERK_FLOW_INCOMPLETE_TCP_IDLE_TIMEOUT_SECS='${flow_incomplete_tcp_idle_timeout_secs}' NEUWERK_FLOW_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS='${flow_incomplete_tcp_syn_sent_idle_timeout_secs}' NEUWERK_DP_MAX_ACTIVE_FLOWS='${dp_max_active_flows}' NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES='${dp_max_active_nat_entries}' NEUWERK_DP_MAX_PENDING_TLS_FLOWS='${dp_max_pending_tls_flows}' NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP='${dp_max_active_flows_per_source_group}' NEUWERK_DPDK_GATEWAY_MAC='${dpdk_gateway_mac}' NEUWERK_DPDK_DHCP_SERVER_IP='${dpdk_dhcp_server_ip}' NEUWERK_DPDK_DHCP_SERVER_MAC='${dpdk_dhcp_server_mac}' bash -s" <<'EOS'
 set -euo pipefail
 
 path="/etc/systemd/system/neuwerk.service.d/95-benchmark-dpdk.conf"
@@ -128,6 +135,13 @@ append_env "NEUWERK_DPDK_SYN_ONLY_TABLE" "${DPDK_SYN_ONLY_TABLE}"
 append_env "NEUWERK_FLOW_TABLE_CAPACITY" "${NEUWERK_FLOW_TABLE_CAPACITY}"
 append_env "NEUWERK_FLOW_INCOMPLETE_TCP_IDLE_TIMEOUT_SECS" "${NEUWERK_FLOW_INCOMPLETE_TCP_IDLE_TIMEOUT_SECS}"
 append_env "NEUWERK_FLOW_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS" "${NEUWERK_FLOW_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS}"
+append_env "NEUWERK_DP_MAX_ACTIVE_FLOWS" "${NEUWERK_DP_MAX_ACTIVE_FLOWS}"
+append_env "NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES" "${NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES}"
+append_env "NEUWERK_DP_MAX_PENDING_TLS_FLOWS" "${NEUWERK_DP_MAX_PENDING_TLS_FLOWS}"
+append_env "NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP" "${NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP}"
+append_env "NEUWERK_DPDK_GATEWAY_MAC" "${NEUWERK_DPDK_GATEWAY_MAC}"
+append_env "NEUWERK_DPDK_DHCP_SERVER_IP" "${NEUWERK_DPDK_DHCP_SERVER_IP}"
+append_env "NEUWERK_DPDK_DHCP_SERVER_MAC" "${NEUWERK_DPDK_DHCP_SERVER_MAC}"
 
 current="$(sudo cat "$path" 2>/dev/null || true)"
 changed=0

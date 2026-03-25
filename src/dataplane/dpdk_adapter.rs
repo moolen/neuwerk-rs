@@ -21,7 +21,8 @@ mod frame_codec;
 mod io_api;
 mod service_lane;
 use debug_flags::{
-    azure_gateway_mac, health_probe_debug_enabled, overlay_debug_enabled,
+    configured_dhcp_server_ip, configured_dhcp_server_mac, configured_gateway_mac,
+    health_probe_debug_enabled, overlay_debug_enabled,
     overlay_force_tunnel_src_port, overlay_swap_tunnels, ARP_LOGS, HEALTH_PROBE_DEBUG_LOGS,
     HEALTH_PROBE_LOGGED, OVERLAY_ACTION_LOGS, OVERLAY_ENCAP_LOGS, OVERLAY_INTERNAL_LOGS,
     OVERLAY_PARSE_LOGS, OVERLAY_SAMPLE_LOGS, OVERLAY_TUNNEL_LOGS,

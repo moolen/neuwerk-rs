@@ -898,6 +898,16 @@ impl Metrics {
             "DPDK pending ARP frame queue depth",
         ))
         .map_err(|err| err.to_string())?;
+        let dpdk_gateway_arp_rejected = Counter::with_opts(Opts::new(
+            "dpdk_gateway_arp_rejected_total",
+            "DPDK gateway ARP learns rejected by trust policy",
+        ))
+        .map_err(|err| err.to_string())?;
+        let dpdk_dhcp_server_hint_rejected = Counter::with_opts(Opts::new(
+            "dpdk_dhcp_server_hint_rejected_total",
+            "DPDK DHCP server-hint learns rejected by trust policy",
+        ))
+        .map_err(|err| err.to_string())?;
         let dpdk_intercept_demux_insert_dropped = Counter::with_opts(Opts::new(
             "dpdk_intercept_demux_insert_dropped_total",
             "DPDK intercept demux inserts dropped due to cap",
@@ -1537,6 +1547,12 @@ impl Metrics {
             .register(Box::new(dpdk_pending_arp_queue_depth.clone()))
             .map_err(|err| err.to_string())?;
         registry
+            .register(Box::new(dpdk_gateway_arp_rejected.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
+            .register(Box::new(dpdk_dhcp_server_hint_rejected.clone()))
+            .map_err(|err| err.to_string())?;
+        registry
             .register(Box::new(dpdk_intercept_demux_insert_dropped.clone()))
             .map_err(|err| err.to_string())?;
         registry
@@ -1885,6 +1901,8 @@ impl Metrics {
         dpdk_intercept_demux_size.set(0.0);
         dpdk_host_frame_queue_depth.set(0.0);
         dpdk_pending_arp_queue_depth.set(0.0);
+        dpdk_gateway_arp_rejected.inc_by(0.0);
+        dpdk_dhcp_server_hint_rejected.inc_by(0.0);
         dpdk_intercept_demux_insert_dropped.inc_by(0.0);
         dpdk_host_frame_dropped.inc_by(0.0);
         dpdk_pending_arp_frame_dropped.inc_by(0.0);
@@ -2194,6 +2212,8 @@ impl Metrics {
             dpdk_intercept_demux_size,
             dpdk_host_frame_queue_depth,
             dpdk_pending_arp_queue_depth,
+            dpdk_gateway_arp_rejected,
+            dpdk_dhcp_server_hint_rejected,
             dpdk_intercept_demux_insert_dropped,
             dpdk_host_frame_dropped,
             dpdk_pending_arp_frame_dropped,

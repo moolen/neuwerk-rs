@@ -15,7 +15,7 @@ impl DpdkAdapter {
             return Some(resp);
         }
 
-        if self.handle_dhcp(frame) {
+        if self.handle_dhcp(frame, state) {
             return None;
         }
 
@@ -156,7 +156,7 @@ impl DpdkAdapter {
             return Some(FrameOut::Owned(resp));
         }
 
-        if self.handle_dhcp(frame) {
+        if self.handle_dhcp(frame, state) {
             return None;
         }
 
@@ -251,7 +251,7 @@ impl DpdkAdapter {
         }
     }
 
-    fn handle_dhcp(&mut self, frame: &[u8]) -> bool {
+    fn handle_dhcp(&mut self, frame: &[u8], state: &EngineState) -> bool {
         let eth = match parse_eth(frame) {
             Some(eth) => eth,
             None => return false,
@@ -280,9 +280,12 @@ impl DpdkAdapter {
                 payload,
             });
         }
+        if !self.dhcp_server_hint_trusted(ipv4.src, eth.src_mac, state.metrics()) {
+            return true;
+        }
         // DHCP replies come from a valid L2 peer; seed ARP for the sender so
         // early forwarded traffic after lease acquisition can resolve gateway MAC.
-        self.insert_arp(ipv4.src, eth.src_mac);
+        let _ = self.learn_arp(state, ipv4.src, eth.src_mac);
         tracing::debug!("dpdk: received dhcp frame from {}", ipv4.src);
         self.dhcp_server_hint = Some(DhcpServerHint {
             ip: ipv4.src,
@@ -293,7 +296,7 @@ impl DpdkAdapter {
 
     fn handle_arp(&mut self, frame: &[u8], state: &EngineState) -> Option<Vec<u8>> {
         if let Some(reply) = parse_arp_reply(frame) {
-            self.insert_arp(reply.sender_ip, reply.sender_mac);
+            let _ = self.learn_arp(state, reply.sender_ip, reply.sender_mac);
             if ARP_LOGS.fetch_add(1, Ordering::Relaxed) < 20 {
                 tracing::debug!(
                     "dpdk: arp reply sender_ip={} sender_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -314,10 +317,40 @@ impl DpdkAdapter {
             return None;
         }
         parse_arp_request(frame, cfg.ip).map(|req| {
-            self.insert_arp(req.sender_ip, req.sender_mac);
+            let _ = self.learn_arp(state, req.sender_ip, req.sender_mac);
             state.inc_dp_arp_handled();
             build_arp_reply(req.sender_mac, req.sender_ip, cfg.mac, cfg.ip)
         })
+    }
+
+    fn learn_arp(&mut self, state: &EngineState, ip: Ipv4Addr, mac: [u8; 6]) -> bool {
+        if mac == [0; 6] || ip == Ipv4Addr::UNSPECIFIED {
+            return false;
+        }
+        let gateway = state
+            .dataplane_config
+            .get()
+            .map(|cfg| cfg.gateway)
+            .unwrap_or(Ipv4Addr::UNSPECIFIED);
+        if gateway != Ipv4Addr::UNSPECIFIED && ip == gateway {
+            if let Some(expected) = configured_gateway_mac() {
+                if mac != expected {
+                    if let Some(metrics) = state.metrics() {
+                        metrics.inc_dpdk_gateway_arp_rejected();
+                    }
+                    return false;
+                }
+            } else if let Some(existing) = self.lookup_arp(ip) {
+                if existing != mac {
+                    if let Some(metrics) = state.metrics() {
+                        metrics.inc_dpdk_gateway_arp_rejected();
+                    }
+                    return false;
+                }
+            }
+        }
+        self.insert_arp(ip, mac);
+        true
     }
 
     fn insert_arp(&mut self, ip: Ipv4Addr, mac: [u8; 6]) {
@@ -355,6 +388,37 @@ impl DpdkAdapter {
             }
         }
         None
+    }
+
+    fn dhcp_server_hint_trusted(
+        &self,
+        src_ip: Ipv4Addr,
+        src_mac: [u8; 6],
+        metrics: Option<&crate::metrics::Metrics>,
+    ) -> bool {
+        let expected_ip = configured_dhcp_server_ip();
+        let expected_mac = configured_dhcp_server_mac();
+        if expected_ip.is_some() || expected_mac.is_some() {
+            let trusted_ip = expected_ip.is_none_or(|ip| ip == src_ip);
+            let trusted_mac = expected_mac.is_none_or(|mac| mac == src_mac);
+            if trusted_ip && trusted_mac {
+                return true;
+            }
+            if let Some(metrics) = metrics {
+                metrics.inc_dpdk_dhcp_server_hint_rejected();
+            }
+            return false;
+        }
+        if let Some(hint) = self.dhcp_server_hint {
+            if hint.ip == src_ip && hint.mac == src_mac {
+                return true;
+            }
+            if let Some(metrics) = metrics {
+                metrics.inc_dpdk_dhcp_server_hint_rejected();
+            }
+            return false;
+        }
+        true
     }
 
     fn maybe_queue_arp_request(
@@ -449,7 +513,7 @@ impl DpdkAdapter {
             Some(mac) => mac,
             None => {
                 if next_hop == cfg.gateway {
-                    if let Some(mac) = azure_gateway_mac() {
+                    if let Some(mac) = configured_gateway_mac() {
                         if ARP_LOGS.fetch_add(1, Ordering::Relaxed) < 5 {
                             tracing::debug!(
                                 "dpdk: using azure gateway mac for next_hop={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",

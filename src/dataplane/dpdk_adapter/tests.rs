@@ -81,6 +81,63 @@ fn with_default_intercept_env<R>(f: impl FnOnce() -> R) -> R {
     with_intercept_env(None, None, f)
 }
 
+fn with_gateway_trust_env<R>(
+    gateway_mac: Option<&str>,
+    dhcp_server_ip: Option<&str>,
+    dhcp_server_mac: Option<&str>,
+    f: impl FnOnce() -> R,
+) -> R {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let old_gateway_mac = std::env::var("NEUWERK_DPDK_GATEWAY_MAC").ok();
+    let old_dhcp_server_ip = std::env::var("NEUWERK_DPDK_DHCP_SERVER_IP").ok();
+    let old_dhcp_server_mac = std::env::var("NEUWERK_DPDK_DHCP_SERVER_MAC").ok();
+    let old_cloud_provider = std::env::var("NEUWERK_CLOUD_PROVIDER").ok();
+    let old_azure_gateway_mac = std::env::var("NEUWERK_AZURE_GATEWAY_MAC").ok();
+
+    match gateway_mac {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_GATEWAY_MAC", value),
+        None => std::env::remove_var("NEUWERK_DPDK_GATEWAY_MAC"),
+    }
+    match dhcp_server_ip {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_DHCP_SERVER_IP", value),
+        None => std::env::remove_var("NEUWERK_DPDK_DHCP_SERVER_IP"),
+    }
+    match dhcp_server_mac {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_DHCP_SERVER_MAC", value),
+        None => std::env::remove_var("NEUWERK_DPDK_DHCP_SERVER_MAC"),
+    }
+    std::env::remove_var("NEUWERK_CLOUD_PROVIDER");
+    std::env::remove_var("NEUWERK_AZURE_GATEWAY_MAC");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+    match old_gateway_mac {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_GATEWAY_MAC", value),
+        None => std::env::remove_var("NEUWERK_DPDK_GATEWAY_MAC"),
+    }
+    match old_dhcp_server_ip {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_DHCP_SERVER_IP", value),
+        None => std::env::remove_var("NEUWERK_DPDK_DHCP_SERVER_IP"),
+    }
+    match old_dhcp_server_mac {
+        Some(value) => std::env::set_var("NEUWERK_DPDK_DHCP_SERVER_MAC", value),
+        None => std::env::remove_var("NEUWERK_DPDK_DHCP_SERVER_MAC"),
+    }
+    match old_cloud_provider {
+        Some(value) => std::env::set_var("NEUWERK_CLOUD_PROVIDER", value),
+        None => std::env::remove_var("NEUWERK_CLOUD_PROVIDER"),
+    }
+    match old_azure_gateway_mac {
+        Some(value) => std::env::set_var("NEUWERK_AZURE_GATEWAY_MAC", value),
+        None => std::env::remove_var("NEUWERK_AZURE_GATEWAY_MAC"),
+    }
+
+    match result {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
 fn build_arp_request(sender_mac: [u8; 6], sender_ip: Ipv4Addr, target_ip: Ipv4Addr) -> Vec<u8> {
     let mut buf = vec![0u8; 42];
     buf[0..6].copy_from_slice(&[0xff; 6]);
