@@ -211,10 +211,12 @@ Image packaging stages that file directly and the systemd unit starts `neuwerk` 
 Operators express runtime intent with subsystem YAML paths such as:
 
 - `bootstrap.management_interface`
-- `bootstrap.data_plane_selector`
+- `bootstrap.data_interface`
 - `dns.upstreams`
 - `metrics.bind`
 - `integration.mode`
+
+The canonical operator-facing runtime config reference lives in [Runtime Knobs](./runtime-knobs.md).
 
 Any runtime-only defaults, semantic validation, machine discovery, or derived settings now belong inside the Neuwerk binary rather than in packaging shell assets.
 
