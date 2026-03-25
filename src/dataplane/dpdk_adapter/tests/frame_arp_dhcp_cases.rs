@@ -99,6 +99,105 @@ fn process_frame_learns_arp_from_dhcp_server_frame() {
 }
 
 #[test]
+fn process_frame_rejects_gateway_arp_mac_mismatch_when_gateway_mac_is_pinned() {
+    with_gateway_trust_env(Some("00:11:22:33:44:55"), None, None, || {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let metrics = Metrics::new().unwrap();
+        let policy = Arc::new(RwLock::new(PolicySnapshot::new(
+            DefaultPolicy::Deny,
+            Vec::new(),
+        )));
+        let mut state =
+            EngineState::new(policy, Ipv4Addr::UNSPECIFIED, 0, Ipv4Addr::UNSPECIFIED, 0);
+        state.set_metrics(metrics.clone());
+        state.set_dataplane_config({
+            let store = crate::dataplane::config::DataplaneConfigStore::new();
+            store.set(DataplaneConfig {
+                ip: Ipv4Addr::new(10, 0, 0, 2),
+                prefix: 24,
+                gateway: Ipv4Addr::new(10, 0, 0, 1),
+                mac: [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+                lease_expiry: None,
+            });
+            store
+        });
+
+        let reply = build_arp_reply(
+            [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+            Ipv4Addr::new(10, 0, 0, 2),
+            [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+            Ipv4Addr::new(10, 0, 0, 1),
+        );
+        assert!(adapter.process_frame(&reply, &mut state).is_none());
+        assert_eq!(adapter.lookup_arp(Ipv4Addr::new(10, 0, 0, 1)), None);
+
+        let rendered = metrics.render().unwrap();
+        let value = metric_value(&rendered, "dpdk_gateway_arp_rejected_total").unwrap_or(0.0);
+        assert!(value >= 1.0, "metrics:\n{rendered}");
+    });
+}
+
+#[test]
+fn process_frame_rejects_untrusted_dhcp_server_hint_change() {
+    with_gateway_trust_env(None, Some("10.0.0.254"), Some("aa:bb:cc:dd:ee:ff"), || {
+        let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
+        let metrics = Metrics::new().unwrap();
+        let mut state = EngineState::new(
+            Arc::new(RwLock::new(PolicySnapshot::new(
+                DefaultPolicy::Deny,
+                Vec::new(),
+            ))),
+            Ipv4Addr::UNSPECIFIED,
+            0,
+            Ipv4Addr::UNSPECIFIED,
+            0,
+        );
+        state.set_metrics(metrics.clone());
+        let trusted_frame = build_udp_ipv4_frame(
+            [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+            [0xff; 6],
+            Ipv4Addr::new(10, 0, 0, 254),
+            Ipv4Addr::BROADCAST,
+            DHCP_SERVER_PORT,
+            DHCP_CLIENT_PORT,
+            b"dhcp-test",
+        );
+        assert!(adapter.process_frame(&trusted_frame, &mut state).is_none());
+        assert_eq!(
+            adapter.dhcp_server_hint.map(|hint| (hint.ip, hint.mac)),
+            Some((
+                Ipv4Addr::new(10, 0, 0, 254),
+                [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]
+            ))
+        );
+
+        let untrusted_frame = build_udp_ipv4_frame(
+            [0x10, 0x11, 0x12, 0x13, 0x14, 0x15],
+            [0xff; 6],
+            Ipv4Addr::new(10, 0, 0, 200),
+            Ipv4Addr::BROADCAST,
+            DHCP_SERVER_PORT,
+            DHCP_CLIENT_PORT,
+            b"dhcp-test-2",
+        );
+        assert!(adapter.process_frame(&untrusted_frame, &mut state).is_none());
+        assert_eq!(
+            adapter.dhcp_server_hint.map(|hint| (hint.ip, hint.mac)),
+            Some((
+                Ipv4Addr::new(10, 0, 0, 254),
+                [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]
+            ))
+        );
+        assert_eq!(adapter.lookup_arp(Ipv4Addr::new(10, 0, 0, 200)), None);
+
+        let rendered = metrics.render().unwrap();
+        let value =
+            metric_value(&rendered, "dpdk_dhcp_server_hint_rejected_total").unwrap_or(0.0);
+        assert!(value >= 1.0, "metrics:\n{rendered}");
+    });
+}
+
+#[test]
 fn next_dhcp_frame_builds_broadcast_frame() {
     let mut adapter = DpdkAdapter::new("data0".to_string()).unwrap();
     adapter.set_mac([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);

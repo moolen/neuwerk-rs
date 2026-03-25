@@ -328,6 +328,12 @@ write_files:
 %{ endif ~}
       NEUWERK_DPDK_OVERLAY_DEBUG=%{ if dpdk_overlay_debug }1%{ else }0%{ endif }
       EOF_ENV
+      cat >> "$ENV_FILE" <<'EOF_DP_ADMISSION'
+      NEUWERK_DP_MAX_ACTIVE_FLOWS=24576
+      NEUWERK_DP_MAX_ACTIVE_NAT_ENTRIES=24576
+      NEUWERK_DP_MAX_PENDING_TLS_FLOWS=2048
+      NEUWERK_DP_MAX_ACTIVE_FLOWS_PER_SOURCE_GROUP=16384
+      EOF_DP_ADMISSION
 %{ if runtime_enabled ~}
         if ldd /usr/local/bin/neuwerk | grep -Fq 'librte_eal.so.26'; then
           cat >> "$ENV_FILE" <<'EOF_RUNTIME'

@@ -251,6 +251,8 @@ pub struct MetricsInner {
     dpdk_intercept_demux_size: Gauge,
     dpdk_host_frame_queue_depth: Gauge,
     dpdk_pending_arp_queue_depth: Gauge,
+    dpdk_gateway_arp_rejected: Counter,
+    dpdk_dhcp_server_hint_rejected: Counter,
     dpdk_intercept_demux_insert_dropped: Counter,
     dpdk_host_frame_dropped: Counter,
     dpdk_pending_arp_frame_dropped: Counter,

@@ -1,3 +1,4 @@
+use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::OnceLock;
 
@@ -73,4 +74,23 @@ pub(super) fn azure_gateway_mac() -> Option<[u8; 6]> {
         Err(_) => return None,
     };
     parse_mac_addr(&mac).ok()
+}
+
+pub(super) fn configured_gateway_mac() -> Option<[u8; 6]> {
+    std::env::var("NEUWERK_DPDK_GATEWAY_MAC")
+        .ok()
+        .and_then(|value| parse_mac_addr(value.trim()).ok())
+        .or_else(azure_gateway_mac)
+}
+
+pub(super) fn configured_dhcp_server_ip() -> Option<Ipv4Addr> {
+    std::env::var("NEUWERK_DPDK_DHCP_SERVER_IP")
+        .ok()
+        .and_then(|value| value.trim().parse::<Ipv4Addr>().ok())
+}
+
+pub(super) fn configured_dhcp_server_mac() -> Option<[u8; 6]> {
+    std::env::var("NEUWERK_DPDK_DHCP_SERVER_MAC")
+        .ok()
+        .and_then(|value| parse_mac_addr(value.trim()).ok())
 }
