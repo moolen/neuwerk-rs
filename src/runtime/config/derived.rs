@@ -1,4 +1,6 @@
-use super::types::{DataPlaneMode, IntegrationMode, ValidatedConfig};
+use std::net::SocketAddr;
+
+use super::types::{DataPlaneMode, IntegrationMode, MetricsConfig, ValidatedConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivedRuntimeConfig {
@@ -21,19 +23,15 @@ pub struct DerivedIntegration {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MetricsBindResolution {
-    Explicit(String),
+    Explicit(SocketAddr),
     FromManagementInterface { port: u16 },
 }
 
 pub fn derive_runtime_config(cfg: ValidatedConfig) -> Result<DerivedRuntimeConfig, String> {
     let data_plane_mode = parse_data_plane_mode(&cfg.bootstrap.data_plane_mode)?;
     let dpdk_enabled = matches!(data_plane_mode, DataPlaneMode::Dpdk);
-    let integration_mode = cfg
-        .integration
-        .as_ref()
-        .map(|integration| integration.mode)
-        .unwrap_or(IntegrationMode::None);
-    let metrics_bind = resolve_metrics_bind(cfg.metrics.as_ref());
+    let integration_mode = cfg.integration.mode;
+    let metrics_bind = resolve_metrics_bind(&cfg.metrics);
 
     Ok(DerivedRuntimeConfig {
         runtime: RuntimeSettings {
@@ -48,19 +46,19 @@ pub fn derive_runtime_config(cfg: ValidatedConfig) -> Result<DerivedRuntimeConfi
     })
 }
 
-fn resolve_metrics_bind(metrics: Option<&super::types::MetricsConfig>) -> MetricsBindResolution {
-    match metrics {
-        Some(metrics) => match metrics.bind.as_ref() {
-            Some(bind) => MetricsBindResolution::Explicit(bind.clone()),
-            None => MetricsBindResolution::FromManagementInterface { port: 8080 },
-        },
+fn resolve_metrics_bind(metrics: &MetricsConfig) -> MetricsBindResolution {
+    match metrics.bind {
+        Some(bind) => MetricsBindResolution::Explicit(bind),
         None => MetricsBindResolution::FromManagementInterface { port: 8080 },
     }
 }
 
 fn parse_data_plane_mode(value: &str) -> Result<DataPlaneMode, String> {
-    if value.eq_ignore_ascii_case("soft") {
-        return Ok(DataPlaneMode::Soft);
+    if value.eq_ignore_ascii_case("tun") || value.eq_ignore_ascii_case("soft") {
+        return Ok(DataPlaneMode::Tun);
+    }
+    if value.eq_ignore_ascii_case("tap") {
+        return Ok(DataPlaneMode::Tap);
     }
     if value.eq_ignore_ascii_case("dpdk") {
         return Ok(DataPlaneMode::Dpdk);
@@ -73,6 +71,7 @@ fn parse_data_plane_mode(value: &str) -> Result<DataPlaneMode, String> {
 #[cfg(test)]
 mod tests {
     use super::super::load_config_str;
+    use super::super::types::DataPlaneMode;
     use super::{derive_runtime_config, MetricsBindResolution};
 
     #[test]
@@ -82,8 +81,11 @@ version: 1
 bootstrap:
   management_interface: eth0
   data_interface: eth1
+  cloud_provider: none
   data_plane_mode: dpdk
 dns:
+  target_ips:
+    - 10.0.0.53
   upstreams:
     - 10.0.0.2:53
 "#;
@@ -99,8 +101,11 @@ version: 1
 bootstrap:
   management_interface: eth0
   data_interface: eth1
-  data_plane_mode: soft
+  cloud_provider: aws
+  data_plane_mode: tun
 dns:
+  target_ips:
+    - 10.0.0.53
   upstreams:
     - 10.0.0.2:53
 integration:
@@ -127,8 +132,11 @@ version: 1
 bootstrap:
   management_interface: eth0
   data_interface: eth1
-  data_plane_mode: soft
+  cloud_provider: none
+  data_plane_mode: tun
 dns:
+  target_ips:
+    - 10.0.0.53
   upstreams:
     - 10.0.0.2:53
 "#;
@@ -147,13 +155,37 @@ version: 1
 bootstrap:
   management_interface: eth0
   data_interface: eth1
+  cloud_provider: none
   data_plane_mode: DpDk
 dns:
+  target_ips:
+    - 10.0.0.53
   upstreams:
     - 10.0.0.2:53
 "#;
         let cfg = load_config_str(raw).expect("load config");
         let derived = derive_runtime_config(cfg).expect("derive should succeed");
         assert!(derived.runtime.dpdk_enabled);
+    }
+
+    #[test]
+    fn derive_runtime_accepts_tap_mode() {
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  cloud_provider: none
+  data_plane_mode: tap
+dns:
+  target_ips:
+    - 10.0.0.53
+  upstreams:
+    - 10.0.0.2:53
+"#;
+        let cfg = load_config_str(raw).expect("load config");
+        let derived = derive_runtime_config(cfg).expect("derive should succeed");
+        assert_eq!(derived.runtime.data_plane_mode, DataPlaneMode::Tap);
+        assert!(!derived.runtime.dpdk_enabled);
     }
 }
