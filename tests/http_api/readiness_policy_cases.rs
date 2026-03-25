@@ -44,7 +44,7 @@ async fn http_api_metrics_bind_public_requires_explicit_allow_override() {
     .await
     .unwrap_err();
 
-    assert!(err.contains("NEUWERK_ALLOW_PUBLIC_METRICS_BIND"));
+    assert!(err.contains("metrics.allow_public_bind=true"), "{err}");
 }
 
 #[tokio::test]

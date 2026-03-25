@@ -103,8 +103,8 @@ Default values from the current CLI/runtime:
 - cluster join defaults to `127.0.0.1:9601`
 - TLS intercept runtime uses `15443`
 
-The metrics listener has an extra guardrail: binding it to a public address requires the
-`NEUWERK_ALLOW_PUBLIC_METRICS_BIND` environment override.
+The metrics listener has an extra guardrail: binding it to a public address requires
+`metrics.allow_public_bind: true` in the runtime config.
 
 ## Security And Exposure Notes
 
