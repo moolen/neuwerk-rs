@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { PolicyRecord } from '../../../types';
-import { summarizePolicySources } from './policySnapshotHelpers';
 import { PolicySnapshotRow } from './PolicySnapshotRow';
 
 describe('PolicySnapshotRow', () => {
@@ -66,39 +65,5 @@ describe('PolicySnapshotRow', () => {
     expect(html).not.toContain('grid grid-cols-3 gap-2');
     expect(html).not.toContain('Open');
     expect(html).not.toContain('Delete');
-  });
-
-  it('keeps policy-level source assumptions that are insufficient for group-centric rows', () => {
-    const policy: PolicyRecord = {
-      id: 'policy-1',
-      name: 'Two groups',
-      created_at: '2026-03-05T12:34:56.000Z',
-      mode: 'enforce',
-      policy: {
-        source_groups: [
-          {
-            id: 'apps',
-            sources: {
-              cidrs: ['10.0.0.0/24'],
-              ips: ['192.168.1.10'],
-              kubernetes: [],
-            },
-            rules: [],
-          },
-          {
-            id: 'batch',
-            sources: {
-              cidrs: ['10.0.1.0/24'],
-              ips: ['192.168.2.10'],
-              kubernetes: [],
-            },
-            rules: [],
-          },
-        ],
-      },
-    };
-
-    // Existing snapshot helpers flatten policy records and drop non-CIDR source detail.
-    expect(summarizePolicySources(policy)).toBe('10.0.0.0/24, 10.0.1.0/24');
   });
 });

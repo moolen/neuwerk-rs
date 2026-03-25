@@ -58,13 +58,36 @@ export function summarizeSourceIdentity(
 }
 
 export function summarizeRulePills(group: PolicySourceGroup): string[] {
-  return uniqueNonEmpty(
-    group.rules.map((rule) => {
-      const proto = (rule.match.proto?.trim() || 'any').toUpperCase();
-      const ports = uniqueNonEmpty(rule.match.dst_ports ?? []);
-      return ports.length ? `${proto}:${ports.join(',')}` : proto;
-    }),
-  );
+  const byProto = new Map<string, { ports: string[]; seenPorts: Set<string>; hasPortlessRule: boolean }>();
+  const protoOrder: string[] = [];
+
+  for (const rule of group.rules) {
+    const proto = (rule.match.proto?.trim() || 'any').toUpperCase();
+    let entry = byProto.get(proto);
+    if (!entry) {
+      entry = { ports: [], seenPorts: new Set<string>(), hasPortlessRule: false };
+      byProto.set(proto, entry);
+      protoOrder.push(proto);
+    }
+
+    const ports = uniqueNonEmpty(rule.match.dst_ports ?? []);
+    if (!ports.length) {
+      entry.hasPortlessRule = true;
+      continue;
+    }
+
+    for (const port of ports) {
+      if (entry.seenPorts.has(port)) continue;
+      entry.seenPorts.add(port);
+      entry.ports.push(port);
+    }
+  }
+
+  return protoOrder.map((proto) => {
+    const entry = byProto.get(proto);
+    if (!entry || entry.hasPortlessRule || !entry.ports.length) return proto;
+    return `${proto}:${entry.ports.join(',')}`;
+  });
 }
 
 export function summarizeGroupAction(group: PolicySourceGroup): SourceGroupActionSummary {
