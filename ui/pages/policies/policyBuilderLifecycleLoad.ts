@@ -5,11 +5,11 @@ import type { PolicyBuilderLifecycleDeps } from './policyBuilderTypes';
 
 type HandleCreate = () => void;
 type LoadEditorForPolicy = (policyId: string) => Promise<void>;
-type OverlayDeps = {
-  setOverlayMode: (mode: 'closed' | 'create-group' | 'edit-group') => void;
-  setOverlaySourceGroupId: (sourceGroupId: string | null) => void;
-};
-type SelectPolicyDeps = OverlayDeps & { setSelectedPolicyId: (policyId: string | null) => void };
+type OverlayDeps = Pick<
+  PolicyBuilderLifecycleDeps,
+  'setOverlayMode' | 'setOverlaySourceGroupId'
+>;
+type SelectPolicyDeps = OverlayDeps & Pick<PolicyBuilderLifecycleDeps, 'setSelectedPolicyId'>;
 
 export function buildCloseSourceGroupEditor(deps: OverlayDeps): () => void {
   const { setOverlayMode, setOverlaySourceGroupId } = deps;
