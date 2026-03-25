@@ -28,6 +28,20 @@ function numericPortOrder(a: string, b: string): number {
   return a.localeCompare(b);
 }
 
+const PROTOCOL_ORDER: Record<string, number> = {
+  ANY: 0,
+  TCP: 1,
+  UDP: 2,
+  ICMP: 3,
+};
+
+function protocolOrder(a: string, b: string): number {
+  const aRank = PROTOCOL_ORDER[a] ?? Number.MAX_SAFE_INTEGER;
+  const bRank = PROTOCOL_ORDER[b] ?? Number.MAX_SAFE_INTEGER;
+  if (aRank !== bRank) return aRank - bRank;
+  return a.localeCompare(b);
+}
+
 function summarizeLabels(labels: Record<string, string>): string {
   return Object.entries(labels)
     .filter(([key, value]) => key.trim() && value.trim())
@@ -71,7 +85,6 @@ export function summarizeSourceIdentity(
 
 export function summarizeRulePills(group: PolicySourceGroup): string[] {
   const byProto = new Map<string, { ports: string[]; seenPorts: Set<string>; hasPortlessRule: boolean }>();
-  const protoOrder: string[] = [];
 
   for (const rule of group.rules) {
     const proto = (rule.match.proto?.trim() || 'any').toUpperCase();
@@ -79,7 +92,6 @@ export function summarizeRulePills(group: PolicySourceGroup): string[] {
     if (!entry) {
       entry = { ports: [], seenPorts: new Set<string>(), hasPortlessRule: false };
       byProto.set(proto, entry);
-      protoOrder.push(proto);
     }
 
     const ports = uniqueNonEmpty(rule.match.dst_ports ?? []);
@@ -95,7 +107,9 @@ export function summarizeRulePills(group: PolicySourceGroup): string[] {
     }
   }
 
-  return protoOrder.map((proto) => {
+  return Array.from(byProto.keys())
+    .sort(protocolOrder)
+    .map((proto) => {
     const entry = byProto.get(proto);
     if (!entry || entry.hasPortlessRule || !entry.ports.length) return proto;
     return `${proto}:${entry.ports.slice().sort(numericPortOrder).join(',')}`;

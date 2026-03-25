@@ -225,6 +225,85 @@ describe('policySourceGroupTableHelpers', () => {
     expect(summarizeRulePills(splitReordered)).toEqual(['TCP:443,80']);
   });
 
+  it('canonicalizes protocol ordering across equivalent multi-protocol rule sets', () => {
+    const tcpThenUdp: PolicySourceGroup = {
+      id: 'apps',
+      sources: { cidrs: [], ips: [], kubernetes: [] },
+      rules: [
+        {
+          id: 'tcp-443',
+          action: 'allow',
+          match: {
+            dst_cidrs: [],
+            dst_ips: [],
+            dns_hostname: 'example.com',
+            proto: 'tcp',
+            src_ports: [],
+            dst_ports: ['443'],
+            icmp_types: [],
+            icmp_codes: [],
+            tls: null,
+          },
+        },
+        {
+          id: 'udp-53',
+          action: 'allow',
+          match: {
+            dst_cidrs: [],
+            dst_ips: [],
+            dns_hostname: 'example.com',
+            proto: 'udp',
+            src_ports: [],
+            dst_ports: ['53'],
+            icmp_types: [],
+            icmp_codes: [],
+            tls: null,
+          },
+        },
+      ],
+    };
+
+    const udpThenTcp: PolicySourceGroup = {
+      id: 'apps',
+      sources: { cidrs: [], ips: [], kubernetes: [] },
+      rules: [
+        {
+          id: 'udp-53',
+          action: 'allow',
+          match: {
+            dst_cidrs: [],
+            dst_ips: [],
+            dns_hostname: 'example.com',
+            proto: 'udp',
+            src_ports: [],
+            dst_ports: ['53'],
+            icmp_types: [],
+            icmp_codes: [],
+            tls: null,
+          },
+        },
+        {
+          id: 'tcp-443',
+          action: 'allow',
+          match: {
+            dst_cidrs: [],
+            dst_ips: [],
+            dns_hostname: 'example.com',
+            proto: 'tcp',
+            src_ports: [],
+            dst_ports: ['443'],
+            icmp_types: [],
+            icmp_codes: [],
+            tls: null,
+          },
+        },
+      ],
+    };
+
+    expect(summarizeRulePills(udpThenTcp)).toEqual(summarizeRulePills(tcpThenUdp));
+    expect(summarizeRulePills(udpThenTcp)).toEqual(['TCP:443', 'UDP:53']);
+  });
+
   it('defaults group action to deny when rules and default_action are both absent', () => {
     const group: PolicySourceGroup = {
       id: 'empty',
