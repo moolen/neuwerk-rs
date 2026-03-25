@@ -3,7 +3,9 @@ import type { Dispatch, SetStateAction } from 'react';
 
 import type { IntegrationView, PolicyCreateRequest, PolicyRecord } from '../../types';
 import { createEmptyPolicyRequest } from '../../utils/policyModel';
-import type { PolicyEditorMode, PolicyOverlayMode } from './policyBuilderTypes';
+import type { PolicyEditorMode } from './policyBuilderTypes';
+
+type PolicyOverlayMode = 'closed' | 'create-group' | 'edit-group';
 
 export interface PolicyBuilderStateStore {
   policies: PolicyRecord[];

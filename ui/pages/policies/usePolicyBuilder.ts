@@ -50,25 +50,19 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     handleDelete,
     handleSave,
   } = createPolicyBuilderLifecycleHandlers({
-    selectedPolicyId,
     selectedId: selectedPolicyId,
     editorMode,
     editorTargetId,
-    overlayMode,
-    overlaySourceGroupId,
     draft,
     integrationNames,
     setPolicies,
     setIntegrations,
-    setSelectedPolicyId,
     setSelectedId: setSelectedPolicyId,
     setLoading,
     setError,
     setDraft,
     setEditorMode,
     setEditorTargetId,
-    setOverlayMode,
-    setOverlaySourceGroupId,
     setSaving,
     setEditorError,
   });
@@ -86,6 +80,14 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     setOverlayMode,
     setOverlaySourceGroupId,
   });
+  const handleCreateWithOverlay = () => {
+    closeSourceGroupEditor();
+    handleCreate();
+  };
+  const loadEditorForPolicyWithOverlay = async (policyId: string) => {
+    closeSourceGroupEditor();
+    await loadEditorForPolicy(policyId);
+  };
 
   useEffect(() => {
     void loadAll();
@@ -121,11 +123,11 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     },
     actions: {
       loadAll,
-      loadEditorForPolicy,
+      loadEditorForPolicy: loadEditorForPolicyWithOverlay,
       selectPolicy,
       openSourceGroupEditor,
       closeSourceGroupEditor,
-      handleCreate,
+      handleCreate: handleCreateWithOverlay,
       handleDelete,
       handleSave,
       updateDraft,
