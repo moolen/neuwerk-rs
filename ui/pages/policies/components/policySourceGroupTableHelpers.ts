@@ -16,6 +16,18 @@ function uniqueNonEmpty(values: string[]): string[] {
   return out;
 }
 
+function numericPortOrder(a: string, b: string): number {
+  const aNum = Number(a);
+  const bNum = Number(b);
+  const aIsInt = Number.isInteger(aNum);
+  const bIsInt = Number.isInteger(bNum);
+
+  if (aIsInt && bIsInt) return bNum - aNum;
+  if (aIsInt) return -1;
+  if (bIsInt) return 1;
+  return a.localeCompare(b);
+}
+
 function summarizeLabels(labels: Record<string, string>): string {
   return Object.entries(labels)
     .filter(([key, value]) => key.trim() && value.trim())
@@ -86,7 +98,7 @@ export function summarizeRulePills(group: PolicySourceGroup): string[] {
   return protoOrder.map((proto) => {
     const entry = byProto.get(proto);
     if (!entry || entry.hasPortlessRule || !entry.ports.length) return proto;
-    return `${proto}:${entry.ports.join(',')}`;
+    return `${proto}:${entry.ports.slice().sort(numericPortOrder).join(',')}`;
   });
 }
 
@@ -98,5 +110,5 @@ export function summarizeGroupAction(group: PolicySourceGroup): SourceGroupActio
   if (hasAllow) return 'allow';
   if (hasDeny) return 'deny';
   if (group.default_action) return group.default_action;
-  return 'allow';
+  return 'deny';
 }

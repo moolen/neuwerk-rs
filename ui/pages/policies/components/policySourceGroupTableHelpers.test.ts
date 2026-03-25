@@ -161,6 +161,80 @@ describe('policySourceGroupTableHelpers', () => {
     expect(summarizeRulePills(split)).toEqual(['TCP:443,80']);
   });
 
+  it('canonicalizes equivalent protocol port sets regardless of encounter order', () => {
+    const combined: PolicySourceGroup = {
+      id: 'apps',
+      sources: { cidrs: [], ips: [], kubernetes: [] },
+      rules: [
+        {
+          id: 'tcp-combined',
+          action: 'allow',
+          match: {
+            dst_cidrs: [],
+            dst_ips: [],
+            dns_hostname: 'example.com',
+            proto: 'tcp',
+            src_ports: [],
+            dst_ports: ['443', '80'],
+            icmp_types: [],
+            icmp_codes: [],
+            tls: null,
+          },
+        },
+      ],
+    };
+
+    const splitReordered: PolicySourceGroup = {
+      id: 'apps',
+      sources: { cidrs: [], ips: [], kubernetes: [] },
+      rules: [
+        {
+          id: 'tcp-80',
+          action: 'allow',
+          match: {
+            dst_cidrs: [],
+            dst_ips: [],
+            dns_hostname: 'example.com',
+            proto: 'tcp',
+            src_ports: [],
+            dst_ports: ['80'],
+            icmp_types: [],
+            icmp_codes: [],
+            tls: null,
+          },
+        },
+        {
+          id: 'tcp-443',
+          action: 'allow',
+          match: {
+            dst_cidrs: [],
+            dst_ips: [],
+            dns_hostname: 'example.com',
+            proto: 'tcp',
+            src_ports: [],
+            dst_ports: ['443'],
+            icmp_types: [],
+            icmp_codes: [],
+            tls: null,
+          },
+        },
+      ],
+    };
+
+    expect(summarizeRulePills(splitReordered)).toEqual(summarizeRulePills(combined));
+    expect(summarizeRulePills(splitReordered)).toEqual(['TCP:443,80']);
+  });
+
+  it('defaults group action to deny when rules and default_action are both absent', () => {
+    const group: PolicySourceGroup = {
+      id: 'empty',
+      sources: { cidrs: [], ips: [], kubernetes: [] },
+      rules: [],
+    };
+
+    expect(summarizeGroupAction(group)).toBe('deny');
+  });
+
   it('documents existing snapshot helper policy-centric flattening assumptions', () => {
     const policy: PolicyRecord = {
       id: 'policy-1',
