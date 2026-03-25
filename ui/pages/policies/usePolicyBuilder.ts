@@ -1,6 +1,11 @@
 import { useEffect } from 'react';
 import { createPolicyBuilderDraftActions } from './policyBuilderDraftActions';
 import { createPolicyBuilderLifecycleHandlers } from './policyBuilderLifecycle';
+import {
+  buildCloseSourceGroupEditor,
+  buildOpenSourceGroupEditor,
+  buildSelectPolicy,
+} from './policyBuilderLifecycleLoad';
 import { createUpdateDraft } from './usePolicyBuilderDraft';
 import { usePolicyBuilderDerived } from './usePolicyBuilderDerived';
 import { usePolicyBuilderState } from './usePolicyBuilderState';
@@ -12,8 +17,8 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     setPolicies,
     integrations,
     setIntegrations,
-    selectedId,
-    setSelectedId,
+    selectedPolicyId,
+    setSelectedPolicyId,
     loading,
     setLoading,
     error,
@@ -24,6 +29,10 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     setEditorMode,
     editorTargetId,
     setEditorTargetId,
+    overlayMode,
+    setOverlayMode,
+    overlaySourceGroupId,
+    setOverlaySourceGroupId,
     saving,
     setSaving,
     editorError,
@@ -41,21 +50,41 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     handleDelete,
     handleSave,
   } = createPolicyBuilderLifecycleHandlers({
-    selectedId,
+    selectedPolicyId,
+    selectedId: selectedPolicyId,
     editorMode,
     editorTargetId,
+    overlayMode,
+    overlaySourceGroupId,
     draft,
     integrationNames,
     setPolicies,
     setIntegrations,
-    setSelectedId,
+    setSelectedPolicyId,
+    setSelectedId: setSelectedPolicyId,
     setLoading,
     setError,
     setDraft,
     setEditorMode,
     setEditorTargetId,
+    setOverlayMode,
+    setOverlaySourceGroupId,
     setSaving,
     setEditorError,
+  });
+
+  const selectPolicy = buildSelectPolicy({
+    setSelectedPolicyId,
+    setOverlayMode,
+    setOverlaySourceGroupId,
+  });
+  const openSourceGroupEditor = buildOpenSourceGroupEditor({
+    setOverlayMode,
+    setOverlaySourceGroupId,
+  });
+  const closeSourceGroupEditor = buildCloseSourceGroupEditor({
+    setOverlayMode,
+    setOverlaySourceGroupId,
   });
 
   useEffect(() => {
@@ -77,12 +106,15 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     state: {
       policies,
       integrations,
-      selectedId,
+      selectedPolicyId,
+      selectedId: selectedPolicyId,
       loading,
       error,
       draft,
       editorMode,
       editorTargetId,
+      overlayMode,
+      overlaySourceGroupId,
       saving,
       editorError,
       validationIssues,
@@ -90,6 +122,9 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     actions: {
       loadAll,
       loadEditorForPolicy,
+      selectPolicy,
+      openSourceGroupEditor,
+      closeSourceGroupEditor,
       handleCreate,
       handleDelete,
       handleSave,

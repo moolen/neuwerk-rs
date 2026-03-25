@@ -1,7 +1,7 @@
 import type { PolicyRecord } from '../../types';
 
 export type LoadAllFollowUp =
-  | { kind: 'open-first'; policyId: string }
+  | { kind: 'select-first'; policyId: string }
   | { kind: 'create' }
   | { kind: 'none' };
 
@@ -11,7 +11,7 @@ export function deriveLoadAllFollowUp(
 ): LoadAllFollowUp {
   if (!policies.length) return { kind: 'create' };
   if (!selectedId) {
-    return { kind: 'open-first', policyId: policies[0].id };
+    return { kind: 'select-first', policyId: policies[0].id };
   }
   return { kind: 'none' };
 }
