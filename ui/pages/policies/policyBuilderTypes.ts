@@ -5,6 +5,7 @@ import type { IntegrationView, PolicyCreateRequest, PolicyRecord } from '../../t
 export type PolicyEditorMode = 'create' | 'edit';
 
 export interface PolicyBuilderLifecycleDeps {
+  selectedPolicyId: string | null;
   selectedId: string | null;
   editorMode: PolicyEditorMode;
   editorTargetId: string | null;
@@ -12,6 +13,7 @@ export interface PolicyBuilderLifecycleDeps {
   integrationNames: Set<string>;
   setPolicies: Dispatch<SetStateAction<PolicyRecord[]>>;
   setIntegrations: Dispatch<SetStateAction<IntegrationView[]>>;
+  setSelectedPolicyId: Dispatch<SetStateAction<string | null>>;
   setSelectedId: Dispatch<SetStateAction<string | null>>;
   setLoading: Dispatch<SetStateAction<boolean>>;
   setError: Dispatch<SetStateAction<string | null>>;

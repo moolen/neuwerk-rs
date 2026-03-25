@@ -50,6 +50,7 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     handleDelete,
     handleSave,
   } = createPolicyBuilderLifecycleHandlers({
+    selectedPolicyId,
     selectedId: selectedPolicyId,
     editorMode,
     editorTargetId,
@@ -57,6 +58,7 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     integrationNames,
     setPolicies,
     setIntegrations,
+    setSelectedPolicyId,
     setSelectedId: setSelectedPolicyId,
     setLoading,
     setError,

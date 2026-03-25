@@ -39,11 +39,11 @@ export function buildSelectPolicy(deps: SelectPolicyDeps): (policyId: string) =>
 }
 
 export function buildHandleCreate(deps: PolicyBuilderLifecycleDeps): HandleCreate {
-  const { setEditorMode, setEditorTargetId, setSelectedId, setDraft, setEditorError } = deps;
+  const { setEditorMode, setEditorTargetId, setSelectedPolicyId, setDraft, setEditorError } = deps;
   return () => {
     setEditorMode('create');
     setEditorTargetId(null);
-    setSelectedId(null);
+    setSelectedPolicyId(null);
     setDraft(createEmptyPolicyRequest());
     setEditorError(null);
   };
@@ -52,7 +52,7 @@ export function buildHandleCreate(deps: PolicyBuilderLifecycleDeps): HandleCreat
 export function buildLoadEditorForPolicy(deps: PolicyBuilderLifecycleDeps): LoadEditorForPolicy {
   const {
     setEditorError,
-    setSelectedId,
+    setSelectedPolicyId,
     setEditorMode,
     setEditorTargetId,
     setDraft,
@@ -60,7 +60,7 @@ export function buildLoadEditorForPolicy(deps: PolicyBuilderLifecycleDeps): Load
   return async (policyId: string) => {
     try {
       setEditorError(null);
-      setSelectedId(policyId);
+      setSelectedPolicyId(policyId);
       setEditorMode('edit');
       setEditorTargetId(policyId);
       setDraft(await loadPolicyDraftRemote(policyId));
@@ -75,7 +75,7 @@ export function buildLoadAll(
   _loadEditorForPolicy: LoadEditorForPolicy,
   handleCreate: HandleCreate,
 ): () => Promise<void> {
-  const { selectedId, setLoading, setError, setPolicies, setIntegrations, setSelectedId } = deps;
+  const { selectedPolicyId, setLoading, setError, setPolicies, setIntegrations, setSelectedPolicyId } = deps;
   return async () => {
     try {
       setLoading(true);
@@ -84,9 +84,9 @@ export function buildLoadAll(
       setPolicies(policies);
       setIntegrations(integrations);
 
-      const followUp = deriveLoadAllFollowUp(policies, selectedId);
+      const followUp = deriveLoadAllFollowUp(policies, selectedPolicyId);
       if (followUp.kind === 'select-first') {
-        setSelectedId(followUp.policyId);
+        setSelectedPolicyId(followUp.policyId);
       } else if (followUp.kind === 'create') {
         handleCreate();
       }
