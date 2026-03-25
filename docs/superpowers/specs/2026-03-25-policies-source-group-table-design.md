@@ -45,6 +45,8 @@ The page includes:
 
 If policies exist, the page selects one policy in the dropdown but does not auto-open an editor. If no policies exist, the page still renders the page shell and empty-state messaging for creating the first policy.
 
+Initial selection follows the current policy list ordering already used by the UI remote loader. On first load, if no prior selection exists, the first policy in that ordered list becomes the selected policy.
+
 ### Policy Selection
 
 The selected policy determines the table contents. The dropdown must list all policy records returned by the existing API so externally managed policies remain visible in the UI. Changing the selected policy:
@@ -53,6 +55,8 @@ The selected policy determines the table contents. The dropdown must list all po
 - updates the source-group table
 - closes any open source-group overlay editor
 
+This iteration does not add a separate unsaved-changes confirmation flow. Switching policies resets the scoped overlay state and loads the newly selected policy draft using the same persistence boundary as the current builder.
+
 ### Table Rows
 
 The table shows one row per source group within the selected policy.
@@ -60,9 +64,11 @@ The table shows one row per source group within the selected policy.
 #### Columns
 
 `Source Identity`
-- Primary information: source group identifier / display name
+- Primary information: source group identifier
 - Secondary information: CIDRs and IPs
 - Optional compact Kubernetes summary if the group contains Kubernetes sources
+
+The current data model only guarantees a source-group `id`, so that value is the primary label for this iteration.
 
 `L3/L4/DNS/DPI Rules`
 - Render as muted pills
@@ -183,6 +189,8 @@ The UI needs a control-plane API that returns, for the selected policy:
 - per-source-group hit total for the previous 24-hour window
 - partial-cluster metadata if some nodes fail to respond
 
+The API should be policy-scoped rather than global so the page can request telemetry only for the selected policy and avoid overfetching source-group aggregates for unrelated policies.
+
 The UI computes or receives:
 
 - current 24h value
@@ -200,6 +208,11 @@ If some cluster members fail to return telemetry:
 - the UI still renders available values
 
 If no telemetry is available for a source group, the UI renders a neutral fallback such as `No data`.
+
+At a high level, this endpoint should mirror the audit aggregation pattern:
+
+- local node endpoint for node-local hourly aggregates
+- leader-facing endpoint that fans out, merges node-local results, and returns a single policy-scoped response to the UI
 
 ### Collection Semantics
 
