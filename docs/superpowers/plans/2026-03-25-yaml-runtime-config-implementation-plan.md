@@ -65,7 +65,8 @@ dns:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test runtime::config::load runtime::config::validate --lib`
+Run: `cargo test --bin neuwerk runtime::config::load`
+Run: `cargo test --bin neuwerk runtime::config::validate`
 Expected: FAIL because the `runtime::config` module and loader APIs do not exist yet.
 
 - [ ] **Step 3: Add the typed schema and loader**
@@ -89,7 +90,8 @@ pub fn load_config_str(raw: &str) -> Result<LoadedConfig, String> {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test runtime::config::load runtime::config::validate --lib`
+Run: `cargo test --bin neuwerk runtime::config::load`
+Run: `cargo test --bin neuwerk runtime::config::validate`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -140,7 +142,8 @@ dpdk:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test runtime::config::validate runtime::config::derived --lib`
+Run: `cargo test --bin neuwerk runtime::config::validate`
+Run: `cargo test --bin neuwerk runtime::config::derived`
 Expected: FAIL because semantic validation and derived config APIs are incomplete.
 
 - [ ] **Step 3: Implement validation and derived config construction**
@@ -167,7 +170,8 @@ pub fn derive_runtime_config(cfg: ValidatedConfig) -> Result<DerivedRuntimeConfi
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test runtime::config::validate runtime::config::derived --lib`
+Run: `cargo test --bin neuwerk runtime::config::validate`
+Run: `cargo test --bin neuwerk runtime::config::derived`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -208,7 +212,7 @@ fn parse_test_config(raw: &str) -> DerivedRuntimeConfig {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test runtime::bootstrap::startup --lib`
+Run: `cargo test --bin neuwerk runtime::bootstrap::startup`
 Expected: FAIL because startup still depends on CLI/env-driven `CliConfig`.
 
 - [ ] **Step 3: Replace the main runtime config entrypoint**
@@ -231,7 +235,7 @@ Keep `auth` and `sysdump` command dispatch ahead of config loading if they do no
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test runtime::bootstrap::startup --lib`
+Run: `cargo test --bin neuwerk runtime::bootstrap::startup`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -271,7 +275,7 @@ fn runtime_usage_points_to_config_yaml() {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test runtime::cli --lib`
+Run: `cargo test --bin neuwerk runtime::cli`
 Expected: FAIL because the old runtime CLI still exposes the flag-based appliance configuration surface.
 
 - [ ] **Step 3: Remove the appliance-runtime CLI surface**
@@ -286,7 +290,7 @@ If a minimal direct-runtime CLI path remains, keep it explicitly unsupported for
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test runtime::cli --lib`
+Run: `cargo test --bin neuwerk runtime::cli`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -331,7 +335,9 @@ assert!(validate_metrics_bind(&cfg).is_err());
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test controlplane::http_api controlplane::trafficd dataplane::engine --lib`
+Run: `cargo test controlplane::http_api --lib`
+Run: `cargo test controlplane::trafficd --lib`
+Run: `cargo test dataplane::engine --lib`
 Expected: FAIL because the code still reads `std::env` directly.
 
 - [ ] **Step 3: Replace env lookups with focused config structs**
@@ -355,7 +361,9 @@ Pass these explicitly through startup instead of looking up env in place.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test controlplane::http_api controlplane::trafficd dataplane::engine --lib`
+Run: `cargo test controlplane::http_api --lib`
+Run: `cargo test controlplane::trafficd --lib`
+Run: `cargo test dataplane::engine --lib`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -405,7 +413,8 @@ assert_eq!(plan.worker_count, 1);
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test runtime::dpdk dataplane::dpdk_adapter --lib`
+Run: `cargo test --bin neuwerk runtime::dpdk`
+Run: `cargo test dataplane::dpdk_adapter --lib`
 Expected: FAIL because the DPDK path still depends on `std::env`.
 
 - [ ] **Step 3: Refactor the DPDK runtime to accept typed config**
@@ -423,7 +432,8 @@ Remove in-place env lookups and env mutation from production code. Tests may sti
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test runtime::dpdk dataplane::dpdk_adapter --lib`
+Run: `cargo test --bin neuwerk runtime::dpdk`
+Run: `cargo test dataplane::dpdk_adapter --lib`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
