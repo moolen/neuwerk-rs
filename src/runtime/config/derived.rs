@@ -23,7 +23,6 @@ pub struct DerivedIntegration {
 pub enum MetricsBindResolution {
     Explicit(String),
     FromManagementInterface { port: u16 },
-    Disabled,
 }
 
 pub fn derive_runtime_config(cfg: ValidatedConfig) -> Result<DerivedRuntimeConfig, String> {
@@ -55,60 +54,106 @@ fn resolve_metrics_bind(metrics: Option<&super::types::MetricsConfig>) -> Metric
             Some(bind) => MetricsBindResolution::Explicit(bind.clone()),
             None => MetricsBindResolution::FromManagementInterface { port: 8080 },
         },
-        None => MetricsBindResolution::Disabled,
+        None => MetricsBindResolution::FromManagementInterface { port: 8080 },
     }
 }
 
 fn parse_data_plane_mode(value: &str) -> Result<DataPlaneMode, String> {
-    match value {
-        "soft" | "SOFT" => Ok(DataPlaneMode::Soft),
-        "dpdk" | "DPDK" => Ok(DataPlaneMode::Dpdk),
-        _ => Err(format!(
-            "config derivation error: unsupported bootstrap.data_plane_mode `{value}`"
-        )),
+    if value.eq_ignore_ascii_case("soft") {
+        return Ok(DataPlaneMode::Soft);
     }
+    if value.eq_ignore_ascii_case("dpdk") {
+        return Ok(DataPlaneMode::Dpdk);
+    }
+    Err(format!(
+        "config derivation error: unsupported bootstrap.data_plane_mode `{value}`"
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::types::{IntegrationConfig, IntegrationMode, MetricsConfig};
+    use super::super::load_config_str;
     use super::{derive_runtime_config, MetricsBindResolution};
 
     #[test]
     fn derive_runtime_marks_dpdk_mode_enabled() {
-        let mut cfg = super::super::types::ValidatedConfig::default();
-        cfg.bootstrap.data_plane_mode = "dpdk".to_string();
-
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  data_plane_mode: dpdk
+dns:
+  upstreams:
+    - 10.0.0.2:53
+"#;
+        let cfg = load_config_str(raw).expect("load config");
         let derived = derive_runtime_config(cfg).expect("derive should succeed");
         assert!(derived.runtime.dpdk_enabled);
     }
 
     #[test]
     fn derive_runtime_preserves_integration_mode_for_later_cloud_resolution() {
-        let mut cfg = super::super::types::ValidatedConfig::default();
-        cfg.integration = Some(IntegrationConfig {
-            mode: IntegrationMode::AwsAsg,
-            route_name: Some("neuwerk-default".to_string()),
-            cluster_name: Some("neuwerk".to_string()),
-            aws: None,
-        });
-
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  data_plane_mode: soft
+dns:
+  upstreams:
+    - 10.0.0.2:53
+integration:
+  mode: aws-asg
+  route_name: neuwerk-default
+  cluster_name: neuwerk
+  aws:
+    region: us-east-1
+    vpc_id: vpc-0123456789abcdef0
+    asg_name: neuwerk-asg
+"#;
+        let cfg = load_config_str(raw).expect("load config");
         let derived = derive_runtime_config(cfg).expect("derive should succeed");
-        assert_eq!(derived.runtime.integration.mode, IntegrationMode::AwsAsg);
+        assert_eq!(
+            derived.runtime.integration.mode,
+            super::super::types::IntegrationMode::AwsAsg
+        );
     }
 
     #[test]
     fn derive_runtime_keeps_management_ip_dependent_metrics_bind_unresolved() {
-        let mut cfg = super::super::types::ValidatedConfig::default();
-        cfg.metrics = Some(MetricsConfig {
-            bind: None,
-            allow_public_bind: false,
-        });
-
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  data_plane_mode: soft
+dns:
+  upstreams:
+    - 10.0.0.2:53
+"#;
+        let cfg = load_config_str(raw).expect("load config");
         let derived = derive_runtime_config(cfg).expect("derive should succeed");
         assert_eq!(
             derived.runtime.metrics_bind,
             MetricsBindResolution::FromManagementInterface { port: 8080 }
         );
+    }
+
+    #[test]
+    fn derive_runtime_accepts_mixed_case_validated_data_plane_mode() {
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  data_plane_mode: DpDk
+dns:
+  upstreams:
+    - 10.0.0.2:53
+"#;
+        let cfg = load_config_str(raw).expect("load config");
+        let derived = derive_runtime_config(cfg).expect("derive should succeed");
+        assert!(derived.runtime.dpdk_enabled);
     }
 }

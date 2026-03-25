@@ -1,8 +1,8 @@
 use super::schema::RuntimeConfigFile;
 use super::types::{
-    BootstrapConfig, DataplaneConfig, DnsConfig, DpdkConfig, HttpConfig, IntegrationConfig,
-    IntegrationMode, LoadedConfig, MetricsConfig, PolicyConfig, SnatMode, TlsInterceptConfig,
-    ValidatedConfig,
+    AwsIntegrationConfig, BootstrapConfig, DataplaneConfig, DnsConfig, DpdkConfig, HttpConfig,
+    IntegrationConfig, IntegrationMode, LoadedConfig, MetricsConfig, PolicyConfig, SnatMode,
+    TlsInterceptConfig, ValidatedConfig,
 };
 
 pub(crate) fn validate_config(raw: RuntimeConfigFile) -> Result<LoadedConfig, String> {
@@ -18,21 +18,99 @@ pub(crate) fn validate_config(raw: RuntimeConfigFile) -> Result<LoadedConfig, St
         bootstrap: BootstrapConfig {
             management_interface: raw.bootstrap.management_interface,
             data_interface: raw.bootstrap.data_interface,
-            data_plane_mode: raw.bootstrap.data_plane_mode,
+            data_plane_mode: canonical_data_plane_mode(&raw.bootstrap.data_plane_mode)?,
         },
         dns: DnsConfig {
             upstreams: raw.dns.upstreams,
         },
         policy: raw.policy.map(|_| PolicyConfig),
         http: raw.http.map(|_| HttpConfig),
-        metrics: raw.metrics.map(|_| MetricsConfig::default()),
-        integration: raw.integration.map(|_| IntegrationConfig::default()),
+        metrics: raw.metrics.map(|metrics| MetricsConfig {
+            bind: metrics.bind,
+            allow_public_bind: metrics.allow_public_bind,
+        }),
+        integration: raw
+            .integration
+            .map(|integration| -> Result<IntegrationConfig, String> {
+                Ok(IntegrationConfig {
+                    mode: integration
+                        .mode
+                        .as_deref()
+                        .map(parse_integration_mode)
+                        .transpose()?
+                        .unwrap_or(IntegrationMode::None),
+                    route_name: integration.route_name,
+                    cluster_name: integration.cluster_name,
+                    aws: integration.aws.map(|aws| AwsIntegrationConfig {
+                        region: aws.region,
+                        vpc_id: aws.vpc_id,
+                        asg_name: aws.asg_name,
+                    }),
+                })
+            })
+            .transpose()?,
         tls_intercept: raw.tls_intercept.map(|_| TlsInterceptConfig),
-        dataplane: raw.dataplane.map(|_| DataplaneConfig::default()),
-        dpdk: raw.dpdk.map(|_| DpdkConfig::default()),
+        dataplane: raw
+            .dataplane
+            .map(|dataplane| -> Result<DataplaneConfig, String> {
+                Ok(DataplaneConfig {
+                    snat: dataplane
+                        .snat
+                        .as_deref()
+                        .map(parse_snat_mode)
+                        .transpose()?
+                        .unwrap_or_default(),
+                })
+            })
+            .transpose()?,
+        dpdk: raw.dpdk.map(|dpdk| DpdkConfig {
+            static_ip: dpdk.static_ip,
+            static_prefix_len: dpdk.static_prefix_len,
+            static_gateway: dpdk.static_gateway,
+            static_mac: dpdk.static_mac,
+        }),
     };
     validate_semantics(&validated)?;
     Ok(validated)
+}
+
+fn canonical_data_plane_mode(value: &str) -> Result<String, String> {
+    if value.eq_ignore_ascii_case("soft") {
+        return Ok("soft".to_string());
+    }
+    if value.eq_ignore_ascii_case("dpdk") {
+        return Ok("dpdk".to_string());
+    }
+    Err(format!(
+        "config validation error: unsupported bootstrap.data_plane_mode `{value}`"
+    ))
+}
+
+fn parse_integration_mode(value: &str) -> Result<IntegrationMode, String> {
+    if value.eq_ignore_ascii_case("none") {
+        return Ok(IntegrationMode::None);
+    }
+    if value.eq_ignore_ascii_case("aws-asg") {
+        return Ok(IntegrationMode::AwsAsg);
+    }
+    Err(format!(
+        "config validation error: unsupported integration.mode `{value}`"
+    ))
+}
+
+fn parse_snat_mode(value: &str) -> Result<SnatMode, String> {
+    if value.eq_ignore_ascii_case("auto") {
+        return Ok(SnatMode::Auto);
+    }
+    if value.eq_ignore_ascii_case("none") {
+        return Ok(SnatMode::None);
+    }
+    if value.eq_ignore_ascii_case("static") {
+        return Ok(SnatMode::Static);
+    }
+    Err(format!(
+        "config validation error: unsupported dataplane.snat `{value}`"
+    ))
 }
 
 pub(crate) fn validate_semantics(cfg: &ValidatedConfig) -> Result<(), String> {
@@ -44,16 +122,8 @@ pub(crate) fn validate_semantics(cfg: &ValidatedConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_data_plane_mode(cfg: &ValidatedConfig) -> Result<(), String> {
-    if cfg.bootstrap.data_plane_mode.eq_ignore_ascii_case("soft")
-        || cfg.bootstrap.data_plane_mode.eq_ignore_ascii_case("dpdk")
-    {
-        return Ok(());
-    }
-    Err(format!(
-        "config validation error: unsupported bootstrap.data_plane_mode `{}`",
-        cfg.bootstrap.data_plane_mode
-    ))
+fn validate_data_plane_mode(_cfg: &ValidatedConfig) -> Result<(), String> {
+    Ok(())
 }
 
 fn validate_dpdk_static_network(cfg: &ValidatedConfig) -> Result<(), String> {
@@ -99,21 +169,40 @@ fn validate_integration_requirements(cfg: &ValidatedConfig) -> Result<(), String
     }
 
     let aws = integration.aws.as_ref().ok_or_else(|| {
-        "config validation error: integration.mode=aws-asg requires integration.aws block".to_string()
+        "config validation error: integration.mode=aws-asg requires integration.aws block"
+            .to_string()
     })?;
-    if aws.region.as_deref().map(str::trim).filter(|v| !v.is_empty()).is_none() {
+    if aws
+        .region
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .is_none()
+    {
         return Err(
             "config validation error: integration.mode=aws-asg requires integration.aws.region"
                 .to_string(),
         );
     }
-    if aws.vpc_id.as_deref().map(str::trim).filter(|v| !v.is_empty()).is_none() {
+    if aws
+        .vpc_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .is_none()
+    {
         return Err(
             "config validation error: integration.mode=aws-asg requires integration.aws.vpc_id"
                 .to_string(),
         );
     }
-    if aws.asg_name.as_deref().map(str::trim).filter(|v| !v.is_empty()).is_none() {
+    if aws
+        .asg_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .is_none()
+    {
         return Err(
             "config validation error: integration.mode=aws-asg requires integration.aws.asg_name"
                 .to_string(),
@@ -167,11 +256,6 @@ fn validate_snat_mode(cfg: &ValidatedConfig) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::super::load_config_str;
-    use super::super::types::{
-        AwsIntegrationConfig, DataplaneConfig, DpdkConfig, IntegrationConfig, IntegrationMode,
-        MetricsConfig, SnatMode, ValidatedConfig,
-    };
-    use super::validate_semantics;
 
     #[test]
     fn load_config_rejects_missing_version() {
@@ -208,74 +292,112 @@ dns:
 
     #[test]
     fn validate_rejects_partial_static_dpdk_addressing() {
-        let cfg = ValidatedConfig {
-            bootstrap: super::super::types::BootstrapConfig {
-                management_interface: "eth0".to_string(),
-                data_interface: "eth1".to_string(),
-                data_plane_mode: "dpdk".to_string(),
-            },
-            dpdk: Some(DpdkConfig {
-                static_ip: Some("10.0.2.5".to_string()),
-                static_prefix_len: None,
-                static_gateway: None,
-                static_mac: None,
-            }),
-            ..ValidatedConfig::default()
-        };
-
-        let err = validate_semantics(&cfg).unwrap_err();
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  data_plane_mode: dpdk
+dns:
+  upstreams:
+    - 10.0.0.2:53
+dpdk:
+  static_ip: 10.0.2.5
+"#;
+        let err = load_config_str(raw).unwrap_err();
         assert!(err.contains("dpdk.static"), "{err}");
     }
 
     #[test]
     fn validate_rejects_aws_asg_missing_required_fields() {
-        let cfg = ValidatedConfig {
-            integration: Some(IntegrationConfig {
-                mode: IntegrationMode::AwsAsg,
-                route_name: Some("neuwerk-default".to_string()),
-                cluster_name: Some("neuwerk".to_string()),
-                aws: Some(AwsIntegrationConfig {
-                    region: None,
-                    vpc_id: None,
-                    asg_name: None,
-                }),
-            }),
-            ..ValidatedConfig::default()
-        };
-
-        let err = validate_semantics(&cfg).unwrap_err();
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  data_plane_mode: soft
+dns:
+  upstreams:
+    - 10.0.0.2:53
+integration:
+  mode: aws-asg
+  route_name: neuwerk-default
+  cluster_name: neuwerk
+"#;
+        let err = load_config_str(raw).unwrap_err();
         assert!(err.contains("integration.aws"), "{err}");
     }
 
     #[test]
     fn validate_rejects_public_metrics_bind_without_allow_flag() {
-        let cfg = ValidatedConfig {
-            metrics: Some(MetricsConfig {
-                bind: Some("0.0.0.0:8080".to_string()),
-                allow_public_bind: false,
-            }),
-            ..ValidatedConfig::default()
-        };
-
-        let err = validate_semantics(&cfg).unwrap_err();
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  data_plane_mode: soft
+dns:
+  upstreams:
+    - 10.0.0.2:53
+metrics:
+  bind: 0.0.0.0:8080
+"#;
+        let err = load_config_str(raw).unwrap_err();
         assert!(err.contains("metrics.allow_public_bind"), "{err}");
     }
 
     #[test]
-    fn validate_rejects_static_snat_with_dpdk_dataplane() {
-        let cfg = ValidatedConfig {
-            bootstrap: super::super::types::BootstrapConfig {
-                management_interface: "eth0".to_string(),
-                data_interface: "eth1".to_string(),
-                data_plane_mode: "dpdk".to_string(),
-            },
-            dataplane: Some(DataplaneConfig {
-                snat: SnatMode::Static,
-            }),
-            ..ValidatedConfig::default()
-        };
+    fn validate_accepts_metrics_fields_when_allow_flag_is_enabled() {
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  data_plane_mode: soft
+dns:
+  upstreams:
+    - 10.0.0.2:53
+metrics:
+  bind: 0.0.0.0:8080
+  allow_public_bind: true
+"#;
+        let cfg = load_config_str(raw).expect("metrics config should load");
+        let metrics = cfg.metrics.expect("metrics block should map through");
+        assert_eq!(metrics.bind.as_deref(), Some("0.0.0.0:8080"));
+        assert!(metrics.allow_public_bind);
+    }
 
-        let err = validate_semantics(&cfg).unwrap_err();
+    #[test]
+    fn validate_rejects_static_snat_with_dpdk_dataplane() {
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  data_plane_mode: dpdk
+dns:
+  upstreams:
+    - 10.0.0.2:53
+dataplane:
+  snat: static
+"#;
+        let err = load_config_str(raw).unwrap_err();
         assert!(err.contains("dataplane.snat"), "{err}");
+    }
+
+    #[test]
+    fn validate_accepts_mixed_case_data_plane_mode_through_load_path() {
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  data_plane_mode: DpDk
+dns:
+  upstreams:
+    - 10.0.0.2:53
+"#;
+        let cfg = load_config_str(raw).expect("mixed-case dataplane mode should load");
+        assert_eq!(cfg.bootstrap.data_plane_mode, "dpdk");
     }
 }

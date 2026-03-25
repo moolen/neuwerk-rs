@@ -46,11 +46,36 @@ pub struct HttpConfigFile {}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MetricsConfigFile {}
+pub struct MetricsConfigFile {
+    #[serde(default)]
+    pub bind: Option<String>,
+    #[serde(default)]
+    pub allow_public_bind: bool,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct IntegrationConfigFile {}
+pub struct IntegrationConfigFile {
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub route_name: Option<String>,
+    #[serde(default)]
+    pub cluster_name: Option<String>,
+    #[serde(default)]
+    pub aws: Option<AwsIntegrationConfigFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwsIntegrationConfigFile {
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub vpc_id: Option<String>,
+    #[serde(default)]
+    pub asg_name: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,8 +83,20 @@ pub struct TlsInterceptConfigFile {}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DataplaneConfigFile {}
+pub struct DataplaneConfigFile {
+    #[serde(default)]
+    pub snat: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DpdkConfigFile {}
+pub struct DpdkConfigFile {
+    #[serde(default)]
+    pub static_ip: Option<String>,
+    #[serde(default)]
+    pub static_prefix_len: Option<u8>,
+    #[serde(default)]
+    pub static_gateway: Option<String>,
+    #[serde(default)]
+    pub static_mac: Option<String>,
+}
