@@ -51,6 +51,7 @@ async fn http_api_local_lifecycle() {
     wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(2))
         .await
         .unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2)).await.unwrap();
     let auth_path = api_auth::local_keyset_path(&tls_dir);
     wait_for_file(&auth_path, Duration::from_secs(2))
         .await
@@ -227,6 +228,7 @@ async fn http_api_policy_by_name_upsert_reuses_record_id_and_rejects_duplicates(
     wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(2))
         .await
         .unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2)).await.unwrap();
     let auth_path = api_auth::local_keyset_path(&tls_dir);
     wait_for_file(&auth_path, Duration::from_secs(2))
         .await
@@ -389,6 +391,7 @@ async fn http_api_integrations_lifecycle_and_policy_ref_validation() {
     wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(2))
         .await
         .unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2)).await.unwrap();
     let auth_path = api_auth::local_keyset_path(&tls_dir);
     wait_for_file(&auth_path, Duration::from_secs(2))
         .await

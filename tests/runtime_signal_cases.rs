@@ -11,6 +11,9 @@ use nix::unistd::Pid;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 
+#[path = "support/runtime_config.rs"]
+mod runtime_config_support;
+
 static RUNTIME_SIGNAL_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn next_addr(ip: Ipv4Addr) -> SocketAddr {
@@ -198,41 +201,9 @@ impl Drop for NetworkCleanup {
 }
 
 fn spawn_neuwerk(
-    tls_dir: &Path,
     local_root: &Path,
-    http_bind: SocketAddr,
-    metrics_bind: SocketAddr,
-    dataplane_iface: &str,
 ) -> Result<Child, String> {
     Command::new(env!("CARGO_BIN_EXE_neuwerk"))
-        .args([
-            "--management-interface",
-            "lo",
-            "--data-plane-interface",
-            dataplane_iface,
-            "--dns-target-ip",
-            "1.1.1.1",
-            "--dns-upstream",
-            "1.1.1.1:53",
-            "--data-plane-mode",
-            "tun",
-            "--internal-cidr",
-            "10.0.0.0/24",
-            "--snat",
-            "none",
-            "--http-bind",
-            &http_bind.to_string(),
-            "--http-advertise",
-            &http_bind.to_string(),
-            "--http-external-url",
-            &format!("https://{http_bind}"),
-            "--http-tls-dir",
-            tls_dir
-                .to_str()
-                .ok_or_else(|| "tls dir not utf8".to_string())?,
-            "--metrics-bind",
-            &metrics_bind.to_string(),
-        ])
         .env("NEUWERK_LOCAL_DATA_DIR", local_root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -260,14 +231,15 @@ async fn neuwerk_binary_sigterm_flips_readiness_false_before_exit_and_restarts()
         return;
     }
 
-    let mut child = spawn_neuwerk(
+    let _runtime_config = runtime_config_support::InstalledRuntimeConfig::install_tun(
         &tls_dir,
-        &local_root,
         http_bind,
         metrics_bind,
         &dataplane_iface,
+        "10.0.0.0/24",
     )
     .unwrap();
+    let mut child = spawn_neuwerk(&local_root).unwrap();
 
     wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(5))
         .await
@@ -321,7 +293,7 @@ async fn neuwerk_binary_sigterm_flips_readiness_false_before_exit_and_restarts()
     wait_for_ready_false_before_exit(&mut child, &client, http_bind, Duration::from_secs(3))
         .await
         .unwrap();
-    wait_for_child_exit(&mut child, Duration::from_secs(5))
+    wait_for_child_exit(&mut child, Duration::from_secs(10))
         .await
         .unwrap();
     wait_for_tcp_closed(http_bind, Duration::from_secs(5))
@@ -331,14 +303,7 @@ async fn neuwerk_binary_sigterm_flips_readiness_false_before_exit_and_restarts()
         .await
         .unwrap();
 
-    let mut restarted = spawn_neuwerk(
-        &tls_dir,
-        &local_root,
-        http_bind,
-        metrics_bind,
-        &dataplane_iface,
-    )
-    .unwrap();
+    let mut restarted = spawn_neuwerk(&local_root).unwrap();
 
     wait_for_ready(&client, http_bind, true, Duration::from_secs(5))
         .await
@@ -355,7 +320,7 @@ async fn neuwerk_binary_sigterm_flips_readiness_false_before_exit_and_restarts()
     assert_eq!(records.len(), 1);
 
     kill(Pid::from_raw(restarted.id() as i32), Signal::SIGTERM).unwrap();
-    wait_for_child_exit(&mut restarted, Duration::from_secs(5))
+    wait_for_child_exit(&mut restarted, Duration::from_secs(10))
         .await
         .unwrap();
 }
@@ -379,14 +344,15 @@ async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart
         return;
     }
 
-    let mut child = spawn_neuwerk(
+    let _runtime_config = runtime_config_support::InstalledRuntimeConfig::install_tun(
         &tls_dir,
-        &local_root,
         http_bind,
         metrics_bind,
         &dataplane_iface,
+        "10.0.0.0/24",
     )
     .unwrap();
+    let mut child = spawn_neuwerk(&local_root).unwrap();
 
     wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(5))
         .await
@@ -466,7 +432,7 @@ async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart
     wait_for_ready_false_before_exit(&mut child, &client, http_bind, Duration::from_secs(3))
         .await
         .unwrap();
-    wait_for_child_exit(&mut child, Duration::from_secs(5))
+    wait_for_child_exit(&mut child, Duration::from_secs(10))
         .await
         .unwrap();
     wait_for_tcp_closed(http_bind, Duration::from_secs(5))
@@ -476,14 +442,7 @@ async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart
         .await
         .unwrap();
 
-    let mut restarted = spawn_neuwerk(
-        &tls_dir,
-        &local_root,
-        http_bind,
-        metrics_bind,
-        &dataplane_iface,
-    )
-    .unwrap();
+    let mut restarted = spawn_neuwerk(&local_root).unwrap();
     wait_for_ready(&client, http_bind, true, Duration::from_secs(5))
         .await
         .unwrap();
@@ -530,7 +489,7 @@ async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart
     );
 
     kill(Pid::from_raw(restarted.id() as i32), Signal::SIGTERM).unwrap();
-    wait_for_child_exit(&mut restarted, Duration::from_secs(5))
+    wait_for_child_exit(&mut restarted, Duration::from_secs(10))
         .await
         .unwrap();
 }

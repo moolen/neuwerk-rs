@@ -14,6 +14,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use tempfile::TempDir;
 
+#[path = "support/runtime_config.rs"]
+mod runtime_config_support;
+
 const PROVIDER_VERSION: &str = "0.1.0";
 
 fn next_addr(ip: Ipv4Addr) -> SocketAddr {
@@ -154,41 +157,9 @@ impl Drop for NetworkCleanup {
 }
 
 fn spawn_neuwerk(
-    tls_dir: &Path,
     local_root: &Path,
-    http_bind: SocketAddr,
-    metrics_bind: SocketAddr,
-    dataplane_iface: &str,
 ) -> Result<Child, String> {
     Command::new(env!("CARGO_BIN_EXE_neuwerk"))
-        .args([
-            "--management-interface",
-            "lo",
-            "--data-plane-interface",
-            dataplane_iface,
-            "--dns-target-ip",
-            "1.1.1.1",
-            "--dns-upstream",
-            "1.1.1.1:53",
-            "--data-plane-mode",
-            "tun",
-            "--internal-cidr",
-            "10.0.0.0/24",
-            "--snat",
-            "none",
-            "--http-bind",
-            &http_bind.to_string(),
-            "--http-advertise",
-            &http_bind.to_string(),
-            "--http-external-url",
-            &format!("https://{http_bind}"),
-            "--http-tls-dir",
-            tls_dir
-                .to_str()
-                .ok_or_else(|| "tls dir not utf8".to_string())?,
-            "--metrics-bind",
-            &metrics_bind.to_string(),
-        ])
         .env("NEUWERK_LOCAL_DATA_DIR", local_root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -200,6 +171,7 @@ fn spawn_neuwerk(
 struct NeuwerkHarness {
     _dir: TempDir,
     _network_cleanup: NetworkCleanup,
+    _runtime_config: runtime_config_support::InstalledRuntimeConfig,
     child: Child,
     tls_dir: PathBuf,
     http_bind: SocketAddr,
@@ -251,13 +223,15 @@ impl NeuwerkHarness {
         cleanup_service_lane_state();
         create_tun_interface(&dataplane_iface, "10.19.0.2/24")?;
 
-        let child = spawn_neuwerk(
+        let runtime_config = runtime_config_support::InstalledRuntimeConfig::install_tun(
             &tls_dir,
-            &local_root,
             http_bind,
             metrics_bind,
             &dataplane_iface,
+            "10.0.0.0/24",
         )?;
+
+        let child = spawn_neuwerk(&local_root)?;
 
         wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(10)).await?;
         let client = http_client(&tls_dir)?;
@@ -275,6 +249,7 @@ impl NeuwerkHarness {
         Ok(Self {
             _dir: dir,
             _network_cleanup: network_cleanup,
+            _runtime_config: runtime_config,
             child,
             tls_dir,
             http_bind,

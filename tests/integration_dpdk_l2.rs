@@ -6,11 +6,22 @@ use neuwerk::dataplane::policy::{
     RuleMode, SourceGroup, Tls13Uninspectable, TlsMatch, TlsMode,
 };
 use neuwerk::dataplane::{DataplaneConfig, DpdkAdapter, EngineState};
+use neuwerk::support::runtime_knobs::{
+    current_runtime_knobs, install_runtime_knobs, CloudProvider, RuntimeKnobs,
+};
 
 const ETH_HDR_LEN: usize = 14;
 const ETH_TYPE_IPV4: u16 = 0x0800;
 const ETH_TYPE_ARP: u16 = 0x0806;
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+struct RuntimeKnobsGuard(RuntimeKnobs);
+
+impl Drop for RuntimeKnobsGuard {
+    fn drop(&mut self) {
+        install_runtime_knobs(self.0.clone());
+    }
+}
 
 fn build_udp_ipv4_frame(
     src_mac: [u8; 6],
@@ -207,12 +218,14 @@ fn integration_dpdk_l2_rewrite_uses_gateway_mac() {
 }
 
 #[test]
-fn integration_dpdk_l2_azure_gateway_mac_fallback_uses_env_mac() {
+fn integration_dpdk_l2_configured_gateway_mac_uses_runtime_knobs() {
     let _guard = TEST_LOCK.lock().expect("test lock");
-    let old_provider = std::env::var("NEUWERK_CLOUD_PROVIDER").ok();
-    let old_gateway_mac = std::env::var("NEUWERK_AZURE_GATEWAY_MAC").ok();
-    std::env::set_var("NEUWERK_CLOUD_PROVIDER", "azure");
-    std::env::set_var("NEUWERK_AZURE_GATEWAY_MAC", "12:34:56:78:9a:bc");
+    let old_knobs = current_runtime_knobs();
+    let _restore_knobs = RuntimeKnobsGuard(old_knobs.clone());
+    let mut knobs = old_knobs;
+    knobs.cloud_provider = CloudProvider::Azure;
+    knobs.dpdk.gateway_mac = Some("12:34:56:78:9a:bc".to_string());
+    install_runtime_knobs(knobs);
 
     {
         let policy = Arc::new(RwLock::new(PolicySnapshot::new(
@@ -249,22 +262,13 @@ fn integration_dpdk_l2_azure_gateway_mac_fallback_uses_env_mac() {
 
         let forwarded = adapter
             .process_frame(&frame, &mut state)
-            .expect("expected forward using azure gateway mac fallback");
+            .expect("expected forward using configured gateway mac");
         assert_eq!(&forwarded[0..6], &[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
         assert_eq!(&forwarded[6..12], &[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
         assert!(
             adapter.next_dhcp_frame(&state).is_none(),
-            "azure fallback should avoid ARP request queueing"
+            "configured gateway mac should avoid ARP request queueing"
         );
-    }
-
-    match old_provider {
-        Some(v) => std::env::set_var("NEUWERK_CLOUD_PROVIDER", v),
-        None => std::env::remove_var("NEUWERK_CLOUD_PROVIDER"),
-    }
-    match old_gateway_mac {
-        Some(v) => std::env::set_var("NEUWERK_AZURE_GATEWAY_MAC", v),
-        None => std::env::remove_var("NEUWERK_AZURE_GATEWAY_MAC"),
     }
 }
 
