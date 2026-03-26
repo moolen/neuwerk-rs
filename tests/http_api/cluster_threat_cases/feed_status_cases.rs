@@ -322,6 +322,9 @@ async fn http_api_threat_feed_status_repairs_stale_local_state_from_cluster_snap
         .unwrap();
 
     let client = http_api_client(&tls_dir).unwrap();
+    wait_for_ready_status(&client, bind_addr, true, Duration::from_secs(5))
+        .await
+        .unwrap();
     let token = api_auth_token_from_store(&runtime.store).unwrap();
 
     let response = client

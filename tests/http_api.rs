@@ -76,11 +76,16 @@ async fn wait_for_ready_status(
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     loop {
-        let resp = client
-            .get(format!("https://{addr}/ready"))
-            .send()
-            .await
-            .map_err(|err| format!("ready request failed: {err}"))?;
+        let resp = match client.get(format!("https://{addr}/ready")).send().await {
+            Ok(resp) => resp,
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    return Err(format!("ready request failed: {err}"));
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let status_ok = resp.status().is_success();
         let body: serde_json::Value = resp
             .json()
