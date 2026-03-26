@@ -65,6 +65,7 @@ export const docsNavigation: DocsNavSection[] = [
       { href: '/docs/interfaces/web-ui', label: 'Web UI' },
       { href: '/docs/interfaces/terraform-provider', label: 'Terraform Provider' },
       { href: '/docs/reference/configuration-schema', label: 'Configuration Schema' },
+      { href: '/docs/reference/runtime-configuration', label: 'Runtime Configuration Reference' },
       { href: '/docs/reference/ports-protocols', label: 'Ports & Protocols' },
       { href: '/docs/reference/glossary', label: 'Glossary' },
     ],

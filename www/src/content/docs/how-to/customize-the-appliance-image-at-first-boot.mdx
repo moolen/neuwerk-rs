@@ -10,6 +10,8 @@ Use this guide when you want to adapt the released Neuwerk appliance image at fi
 
 Use `/etc/neuwerk/config.yaml` when your change is runtime configuration: interface selection, DNS settings, default policy behavior, cloud provider hinting, integration identifiers, or dataplane/runtime tuning.
 
+For the full supported path-by-path reference, read [Runtime Configuration Reference](/docs/reference/runtime-configuration).
+
 Use cloud-init `write_files` alone when you only need to place declarative config files or small support assets on disk (for example cert material, local config fragments, or helper scripts).
 
 Use cloud-init package installation when the image is missing a true supporting dependency (for example provider CLI tooling, diagnostics packages, or a helper binary your automation calls).
@@ -108,6 +110,7 @@ runcmd:
 
 ## Related Pages
 
+- [Runtime Configuration Reference](/docs/reference/runtime-configuration)
 - [Launch Neuwerk From The Released Cloud Image](/docs/tutorials/launch-from-released-cloud-image)
 - [Cloud Rollout Integration](/docs/architecture/cloud-rollout-integration)
 - [Requirements](/docs/deployment/requirements)

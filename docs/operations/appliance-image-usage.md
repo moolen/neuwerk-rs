@@ -215,7 +215,7 @@ The packaged runtime contract is:
 
 Edit subsystem YAML paths directly in that file, then restart `neuwerk.service`.
 
-For the canonical operator-facing reference for supported YAML runtime paths, defaults, and guidance, see [Runtime Knobs](./runtime-knobs.md).
+For the canonical operator-facing reference for supported YAML runtime paths, defaults, and guidance, see [Runtime Configuration Reference](./runtime-knobs.md).
 
 At minimum, verify or set:
 

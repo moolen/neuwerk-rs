@@ -150,6 +150,18 @@ test('cloud-rollout-integration docs page exists', () => {
   assert.equal(existsSync(fileUrl), true, 'expected architecture/cloud-rollout-integration.mdx to exist');
 });
 
+test('runtime configuration reference docs page exists and is in reference navigation', () => {
+  const fileUrl = new URL('../src/content/docs/reference/runtime-configuration.mdx', import.meta.url);
+  assert.equal(existsSync(fileUrl), true, 'expected reference/runtime-configuration.mdx to exist');
+
+  const navSource = readFileSync(new URL('../src/data/docsNavigation.ts', import.meta.url), 'utf8');
+  assert.match(
+    navSource,
+    /href: '\/docs\/reference\/runtime-configuration', label: 'Runtime Configuration Reference'/,
+    'expected docs navigation to include Runtime Configuration Reference in the Reference section',
+  );
+});
+
 test('quickstart docs cross-link to appliance customization how-to', () => {
   const quickstart = readFileSync(
     new URL('../src/content/docs/tutorials/launch-from-released-cloud-image.mdx', import.meta.url),
@@ -173,6 +185,11 @@ test('rollout docs cross-link to appliance customization how-to', () => {
     rollout,
     '/docs/how-to/customize-the-appliance-image-at-first-boot',
     'expected cloud-rollout-integration to reference /docs/how-to/customize-the-appliance-image-at-first-boot',
+  );
+  assertMdxLink(
+    rollout,
+    '/docs/reference/runtime-configuration',
+    'expected cloud-rollout-integration to reference /docs/reference/runtime-configuration',
   );
 });
 
