@@ -193,7 +193,7 @@ export const PoliciesPage: React.FC = () => {
         </div>
       )}
 
-      <div className="space-y-5">
+      <div className="relative space-y-5" data-policies-main-content="true">
         <PolicySelector
           policies={policies}
           selectedPolicyId={selectedPolicyId}
@@ -212,69 +212,67 @@ export const PoliciesPage: React.FC = () => {
             Loading policies...
           </div>
         ) : (
-          <div className="relative">
-            <PolicySourceGroupsTable
-              groups={selectedSourceGroups}
-              activeSourceGroupId={activeSourceGroupId}
-              telemetryBySourceGroupId={telemetryState.bySourceGroupId}
-              telemetryPartial={telemetryState.partial}
-              telemetryNodesQueried={telemetryState.nodesQueried}
-              telemetryNodesResponded={telemetryState.nodesResponded}
-              telemetryNodeErrorCount={telemetryState.nodeErrorCount}
-              createActionLabel={selectedPolicyId ? 'Add source group' : 'Create first policy'}
-              emptyStateDescription={
-                selectedPolicyId
-                  ? 'Create the first source group to start shaping the selected policy.'
-                  : 'Create a policy first, then start organizing traffic by source group.'
-              }
-              emptyStateTitle={
-                selectedPolicyId ? 'No source groups configured' : 'No policy selected'
-              }
-              onCreateGroup={() => {
-                void handleCreateSourceGroup();
-              }}
-              onDeleteGroup={handleDeleteSourceGroup}
-              onMoveGroup={handleMoveSourceGroup}
-              onSelectGroup={(groupId) => {
-                void handleOpenSourceGroup(groupId);
-              }}
-            />
-
-            <PolicySourceGroupEditorOverlay
-              open={overlayOpen}
-              policyLabel={selectedPolicyLabel}
-              sourceGroupLabel={overlaySourceGroupLabel}
-              saving={saving}
-              validationIssueCount={validationIssues.length}
-              onClose={closeSourceGroupEditor}
-              onSave={() => {
-                void handleSave();
-              }}
-            >
-              <ScopedSourceGroupEditor
-                draft={draft}
-                integrations={integrations}
-                updateDraft={updateDraft}
-                overlayMode={overlayMode}
-                sourceGroupId={overlaySourceGroupId}
-                duplicateGroup={duplicateGroup}
-                moveGroup={moveGroup}
-                deleteGroup={deleteGroup}
-                addRule={addRule}
-                duplicateRule={duplicateRule}
-                moveRule={moveRule}
-                deleteRule={deleteRule}
-              />
-
-              <div className="mt-4">
-                <PolicyEditorMessages
-                  validationIssues={validationIssues}
-                  editorError={editorError}
-                />
-              </div>
-            </PolicySourceGroupEditorOverlay>
-          </div>
+          <PolicySourceGroupsTable
+            groups={selectedSourceGroups}
+            activeSourceGroupId={activeSourceGroupId}
+            telemetryBySourceGroupId={telemetryState.bySourceGroupId}
+            telemetryPartial={telemetryState.partial}
+            telemetryNodesQueried={telemetryState.nodesQueried}
+            telemetryNodesResponded={telemetryState.nodesResponded}
+            telemetryNodeErrorCount={telemetryState.nodeErrorCount}
+            createActionLabel={selectedPolicyId ? 'Add source group' : 'Create first policy'}
+            emptyStateDescription={
+              selectedPolicyId
+                ? 'Create the first source group to start shaping the selected policy.'
+                : 'Create a policy first, then start organizing traffic by source group.'
+            }
+            emptyStateTitle={
+              selectedPolicyId ? 'No source groups configured' : 'No policy selected'
+            }
+            onCreateGroup={() => {
+              void handleCreateSourceGroup();
+            }}
+            onDeleteGroup={handleDeleteSourceGroup}
+            onMoveGroup={handleMoveSourceGroup}
+            onSelectGroup={(groupId) => {
+              void handleOpenSourceGroup(groupId);
+            }}
+          />
         )}
+
+        <PolicySourceGroupEditorOverlay
+          open={overlayOpen}
+          policyLabel={selectedPolicyLabel}
+          sourceGroupLabel={overlaySourceGroupLabel}
+          saving={saving}
+          validationIssueCount={validationIssues.length}
+          onClose={closeSourceGroupEditor}
+          onSave={() => {
+            void handleSave();
+          }}
+        >
+          <ScopedSourceGroupEditor
+            draft={draft}
+            integrations={integrations}
+            updateDraft={updateDraft}
+            overlayMode={overlayMode}
+            sourceGroupId={overlaySourceGroupId}
+            duplicateGroup={duplicateGroup}
+            moveGroup={moveGroup}
+            deleteGroup={deleteGroup}
+            addRule={addRule}
+            duplicateRule={duplicateRule}
+            moveRule={moveRule}
+            deleteRule={deleteRule}
+          />
+
+          <div className="mt-4">
+            <PolicyEditorMessages
+              validationIssues={validationIssues}
+              editorError={editorError}
+            />
+          </div>
+        </PolicySourceGroupEditorOverlay>
       </div>
     </PageLayout>
   );

@@ -29,7 +29,10 @@ export const PolicySourceGroupEditorOverlay: React.FC<PolicySourceGroupEditorOve
   const saveDisabled = isPolicySaveDisabled(saving, validationIssueCount);
 
   return (
-    <div className="absolute inset-0 z-20 flex items-start justify-end p-4 sm:p-6">
+    <div
+      data-overlay-anchor="policy-main-content"
+      className="absolute inset-0 z-20 flex items-start justify-end p-4 sm:p-6"
+    >
       <section
         data-overlay-surface="inline"
         className="w-full max-w-5xl overflow-hidden rounded-[1.6rem]"
