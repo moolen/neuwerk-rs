@@ -36,6 +36,237 @@ dns:
     - 10.0.0.2:53
 ```
 
+## Full Reference `config.yaml`
+
+Use this as a shape/reference document, not as a copy-paste baseline. Remove sections you do not need for your deployment.
+
+```yaml
+# Neuwerk runtime configuration
+# Edit /etc/neuwerk/config.yaml and restart neuwerk.service after changes.
+
+version: 1
+
+bootstrap:
+  # Management NIC used for HTTP, metrics, DNS control-plane traffic, and cloud discovery.
+  management_interface: eth0
+  # Dataplane NIC used for policy-enforced traffic.
+  data_interface: eth1
+  # One of: none, aws, azure, gcp.
+  cloud_provider: aws
+  # One of: tun, tap, dpdk.
+  data_plane_mode: dpdk
+
+dns:
+  # IPs Neuwerk should answer DNS on.
+  target_ips:
+    - 10.0.0.53
+  # Upstream resolvers reachable from the management network.
+  upstreams:
+    - 10.0.0.2:53
+    - 10.0.0.3:53
+
+runtime:
+  # Tokio worker count for DNS/control-plane background tasks.
+  controlplane_worker_threads: 4
+  # Tokio worker count for the HTTP API/UI runtime.
+  http_worker_threads: 2
+  kubernetes:
+    # Reconcile cadence for Kubernetes-backed integration state.
+    reconcile_interval_secs: 5
+    # Grace window before stale Kubernetes state is dropped.
+    stale_grace_secs: 300
+
+policy:
+  # Startup default policy: allow or deny.
+  default: deny
+  # Optional internal CIDR used for local/internal traffic classification.
+  internal_cidr: 10.123.0.0/16
+
+http:
+  # Bind address for the HTTP API and UI.
+  bind: 10.0.0.10:8443
+  # Address Neuwerk advertises to peers/clients if it differs from bind.
+  advertise: 10.0.0.10:8443
+  # External URL when Neuwerk sits behind a reverse proxy or DNS name.
+  external_url: https://neuwerk.example.com
+  # Directory for generated or managed HTTP TLS assets.
+  tls_dir: /var/lib/neuwerk/http-tls
+  # Optional explicit TLS material paths.
+  cert_path: /var/lib/neuwerk/http-tls/server.crt
+  key_path: /var/lib/neuwerk/http-tls/server.key
+  ca_path: /var/lib/neuwerk/http-tls/ca.crt
+  # Extra SANs for generated or validated certificates.
+  tls_san:
+    - neuwerk.example.com
+    - neuwerk.internal
+
+metrics:
+  # Metrics listener; if omitted Neuwerk derives it from the management IP.
+  bind: 10.0.0.10:8080
+  # Must be true before binding metrics on a public/non-private address.
+  allow_public_bind: false
+
+cluster:
+  # Cluster bind enables cluster mode when any cluster.* setting is present.
+  bind: 10.0.0.10:9600
+  # Optional separate join listener; defaults to bind port + 1.
+  join_bind: 10.0.0.10:9601
+  # Address advertised to other nodes.
+  advertise: 10.0.0.10:9600
+  # Seed node to join; omit on the first cluster node.
+  join_seed: 10.0.0.11:9600
+  # Persistent cluster state paths.
+  data_dir: /var/lib/neuwerk/cluster
+  node_id_path: /var/lib/neuwerk/node_id
+  token_path: /var/lib/neuwerk/bootstrap-token
+  # Migration controls for moving local state into clustered storage.
+  migrate_from_local: false
+  migrate_force: false
+  migrate_verify: false
+
+integration:
+  # One of: none, aws-asg, azure-vmss, gcp-mig.
+  mode: aws-asg
+  route_name: neuwerk-default
+  cluster_name: neuwerk
+  drain_timeout_secs: 300
+  reconcile_interval_secs: 15
+  # Populate only the subsection that matches integration.mode.
+  aws:
+    region: us-east-1
+    vpc_id: vpc-0123456789abcdef0
+    asg_name: neuwerk-asg
+  # azure:
+  #   subscription_id: 00000000-0000-0000-0000-000000000000
+  #   resource_group: rg-neuwerk
+  #   vmss_name: vmss-neuwerk
+  # gcp:
+  #   project: my-project
+  #   region: us-central1
+  #   ig_name: neuwerk-mig
+
+tls_intercept:
+  # One of: strict, insecure.
+  upstream_verify: strict
+  # Upstream TLS handshake/read timeout.
+  io_timeout_secs: 3
+  # Listener backlog for the intercept path.
+  listen_backlog: 1024
+  h2:
+    body_timeout_secs: 10
+    max_concurrent_streams: 64
+    max_requests_per_connection: 800
+    pool_shards: 1
+    detailed_metrics: false
+    selection_inflight_weight: 128
+    reconnect_backoff_base_ms: 5
+    reconnect_backoff_max_ms: 250
+
+dataplane:
+  idle_timeout_secs: 300
+  dns_allowlist_idle_secs: 420
+  dns_allowlist_gc_interval_secs: 30
+  dhcp_timeout_secs: 5
+  dhcp_retry_max: 5
+  dhcp_lease_min_secs: 60
+  # Either a scalar:
+  snat: auto
+  # Or a structured static form:
+  # snat:
+  #   mode: static
+  #   ip: 198.51.100.20
+  # Overlay mode: none, vxlan, geneve.
+  encap_mode: none
+  # VXLAN options. Use encap_vni or the internal/external pair, not both.
+  # encap_vni: 1001
+  # encap_vni_internal: 1002
+  # encap_vni_external: 1003
+  # Optional UDP port overrides for overlay traffic.
+  # encap_udp_port: 10800
+  # encap_udp_port_internal: 10810
+  # encap_udp_port_external: 10811
+  encap_mtu: 1500
+  flow_table_capacity: 32768
+  nat_table_capacity: 32768
+  # Optional half-open TCP idle timeout override.
+  # flow_incomplete_tcp_idle_timeout_secs: 300
+  flow_incomplete_tcp_syn_sent_idle_timeout_secs: 3
+  syn_only_enabled: false
+  detailed_observability: false
+  admission:
+    max_active_flows: 24576
+    max_active_nat_entries: 24576
+    max_pending_tls_flows: 2048
+    # Omit to leave per-source-group admission disabled.
+    # max_active_flows_per_source_group: 16384
+
+dpdk:
+  # Set all four static_* keys together if you need static DPDK addressing.
+  # static_ip: 10.0.1.10
+  # static_prefix_len: 24
+  # static_gateway: 10.0.1.1
+  # static_mac: 02:00:00:00:00:42
+  # Either auto or an explicit worker count.
+  workers: auto
+  # Optional explicit EAL core pinning.
+  core_ids: [0, 1]
+  allow_azure_multiworker: false
+  single_queue_mode: demux
+  perf_mode: standard
+  force_shared_rx_demux: false
+  pin_https_demux_owner: false
+  disable_service_lane: false
+  lockless_queue_per_worker: false
+  shared_rx_owner_only: true
+  housekeeping_interval_packets: 64
+  housekeeping_interval_us: 250
+  pin_state_shard_guard: false
+  pin_state_shard_burst: 64
+  # Optional explicit shard count; defaults to worker count.
+  # state_shards: 2
+  disable_in_memory: false
+  # Optional IOVA mode override: va or pa.
+  # iova_mode: va
+  force_netvsc: false
+  gcp_auto_probe: false
+  # Extra DPDK PMD/bus libraries to preload.
+  driver_preload: []
+  skip_bus_pci_preload: false
+  prefer_pci: false
+  # Optional queue capability override.
+  # queue_override: 4
+  # Optional MTU override for the DPDK port.
+  # port_mtu: 1500
+  # Optional mbuf tuning.
+  # mbuf_data_room: 2176
+  # mbuf_pool_size: 65535
+  rx_ring_size: 1024
+  tx_ring_size: 1024
+  # Optional checksum offload override.
+  # tx_checksum_offload: true
+  allow_retaless_multi_queue: false
+  service_lane:
+    interface: svc0
+    intercept_service_ip: 169.254.255.1
+    intercept_service_port: 15443
+    multi_queue: true
+  intercept_demux:
+    gc_interval_ms: 1000
+    max_entries: 65536
+    shard_count: 64
+    host_frame_queue_max: 8192
+    pending_arp_queue_max: 4096
+  # Optional trust pins for gateway and DHCP learning.
+  # gateway_mac: aa:bb:cc:dd:ee:ff
+  # dhcp_server_ip: 10.0.1.1
+  # dhcp_server_mac: aa:bb:cc:dd:ee:01
+  overlay:
+    swap_tunnels: false
+    force_tunnel_src_port: false
+    debug: false
+    health_probe_debug: false
+```
+
 ## Quick Reference
 
 ### Required Bootstrap And DNS
