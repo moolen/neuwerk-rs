@@ -8,7 +8,7 @@ export function createPolicyBuilderLifecycleHandlers(
 ): PolicyBuilderLifecycleHandlers {
   const handleCreate = buildHandleCreate(deps);
   const loadEditorForPolicy = buildLoadEditorForPolicy(deps);
-  const loadAll = buildLoadAll(deps, loadEditorForPolicy, handleCreate);
+  const loadAll = buildLoadAll(deps, handleCreate);
   const handleDelete = buildHandleDelete(deps, loadAll, handleCreate);
   const handleSave = buildHandleSave(deps, loadAll);
 

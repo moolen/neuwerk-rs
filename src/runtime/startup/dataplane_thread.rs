@@ -8,7 +8,7 @@ use neuwerk::dataplane::policy::{
 };
 use neuwerk::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DrainControl, OverlayConfig,
-    SharedInterceptDemuxState, SnatMode, WiretapEmitter,
+    PolicyTelemetryEmitter, SharedInterceptDemuxState, SnatMode, WiretapEmitter,
 };
 use neuwerk::metrics::Metrics;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -31,6 +31,7 @@ pub struct DataplaneRuntimeConfig {
     pub dns_target_ips: Vec<Ipv4Addr>,
     pub wiretap_emitter: Option<WiretapEmitter>,
     pub audit_emitter: Option<AuditEmitter>,
+    pub policy_telemetry_emitter: Option<PolicyTelemetryEmitter>,
     pub internal_net: Ipv4Addr,
     pub internal_prefix: u8,
     pub public_ip: Ipv4Addr,
@@ -68,6 +69,7 @@ pub fn spawn_dataplane_runtime_thread(
                     cfg.dns_target_ips,
                     cfg.wiretap_emitter,
                     cfg.audit_emitter,
+                    cfg.policy_telemetry_emitter,
                     cfg.internal_net,
                     cfg.internal_prefix,
                     cfg.public_ip,

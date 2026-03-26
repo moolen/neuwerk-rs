@@ -9,6 +9,7 @@ pub mod nat;
 pub mod overlay;
 pub mod packet;
 pub mod policy;
+pub mod policy_telemetry;
 pub mod soft_adapter;
 pub mod tls;
 pub mod wiretap;
@@ -31,6 +32,7 @@ pub use overlay::{EncapMode, OverlayConfig, OverlayPacket, SnatMode};
 pub use packet::Packet;
 pub use soft_adapter::{SoftAdapter, SoftMode};
 pub use tls::{TlsFlowDecision, TlsFlowState, TlsVerifier};
+pub use policy_telemetry::{PolicyTelemetryEmitter, PolicyTelemetryEvent};
 pub use wiretap::{
     WiretapEmitter, WiretapEvent, WiretapEventType, DEFAULT_WIRETAP_REPORT_INTERVAL_SECS,
 };

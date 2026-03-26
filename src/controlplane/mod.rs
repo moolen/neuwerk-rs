@@ -12,6 +12,7 @@ pub mod intercept_tls;
 pub mod kubernetes;
 pub mod metrics;
 pub mod policy_config;
+pub mod policy_telemetry;
 pub mod policy_replication;
 pub mod policy_repository;
 pub mod policy_store;

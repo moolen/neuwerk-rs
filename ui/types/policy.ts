@@ -1,3 +1,5 @@
+import type { AuditNodeError } from './audit';
+
 export type PolicyMode = 'disabled' | 'audit' | 'enforce';
 
 export type PolicyAction = 'allow' | 'deny';
@@ -124,4 +126,18 @@ export interface PolicyCreateRequest {
   name?: string;
   mode: PolicyMode;
   policy: PolicyConfig;
+}
+
+export interface PolicySourceGroupTelemetry {
+  source_group_id: string;
+  current_24h_hits: number;
+  previous_24h_hits: number;
+}
+
+export interface PolicyTelemetryResponse {
+  items: PolicySourceGroupTelemetry[];
+  partial: boolean;
+  node_errors: AuditNodeError[];
+  nodes_queried: number;
+  nodes_responded: number;
 }

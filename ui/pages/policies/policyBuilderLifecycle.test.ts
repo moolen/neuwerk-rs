@@ -1,11 +1,17 @@
 import React from 'react';
-import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PolicyRecord } from '../../types';
+import { createEmptyPolicyRequest } from '../../utils/policyModel';
 import { deriveLoadAllFollowUp, errorMessage } from './policyBuilderLifecycle';
-import { loadPolicyBuilderRemote } from './policyBuilderRemote';
+import { buildHandleDelete } from './policyBuilderLifecycleDelete';
+import { buildHandleSave } from './policyBuilderLifecycleSave';
+import {
+  deletePolicyRemote,
+  loadPolicyBuilderRemote,
+  savePolicyRemote,
+} from './policyBuilderRemote';
 import {
   buildCloseSourceGroupEditor,
   buildLoadAll,
@@ -13,22 +19,31 @@ import {
   buildSelectPolicy,
 } from './policyBuilderLifecycleLoad';
 import type { PolicyBuilderLifecycleDeps } from './policyBuilderTypes';
+import { usePolicyBuilder } from './usePolicyBuilder';
 import { usePolicyBuilderState } from './usePolicyBuilderState';
 
 vi.mock('./policyBuilderRemote', () => ({
+  deletePolicyRemote: vi.fn(),
   loadPolicyBuilderRemote: vi.fn(),
   loadPolicyDraftRemote: vi.fn(),
+  savePolicyRemote: vi.fn(),
 }));
 
 describe('policyBuilderLifecycle helpers', () => {
   beforeEach(() => {
     vi.mocked(loadPolicyBuilderRemote).mockReset();
+    vi.mocked(deletePolicyRemote).mockReset();
+    vi.mocked(savePolicyRemote).mockReset();
   });
 
   it('derives initial load follow-up action', () => {
     const policies = [{ id: 'p-1' }, { id: 'p-2' }] as PolicyRecord[];
     expect(deriveLoadAllFollowUp(policies, null)).toEqual({ kind: 'select-first', policyId: 'p-1' });
     expect(deriveLoadAllFollowUp(policies, 'p-2')).toEqual({ kind: 'none' });
+    expect(deriveLoadAllFollowUp([{ id: 'p-2' }] as PolicyRecord[], 'p-1')).toEqual({
+      kind: 'select-first',
+      policyId: 'p-2',
+    });
     expect(deriveLoadAllFollowUp([], null)).toEqual({ kind: 'create' });
   });
 
@@ -37,13 +52,18 @@ describe('policyBuilderLifecycle helpers', () => {
     expect(errorMessage('x', 'fallback')).toBe('fallback');
   });
 
-  it('removes legacy selectedId lifecycle deps and wiring', () => {
-    const lifecycleTypesSource = readFileSync(new URL('./policyBuilderTypes.ts', import.meta.url), 'utf8');
-    const policyBuilderHookSource = readFileSync(new URL('./usePolicyBuilder.ts', import.meta.url), 'utf8');
+  it('exposes selected policy state without a legacy selectedId alias', () => {
+    let capturedHook: ReturnType<typeof usePolicyBuilder> | null = null;
+    const CaptureHook = () => {
+      capturedHook = usePolicyBuilder();
+      return React.createElement('div');
+    };
 
-    expect(lifecycleTypesSource).not.toContain('selectedId: string | null;');
-    expect(lifecycleTypesSource).not.toContain('setSelectedId: Dispatch<SetStateAction<string | null>>;');
-    expect(policyBuilderHookSource).not.toContain('setSelectedId: setSelectedPolicyId');
+    renderToStaticMarkup(React.createElement(CaptureHook));
+
+    expect(capturedHook).not.toBeNull();
+    expect(capturedHook?.state.selectedPolicyId).toBeNull();
+    expect('selectedId' in (capturedHook?.state ?? {})).toBe(false);
   });
 
   it('tracks selected policy and editor target as separate hook state', () => {
@@ -122,7 +142,6 @@ describe('policyBuilderLifecycle helpers', () => {
     });
 
     const selectedPolicyIds: Array<string | null> = [];
-    const selectedIds: Array<string | null> = [];
     const deps: PolicyBuilderLifecycleDeps = {
       selectedPolicyId: null,
       editorMode: 'create',
@@ -145,14 +164,100 @@ describe('policyBuilderLifecycle helpers', () => {
       setEditorError: () => undefined,
     };
 
-    const loadAll = buildLoadAll(
-      deps,
-      async () => undefined,
-      () => undefined,
-    );
+    const loadAll = buildLoadAll(deps, () => undefined);
 
     await loadAll();
 
     expect(selectedPolicyIds).toEqual(['p-1']);
+  });
+
+  it('resets the editor after deleting the edited policy without clearing the refreshed selection', async () => {
+    vi.mocked(deletePolicyRemote).mockResolvedValue(undefined);
+    const confirmSpy = vi.fn(() => true);
+    vi.stubGlobal('window', { confirm: confirmSpy });
+
+    const selectedPolicyIds: Array<string | null> = [];
+    const editorModes: Array<'create' | 'edit'> = [];
+    const editorTargetIds: Array<string | null> = [];
+    const drafts = new Array<ReturnType<typeof createEmptyPolicyRequest>>();
+    const deps: PolicyBuilderLifecycleDeps = {
+      selectedPolicyId: 'p-deleted',
+      editorMode: 'edit',
+      editorTargetId: 'p-deleted',
+      overlayMode: 'closed',
+      overlaySourceGroupId: null,
+      draft: createEmptyPolicyRequest(),
+      integrationNames: new Set<string>(),
+      setPolicies: () => undefined,
+      setIntegrations: () => undefined,
+      setSelectedPolicyId: (value) => selectedPolicyIds.push(value),
+      setOverlayMode: () => undefined,
+      setOverlaySourceGroupId: () => undefined,
+      setLoading: () => undefined,
+      setError: () => undefined,
+      setDraft: (value) => {
+        drafts.push(typeof value === 'function' ? value(createEmptyPolicyRequest()) : value);
+      },
+      setEditorMode: (value) => editorModes.push(value),
+      setEditorTargetId: (value) => editorTargetIds.push(value),
+      setSaving: () => undefined,
+      setEditorError: () => undefined,
+    };
+
+    const handleDelete = buildHandleDelete(
+      deps,
+      async () => {
+        selectedPolicyIds.push('p-remaining');
+      },
+      () => undefined,
+    );
+
+    await handleDelete('p-deleted');
+
+    expect(selectedPolicyIds).toEqual(['p-remaining']);
+    expect(editorModes).toEqual(['create']);
+    expect(editorTargetIds).toEqual([null]);
+    expect(drafts).toEqual([createEmptyPolicyRequest()]);
+    expect(confirmSpy).toHaveBeenCalledWith('Delete this policy?');
+
+    vi.unstubAllGlobals();
+  });
+
+  it('selects the created policy after save without relying on legacy selectedId wiring', async () => {
+    vi.mocked(savePolicyRemote).mockResolvedValue({
+      editorMode: 'edit',
+      editorTargetId: 'p-new',
+      selectedPolicyId: 'p-new',
+      draft: createEmptyPolicyRequest(),
+    });
+
+    const selectedPolicyIds: Array<string | null> = [];
+    const deps: PolicyBuilderLifecycleDeps = {
+      selectedPolicyId: null,
+      editorMode: 'create',
+      editorTargetId: null,
+      overlayMode: 'closed',
+      overlaySourceGroupId: null,
+      draft: createEmptyPolicyRequest(),
+      integrationNames: new Set<string>(),
+      setPolicies: () => undefined,
+      setIntegrations: () => undefined,
+      setSelectedPolicyId: (value) => selectedPolicyIds.push(value),
+      setOverlayMode: () => undefined,
+      setOverlaySourceGroupId: () => undefined,
+      setLoading: () => undefined,
+      setError: () => undefined,
+      setDraft: () => undefined,
+      setEditorMode: () => undefined,
+      setEditorTargetId: () => undefined,
+      setSaving: () => undefined,
+      setEditorError: () => undefined,
+    };
+
+    const handleSave = buildHandleSave(deps, async () => undefined);
+
+    await handleSave();
+
+    expect(selectedPolicyIds).toEqual(['p-new']);
   });
 });

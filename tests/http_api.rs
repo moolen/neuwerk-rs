@@ -15,6 +15,7 @@ use neuwerk::controlplane::http_api::{HttpApiCluster, HttpApiConfig};
 use neuwerk::controlplane::intercept_tls::local_intercept_ca_paths;
 use neuwerk::controlplane::metrics::Metrics;
 use neuwerk::controlplane::policy_config::PolicyMode;
+use neuwerk::controlplane::policy_telemetry::PolicyTelemetryStore;
 use neuwerk::controlplane::policy_repository::{
     PolicyActive, PolicyDiskStore, PolicyRecord, POLICY_ACTIVE_KEY,
 };
@@ -257,6 +258,9 @@ where
         }
     }
 }
+
+#[path = "http_api/cluster_policy_telemetry_cases.rs"]
+mod cluster_policy_telemetry_cases;
 
 #[path = "http_api/authz_cases.rs"]
 mod authz_cases;

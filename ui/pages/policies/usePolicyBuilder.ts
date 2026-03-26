@@ -97,6 +97,14 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     void loadAll();
   }, []);
 
+  useEffect(() => {
+    if (!selectedPolicyId || editorTargetId === selectedPolicyId) {
+      return;
+    }
+
+    void loadEditorForPolicyWithOverlay(selectedPolicyId);
+  }, [selectedPolicyId, editorTargetId]);
+
   const {
     addGroup,
     duplicateGroup,
@@ -113,7 +121,6 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
       policies,
       integrations,
       selectedPolicyId,
-      selectedId: selectedPolicyId,
       loading,
       error,
       draft,

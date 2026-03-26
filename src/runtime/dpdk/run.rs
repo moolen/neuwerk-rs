@@ -12,8 +12,8 @@ use neuwerk::dataplane::DpdkTransferredRxPacket;
 use neuwerk::dataplane::engine::EngineRuntimeConfig;
 use neuwerk::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo, DrainControl,
-    EngineState, FrameIo, FrameOut, OverlayConfig, Packet, SharedArpState,
-    SharedInterceptDemuxState, SnatMode, SoftAdapter, WiretapEmitter,
+    EngineState, FrameIo, FrameOut, OverlayConfig, Packet, PolicyTelemetryEmitter,
+    SharedArpState, SharedInterceptDemuxState, SnatMode, SoftAdapter, WiretapEmitter,
 };
 use neuwerk::metrics::{
     current_dpdk_worker_id, set_current_dpdk_worker_id, DpdkFlowSteerMetricHandles, Metrics,
@@ -588,6 +588,7 @@ pub fn run_dataplane(
     dns_target_ips: Vec<Ipv4Addr>,
     wiretap_emitter: Option<WiretapEmitter>,
     audit_emitter: Option<AuditEmitter>,
+    policy_telemetry_emitter: Option<PolicyTelemetryEmitter>,
     internal_net: Ipv4Addr,
     internal_prefix: u8,
     public_ip: Ipv4Addr,
@@ -658,6 +659,9 @@ pub fn run_dataplane(
         if let Some(emitter) = audit_emitter {
             state.set_audit_emitter(emitter);
         }
+    }
+    if let Some(emitter) = policy_telemetry_emitter {
+        state.set_policy_telemetry_emitter(emitter);
     }
 
     match data_plane_mode {

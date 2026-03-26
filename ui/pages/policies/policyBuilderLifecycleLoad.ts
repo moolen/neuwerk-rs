@@ -72,7 +72,6 @@ export function buildLoadEditorForPolicy(deps: PolicyBuilderLifecycleDeps): Load
 
 export function buildLoadAll(
   deps: PolicyBuilderLifecycleDeps,
-  _loadEditorForPolicy: LoadEditorForPolicy,
   handleCreate: HandleCreate,
 ): () => Promise<void> {
   const { selectedPolicyId, setLoading, setError, setPolicies, setIntegrations, setSelectedPolicyId } = deps;

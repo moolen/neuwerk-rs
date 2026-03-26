@@ -7,13 +7,15 @@ export type LoadAllFollowUp =
 
 export function deriveLoadAllFollowUp(
   policies: PolicyRecord[],
-  selectedId: string | null,
+  selectedPolicyId: string | null,
 ): LoadAllFollowUp {
   if (!policies.length) return { kind: 'create' };
-  if (!selectedId) {
+  if (!selectedPolicyId) {
     return { kind: 'select-first', policyId: policies[0].id };
   }
-  return { kind: 'none' };
+  return policies.some((policy) => policy.id === selectedPolicyId)
+    ? { kind: 'none' }
+    : { kind: 'select-first', policyId: policies[0].id };
 }
 
 export function errorMessage(err: unknown, fallback: string): string {

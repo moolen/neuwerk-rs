@@ -12,6 +12,7 @@ use neuwerk::controlplane::audit::{AuditStore, DEFAULT_AUDIT_STORE_MAX_BYTES};
 use neuwerk::controlplane::cluster::ClusterRuntime;
 use neuwerk::controlplane::integrations::IntegrationStore;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
+use neuwerk::controlplane::policy_telemetry::PolicyTelemetryStore;
 use neuwerk::controlplane::ready::ReadinessState;
 use neuwerk::controlplane::threat_intel::feeds::ThreatSnapshot;
 #[cfg(test)]
@@ -30,8 +31,8 @@ use neuwerk::controlplane::threat_intel::types::ThreatSeverity;
 use neuwerk::controlplane::wiretap::{DnsMap, WiretapHub};
 use neuwerk::controlplane::PolicyStore;
 use neuwerk::dataplane::{
-    AuditEmitter, SharedInterceptDemuxState, WiretapEmitter, DEFAULT_AUDIT_REPORT_INTERVAL_SECS,
-    DEFAULT_WIRETAP_REPORT_INTERVAL_SECS,
+    AuditEmitter, PolicyTelemetryEmitter, SharedInterceptDemuxState, WiretapEmitter,
+    DEFAULT_AUDIT_REPORT_INTERVAL_SECS, DEFAULT_WIRETAP_REPORT_INTERVAL_SECS,
 };
 use neuwerk::metrics::Metrics;
 use tokio::sync::{mpsc, oneshot};
@@ -52,6 +53,7 @@ pub struct ControlplaneRuntimeHandles {
     pub http_shutdown: controlplane::http_api::HttpApiShutdown,
     pub wiretap_emitter: WiretapEmitter,
     pub audit_emitter: AuditEmitter,
+    pub policy_telemetry_emitter: PolicyTelemetryEmitter,
     pub shared_intercept_demux: Arc<SharedInterceptDemuxState>,
 }
 
@@ -263,6 +265,8 @@ pub async fn start_controlplane_runtime(
     let dns_map_for_gc = dns_map.clone();
     let dns_map_for_http = dns_map.clone();
     let local_data_root = local_controlplane_data_root();
+    let policy_telemetry_store =
+        PolicyTelemetryStore::new(local_data_root.join("policy-telemetry"));
     let audit_store = AuditStore::new(
         local_data_root.join("audit-store"),
         DEFAULT_AUDIT_STORE_MAX_BYTES,
@@ -388,15 +392,19 @@ pub async fn start_controlplane_runtime(
     }
     let (wiretap_tx, wiretap_rx) = mpsc::channel(1024);
     let (audit_tx, audit_rx) = mpsc::channel(4096);
+    let (policy_telemetry_tx, policy_telemetry_rx) = mpsc::channel(4096);
     let wiretap_emitter = WiretapEmitter::new(wiretap_tx, DEFAULT_WIRETAP_REPORT_INTERVAL_SECS);
     let audit_emitter = AuditEmitter::new(audit_tx, DEFAULT_AUDIT_REPORT_INTERVAL_SECS);
+    let policy_telemetry_emitter = PolicyTelemetryEmitter::new(policy_telemetry_tx);
 
     spawn_event_bridges(
         wiretap_rx,
         audit_rx,
+        policy_telemetry_rx,
         wiretap_hub.clone(),
         dns_map.clone(),
         audit_store.clone(),
+        policy_telemetry_store.clone(),
         policy_store.clone(),
         Some(threat_runtime.clone()),
         node_id.clone(),
@@ -491,6 +499,7 @@ pub async fn start_controlplane_runtime(
         intercept_demux: shared_intercept_demux.clone(),
         policy_store: policy_store.clone(),
         audit_store: Some(audit_store.clone()),
+        policy_telemetry_store: Some(policy_telemetry_store.clone()),
         threat_runtime: Some(threat_runtime),
         node_id: node_id.clone(),
         startup_status_tx: None,
@@ -552,6 +561,7 @@ pub async fn start_controlplane_runtime(
         local_store: local_policy_store,
         cluster: http_cluster,
         audit_store: Some(audit_store),
+        policy_telemetry_store: Some(policy_telemetry_store),
         threat_store: Some(threat_store),
         wiretap_hub: Some(wiretap_hub),
         dns_map: Some(dns_map_for_http),
@@ -567,6 +577,7 @@ pub async fn start_controlplane_runtime(
         http_shutdown,
         wiretap_emitter,
         audit_emitter,
+        policy_telemetry_emitter,
         shared_intercept_demux,
     })
 }

@@ -39,6 +39,7 @@ use crate::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
 use crate::controlplane::http_tls::{ensure_http_tls, HttpTlsConfig};
 use crate::controlplane::integrations::{IntegrationKind, IntegrationStore, IntegrationView};
 use crate::controlplane::metrics::Metrics;
+use crate::controlplane::policy_telemetry::PolicyTelemetryStore;
 use crate::controlplane::policy_repository::{
     policy_item_key, PolicyActive, PolicyDiskStore, PolicyIndex, PolicyMeta, PolicyRecord,
     POLICY_ACTIVE_KEY, POLICY_INDEX_KEY,
@@ -74,6 +75,7 @@ pub mod openapi;
 mod performance_mode;
 mod policy;
 mod policy_activation;
+mod policy_telemetry;
 mod proxy;
 mod security;
 mod service_accounts_api;
@@ -98,6 +100,7 @@ use policy::{
     upsert_policy_by_name,
 };
 use policy_activation::{enforcement_mode_for_policy_mode, wait_for_policy_activation};
+use policy_telemetry::{policy_telemetry, policy_telemetry_local};
 use service_accounts_api::{
     create_service_account, create_service_account_token, delete_service_account,
     list_service_account_tokens, list_service_accounts, revoke_service_account_token,
@@ -179,6 +182,7 @@ struct ApiState {
     sso: SsoStore,
     integrations: IntegrationStore,
     audit_store: Option<AuditStore>,
+    policy_telemetry_store: Option<PolicyTelemetryStore>,
     threat_store: Option<ThreatStore>,
     cluster: Option<HttpApiCluster>,
     metrics: Metrics,
@@ -248,6 +252,35 @@ pub async fn run_http_api(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub async fn run_http_api_with_policy_telemetry(
+    cfg: HttpApiConfig,
+    policy_store: PolicyStore,
+    local_store: PolicyDiskStore,
+    cluster: Option<HttpApiCluster>,
+    audit_store: Option<AuditStore>,
+    policy_telemetry_store: Option<PolicyTelemetryStore>,
+    wiretap_hub: Option<WiretapHub>,
+    dns_map: Option<DnsMap>,
+    readiness: Option<ReadinessState>,
+    metrics: Metrics,
+) -> Result<(), String> {
+    run_http_api_with_threat_and_policy_telemetry(
+        cfg,
+        policy_store,
+        local_store,
+        cluster,
+        audit_store,
+        policy_telemetry_store,
+        None,
+        wiretap_hub,
+        dns_map,
+        readiness,
+        metrics,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn run_http_api_with_threat_store(
     cfg: HttpApiConfig,
     policy_store: PolicyStore,
@@ -260,12 +293,43 @@ pub async fn run_http_api_with_threat_store(
     readiness: Option<ReadinessState>,
     metrics: Metrics,
 ) -> Result<(), String> {
+    run_http_api_with_threat_and_policy_telemetry(
+        cfg,
+        policy_store,
+        local_store,
+        cluster,
+        audit_store,
+        None,
+        threat_store,
+        wiretap_hub,
+        dns_map,
+        readiness,
+        metrics,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_http_api_with_threat_and_policy_telemetry(
+    cfg: HttpApiConfig,
+    policy_store: PolicyStore,
+    local_store: PolicyDiskStore,
+    cluster: Option<HttpApiCluster>,
+    audit_store: Option<AuditStore>,
+    policy_telemetry_store: Option<PolicyTelemetryStore>,
+    threat_store: Option<ThreatStore>,
+    wiretap_hub: Option<WiretapHub>,
+    dns_map: Option<DnsMap>,
+    readiness: Option<ReadinessState>,
+    metrics: Metrics,
+) -> Result<(), String> {
     run_http_api_with_shutdown_and_threat_store(
         cfg,
         policy_store,
         local_store,
         cluster,
         audit_store,
+        policy_telemetry_store,
         threat_store,
         wiretap_hub,
         dns_map,
@@ -296,6 +360,7 @@ pub async fn run_http_api_with_shutdown(
         cluster,
         audit_store,
         None,
+        None,
         wiretap_hub,
         dns_map,
         readiness,
@@ -312,6 +377,7 @@ pub async fn run_http_api_with_shutdown_and_threat_store(
     local_store: PolicyDiskStore,
     cluster: Option<HttpApiCluster>,
     audit_store: Option<AuditStore>,
+    policy_telemetry_store: Option<PolicyTelemetryStore>,
     threat_store: Option<ThreatStore>,
     wiretap_hub: Option<WiretapHub>,
     dns_map: Option<DnsMap>,
@@ -325,6 +391,7 @@ pub async fn run_http_api_with_shutdown_and_threat_store(
         local_store,
         cluster,
         audit_store,
+        policy_telemetry_store,
         threat_store,
         wiretap_hub,
         dns_map,
@@ -343,6 +410,7 @@ pub async fn run_http_api_with_shutdown_and_threat_store_with_local_apply_guard(
     local_store: PolicyDiskStore,
     cluster: Option<HttpApiCluster>,
     audit_store: Option<AuditStore>,
+    policy_telemetry_store: Option<PolicyTelemetryStore>,
     threat_store: Option<ThreatStore>,
     wiretap_hub: Option<WiretapHub>,
     dns_map: Option<DnsMap>,
@@ -357,6 +425,7 @@ pub async fn run_http_api_with_shutdown_and_threat_store_with_local_apply_guard(
         local_store,
         cluster,
         audit_store,
+        policy_telemetry_store,
         threat_store,
         wiretap_hub,
         dns_map,
@@ -375,6 +444,7 @@ async fn run_http_api_with_shutdown_impl(
     local_store: PolicyDiskStore,
     cluster: Option<HttpApiCluster>,
     audit_store: Option<AuditStore>,
+    policy_telemetry_store: Option<PolicyTelemetryStore>,
     threat_store: Option<ThreatStore>,
     wiretap_hub: Option<WiretapHub>,
     dns_map: Option<DnsMap>,
@@ -451,6 +521,7 @@ async fn run_http_api_with_shutdown_impl(
         sso,
         integrations,
         audit_store,
+        policy_telemetry_store,
         threat_store,
         cluster,
         metrics: metrics.clone(),
@@ -523,6 +594,8 @@ async fn run_http_api_with_shutdown_impl(
         )
         .route("/audit/findings", get(audit_findings))
         .route("/audit/findings/local", get(audit_findings_local))
+        .route("/policies/:id/telemetry", get(policy_telemetry))
+        .route("/policies/:id/telemetry/local", get(policy_telemetry_local))
         .route("/threats/findings", get(threat_findings))
         .route("/threats/findings/local", get(threat_findings_local))
         .route(

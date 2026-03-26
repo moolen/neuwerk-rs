@@ -40,7 +40,7 @@ export async function savePolicyRemote(
 ): Promise<{
   editorMode: 'create' | 'edit';
   editorTargetId: string | null;
-  selectedId: string | null;
+  selectedPolicyId: string | null;
   draft: PolicyCreateRequest;
 }> {
   const request = sanitizePolicyRequestForApi(draft);
@@ -49,7 +49,7 @@ export async function savePolicyRemote(
     return {
       editorMode: 'edit',
       editorTargetId: created.id,
-      selectedId: created.id,
+      selectedPolicyId: created.id,
       draft: normalizePolicyRequest({ name: created.name, mode: created.mode, policy: created.policy }),
     };
   }
@@ -59,7 +59,7 @@ export async function savePolicyRemote(
     return {
       editorMode: 'edit',
       editorTargetId,
-      selectedId: null,
+      selectedPolicyId: null,
       draft: normalizePolicyRequest({ name: updated.name, mode: updated.mode, policy: updated.policy }),
     };
   }
@@ -67,7 +67,7 @@ export async function savePolicyRemote(
   return {
     editorMode,
     editorTargetId,
-    selectedId: null,
+    selectedPolicyId: null,
     draft,
   };
 }

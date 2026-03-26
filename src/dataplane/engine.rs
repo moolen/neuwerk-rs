@@ -18,6 +18,7 @@ use crate::dataplane::policy::{
     new_shared_exact_source_group_index, DynamicIpSetV4, PacketMeta, PolicyDecision,
     PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
 };
+use crate::dataplane::policy_telemetry::{PolicyTelemetryEmitter, PolicyTelemetryEvent};
 use crate::dataplane::tls::{
     TlsDirection, TlsFlowDecision, TlsFlowState, TlsObservation, TlsVerifier,
 };
@@ -151,6 +152,7 @@ pub struct EngineState {
     dns_allowlist_override: Option<DynamicIpSetV4>,
     wiretap: Option<WiretapEmitter>,
     audit: Option<AuditEmitter>,
+    policy_telemetry: Option<PolicyTelemetryEmitter>,
     now_override_secs: Option<u64>,
     last_eviction_check_secs: Option<u64>,
     metrics: Option<Arc<Metrics>>,
@@ -271,6 +273,7 @@ impl EngineState {
             dns_allowlist_override: None,
             wiretap: None,
             audit: None,
+            policy_telemetry: None,
             now_override_secs: None,
             last_eviction_check_secs: None,
             metrics: None,
@@ -404,6 +407,7 @@ impl EngineState {
             dns_allowlist_override: self.dns_allowlist_override.clone(),
             wiretap: self.wiretap.clone(),
             audit: self.audit.clone(),
+            policy_telemetry: self.policy_telemetry.clone(),
             now_override_secs: self.now_override_secs,
             last_eviction_check_secs: None,
             metrics: self.metrics.clone(),
@@ -445,6 +449,10 @@ impl EngineState {
 
     pub fn set_audit_emitter(&mut self, emitter: AuditEmitter) {
         self.audit = Some(emitter);
+    }
+
+    pub fn set_policy_telemetry_emitter(&mut self, emitter: PolicyTelemetryEmitter) {
+        self.policy_telemetry = Some(emitter);
     }
 
     pub fn set_metrics(&mut self, metrics: Metrics) {
@@ -877,6 +885,12 @@ impl EngineState {
         now: u64,
     ) {
         self.note_dns_grant_flow_open(source_group, flow.dst_ip, now);
+        if let Some(emitter) = &self.policy_telemetry {
+            emitter.try_send(PolicyTelemetryEvent {
+                source_group: source_group.to_string(),
+                observed_at: now,
+            });
+        }
         self.note_flow_lifecycle_event("open", reason, 1);
         if let Some(metrics) = &self.metrics {
             metrics.inc_dp_flow_open(proto_label(proto), source_group);

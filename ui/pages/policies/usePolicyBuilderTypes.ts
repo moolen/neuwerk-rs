@@ -2,19 +2,17 @@ import type { Dispatch, SetStateAction } from 'react';
 
 import type { IntegrationView, PolicyCreateRequest, PolicyRecord } from '../../types';
 import type { PolicyValidationIssue } from '../../utils/policyValidation';
-
-type PolicyOverlayMode = 'closed' | 'create-group' | 'edit-group';
+import type { PolicyEditorMode, PolicyOverlayMode } from './policyBuilderTypes';
 
 export interface UsePolicyBuilderState {
   policies: PolicyRecord[];
   integrations: IntegrationView[];
   selectedPolicyId: string | null;
-  selectedId: string | null;
   loading: boolean;
   error: string | null;
 
   draft: PolicyCreateRequest;
-  editorMode: 'create' | 'edit';
+  editorMode: PolicyEditorMode;
   editorTargetId: string | null;
   overlayMode: PolicyOverlayMode;
   overlaySourceGroupId: string | null;

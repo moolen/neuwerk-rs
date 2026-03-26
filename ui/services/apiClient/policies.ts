@@ -1,5 +1,9 @@
-import type { PolicyCreateRequest, PolicyRecord } from '../../types';
+import type { PolicyCreateRequest, PolicyRecord, PolicyTelemetryResponse } from '../../types';
 import { fetchJSON, fetchText } from './transport';
+
+export function buildPolicyTelemetryPath(id: string): string {
+  return `/policies/${encodeURIComponent(id)}/telemetry`;
+}
 
 export async function listPolicies(): Promise<PolicyRecord[]> {
   return fetchJSON<PolicyRecord[]>('/policies');
@@ -31,4 +35,8 @@ export async function deletePolicy(id: string): Promise<void> {
   await fetchJSON<void>(`/policies/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
+}
+
+export async function getPolicyTelemetry(id: string): Promise<PolicyTelemetryResponse> {
+  return fetchJSON<PolicyTelemetryResponse>(buildPolicyTelemetryPath(id));
 }
