@@ -1,18 +1,17 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::dataplane::engine::{Action, EngineState};
 use crate::dataplane::overlay::{self, EncapMode};
 use crate::dataplane::packet::Packet;
+use crate::support::runtime_knobs::current_runtime_knobs;
 
 const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
 const IFF_TUN: libc::c_short = 0x0001;
 const IFF_TAP: libc::c_short = 0x0002;
 const IFF_NO_PI: libc::c_short = 0x1000;
-static OVERLAY_SWAP_TUNNELS: OnceLock<bool> = OnceLock::new();
 const SOFT_HOUSEKEEPING_INTERVAL_PACKETS: u64 = 64;
 const SOFT_HOUSEKEEPING_INTERVAL: Duration = Duration::from_micros(250);
 
@@ -45,6 +44,7 @@ pub struct SoftAdapter {
     iface: String,
     mode: SoftMode,
     file: File,
+    overlay_swap_tunnels: bool,
 }
 
 impl SoftAdapter {
@@ -60,7 +60,13 @@ impl SoftAdapter {
             ));
         }
         let file = open_tun_tap(&iface, mode)?;
-        Ok(Self { iface, mode, file })
+        let overlay_swap_tunnels = current_runtime_knobs().dpdk.overlay_swap_tunnels;
+        Ok(Self {
+            iface,
+            mode,
+            file,
+            overlay_swap_tunnels,
+        })
     }
 
     pub fn run(&mut self, state: &mut EngineState) -> Result<(), String> {
@@ -115,7 +121,7 @@ impl SoftAdapter {
                     let out_meta = overlay::reply_meta(
                         &overlay_pkt.meta,
                         &state.overlay,
-                        overlay_swap_tunnels(),
+                        self.overlay_swap_tunnels,
                     );
                     let out =
                         match overlay::encap(&inner, &out_meta, &state.overlay, state.metrics()) {
@@ -137,14 +143,6 @@ impl SoftAdapter {
             }
         }
     }
-}
-
-fn overlay_swap_tunnels() -> bool {
-    *OVERLAY_SWAP_TUNNELS.get_or_init(|| {
-        std::env::var("NEUWERK_GWLB_SWAP_TUNNELS")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(false)
-    })
 }
 
 fn open_tun_tap(name: &str, mode: SoftMode) -> Result<File, String> {

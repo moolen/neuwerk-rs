@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
@@ -15,6 +15,7 @@ use crate::dataplane::dhcp::{DhcpRx, DhcpTx, DHCP_CLIENT_PORT, DHCP_SERVER_PORT}
 use crate::dataplane::engine::{Action, EngineState};
 use crate::dataplane::overlay::{self, EncapMode};
 use crate::dataplane::packet::Packet;
+use crate::support::runtime_knobs::current_runtime_knobs;
 
 mod debug_flags;
 mod frame_codec;
@@ -22,10 +23,10 @@ mod io_api;
 mod service_lane;
 use debug_flags::{
     configured_dhcp_server_ip, configured_dhcp_server_mac, configured_gateway_mac,
-    health_probe_debug_enabled, overlay_debug_enabled,
-    overlay_force_tunnel_src_port, overlay_swap_tunnels, ARP_LOGS, HEALTH_PROBE_DEBUG_LOGS,
-    HEALTH_PROBE_LOGGED, OVERLAY_ACTION_LOGS, OVERLAY_ENCAP_LOGS, OVERLAY_INTERNAL_LOGS,
-    OVERLAY_PARSE_LOGS, OVERLAY_SAMPLE_LOGS, OVERLAY_TUNNEL_LOGS,
+    health_probe_debug_enabled, overlay_debug_enabled, overlay_force_tunnel_src_port,
+    overlay_swap_tunnels, ARP_LOGS, HEALTH_PROBE_DEBUG_LOGS, HEALTH_PROBE_LOGGED,
+    OVERLAY_ACTION_LOGS, OVERLAY_ENCAP_LOGS, OVERLAY_INTERNAL_LOGS, OVERLAY_PARSE_LOGS,
+    OVERLAY_SAMPLE_LOGS, OVERLAY_TUNNEL_LOGS,
 };
 use frame_codec::{
     build_arp_reply, build_arp_request, build_tcp_control, build_udp_frame, parse_arp_reply,
@@ -48,12 +49,10 @@ const TCP_FLAG_ACK: u8 = 0x10;
 const ARP_CACHE_TTL_SECS: u64 = 120;
 const ARP_REQUEST_COOLDOWN_MS: u64 = 500;
 const INTERCEPT_DEMUX_IDLE_SECS: u64 = 300;
-const INTERCEPT_DEMUX_GC_INTERVAL_MS_DEFAULT: u64 = 1_000;
-const INTERCEPT_DEMUX_MAX_ENTRIES_DEFAULT: usize = 65_536;
-const HOST_FRAME_QUEUE_MAX_DEFAULT: usize = 8_192;
-const PENDING_ARP_QUEUE_MAX_DEFAULT: usize = 4_096;
 const SERVICE_LANE_TAP_RETRY_MS: u64 = 1_000;
+#[cfg(test)]
 const INTERCEPT_SERVICE_IP_DEFAULT: Ipv4Addr = Ipv4Addr::new(169, 254, 255, 1);
+#[cfg(test)]
 const INTERCEPT_SERVICE_PORT_DEFAULT: u16 = 15443;
 const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
 const IFF_TAP: libc::c_short = 0x0002;
@@ -77,46 +76,21 @@ pub struct SharedArpState {
 }
 
 fn intercept_demux_gc_interval() -> Duration {
-    static INTERVAL: OnceLock<Duration> = OnceLock::new();
-
-    *INTERVAL.get_or_init(|| {
-        let interval_ms = std::env::var("NEUWERK_DPDK_INTERCEPT_DEMUX_GC_INTERVAL_MS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(INTERCEPT_DEMUX_GC_INTERVAL_MS_DEFAULT);
-        tracing::info!(interval_ms, "dpdk intercept demux gc interval configured");
-        Duration::from_millis(interval_ms)
-    })
-}
-
-fn parse_env_usize_gt_zero(var_name: &str, default: usize) -> usize {
-    std::env::var(var_name)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
+    let interval_ms = current_runtime_knobs().dpdk.intercept_demux_gc_interval_ms;
+    tracing::info!(interval_ms, "dpdk intercept demux gc interval configured");
+    Duration::from_millis(interval_ms)
 }
 
 fn intercept_demux_max_entries() -> usize {
-    parse_env_usize_gt_zero(
-        "NEUWERK_DPDK_INTERCEPT_DEMUX_MAX_ENTRIES",
-        INTERCEPT_DEMUX_MAX_ENTRIES_DEFAULT,
-    )
+    current_runtime_knobs().dpdk.intercept_demux_max_entries
 }
 
 fn host_frame_queue_max() -> usize {
-    parse_env_usize_gt_zero(
-        "NEUWERK_DPDK_HOST_FRAME_QUEUE_MAX",
-        HOST_FRAME_QUEUE_MAX_DEFAULT,
-    )
+    current_runtime_knobs().dpdk.host_frame_queue_max
 }
 
 fn pending_arp_queue_max() -> usize {
-    parse_env_usize_gt_zero(
-        "NEUWERK_DPDK_PENDING_ARP_QUEUE_MAX",
-        PENDING_ARP_QUEUE_MAX_DEFAULT,
-    )
+    current_runtime_knobs().dpdk.pending_arp_queue_max
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -155,12 +129,7 @@ pub struct SharedInterceptDemuxState {
 
 impl Default for SharedInterceptDemuxState {
     fn default() -> Self {
-        const DEFAULT_SHARD_COUNT: usize = 64;
-        let shard_count = std::env::var("NEUWERK_DPDK_INTERCEPT_DEMUX_SHARDS")
-            .ok()
-            .and_then(|raw| raw.parse::<usize>().ok())
-            .filter(|count| *count > 0)
-            .unwrap_or(DEFAULT_SHARD_COUNT);
+        let shard_count = current_runtime_knobs().dpdk.intercept_demux_shard_count;
         let mut shards = Vec::with_capacity(shard_count);
         for _ in 0..shard_count {
             shards.push(Mutex::new(InterceptDemuxShard::default()));

@@ -1,4 +1,3 @@
-use std::env;
 #[cfg(test)]
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -45,8 +44,6 @@ use crate::runtime::startup::controlplane_threads::{
     spawn_dns_runtime_thread, spawn_http_runtime_thread, HttpRuntimeThreadConfig,
 };
 
-const KUBERNETES_RECONCILE_INTERVAL_SECS: u64 = 5;
-const KUBERNETES_STALE_GRACE_SECS: u64 = 300;
 const THREAT_RUNTIME_RELOAD_INTERVAL_SECS: u64 = 5;
 
 pub struct ControlplaneRuntimeHandles {
@@ -61,23 +58,6 @@ pub struct ControlplaneRuntimeHandles {
 #[cfg(test)]
 fn threat_snapshot_path(local_data_root: &Path) -> PathBuf {
     local_snapshot_path(local_data_root)
-}
-
-fn env_u64_with_default(name: &str, default: u64) -> u64 {
-    match env::var(name) {
-        Ok(raw) => match raw.trim().parse::<u64>() {
-            Ok(0) => {
-                warn!(env_var = %name, value = 0, default, "invalid zero value; using default");
-                default
-            }
-            Ok(value) => value,
-            Err(_) => {
-                warn!(env_var = %name, raw = %raw, default, "invalid numeric value; using default");
-                default
-            }
-        },
-        Err(_) => default,
-    }
 }
 
 #[cfg(test)]
@@ -273,8 +253,8 @@ pub async fn start_controlplane_runtime(
     let dns_policy = policy_store.dns_policy();
     let dns_upstreams = cfg.dns_upstreams.clone();
     let dns_listen = SocketAddr::new(IpAddr::V4(management_ip), 53);
-    let service_lane_iface = "svc0".to_string();
-    let service_lane_ip = Ipv4Addr::new(169, 254, 255, 1);
+    let service_lane_iface = cfg.dpdk.service_lane.interface.clone();
+    let service_lane_ip = cfg.dpdk.service_lane.intercept_service_ip;
     let service_lane_prefix = 30u8;
     let service_policy_snapshot = policy_store.snapshot();
     let service_policy_applied_generation = policy_store.service_policy_applied_tracker();
@@ -456,14 +436,8 @@ pub async fn start_controlplane_runtime(
         ),
         None => IntegrationStore::local(local_integrations_dir.clone()),
     };
-    let kubernetes_reconcile_interval_secs = env_u64_with_default(
-        "NEUWERK_KUBERNETES_RECONCILE_INTERVAL_SECS",
-        KUBERNETES_RECONCILE_INTERVAL_SECS,
-    );
-    let kubernetes_stale_grace_secs = env_u64_with_default(
-        "NEUWERK_KUBERNETES_STALE_GRACE_SECS",
-        KUBERNETES_STALE_GRACE_SECS,
-    );
+    let kubernetes_reconcile_interval_secs = cfg.runtime.kubernetes.reconcile_interval_secs;
+    let kubernetes_stale_grace_secs = cfg.runtime.kubernetes.stale_grace_secs;
     {
         let policy_store = policy_store.clone();
         let integration_store = kubernetes_integration_store.clone();
@@ -494,7 +468,7 @@ pub async fn start_controlplane_runtime(
             tls_dir: cfg.http_tls_dir.clone(),
         }
     };
-    let tls_intercept_listen_port = 15443u16;
+    let tls_intercept_listen_port = cfg.dpdk.service_lane.intercept_service_port;
     let shared_intercept_demux = Arc::new(SharedInterceptDemuxState::default());
 
     let dns_cfg = controlplane::trafficd::TrafficdConfig {
@@ -509,6 +483,7 @@ pub async fn start_controlplane_runtime(
         tls_intercept_ca_generation: tls_intercept_ca_generation.clone(),
         tls_intercept_ca_source: tls_intercept_ca_source.clone(),
         tls_intercept_listen_port,
+        tls_intercept: cfg.tls_intercept.clone(),
         enable_kernel_intercept_steering: !dpdk_enabled,
         service_lane_iface: service_lane_iface.clone(),
         service_lane_ip,
@@ -520,7 +495,8 @@ pub async fn start_controlplane_runtime(
         node_id: node_id.clone(),
         startup_status_tx: None,
     };
-    let (dns_task, dns_startup_rx) = spawn_dns_runtime_thread(dns_cfg)?;
+    let (dns_task, dns_startup_rx) =
+        spawn_dns_runtime_thread(dns_cfg, cfg.runtime.controlplane_worker_threads)?;
     match tokio::time::timeout(Duration::from_secs(2), dns_startup_rx).await {
         Ok(Ok(Ok(()))) => {
             readiness.set_dns_ready(true);
@@ -552,6 +528,7 @@ pub async fn start_controlplane_runtime(
         bind_addr: http_bind,
         advertise_addr: http_advertise,
         metrics_bind,
+        allow_public_metrics_bind: cfg.allow_public_metrics_bind,
         tls_dir: cfg.http_tls_dir.clone(),
         cert_path: cfg.http_cert_path.clone(),
         key_path: cfg.http_key_path.clone(),
@@ -582,7 +559,7 @@ pub async fn start_controlplane_runtime(
         metrics,
         shutdown: http_shutdown.clone(),
         leader_local_policy_apply_count,
-    })?;
+    }, cfg.runtime.http_worker_threads)?;
 
     Ok(ControlplaneRuntimeHandles {
         dns_task,

@@ -1,6 +1,6 @@
+use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::fs;
 
 use tempfile::TempDir;
 
@@ -40,14 +40,15 @@ fn export_creates_flat_provider_release_source_tree() {
     assert_exists(&exported_root.join(".github/workflows/ci.yml"));
     assert_exists(&exported_root.join(".github/workflows/release.yml"));
 
-    let exported_main = fs::read_to_string(exported_root.join("main.go")).expect("read exported main");
+    let exported_main =
+        fs::read_to_string(exported_root.join("main.go")).expect("read exported main");
     assert!(
         exported_main.contains("registry.terraform.io/moolen/neuwerk"),
         "expected exported main.go to contain the moolen provider address"
     );
 
-    let exported_example =
-        fs::read_to_string(exported_root.join("examples/basic/main.tf")).expect("read exported example");
+    let exported_example = fs::read_to_string(exported_root.join("examples/basic/main.tf"))
+        .expect("read exported example");
     assert!(
         exported_example.contains("source = \"moolen/neuwerk\""),
         "expected exported example to contain the moolen provider source"
@@ -67,10 +68,9 @@ fn export_creates_flat_provider_release_source_tree() {
         "expected exported LICENSE to contain Apache 2.0 text"
     );
 
-    let exported_public_key = fs::read_to_string(
-        exported_root.join("terraform-provider-neuwerk-signing-key.asc"),
-    )
-    .expect("read exported signing key");
+    let exported_public_key =
+        fs::read_to_string(exported_root.join("terraform-provider-neuwerk-signing-key.asc"))
+            .expect("read exported signing key");
     assert!(
         exported_public_key.contains("BEGIN PGP PUBLIC KEY BLOCK"),
         "expected exported signing key to contain an armored public key"
@@ -80,29 +80,30 @@ fn export_creates_flat_provider_release_source_tree() {
         "expected exported signing key to contain the tracked release signing fingerprint"
     );
 
-    let exported_registry_manifest = fs::read_to_string(
-        exported_root.join("terraform-registry-manifest.json"),
-    )
-    .expect("read exported registry manifest");
+    let exported_registry_manifest =
+        fs::read_to_string(exported_root.join("terraform-registry-manifest.json"))
+            .expect("read exported registry manifest");
     assert!(
         exported_registry_manifest.contains("\"protocol_versions\": [\"6.0\"]"),
         "expected exported registry manifest to advertise Terraform plugin protocol 6.0"
     );
 
-    let exported_release_workflow = fs::read_to_string(
-        exported_root.join(".github/workflows/release.yml"),
-    )
-    .expect("read exported release workflow");
+    let exported_release_workflow =
+        fs::read_to_string(exported_root.join(".github/workflows/release.yml"))
+            .expect("read exported release workflow");
     assert!(
         exported_release_workflow.contains("refs/tags/${RELEASE_VERSION}"),
         "expected exported release workflow to create the release tag ref"
     );
     assert!(
-        exported_release_workflow.contains("--notes-file artifacts/terraform-provider-release/release-notes.md"),
+        exported_release_workflow
+            .contains("--notes-file artifacts/terraform-provider-release/release-notes.md"),
         "expected exported release workflow to use release-notes.md as the GitHub release body"
     );
     assert!(
-        !exported_release_workflow.contains("terraform-provider-neuwerk-signing-key.asc artifacts/terraform-provider-release/"),
+        !exported_release_workflow.contains(
+            "terraform-provider-neuwerk-signing-key.asc artifacts/terraform-provider-release/"
+        ),
         "expected exported release workflow not to stage the signing key as a release asset"
     );
     assert!(
@@ -112,7 +113,8 @@ fn export_creates_flat_provider_release_source_tree() {
         "expected exported release workflow not to upload every staged artifact blindly"
     );
     assert!(
-        !exported_release_workflow.contains("artifacts/terraform-provider-release/release-notes.md --clobber"),
+        !exported_release_workflow
+            .contains("artifacts/terraform-provider-release/release-notes.md --clobber"),
         "expected exported release workflow not to upload release-notes.md as a release asset"
     );
     assert!(
@@ -122,12 +124,12 @@ fn export_creates_flat_provider_release_source_tree() {
         "expected exported release workflow to upload only provider archives and checksum artifacts"
     );
 
-    let monorepo_release_workflow = fs::read_to_string(
-        repo_root.join(".github/workflows/terraform-provider-release.yml"),
-    )
-    .expect("read monorepo release workflow");
+    let monorepo_release_workflow =
+        fs::read_to_string(repo_root.join(".github/workflows/terraform-provider-release.yml"))
+            .expect("read monorepo release workflow");
     assert!(
-        monorepo_release_workflow.contains("--notes-file artifacts/terraform-provider-release/release-notes.md"),
+        monorepo_release_workflow
+            .contains("--notes-file artifacts/terraform-provider-release/release-notes.md"),
         "expected monorepo release workflow to use release-notes.md as the GitHub release body"
     );
     assert!(

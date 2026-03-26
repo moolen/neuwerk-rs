@@ -2,7 +2,10 @@ use std::net::Ipv4Addr;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 
-use neuwerk::dataplane::policy::{PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot};
+use neuwerk::dataplane::engine::EngineRuntimeConfig;
+use neuwerk::dataplane::policy::{
+    PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
+};
 use neuwerk::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DrainControl, OverlayConfig,
     SharedInterceptDemuxState, SnatMode, WiretapEmitter,
@@ -12,11 +15,14 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::runtime::cli::DataPlaneMode;
 use crate::runtime::dpdk::run::run_dataplane;
+use crate::runtime::config::RuntimeDpdkConfig;
 
 pub struct DataplaneRuntimeConfig {
     pub data_plane_iface: String,
     pub data_plane_mode: DataPlaneMode,
+    pub dpdk: RuntimeDpdkConfig,
     pub idle_timeout_secs: u64,
+    pub engine_runtime: EngineRuntimeConfig,
     pub policy: Arc<RwLock<PolicySnapshot>>,
     pub policy_snapshot: SharedPolicySnapshot,
     pub exact_source_group_index: SharedExactSourceGroupIndex,
@@ -51,7 +57,9 @@ pub fn spawn_dataplane_runtime_thread(
                 run_dataplane(
                     cfg.data_plane_iface,
                     cfg.data_plane_mode,
+                    cfg.dpdk,
                     cfg.idle_timeout_secs,
+                    cfg.engine_runtime,
                     cfg.policy,
                     cfg.policy_snapshot,
                     cfg.exact_source_group_index,

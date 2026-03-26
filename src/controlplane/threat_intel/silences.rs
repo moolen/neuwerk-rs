@@ -93,15 +93,15 @@ impl ThreatSilenceEntry {
     pub fn normalized(mut self) -> Result<Self, String> {
         self.value = match self.kind {
             ThreatSilenceKind::Exact => {
-                let indicator_type = self.indicator_type.ok_or_else(|| {
-                    "exact threat silence requires indicator_type".to_string()
-                })?;
+                let indicator_type = self
+                    .indicator_type
+                    .ok_or_else(|| "exact threat silence requires indicator_type".to_string())?;
                 normalize_exact_value(indicator_type, &self.value)?
             }
             ThreatSilenceKind::HostnameRegex => {
                 if self.indicator_type == Some(ThreatIndicatorType::Ip) {
                     return Err(
-                        "hostname_regex threat silence cannot target ip indicators".to_string(),
+                        "hostname_regex threat silence cannot target ip indicators".to_string()
                     );
                 }
                 self.indicator_type = None;
@@ -143,11 +143,12 @@ impl ThreatSilenceMatcher {
                     }
                 }
                 ThreatSilenceKind::HostnameRegex => {
-                    if entry.indicator_type.is_some_and(|kind| kind != ThreatIndicatorType::Hostname)
+                    if entry
+                        .indicator_type
+                        .is_some_and(|kind| kind != ThreatIndicatorType::Hostname)
                     {
                         return Err(
-                            "hostname_regex threat silence cannot target ip indicators"
-                                .to_string(),
+                            "hostname_regex threat silence cannot target ip indicators".to_string()
                         );
                     }
                     matcher
@@ -234,7 +235,9 @@ pub fn persist_silences_local(
 }
 
 fn local_silences_path(local_data_root: &Path) -> PathBuf {
-    local_data_root.join("settings").join("threat-intel-silences.json")
+    local_data_root
+        .join("settings")
+        .join("threat-intel-silences.json")
 }
 
 fn encode_silences_value(silences: &ThreatSilenceList) -> Result<Vec<u8>, String> {
@@ -245,7 +248,10 @@ fn parse_silences_value(raw: &[u8]) -> Result<ThreatSilenceList, String> {
     serde_json::from_slice(raw).map_err(|err| format!("invalid threat silences value: {err}"))
 }
 
-fn normalize_exact_value(indicator_type: ThreatIndicatorType, value: &str) -> Result<String, String> {
+fn normalize_exact_value(
+    indicator_type: ThreatIndicatorType,
+    value: &str,
+) -> Result<String, String> {
     match indicator_type {
         ThreatIndicatorType::Hostname => {
             let normalized = normalize_hostname(value);
@@ -280,9 +286,7 @@ fn normalize_ip(value: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ThreatSilenceEntry, ThreatSilenceKind, ThreatSilenceList, ThreatSilenceMatcher,
-    };
+    use super::{ThreatSilenceEntry, ThreatSilenceKind, ThreatSilenceList, ThreatSilenceMatcher};
     use crate::controlplane::threat_intel::types::ThreatIndicatorType;
 
     #[test]

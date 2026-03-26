@@ -1,19 +1,25 @@
 use std::env;
 use std::net::Ipv4Addr;
 
+#[allow(unused_imports)]
+pub(crate) use neuwerk::controlplane;
 use neuwerk::controlplane::ready::ReadinessState;
 use neuwerk::controlplane::wiretap::{load_or_create_node_id, WiretapHub};
-use neuwerk::controlplane::{self, PolicyStore};
+use neuwerk::controlplane::PolicyStore;
 #[cfg(test)]
 use neuwerk::dataplane::Packet;
 use neuwerk::dataplane::{DataplaneConfigStore, DrainControl, SnatMode};
 use neuwerk::logging;
+use neuwerk::support::runtime_knobs::{
+    install_runtime_knobs, CloudProvider as RuntimeCloudProvider, DpdkIovaMode as RuntimeIovaMode,
+    RuntimeKnobs,
+};
 mod runtime;
 use tracing::{error, info, warn};
 
 use runtime::auth::{auth_usage, parse_auth_args, run_auth_command};
 use runtime::bootstrap::dataplane_config::{
-    dpdk_static_config_from_env, imds_dataplane_from_mgmt_ip,
+    dpdk_static_config_from_runtime, imds_dataplane_from_mgmt_ip,
 };
 use runtime::bootstrap::dataplane_warmup::maybe_spawn_soft_dataplane_autoconfig_task;
 use runtime::bootstrap::integration::build_integration_provider;
@@ -21,11 +27,12 @@ use runtime::bootstrap::network::{dataplane_ipv4_config, internal_ipv4_config};
 use runtime::bootstrap::policy_state::init_local_controlplane_state;
 use runtime::bootstrap::shutdown::spawn_signal_shutdown_task;
 use runtime::bootstrap::startup::{
-    build_dataplane_runtime_network_config, log_startup_summary, maybe_select_cluster_seed,
-    resolve_bindings, run_cluster_migration_if_requested, start_cluster_runtime,
+    build_dataplane_runtime_network_config, build_runtime_cli_config, load_default_runtime_config,
+    log_startup_summary, maybe_select_cluster_seed, resolve_bindings,
+    run_cluster_migration_if_requested, start_cluster_runtime,
 };
 use runtime::bootstrap::task_wait::await_runtime_tasks;
-use runtime::cli::{parse_args, usage, CloudProviderKind, DataPlaneMode};
+use runtime::cli::{CloudProviderKind, RUNTIME_STARTUP_UNSUPPORTED_MESSAGE};
 #[cfg(test)]
 use runtime::dpdk::worker_plan::{
     choose_dpdk_worker_plan, flow_steer_payload, parse_truthy_flag,
@@ -41,6 +48,57 @@ use runtime::sysdump::{parse_sysdump_args, run_sysdump, sysdump_usage};
 
 fn boxed_error(msg: impl Into<String>) -> Box<dyn std::error::Error> {
     std::io::Error::other(msg.into()).into()
+}
+
+fn install_runtime_knobs_from_config(cfg: &runtime::cli::CliConfig) {
+    let cloud_provider = match cfg.cloud_provider {
+        CloudProviderKind::None => RuntimeCloudProvider::None,
+        CloudProviderKind::Azure => RuntimeCloudProvider::Azure,
+        CloudProviderKind::Aws => RuntimeCloudProvider::Aws,
+        CloudProviderKind::Gcp => RuntimeCloudProvider::Gcp,
+    };
+    let iova_mode = cfg.dpdk.iova_mode.map(|mode| match mode {
+        runtime::cli::DpdkIovaMode::Va => RuntimeIovaMode::Va,
+        runtime::cli::DpdkIovaMode::Pa => RuntimeIovaMode::Pa,
+    });
+    install_runtime_knobs(RuntimeKnobs {
+        cloud_provider,
+        dpdk: neuwerk::support::runtime_knobs::DpdkRuntimeKnobs {
+            workers: cfg.dpdk.workers,
+            core_ids: cfg.dpdk.core_ids.clone(),
+            disable_in_memory: cfg.dpdk.disable_in_memory,
+            iova_mode,
+            force_netvsc: cfg.dpdk.force_netvsc,
+            gcp_auto_probe: cfg.dpdk.gcp_auto_probe,
+            driver_preload: cfg.dpdk.driver_preload.clone(),
+            skip_bus_pci_preload: cfg.dpdk.skip_bus_pci_preload,
+            prefer_pci: cfg.dpdk.prefer_pci,
+            queue_override: cfg.dpdk.queue_override,
+            port_mtu: cfg.dpdk.port_mtu,
+            mbuf_data_room: cfg.dpdk.mbuf_data_room,
+            mbuf_pool_size: cfg.dpdk.mbuf_pool_size,
+            rx_ring_size: cfg.dpdk.rx_ring_size,
+            tx_ring_size: cfg.dpdk.tx_ring_size,
+            tx_checksum_offload: cfg.dpdk.tx_checksum_offload,
+            allow_retaless_multi_queue: cfg.dpdk.allow_retaless_multi_queue,
+            service_lane_interface: cfg.dpdk.service_lane.interface.clone(),
+            service_lane_intercept_service_ip: cfg.dpdk.service_lane.intercept_service_ip,
+            service_lane_intercept_service_port: cfg.dpdk.service_lane.intercept_service_port,
+            service_lane_multi_queue: cfg.dpdk.service_lane.multi_queue,
+            intercept_demux_gc_interval_ms: cfg.dpdk.intercept_demux.gc_interval_ms,
+            intercept_demux_max_entries: cfg.dpdk.intercept_demux.max_entries,
+            intercept_demux_shard_count: cfg.dpdk.intercept_demux.shard_count,
+            host_frame_queue_max: cfg.dpdk.intercept_demux.host_frame_queue_max,
+            pending_arp_queue_max: cfg.dpdk.intercept_demux.pending_arp_queue_max,
+            overlay_swap_tunnels: cfg.dpdk.overlay.swap_tunnels,
+            overlay_force_tunnel_src_port: cfg.dpdk.overlay.force_tunnel_src_port,
+            overlay_debug: cfg.dpdk.overlay.debug,
+            health_probe_debug: cfg.dpdk.overlay.health_probe_debug,
+            gateway_mac: cfg.dpdk.gateway_mac.clone(),
+            dhcp_server_ip: cfg.dpdk.dhcp_server_ip,
+            dhcp_server_mac: cfg.dpdk.dhcp_server_mac.clone(),
+        },
+    });
 }
 
 #[tokio::main]
@@ -78,23 +136,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    if !args.is_empty() {
+        eprintln!("{RUNTIME_STARTUP_UNSUPPORTED_MESSAGE}");
+        std::process::exit(2);
+    }
 
-    let mut cfg = match parse_args(&bin, args) {
+    let runtime_cfg = match load_default_runtime_config() {
         Ok(cfg) => cfg,
         Err(err) => {
-            eprintln!("{err}\n\n{}", usage(&bin));
+            eprintln!("{err}");
             std::process::exit(2);
         }
     };
-    if cfg.cloud_provider != CloudProviderKind::None {
-        std::env::set_var("NEUWERK_CLOUD_PROVIDER", cfg.cloud_provider.as_str());
-    }
+    log_startup_summary(&runtime_cfg);
+    let mut cfg = match build_runtime_cli_config(&runtime_cfg) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(2);
+        }
+    };
+    install_runtime_knobs_from_config(&cfg);
 
     let integration_provider = build_integration_provider(&cfg).map_err(boxed_error)?;
     maybe_select_cluster_seed(&mut cfg, integration_provider.clone()).await;
-    log_startup_summary(&cfg);
-
-    let dpdk_enabled = matches!(cfg.data_plane_mode, DataPlaneMode::Dpdk);
+    let dpdk_enabled = runtime_cfg.runtime.dpdk_enabled;
     if dpdk_enabled && matches!(cfg.snat_mode, SnatMode::Static(_)) {
         eprintln!("--snat <ipv4> is only supported in software dataplane mode");
         std::process::exit(2);
@@ -105,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dataplane_ipv4_config(&cfg.data_plane_iface).await.ok()
     };
 
-    let bindings = match resolve_bindings(&cfg, dpdk_enabled).await {
+    let bindings = match resolve_bindings(&runtime_cfg).await {
         Ok(bindings) => bindings,
         Err(err) => {
             eprintln!("management interface ip error: {err}");
@@ -149,7 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if dpdk_enabled && dataplane_config.get().is_none() {
-        match dpdk_static_config_from_env() {
+        match dpdk_static_config_from_runtime(&runtime_cfg) {
             Ok(Some(config)) => {
                 info!(
                     dataplane_ip = %config.ip,
@@ -349,10 +415,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mac_tx,
     } = dataplane_bootstrap;
     readiness.set_dataplane_running(true);
+    let engine_runtime = cfg.engine_runtime.clone();
     let dataplane_task = match spawn_dataplane_runtime_thread(DataplaneRuntimeConfig {
         data_plane_iface: cfg.data_plane_iface,
         data_plane_mode: cfg.data_plane_mode,
+        dpdk: cfg.dpdk.clone(),
         idle_timeout_secs: cfg.idle_timeout_secs,
+        engine_runtime,
         policy: policy_store.snapshot(),
         policy_snapshot: policy_store.shared_snapshot(),
         exact_source_group_index: policy_store.exact_source_group_index(),

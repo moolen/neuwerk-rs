@@ -1,19 +1,18 @@
 pub(super) fn init_eal(iface: &str) -> Result<(), String> {
     let cached = EAL_INIT.get_or_init(|| {
+            let knobs = crate::support::runtime_knobs::current_runtime_knobs();
             let max_cores = std::thread::available_parallelism()
                 .map(|count| count.get())
                 .unwrap_or(1)
                 .max(1);
-            let requested = std::env::var("NEUWERK_DPDK_WORKERS")
-                .ok()
-                .and_then(|val| val.parse::<usize>().ok())
+            let requested = knobs
+                .dpdk
+                .workers
                 .unwrap_or(max_cores)
                 .max(1);
             let requested = requested.min(max_cores);
-            let core_ids = std::env::var("NEUWERK_DPDK_CORE_IDS")
-                .ok()
-                .map(|raw| parse_core_id_list(&raw))
-                .filter(|ids| !ids.is_empty())
+            let core_ids = (!knobs.dpdk.core_ids.is_empty())
+                .then_some(knobs.dpdk.core_ids.clone())
                 .map(|mut ids| {
                     ids.truncate(requested);
                     ids
@@ -39,45 +38,37 @@ pub(super) fn init_eal(iface: &str) -> Result<(), String> {
                 "--file-prefix=neuwerk".to_string(),
                 "--no-telemetry".to_string(),
             ];
-            let disable_in_memory = std::env::var("NEUWERK_DPDK_DISABLE_IN_MEMORY")
-                .ok()
-                .map(|raw| matches!(raw.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-                .unwrap_or(false);
+            let disable_in_memory = knobs.dpdk.disable_in_memory;
             if !disable_in_memory {
                 args.push("--in-memory".to_string());
             } else {
                 tracing::info!("dpdk: NEUWERK_DPDK_DISABLE_IN_MEMORY enabled; omitting --in-memory");
             }
-            let cloud_provider = std::env::var("NEUWERK_CLOUD_PROVIDER")
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            let iova_override = std::env::var("NEUWERK_DPDK_IOVA").ok();
-            if let Some(mode) = iova_override.as_deref() {
-                let mode = mode.trim().to_ascii_lowercase();
-                if mode == "va" || mode == "pa" {
-                    args.push(format!("--iova-mode={}", mode));
-                } else {
-                    tracing::warn!("dpdk: invalid NEUWERK_DPDK_IOVA={}, ignoring", mode);
-                }
+            let cloud_provider = match knobs.cloud_provider {
+                crate::support::runtime_knobs::CloudProvider::None => "none",
+                crate::support::runtime_knobs::CloudProvider::Azure => "azure",
+                crate::support::runtime_knobs::CloudProvider::Aws => "aws",
+                crate::support::runtime_knobs::CloudProvider::Gcp => "gcp",
+            }
+            .to_string();
+            if let Some(mode) = knobs.dpdk.iova_mode {
+                let mode = match mode {
+                    crate::support::runtime_knobs::DpdkIovaMode::Va => "va",
+                    crate::support::runtime_knobs::DpdkIovaMode::Pa => "pa",
+                };
+                args.push(format!("--iova-mode={mode}"));
             } else if !iommu_groups_present() {
                 args.push("--iova-mode=va".to_string());
                 tracing::warn!("dpdk: no iommu groups detected; forcing iova=va");
             }
-            let force_netvsc = std::env::var("NEUWERK_DPDK_NETVSC")
-                .ok()
-                .as_deref()
-                == Some("1");
+            let force_netvsc = knobs.dpdk.force_netvsc;
             for driver in resolve_eal_driver_preloads(iface, &cloud_provider, force_netvsc) {
                 tracing::info!("dpdk: preloading driver {}", driver);
                 args.push("-d".to_string());
                 args.push(driver);
             }
             let allow_azure_pmds = cloud_provider == "azure";
-            let allow_gcp_autoprobe = cloud_provider == "gcp"
-                && std::env::var("NEUWERK_GCP_DPDK_AUTOPROBE")
-                    .ok()
-                    .as_deref()
-                    == Some("1");
+            let allow_gcp_autoprobe = cloud_provider == "gcp" && knobs.dpdk.gcp_auto_probe;
             if allow_gcp_autoprobe {
                 tracing::info!("dpdk: gcp auto-probe override enabled");
             }
@@ -187,26 +178,27 @@ fn resolve_eal_driver_preloads(
             }
         }
     }
-    if let Ok(extra) = std::env::var("NEUWERK_DPDK_DRIVER_PRELOAD") {
-        for raw in extra.split(',') {
-            let token = raw.trim();
-            if token.is_empty() {
-                continue;
-            }
-            let resolved_path = if token.contains('/') {
+    for token in crate::support::runtime_knobs::current_runtime_knobs()
+        .dpdk
+        .driver_preload
+    {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let resolved_path = if token.contains('/') {
                 let candidate = Path::new(token);
                 if candidate.is_file() {
                     Some(candidate.display().to_string())
                 } else {
                     None
                 }
-            } else {
-                resolve_driver_lib_path(token, &search_dirs)
-            };
-            if let Some(path) = resolved_path {
-                if !resolved.contains(&path) {
-                    resolved.push(path);
-                }
+        } else {
+            resolve_driver_lib_path(token, &search_dirs)
+        };
+        if let Some(path) = resolved_path {
+            if !resolved.contains(&path) {
+                resolved.push(path);
             }
         }
     }
@@ -218,10 +210,9 @@ fn base_driver_preload_names(
     cloud_provider: &str,
     force_netvsc: bool,
 ) -> Vec<&'static str> {
-    let skip_bus_pci = std::env::var("NEUWERK_DPDK_SKIP_BUS_PCI_PRELOAD")
-        .ok()
-        .map(|raw| matches!(raw.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false);
+    let skip_bus_pci = crate::support::runtime_knobs::current_runtime_knobs()
+        .dpdk
+        .skip_bus_pci_preload;
     let mut driver_names: Vec<&'static str> = vec!["librte_mempool_ring.so"];
     if iface_looks_pci && !skip_bus_pci {
         driver_names.push("librte_bus_pci.so");
@@ -368,7 +359,9 @@ fn port_id_for_mac(mac: [u8; 6], ports: &[PortInfo]) -> Result<u16, String> {
     if matches.len() == 1 {
         return Ok(matches[0].id);
     }
-    let prefer_pci = std::env::var("NEUWERK_DPDK_PREFER_PCI").ok().as_deref() == Some("1");
+    let prefer_pci = crate::support::runtime_knobs::current_runtime_knobs()
+        .dpdk
+        .prefer_pci;
     if prefer_pci {
         if let Some(port) = matches
             .iter()
@@ -608,14 +601,12 @@ fn is_hex_len(value: &str, len: usize) -> bool {
 #[cfg(test)]
 mod eal_preload_tests {
     use std::collections::HashSet;
-    use std::sync::Mutex;
 
     use super::{
         base_driver_preload_names, normalize_mac_arg, parse_mac, port_id_for_iface_or_pci,
         port_id_for_mac, PortInfo,
     };
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::support::runtime_knobs::{with_runtime_knobs, RuntimeKnobs};
 
     fn port(id: u16, mac: [u8; 6], name: Option<&str>) -> PortInfo {
         PortInfo {
@@ -625,26 +616,10 @@ mod eal_preload_tests {
         }
     }
 
-    fn with_prefer_pci_env<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
-        let _env_guard = ENV_LOCK.lock().expect("env lock");
-        let old_value = std::env::var("NEUWERK_DPDK_PREFER_PCI").ok();
-
-        match value {
-            Some(value) => std::env::set_var("NEUWERK_DPDK_PREFER_PCI", value),
-            None => std::env::remove_var("NEUWERK_DPDK_PREFER_PCI"),
-        }
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-
-        match old_value {
-            Some(value) => std::env::set_var("NEUWERK_DPDK_PREFER_PCI", value),
-            None => std::env::remove_var("NEUWERK_DPDK_PREFER_PCI"),
-        }
-
-        match result {
-            Ok(value) => value,
-            Err(payload) => std::panic::resume_unwind(payload),
-        }
+    fn with_prefer_pci<R>(prefer_pci: bool, f: impl FnOnce() -> R) -> R {
+        let mut knobs = RuntimeKnobs::default();
+        knobs.dpdk.prefer_pci = prefer_pci;
+        with_runtime_knobs(knobs, f)
     }
 
     #[test]
@@ -696,7 +671,7 @@ mod eal_preload_tests {
 
     #[test]
     fn port_lookup_by_mac_prefers_pci_when_override_enabled() {
-        with_prefer_pci_env(Some("1"), || {
+        with_prefer_pci(true, || {
             let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x43];
             let ports = vec![
                 port(3, mac, Some("net_vdev_netvsc0")),

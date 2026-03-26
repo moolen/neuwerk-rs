@@ -2,19 +2,14 @@ use std::fs::File;
 use std::net::Ipv4Addr;
 use std::os::fd::{AsRawFd, FromRawFd};
 
+use crate::support::runtime_knobs::current_runtime_knobs;
+
 pub(super) fn intercept_service_ip() -> Ipv4Addr {
-    std::env::var("NEUWERK_DPDK_INTERCEPT_SERVICE_IP")
-        .ok()
-        .and_then(|raw| raw.parse::<Ipv4Addr>().ok())
-        .unwrap_or(super::INTERCEPT_SERVICE_IP_DEFAULT)
+    current_runtime_knobs().dpdk.service_lane_intercept_service_ip
 }
 
 pub(super) fn intercept_service_port() -> u16 {
-    std::env::var("NEUWERK_DPDK_INTERCEPT_SERVICE_PORT")
-        .ok()
-        .and_then(|raw| raw.parse::<u16>().ok())
-        .filter(|port| *port != 0)
-        .unwrap_or(super::INTERCEPT_SERVICE_PORT_DEFAULT)
+    current_runtime_knobs().dpdk.service_lane_intercept_service_port
 }
 
 #[repr(C)]
@@ -23,15 +18,9 @@ struct IfReq {
     ifr_flags: libc::c_short,
 }
 
-fn env_truthy_default_true(name: &str) -> bool {
-    std::env::var(name)
-        .map(|raw| !matches!(raw.as_str(), "0" | "false" | "FALSE" | "no" | "NO"))
-        .unwrap_or(true)
-}
-
 fn tap_ifreq_flags() -> libc::c_short {
     let mut flags = super::IFF_TAP | super::IFF_NO_PI;
-    if env_truthy_default_true("NEUWERK_DPDK_SERVICE_LANE_MULTI_QUEUE") {
+    if current_runtime_knobs().dpdk.service_lane_multi_queue {
         flags |= libc::IFF_MULTI_QUEUE as libc::c_short;
     }
     flags
@@ -144,27 +133,11 @@ pub(super) fn select_mac(fallback: [u8; 6], candidate: Option<[u8; 6]>) -> [u8; 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn with_env_var<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let old = std::env::var(name).ok();
-        match value {
-            Some(v) => std::env::set_var(name, v),
-            None => std::env::remove_var(name),
-        }
-        let out = f();
-        match old {
-            Some(v) => std::env::set_var(name, v),
-            None => std::env::remove_var(name),
-        }
-        out
-    }
+    use crate::support::runtime_knobs::{with_runtime_knobs, RuntimeKnobs};
 
     #[test]
     fn tap_ifreq_flags_enables_multiqueue_by_default() {
-        with_env_var("NEUWERK_DPDK_SERVICE_LANE_MULTI_QUEUE", None, || {
+        with_runtime_knobs(RuntimeKnobs::default(), || {
             let flags = tap_ifreq_flags();
             assert_ne!(flags & libc::IFF_MULTI_QUEUE as libc::c_short, 0);
         });
@@ -172,13 +145,11 @@ mod tests {
 
     #[test]
     fn tap_ifreq_flags_honors_multiqueue_disable_override() {
-        with_env_var(
-            "NEUWERK_DPDK_SERVICE_LANE_MULTI_QUEUE",
-            Some("false"),
-            || {
-                let flags = tap_ifreq_flags();
-                assert_eq!(flags & libc::IFF_MULTI_QUEUE as libc::c_short, 0);
-            },
-        );
+        let mut knobs = RuntimeKnobs::default();
+        knobs.dpdk.service_lane_multi_queue = false;
+        with_runtime_knobs(knobs, || {
+            let flags = tap_ifreq_flags();
+            assert_eq!(flags & libc::IFF_MULTI_QUEUE as libc::c_short, 0);
+        });
     }
 }

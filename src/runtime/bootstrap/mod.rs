@@ -1,4 +1,3 @@
-pub mod cluster;
 pub mod dataplane_config;
 pub mod dataplane_warmup;
 pub mod integration;

@@ -41,8 +41,7 @@ for ip in $FW_MGMT_IPS; do
   nstat_file="${ARTIFACT_DIR}/raw/${STAGE}.${safe_ip}.nstat.txt"
   ip_link_file="${ARTIFACT_DIR}/raw/${STAGE}.${safe_ip}.ip-link-s.txt"
 
-  metrics="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
-    "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" || true)"
+  metrics="$(fetch_neuwerk_metrics "$JUMPBOX_IP" "$KEY_PATH" "$ip" || true)"
   printf "%s\n" "$metrics" > "$metrics_file"
 
   {

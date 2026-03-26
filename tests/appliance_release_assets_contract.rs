@@ -16,7 +16,12 @@ fn write_file(path: &Path, contents: &[u8]) {
     fs::write(path, contents).expect("write file");
 }
 
-fn stage_release_fixture(root: &Path, target: &str, include_image_sbom: bool, include_source_bundle: bool) -> Vec<u8> {
+fn stage_release_fixture(
+    root: &Path,
+    target: &str,
+    include_image_sbom: bool,
+    include_source_bundle: bool,
+) -> Vec<u8> {
     let release_dir = root.join("release").join(target);
     let qemu_dir = root.join("qemu").join(target);
 
@@ -43,8 +48,23 @@ fn stage_release_fixture(root: &Path, target: &str, include_image_sbom: bool, in
         br#"{"bomFormat":"CycloneDX"}"#,
     );
     write_file(
-        &release_dir.join("rootfs/etc/neuwerk/appliance.env"),
-        b"NEUWERK_BOOTSTRAP_DEFAULT_POLICY=deny\n",
+        &release_dir.join("rootfs/etc/neuwerk/config.yaml"),
+        br#"version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  cloud_provider: none
+  data_plane_mode: dpdk
+dns:
+  target_ips:
+    - 10.0.0.53
+  upstreams:
+    - 10.0.0.2:53
+policy:
+  default: deny
+dataplane:
+  snat: auto
+"#,
     );
     write_file(&root.join("packer-manifest.json"), br#"{"builds":[]}"#);
     if include_source_bundle {
@@ -87,7 +107,13 @@ Passphrase: neuwerk-ci-passphrase
 
     let status = Command::new("gpg")
         .env("GNUPGHOME", gnupg_home.path())
-        .args(["--batch", "--pinentry-mode", "loopback", "--passphrase", passphrase])
+        .args([
+            "--batch",
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase",
+            passphrase,
+        ])
         .arg("--generate-key")
         .arg(&config_path)
         .status()
@@ -190,7 +216,10 @@ fn prepare_github_release_emits_verified_appliance_contract() {
         .status()
         .expect("run prepare_github_release.sh");
 
-    assert!(status.success(), "prepare_github_release.sh failed: {status}");
+    assert!(
+        status.success(),
+        "prepare_github_release.sh failed: {status}"
+    );
 
     let output_root = output_dir.path();
     assert_exists(&output_root.join("manifest.json"));
@@ -238,12 +267,7 @@ fn prepare_github_release_emits_verified_appliance_contract() {
         .as_array()
         .expect("manifest artifacts array")
         .iter()
-        .map(|entry| {
-            entry["path"]
-                .as_str()
-                .expect("artifact path")
-                .to_string()
-        })
+        .map(|entry| entry["path"].as_str().expect("artifact path").to_string())
         .collect::<Vec<_>>();
     assert!(
         artifact_paths.iter().any(|path| path == "release-notes.md"),
@@ -305,7 +329,10 @@ fn prepare_github_release_emits_verified_appliance_contract() {
         .arg("./restore-qcow2.sh")
         .status()
         .expect("run restore-qcow2.sh");
-    assert!(restore_status.success(), "restore-qcow2.sh failed: {restore_status}");
+    assert!(
+        restore_status.success(),
+        "restore-qcow2.sh failed: {restore_status}"
+    );
 
     let restored_qcow2 =
         fs::read(output_root.join(format!("neuwerk-{target}.qcow2"))).expect("read restored qcow2");
@@ -390,7 +417,10 @@ fn sign_appliance_release_checksums_emits_signature_and_public_key() {
         .arg(output_dir.path())
         .status()
         .expect("prepare release assets");
-    assert!(prepare_status.success(), "prepare_github_release.sh failed: {prepare_status}");
+    assert!(
+        prepare_status.success(),
+        "prepare_github_release.sh failed: {prepare_status}"
+    );
 
     let mut command = Command::new("bash");
     command
@@ -421,7 +451,10 @@ fn sign_appliance_release_checksums_emits_signature_and_public_key() {
         .arg(&public_key_path)
         .status()
         .expect("import public key");
-    assert!(import_status.success(), "gpg import failed: {import_status}");
+    assert!(
+        import_status.success(),
+        "gpg import failed: {import_status}"
+    );
 
     let verify_output = Command::new("gpg")
         .env("GNUPGHOME", verify_home.path())

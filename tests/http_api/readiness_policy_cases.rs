@@ -15,6 +15,7 @@ async fn http_api_metrics_bind_public_requires_explicit_allow_override() {
         bind_addr,
         advertise_addr: bind_addr,
         metrics_bind: metrics_addr,
+        allow_public_metrics_bind: false,
         tls_dir: tls_dir.clone(),
         cert_path: None,
         key_path: None,
@@ -43,7 +44,7 @@ async fn http_api_metrics_bind_public_requires_explicit_allow_override() {
     .await
     .unwrap_err();
 
-    assert!(err.contains("NEUWERK_ALLOW_PUBLIC_METRICS_BIND"));
+    assert!(err.contains("metrics.allow_public_bind=true"), "{err}");
 }
 
 #[tokio::test]
@@ -62,6 +63,7 @@ async fn http_api_metrics_bind_conflict_fails_startup() {
         bind_addr,
         advertise_addr: bind_addr,
         metrics_bind: metrics_addr,
+        allow_public_metrics_bind: false,
         tls_dir: tls_dir.clone(),
         cert_path: None,
         key_path: None,
@@ -112,6 +114,7 @@ async fn http_api_ready_health_metrics_contract_startup_and_failure_modes() {
         bind_addr,
         advertise_addr: bind_addr,
         metrics_bind: metrics_addr,
+        allow_public_metrics_bind: false,
         tls_dir: tls_dir.clone(),
         cert_path: None,
         key_path: None,
@@ -363,6 +366,7 @@ async fn cluster_ready_degrades_on_quorum_loss_and_recovers() {
         bind_addr: api_bind,
         advertise_addr: api_bind,
         metrics_bind,
+        allow_public_metrics_bind: false,
         tls_dir: tls_dir.clone(),
         cert_path: None,
         key_path: None,
@@ -433,6 +437,7 @@ async fn http_api_tls_intercept_ca_local_settings_round_trip() {
         bind_addr,
         advertise_addr: bind_addr,
         metrics_bind: metrics_addr,
+        allow_public_metrics_bind: false,
         tls_dir: tls_dir.clone(),
         cert_path: None,
         key_path: None,
@@ -563,6 +568,7 @@ async fn http_api_policy_write_times_out_when_dataplane_ack_missing() {
         bind_addr,
         advertise_addr: bind_addr,
         metrics_bind: metrics_addr,
+        allow_public_metrics_bind: false,
         tls_dir: tls_dir.clone(),
         cert_path: None,
         key_path: None,
@@ -677,6 +683,7 @@ async fn http_api_policy_write_waits_for_dataplane_ack() {
         bind_addr,
         advertise_addr: bind_addr,
         metrics_bind: metrics_addr,
+        allow_public_metrics_bind: false,
         tls_dir: tls_dir.clone(),
         cert_path: None,
         key_path: None,
@@ -817,6 +824,7 @@ async fn http_api_policy_write_times_out_when_service_plane_ack_missing() {
         bind_addr,
         advertise_addr: bind_addr,
         metrics_bind: metrics_addr,
+        allow_public_metrics_bind: false,
         tls_dir: tls_dir.clone(),
         cert_path: None,
         key_path: None,

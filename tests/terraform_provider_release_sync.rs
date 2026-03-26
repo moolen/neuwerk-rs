@@ -23,7 +23,10 @@ fn sync_script_bootstraps_and_pushes_public_release_repo() {
     let local_clone = temp_root.path().join("public-repo");
     let verify_clone = temp_root.path().join("verify-clone");
 
-    run(Command::new("git").arg("init").arg("--bare").arg(&bare_remote));
+    run(Command::new("git")
+        .arg("init")
+        .arg("--bare")
+        .arg(&bare_remote));
 
     let mut sync = Command::new("bash");
     sync.current_dir(repo_root)
@@ -39,14 +42,12 @@ fn sync_script_bootstraps_and_pushes_public_release_repo() {
         .env("GIT_COMMITTER_EMAIL", "test@neuwerk.invalid");
     run(&mut sync);
 
-    run(
-        Command::new("git")
-            .arg("clone")
-            .arg("--branch")
-            .arg("main")
-            .arg(&bare_remote)
-            .arg(&verify_clone),
-    );
+    run(Command::new("git")
+        .arg("clone")
+        .arg("--branch")
+        .arg("main")
+        .arg(&bare_remote)
+        .arg(&verify_clone));
 
     assert!(verify_clone.join("main.go").exists());
     assert!(verify_clone.join("LICENSE").exists());

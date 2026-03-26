@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::controlplane::PolicyStore;
 use crate::controlplane::wiretap::DnsMap;
+use crate::controlplane::PolicyStore;
 
 pub async fn run_allowlist_gc(
     policy_store: PolicyStore,

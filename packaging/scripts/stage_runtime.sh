@@ -117,9 +117,7 @@ with open(output, "w", encoding="utf-8") as handle:
     handle.write(f"RUNTIME_PREFIX={shlex.quote(runtime['prefix'])}\n")
     handle.write(f"RUNTIME_BINARY_DIR={shlex.quote(runtime['binary_dir'])}\n")
     handle.write(f"RUNTIME_UI_DIR={shlex.quote(runtime['ui_dir'])}\n")
-    handle.write(f"RUNTIME_ENV_FILE={shlex.quote(runtime['env_file'])}\n")
-    handle.write(f"RUNTIME_APPLIANCE_ENV_FILE={shlex.quote(runtime['appliance_env_file'])}\n")
-    handle.write(f"RUNTIME_BOOTSTRAP_PATH={shlex.quote(runtime['bootstrap_path'])}\n")
+    handle.write(f"RUNTIME_CONFIG_FILE={shlex.quote(runtime['config_file'])}\n")
     handle.write(f"RUNTIME_SERVICE_FILE={shlex.quote(runtime['service_file'])}\n")
     handle.write(f"RUNTIME_LINK_NAME={shlex.quote(runtime['link_name'])}\n")
     for index, value in enumerate(runtime["dpdk_library_globs"]):
@@ -153,8 +151,7 @@ fi
 install -d "$output_root"
 install -d "$(join_root "$output_root" "$RUNTIME_BINARY_DIR")"
 install -d "$(join_root "$output_root" "$RUNTIME_UI_DIR")"
-install -d "$(dirname "$(join_root "$output_root" "$RUNTIME_ENV_FILE")")"
-install -d "$(dirname "$(join_root "$output_root" "$RUNTIME_APPLIANCE_ENV_FILE")")"
+install -d "$(dirname "$(join_root "$output_root" "$RUNTIME_CONFIG_FILE")")"
 install -d "$(dirname "$(join_root "$output_root" "$RUNTIME_SERVICE_FILE")")"
 install -d "$(dirname "$(join_root "$output_root" "$RUNTIME_LINK_NAME")")"
 
@@ -175,45 +172,9 @@ done
 copy_matches "$dpdk_prefix" "$runtime_dpdk_dir" "${runtime_globs[@]}"
 ln -sfn "dpdk/$TARGET_DPDK_VERSION" "$(join_root "$output_root" "$RUNTIME_PREFIX")/current"
 
-cat > "$(join_root "$output_root" "$RUNTIME_ENV_FILE")" <<EOF
-NEUWERK_RUNTIME_PREFIX=$RUNTIME_PREFIX
-NEUWERK_DPDK_VERSION=$TARGET_DPDK_VERSION
-LD_LIBRARY_PATH=$RUNTIME_PREFIX/current/lib:$RUNTIME_PREFIX/current/lib/x86_64-linux-gnu:$RUNTIME_PREFIX/current/lib64
-RTE_EAL_PMD_PATH=$RUNTIME_PREFIX/current/lib/dpdk
-NEUWERK_MANAGEMENT_INTERFACE=
-NEUWERK_DATA_PLANE_INTERFACE=
-NEUWERK_DATA_PLANE_MODE=dpdk
-NEUWERK_DNS_TARGET_IPS=
-NEUWERK_DNS_UPSTREAMS=
-NEUWERK_DEFAULT_POLICY=deny
-NEUWERK_SNAT_MODE=auto
-NEUWERK_CLOUD_PROVIDER=none
-NEUWERK_HTTP_BIND=
-NEUWERK_METRICS_BIND=
-EOF
-chmod 0640 "$(join_root "$output_root" "$RUNTIME_ENV_FILE")"
-
-cp "$runtime_template_dir/appliance.env" "$(join_root "$output_root" "$RUNTIME_APPLIANCE_ENV_FILE")"
-chmod 0644 "$(join_root "$output_root" "$RUNTIME_APPLIANCE_ENV_FILE")"
-
-launcher_path="$(join_root "$output_root" "$RUNTIME_BINARY_DIR")/neuwerk-launch"
-render_template \
-  "$runtime_template_dir/neuwerk-launch.sh" \
-  "$launcher_path" \
-  "__RUNTIME_ENV_FILE__=$RUNTIME_ENV_FILE" \
-  "__RUNTIME_BINARY_DIR__=$RUNTIME_BINARY_DIR"
-chmod 0755 "$launcher_path"
-
-bootstrap_path="$(join_root "$output_root" "$RUNTIME_BOOTSTRAP_PATH")"
-render_template \
-  "$runtime_template_dir/neuwerk-bootstrap.sh" \
-  "$bootstrap_path" \
-  "__RUNTIME_ENV_FILE__=$RUNTIME_ENV_FILE" \
-  "__APPLIANCE_ENV_FILE__=$RUNTIME_APPLIANCE_ENV_FILE" \
-  "__RUNTIME_PREFIX__=$RUNTIME_PREFIX" \
-  "__RUNTIME_BINARY_DIR__=$RUNTIME_BINARY_DIR" \
-  "__TARGET_DPDK_VERSION__=$TARGET_DPDK_VERSION"
-chmod 0755 "$bootstrap_path"
+install -m 0644 \
+  "$runtime_template_dir/config.yaml" \
+  "$(join_root "$output_root" "$RUNTIME_CONFIG_FILE")"
 
 render_template \
   "$runtime_template_dir/neuwerk.service.in" \

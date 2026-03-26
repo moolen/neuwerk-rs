@@ -6,6 +6,7 @@ mod tests;
 mod tls_eval;
 
 pub use ip_sets::{CidrV4, DynamicIpSetV4, IpSetV4};
+pub(crate) use model::DNS_ALLOWLIST_RULE_ID;
 pub use model::{
     new_shared_exact_source_group_index, DefaultPolicy, EnforcementMode, ExactSourceGroupIndex,
     HttpHeadersMatcher, HttpPathMatcher, HttpQueryMatcher, HttpRequestPolicy, HttpResponsePolicy,
@@ -13,4 +14,3 @@ pub use model::{
     RuleAction, RuleMatch, RuleMode, SharedExactSourceGroupIndex, SharedPolicySnapshot,
     SourceGroup, Tls13Uninspectable, TlsInterceptHttpPolicy, TlsMatch, TlsMode, TlsNameMatch,
 };
-pub(crate) use model::DNS_ALLOWLIST_RULE_ID;

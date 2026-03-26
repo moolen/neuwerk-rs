@@ -99,8 +99,7 @@ collect_fw_dpdk_bytes() {
   : > "$out_file"
   local ip metrics rx tx
   for ip in $FW_MGMT_IPS; do
-    metrics="$(ssh_jump "$JUMPBOX_IP" "$KEY_PATH" "$ip" \
-      "bash -lc 'METRICS_HOST=\$(grep \"^MGMT_IP=\" /etc/neuwerk/neuwerk.env 2>/dev/null | cut -d= -f2); [ -z \"\$METRICS_HOST\" ] && METRICS_HOST=127.0.0.1; curl -fsS http://\${METRICS_HOST}:8080/metrics'" 2>/dev/null || true)"
+    metrics="$(fetch_neuwerk_metrics "$JUMPBOX_IP" "$KEY_PATH" "$ip" 2>/dev/null || true)"
     rx="$(echo "$metrics" | awk '/^dpdk_rx_bytes_total /{print $2}' | tail -n1)"
     tx="$(echo "$metrics" | awk '/^dpdk_tx_bytes_total /{print $2}' | tail -n1)"
     [ -z "$rx" ] && rx=0

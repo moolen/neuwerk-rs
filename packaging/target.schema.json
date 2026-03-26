@@ -76,11 +76,8 @@
         "prefix",
         "binary_dir",
         "ui_dir",
-        "env_file",
-        "appliance_env_file",
-        "bootstrap_path",
+        "config_file",
         "service_file",
-        "launcher_path",
         "link_name",
         "dpdk_library_globs",
         "dpdk_pmd_globs"

@@ -416,8 +416,7 @@ pub(super) fn handle_outbound_no_snat(
                             if pending_tls_cap
                                 .is_some_and(|max| current_pending_tls_flow_count >= max)
                             {
-                                pending_tls_cap_rejection =
-                                    Some(AdmissionRejection::PendingTlsCap);
+                                pending_tls_cap_rejection = Some(AdmissionRejection::PendingTlsCap);
                                 policy_drop = true;
                                 policy_drop_group = next_group;
                             } else {
@@ -499,7 +498,7 @@ pub(super) fn handle_outbound_no_snat(
                                     proto_label(proto),
                                     "deny",
                                     source_group_name,
-                            pkt.len(),
+                                    pkt.len(),
                                 );
                             }
                             tls_packet_denied = true;
@@ -982,11 +981,9 @@ pub(super) fn handle_inbound_no_snat(
                 }
                 PolicyDecision::PendingTls => {
                     if !pending_tls_before {
-                        if pending_tls_cap
-                            .is_some_and(|max| current_pending_tls_flow_count >= max)
+                        if pending_tls_cap.is_some_and(|max| current_pending_tls_flow_count >= max)
                         {
-                            pending_tls_cap_rejection =
-                                Some(AdmissionRejection::PendingTlsCap);
+                            pending_tls_cap_rejection = Some(AdmissionRejection::PendingTlsCap);
                             policy_drop = true;
                             policy_drop_group = next_group;
                         } else {

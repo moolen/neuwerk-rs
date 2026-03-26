@@ -1,4 +1,8 @@
 use std::collections::HashSet;
+use std::fmt::Write as _;
+use std::fs::{self, File, OpenOptions};
+use std::io::ErrorKind;
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -18,6 +22,17 @@ use neuwerk::e2e::tests::{
     cases, overlay_cases_geneve, overlay_cases_vxlan, overlay_cases_vxlan_dual_tunnel, TestCase,
 };
 use neuwerk::e2e::topology::{Topology, TopologyConfig};
+
+const RUNTIME_CONFIG_DIR: &str = "/etc/neuwerk";
+const RUNTIME_CONFIG_PATH: &str = "/etc/neuwerk/config.yaml";
+const RUNTIME_CONFIG_LOCK_PATH: &str = "/tmp/neuwerk-runtime-config.lock";
+
+#[derive(Clone, Debug)]
+struct RuntimeConfigPaths {
+    dir: PathBuf,
+    config: PathBuf,
+    lock: PathBuf,
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_root()?;
@@ -61,7 +76,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tls_material,
     )?;
 
-    let mut neuwerk = NeuwerkProcess::new(spawn_neuwerk(&topology, &cfg, &[], &[])?);
+    let mut neuwerk = spawn_neuwerk(
+        &topology,
+        &cfg,
+        &OverlayConfigOverrides::default(),
+        &[],
+    )?;
     topology.configure_fw_dataplane(&cfg)?;
 
     let mut result = run_cases(&cfg, &topology, &upstream_services, case_filter.as_ref());
@@ -143,58 +163,54 @@ fn run_overlay_suites(cfg: &TopologyConfig, topology: &Topology) -> Result<(), S
         cfg,
         topology,
         overlay_cases_vxlan(),
-        vec![
-            "--snat".to_string(),
-            "none".to_string(),
-            "--encap".to_string(),
-            "vxlan".to_string(),
-            "--encap-vni".to_string(),
-            cfg.overlay_vxlan_vni.to_string(),
-            "--encap-udp-port".to_string(),
-            cfg.overlay_vxlan_port.to_string(),
-            "--encap-mtu".to_string(),
-            "1200".to_string(),
-        ],
+        OverlayConfigOverrides {
+            snat: "none".to_string(),
+            encap_mode: Some("vxlan".to_string()),
+            encap_vni: Some(cfg.overlay_vxlan_vni),
+            encap_vni_internal: None,
+            encap_vni_external: None,
+            encap_udp_port: Some(cfg.overlay_vxlan_port),
+            encap_udp_port_internal: None,
+            encap_udp_port_external: None,
+            encap_mtu: Some(1200),
+            swap_tunnels: false,
+        },
         vec![],
     )?;
     run_overlay_suite(
         cfg,
         topology,
         overlay_cases_vxlan_dual_tunnel(),
-        vec![
-            "--snat".to_string(),
-            "none".to_string(),
-            "--encap".to_string(),
-            "vxlan".to_string(),
-            "--encap-vni-internal".to_string(),
-            cfg.overlay_vxlan_vni.to_string(),
-            "--encap-vni-external".to_string(),
-            cfg.overlay_vxlan_vni.wrapping_add(1).to_string(),
-            "--encap-udp-port-internal".to_string(),
-            cfg.overlay_vxlan_port.to_string(),
-            "--encap-udp-port-external".to_string(),
-            cfg.overlay_vxlan_port.wrapping_add(1).to_string(),
-            "--encap-mtu".to_string(),
-            "1200".to_string(),
-        ],
+        OverlayConfigOverrides {
+            snat: "none".to_string(),
+            encap_mode: Some("vxlan".to_string()),
+            encap_vni: None,
+            encap_vni_internal: Some(cfg.overlay_vxlan_vni),
+            encap_vni_external: Some(cfg.overlay_vxlan_vni.wrapping_add(1)),
+            encap_udp_port: None,
+            encap_udp_port_internal: Some(cfg.overlay_vxlan_port),
+            encap_udp_port_external: Some(cfg.overlay_vxlan_port.wrapping_add(1)),
+            encap_mtu: Some(1200),
+            swap_tunnels: true,
+        },
         vec![("NEUWERK_GWLB_SWAP_TUNNELS".to_string(), "1".to_string())],
     )?;
     run_overlay_suite(
         cfg,
         topology,
         overlay_cases_geneve(),
-        vec![
-            "--snat".to_string(),
-            "none".to_string(),
-            "--encap".to_string(),
-            "geneve".to_string(),
-            "--encap-vni".to_string(),
-            cfg.overlay_geneve_vni.to_string(),
-            "--encap-udp-port".to_string(),
-            cfg.overlay_geneve_port.to_string(),
-            "--encap-mtu".to_string(),
-            "1200".to_string(),
-        ],
+        OverlayConfigOverrides {
+            snat: "none".to_string(),
+            encap_mode: Some("geneve".to_string()),
+            encap_vni: Some(cfg.overlay_geneve_vni),
+            encap_vni_internal: None,
+            encap_vni_external: None,
+            encap_udp_port: Some(cfg.overlay_geneve_port),
+            encap_udp_port_internal: None,
+            encap_udp_port_external: None,
+            encap_mtu: Some(1200),
+            swap_tunnels: false,
+        },
         vec![],
     )?;
     Ok(())
@@ -204,10 +220,10 @@ fn run_overlay_suite(
     cfg: &TopologyConfig,
     topology: &Topology,
     cases: Vec<TestCase>,
-    extra_args: Vec<String>,
+    overlay: OverlayConfigOverrides,
     extra_env: Vec<(String, String)>,
 ) -> Result<(), String> {
-    let mut neuwerk = NeuwerkProcess::new(spawn_neuwerk(topology, cfg, &extra_args, &extra_env)?);
+    let mut neuwerk = spawn_neuwerk(topology, cfg, &overlay, &extra_env)?;
     topology.configure_fw_dataplane(cfg)?;
     for case in cases {
         run_case(cfg, topology, &case)?;
@@ -311,68 +327,23 @@ fn auth_token(cfg: &TopologyConfig) -> Result<String, String> {
 fn spawn_neuwerk(
     topology: &Topology,
     cfg: &TopologyConfig,
-    extra_args: &[String],
+    overlay: &OverlayConfigOverrides,
     extra_env: &[(String, String)],
-) -> Result<Child, String> {
+) -> Result<NeuwerkProcess, String> {
     let bin = neuwerk_binary_path().map_err(|e| format!("{e}"))?;
     let ns_file = topology
         .fw()
         .file()
         .try_clone()
         .map_err(|e| format!("clone netns fd failed: {e}"))?;
+    let runtime_config = install_runtime_config(&build_runtime_config_yaml(cfg, overlay))?;
 
     let mut cmd = Command::new(bin);
-    cmd.arg("--management-interface")
-        .arg(&cfg.fw_mgmt_iface)
-        .arg("--data-plane-interface")
-        .arg(&cfg.dp_tun_iface)
-        .arg("--data-plane-mode")
-        .arg("tun")
-        .arg("--idle-timeout-secs")
-        .arg(cfg.idle_timeout_secs.to_string())
-        .arg("--dns-allowlist-idle-secs")
-        .arg(cfg.dns_allowlist_idle_secs.to_string())
-        .arg("--dns-allowlist-gc-interval-secs")
-        .arg(cfg.dns_allowlist_gc_interval_secs.to_string())
-        .arg("--dns-target-ip")
-        .arg(cfg.fw_mgmt_ip.to_string())
-        .arg("--dns-upstream")
-        .arg(format!("{}:53", cfg.up_mgmt_ip))
-        .arg("--dns-upstream")
-        .arg(format!("{}:53", cfg.up_mgmt_ip_alt))
-        .arg("--snat")
-        .arg(cfg.dp_public_ip.to_string())
-        .arg("--http-tls-dir")
-        .arg(&cfg.http_tls_dir)
-        .arg("--cluster-bind")
-        .arg(format!("{}:{}", cfg.fw_mgmt_ip, cfg.cluster_bind_port))
-        .arg("--cluster-join-bind")
-        .arg(format!("{}:{}", cfg.fw_mgmt_ip, cfg.cluster_join_port))
-        .arg("--cluster-advertise")
-        .arg(format!("{}:{}", cfg.fw_mgmt_ip, cfg.cluster_bind_port))
-        .arg("--cluster-data-dir")
-        .arg(&cfg.cluster_data_dir)
-        .arg("--node-id-path")
-        .arg(&cfg.cluster_node_id_path)
-        .arg("--bootstrap-token-path")
-        .arg(&cfg.bootstrap_token_path)
-        .stdout(Stdio::inherit())
+    cmd.stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
-    // E2E uses RFC5737 test-net addresses inside isolated netns. Treat metrics bind as safe here.
-    cmd.env("NEUWERK_ALLOW_PUBLIC_METRICS_BIND", "1");
-    // E2E upstream TLS is backed by generated non-public CA material.
-    cmd.env("NEUWERK_TLS_INTERCEPT_UPSTREAM_VERIFY", "insecure");
-
-    for arg in extra_args {
-        cmd.arg(arg);
-    }
     for (key, value) in extra_env {
         cmd.env(key, value);
-    }
-
-    if !cfg.http_tls_sans.is_empty() {
-        cmd.arg("--http-tls-san").arg(cfg.http_tls_sans.join(","));
     }
 
     unsafe {
@@ -382,19 +353,233 @@ fn spawn_neuwerk(
         });
     }
 
-    cmd.spawn()
-        .map_err(|e| format!("failed to spawn neuwerk: {e}"))
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn neuwerk: {e}"))?;
+
+    Ok(NeuwerkProcess {
+        child,
+        runtime_config: Some(runtime_config),
+    })
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct OverlayConfigOverrides {
+    snat: String,
+    encap_mode: Option<String>,
+    encap_vni: Option<u32>,
+    encap_vni_internal: Option<u32>,
+    encap_vni_external: Option<u32>,
+    encap_udp_port: Option<u16>,
+    encap_udp_port_internal: Option<u16>,
+    encap_udp_port_external: Option<u16>,
+    encap_mtu: Option<u16>,
+    swap_tunnels: bool,
+}
+
+fn build_runtime_config_yaml(cfg: &TopologyConfig, overlay: &OverlayConfigOverrides) -> String {
+    let (snat_mode, snat_ip) = match overlay.snat.trim() {
+        "" => ("static", Some(cfg.dp_public_ip.to_string())),
+        "none" => ("none", None),
+        "auto" => ("auto", None),
+        ip => ("static", Some(ip.to_string())),
+    };
+
+    let mut yaml = String::new();
+    writeln!(&mut yaml, "version: 1").unwrap();
+    writeln!(&mut yaml, "bootstrap:").unwrap();
+    writeln!(&mut yaml, "  management_interface: {}", cfg.fw_mgmt_iface).unwrap();
+    writeln!(&mut yaml, "  data_interface: {}", cfg.dp_tun_iface).unwrap();
+    writeln!(&mut yaml, "  cloud_provider: none").unwrap();
+    writeln!(&mut yaml, "  data_plane_mode: tun").unwrap();
+
+    writeln!(&mut yaml, "dns:").unwrap();
+    writeln!(&mut yaml, "  target_ips:").unwrap();
+    writeln!(&mut yaml, "    - {}", cfg.fw_mgmt_ip).unwrap();
+    writeln!(&mut yaml, "  upstreams:").unwrap();
+    writeln!(&mut yaml, "    - {}:53", cfg.up_mgmt_ip).unwrap();
+    writeln!(&mut yaml, "    - {}:53", cfg.up_mgmt_ip_alt).unwrap();
+
+    writeln!(&mut yaml, "http:").unwrap();
+    writeln!(
+        &mut yaml,
+        "  bind: {}:{}",
+        cfg.fw_mgmt_ip, cfg.http_bind_port
+    )
+    .unwrap();
+    writeln!(
+        &mut yaml,
+        "  advertise: {}:{}",
+        cfg.fw_mgmt_ip, cfg.http_bind_port
+    )
+    .unwrap();
+    writeln!(&mut yaml, "  tls_dir: {}", cfg.http_tls_dir.display()).unwrap();
+    if !cfg.http_tls_sans.is_empty() {
+        writeln!(&mut yaml, "  tls_san:").unwrap();
+        for san in &cfg.http_tls_sans {
+            writeln!(&mut yaml, "    - {san}").unwrap();
+        }
+    }
+
+    writeln!(&mut yaml, "metrics:").unwrap();
+    writeln!(
+        &mut yaml,
+        "  bind: {}:{}",
+        cfg.fw_mgmt_ip, cfg.metrics_port
+    )
+    .unwrap();
+    writeln!(&mut yaml, "  allow_public_bind: true").unwrap();
+
+    writeln!(&mut yaml, "cluster:").unwrap();
+    writeln!(
+        &mut yaml,
+        "  bind: {}:{}",
+        cfg.fw_mgmt_ip, cfg.cluster_bind_port
+    )
+    .unwrap();
+    writeln!(
+        &mut yaml,
+        "  join_bind: {}:{}",
+        cfg.fw_mgmt_ip, cfg.cluster_join_port
+    )
+    .unwrap();
+    writeln!(
+        &mut yaml,
+        "  advertise: {}:{}",
+        cfg.fw_mgmt_ip, cfg.cluster_bind_port
+    )
+    .unwrap();
+    writeln!(&mut yaml, "  data_dir: {}", cfg.cluster_data_dir.display()).unwrap();
+    writeln!(
+        &mut yaml,
+        "  node_id_path: {}",
+        cfg.cluster_node_id_path.display()
+    )
+    .unwrap();
+    writeln!(
+        &mut yaml,
+        "  token_path: {}",
+        cfg.bootstrap_token_path.display()
+    )
+    .unwrap();
+
+    writeln!(&mut yaml, "tls_intercept:").unwrap();
+    writeln!(&mut yaml, "  upstream_verify: insecure").unwrap();
+
+    writeln!(&mut yaml, "dataplane:").unwrap();
+    writeln!(
+        &mut yaml,
+        "  idle_timeout_secs: {}",
+        cfg.idle_timeout_secs
+    )
+    .unwrap();
+    writeln!(
+        &mut yaml,
+        "  dns_allowlist_idle_secs: {}",
+        cfg.dns_allowlist_idle_secs
+    )
+    .unwrap();
+    writeln!(
+        &mut yaml,
+        "  dns_allowlist_gc_interval_secs: {}",
+        cfg.dns_allowlist_gc_interval_secs
+    )
+    .unwrap();
+    writeln!(&mut yaml, "  snat:").unwrap();
+    writeln!(&mut yaml, "    mode: {snat_mode}").unwrap();
+    if let Some(ip) = snat_ip {
+        writeln!(&mut yaml, "    ip: {ip}").unwrap();
+    }
+    if let Some(encap_mode) = &overlay.encap_mode {
+        writeln!(&mut yaml, "  encap_mode: {encap_mode}").unwrap();
+    }
+    if let Some(encap_vni) = overlay.encap_vni {
+        writeln!(&mut yaml, "  encap_vni: {encap_vni}").unwrap();
+    }
+    if let Some(encap_vni_internal) = overlay.encap_vni_internal {
+        writeln!(&mut yaml, "  encap_vni_internal: {encap_vni_internal}").unwrap();
+    }
+    if let Some(encap_vni_external) = overlay.encap_vni_external {
+        writeln!(&mut yaml, "  encap_vni_external: {encap_vni_external}").unwrap();
+    }
+    if let Some(encap_udp_port) = overlay.encap_udp_port {
+        writeln!(&mut yaml, "  encap_udp_port: {encap_udp_port}").unwrap();
+    }
+    if let Some(encap_udp_port_internal) = overlay.encap_udp_port_internal {
+        writeln!(
+            &mut yaml,
+            "  encap_udp_port_internal: {encap_udp_port_internal}"
+        )
+        .unwrap();
+    }
+    if let Some(encap_udp_port_external) = overlay.encap_udp_port_external {
+        writeln!(
+            &mut yaml,
+            "  encap_udp_port_external: {encap_udp_port_external}"
+        )
+        .unwrap();
+    }
+    if let Some(encap_mtu) = overlay.encap_mtu {
+        writeln!(&mut yaml, "  encap_mtu: {encap_mtu}").unwrap();
+    }
+    if overlay.swap_tunnels {
+        writeln!(&mut yaml, "dpdk:").unwrap();
+        writeln!(&mut yaml, "  overlay:").unwrap();
+        writeln!(&mut yaml, "    swap_tunnels: true").unwrap();
+    }
+
+    yaml
+}
+
+fn install_runtime_config(yaml: &str) -> Result<InstalledRuntimeConfig, String> {
+    install_runtime_config_with_paths(&default_runtime_config_paths(), yaml)
+}
+
+fn install_runtime_config_with_paths(
+    paths: &RuntimeConfigPaths,
+    yaml: &str,
+) -> Result<InstalledRuntimeConfig, String> {
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&paths.lock)
+        .map_err(|err| format!("open runtime config lock failed: {err}"))?;
+    flock_exclusive(&lock_file)?;
+
+    let config_dir = paths.dir.as_path();
+    let created_dir = if config_dir.exists() {
+        false
+    } else {
+        fs::create_dir_all(config_dir)
+            .map_err(|err| format!("create runtime config dir failed: {err}"))?;
+        true
+    };
+
+    let previous = match fs::read(&paths.config) {
+        Ok(raw) => Some(raw),
+        Err(err) if err.kind() == ErrorKind::NotFound => None,
+        Err(err) => return Err(format!("read existing runtime config failed: {err}")),
+    };
+
+    fs::write(&paths.config, yaml)
+        .map_err(|err| format!("write runtime config {} failed: {err}", paths.config.display()))?;
+
+    Ok(InstalledRuntimeConfig {
+        paths: paths.clone(),
+        lock_file,
+        previous,
+        created_dir,
+    })
 }
 
 struct NeuwerkProcess {
     child: Child,
+    runtime_config: Option<InstalledRuntimeConfig>,
 }
 
 impl NeuwerkProcess {
-    fn new(child: Child) -> Self {
-        Self { child }
-    }
-
     fn kill(&mut self) {
         let _ = self.child.kill();
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -411,12 +596,66 @@ impl NeuwerkProcess {
                 Err(_) => break,
             }
         }
+        let _ = self.runtime_config.take();
     }
 }
 
 impl Drop for NeuwerkProcess {
     fn drop(&mut self) {
         let _ = self.child.kill();
+    }
+}
+
+struct InstalledRuntimeConfig {
+    paths: RuntimeConfigPaths,
+    lock_file: File,
+    previous: Option<Vec<u8>>,
+    created_dir: bool,
+}
+
+impl Drop for InstalledRuntimeConfig {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            let _ = fs::write(&self.paths.config, previous);
+        } else {
+            let _ = fs::remove_file(&self.paths.config);
+            if self.created_dir {
+                let _ = fs::remove_dir(&self.paths.dir);
+            }
+        }
+        let _ = flock_unlock(&self.lock_file);
+    }
+}
+
+fn default_runtime_config_paths() -> RuntimeConfigPaths {
+    RuntimeConfigPaths {
+        dir: PathBuf::from(RUNTIME_CONFIG_DIR),
+        config: PathBuf::from(RUNTIME_CONFIG_PATH),
+        lock: PathBuf::from(RUNTIME_CONFIG_LOCK_PATH),
+    }
+}
+
+fn flock_exclusive(file: &File) -> Result<(), String> {
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "lock runtime config failed: {}",
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
+fn flock_unlock(file: &File) -> Result<(), String> {
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "unlock runtime config failed: {}",
+            std::io::Error::last_os_error()
+        ))
     }
 }
 
@@ -455,4 +694,118 @@ fn write_token_file(path: &PathBuf) -> Result<(), String> {
             .map_err(|e| format!("set token file permissions failed: {e}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Stdio;
+
+    #[test]
+    fn runtime_config_yaml_maps_base_tun_settings() {
+        let cfg = TopologyConfig::default();
+
+        let yaml = build_runtime_config_yaml(&cfg, &OverlayConfigOverrides::default());
+
+        assert!(yaml.contains("management_interface: veth-fw-mgmt"), "{yaml}");
+        assert!(yaml.contains("data_interface: dp0"), "{yaml}");
+        assert!(yaml.contains("data_plane_mode: tun"), "{yaml}");
+        assert!(yaml.contains("target_ips:\n    - 192.0.2.1"), "{yaml}");
+        assert!(
+            yaml.contains("upstreams:\n    - 172.16.0.2:53\n    - 172.16.0.3:53"),
+            "{yaml}"
+        );
+        assert!(yaml.contains("bind: 192.0.2.1:8443"), "{yaml}");
+        assert!(yaml.contains("join_bind: 192.0.2.1:9601"), "{yaml}");
+        assert!(yaml.contains("data_dir: /tmp/neuwerk-e2e-cluster"), "{yaml}");
+        assert!(yaml.contains("idle_timeout_secs: 1"), "{yaml}");
+        assert!(yaml.contains("dns_allowlist_idle_secs: 2"), "{yaml}");
+        assert!(yaml.contains("dns_allowlist_gc_interval_secs: 1"), "{yaml}");
+        assert!(yaml.contains("mode: static"), "{yaml}");
+        assert!(yaml.contains("ip: 203.0.113.1"), "{yaml}");
+        assert!(yaml.contains("allow_public_bind: true"), "{yaml}");
+        assert!(yaml.contains("upstream_verify: insecure"), "{yaml}");
+    }
+
+    #[test]
+    fn runtime_config_yaml_maps_dual_tunnel_overlay_settings() {
+        let cfg = TopologyConfig::default();
+        let overrides = OverlayConfigOverrides {
+            snat: "none".to_string(),
+            encap_mode: Some("vxlan".to_string()),
+            encap_vni: None,
+            encap_vni_internal: Some(cfg.overlay_vxlan_vni),
+            encap_vni_external: Some(cfg.overlay_vxlan_vni.wrapping_add(1)),
+            encap_udp_port: None,
+            encap_udp_port_internal: Some(cfg.overlay_vxlan_port),
+            encap_udp_port_external: Some(cfg.overlay_vxlan_port.wrapping_add(1)),
+            encap_mtu: Some(1200),
+            swap_tunnels: true,
+        };
+
+        let yaml = build_runtime_config_yaml(&cfg, &overrides);
+
+        assert!(yaml.contains("mode: none"), "{yaml}");
+        assert!(yaml.contains("encap_mode: vxlan"), "{yaml}");
+        assert!(yaml.contains("encap_vni_internal: 800"), "{yaml}");
+        assert!(yaml.contains("encap_vni_external: 801"), "{yaml}");
+        assert!(yaml.contains("encap_udp_port_internal: 10800"), "{yaml}");
+        assert!(yaml.contains("encap_udp_port_external: 10801"), "{yaml}");
+        assert!(yaml.contains("encap_mtu: 1200"), "{yaml}");
+        assert!(yaml.contains("swap_tunnels: true"), "{yaml}");
+    }
+
+    #[test]
+    fn neuwerk_process_kill_releases_runtime_config_lock() {
+        let cfg = TopologyConfig::default();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let paths = test_runtime_config_paths(tempdir.path());
+        let runtime_config = install_runtime_config_with_paths(
+            &paths,
+            &build_runtime_config_yaml(&cfg, &OverlayConfigOverrides::default()),
+        )
+        .expect("runtime config install");
+        let child = Command::new("sleep")
+            .arg("60")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sleep child");
+        let mut neuwerk = NeuwerkProcess {
+            child,
+            runtime_config: Some(runtime_config),
+        };
+
+        neuwerk.kill();
+
+        assert!(
+            runtime_config_lock_available(&paths),
+            "runtime config lock is still held"
+        );
+    }
+
+    fn runtime_config_lock_available(paths: &RuntimeConfigPaths) -> bool {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&paths.lock)
+            .expect("open runtime config lock");
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc == 0 {
+            let _ = flock_unlock(&file);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn test_runtime_config_paths(root: &std::path::Path) -> RuntimeConfigPaths {
+        RuntimeConfigPaths {
+            dir: root.join("etc-neuwerk"),
+            config: root.join("etc-neuwerk/config.yaml"),
+            lock: root.join("neuwerk-runtime-config.lock"),
+        }
+    }
 }

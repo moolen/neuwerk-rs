@@ -300,6 +300,7 @@ async fn supervisor_fails_closed_when_cluster_intercept_ca_cannot_be_loaded() {
         InterceptCaSource::Cluster { store, token_path },
         intercept_ready.clone(),
         "127.0.0.1:0".parse().unwrap(),
+        TlsInterceptSettings::default(),
         false,
         "data0".to_string(),
         intercept_demux,
@@ -954,7 +955,10 @@ async fn spawn_intercept_runtime_with_policy_and_metrics(
     let proxy_task = tokio::spawn(run_tls_intercept_runtime(TlsInterceptRuntimeConfig {
         bind_addr: intercept_addr,
         upstream_override: Some(upstream_addr),
-        upstream_tls_insecure: true,
+        settings: TlsInterceptSettings {
+            upstream_verify: UpstreamTlsVerificationMode::Insecure,
+            ..TlsInterceptSettings::default()
+        },
         intercept_ca_cert_pem: proxy_ca_cert_pem,
         intercept_ca_key_der: proxy_ca_key_der,
         metrics,
@@ -1222,6 +1226,33 @@ fn upstream_tls_verify_mode_parsing_accepts_insecure() {
     );
 }
 
+#[test]
+fn tls_intercept_settings_defaults_match_runtime_contract() {
+    let settings = TlsInterceptSettings::default();
+
+    assert_eq!(
+        settings.upstream_verify,
+        upstream_tls::UpstreamTlsVerificationMode::Strict
+    );
+    assert_eq!(settings.io_timeout, Duration::from_secs(3));
+    assert_eq!(settings.listen_backlog, 1024);
+    assert_eq!(settings.h2.body_timeout, Duration::from_secs(10));
+    assert_eq!(settings.h2.max_concurrent_streams, 64);
+}
+
+#[test]
+fn tls_intercept_settings_allow_typed_insecure_upstream_verify() {
+    let settings = TlsInterceptSettings {
+        upstream_verify: upstream_tls::UpstreamTlsVerificationMode::Insecure,
+        ..TlsInterceptSettings::default()
+    };
+
+    assert_eq!(
+        settings.upstream_verify,
+        upstream_tls::UpstreamTlsVerificationMode::Insecure
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn tls_intercept_runtime_enforces_request_policy() {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -1246,7 +1277,10 @@ async fn tls_intercept_runtime_enforces_request_policy() {
     let proxy_task = tokio::spawn(run_tls_intercept_runtime(TlsInterceptRuntimeConfig {
         bind_addr: intercept_addr,
         upstream_override: Some(upstream_addr),
-        upstream_tls_insecure: true,
+        settings: TlsInterceptSettings {
+            upstream_verify: UpstreamTlsVerificationMode::Insecure,
+            ..TlsInterceptSettings::default()
+        },
         intercept_ca_cert_pem: proxy_ca_cert_pem,
         intercept_ca_key_der: proxy_ca_key_der,
         metrics: Metrics::new().unwrap(),
@@ -1317,7 +1351,10 @@ async fn tls_intercept_runtime_audit_mode_allows_policy_denies() {
     let proxy_task = tokio::spawn(run_tls_intercept_runtime(TlsInterceptRuntimeConfig {
         bind_addr: intercept_addr,
         upstream_override: Some(upstream_addr),
-        upstream_tls_insecure: true,
+        settings: TlsInterceptSettings {
+            upstream_verify: UpstreamTlsVerificationMode::Insecure,
+            ..TlsInterceptSettings::default()
+        },
         intercept_ca_cert_pem: proxy_ca_cert_pem,
         intercept_ca_key_der: proxy_ca_key_der,
         metrics: Metrics::new().unwrap(),
@@ -1383,9 +1420,13 @@ async fn tls_intercept_runtime_allows_large_h2_request_body() {
             .expect("request accept timeout")
             .expect("connection closed before request")
             .expect("request accept failed");
-        let body = read_h2_request_body_with_conn_progress(&mut conn, request.into_body())
-            .await
-            .expect("large h2 request body read failed");
+        let body = read_h2_request_body_with_conn_progress(
+            &mut conn,
+            request.into_body(),
+            TlsInterceptSettings::default().h2.body_timeout,
+        )
+        .await
+        .expect("large h2 request body read failed");
         let _ = observed_body_tx.send(body.len());
         let response = Response::builder()
             .status(200)
@@ -1776,7 +1817,10 @@ async fn tls_intercept_runtime_h2_forwards_browser_xhr_headers_end_to_end() {
     let proxy_task = tokio::spawn(run_tls_intercept_runtime(TlsInterceptRuntimeConfig {
         bind_addr: intercept_addr,
         upstream_override: Some(upstream_addr),
-        upstream_tls_insecure: true,
+        settings: TlsInterceptSettings {
+            upstream_verify: UpstreamTlsVerificationMode::Insecure,
+            ..TlsInterceptSettings::default()
+        },
         intercept_ca_cert_pem: proxy_ca_cert_pem,
         intercept_ca_key_der: proxy_ca_key_der,
         metrics: Metrics::new().unwrap(),
@@ -1897,7 +1941,10 @@ async fn tls_intercept_runtime_h2_processes_parallel_streams_without_serial_queu
     let proxy_task = tokio::spawn(run_tls_intercept_runtime(TlsInterceptRuntimeConfig {
         bind_addr: intercept_addr,
         upstream_override: Some(upstream_addr),
-        upstream_tls_insecure: true,
+        settings: TlsInterceptSettings {
+            upstream_verify: UpstreamTlsVerificationMode::Insecure,
+            ..TlsInterceptSettings::default()
+        },
         intercept_ca_cert_pem: proxy_ca_cert_pem,
         intercept_ca_key_der: proxy_ca_key_der,
         metrics: Metrics::new().unwrap(),

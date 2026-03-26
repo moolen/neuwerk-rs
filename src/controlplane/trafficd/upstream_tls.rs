@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
 use tokio_rustls::TlsConnector;
-use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum UpstreamTlsVerificationMode {
+pub enum UpstreamTlsVerificationMode {
     Strict,
     Insecure,
 }
@@ -88,6 +87,7 @@ fn build_strict_tls_connector(alpn_protocols: Vec<Vec<u8>>) -> Result<TlsConnect
     Ok(TlsConnector::from(Arc::new(config)))
 }
 
+#[cfg(test)]
 pub(super) fn parse_upstream_tls_verify_mode(raw: Option<&str>) -> UpstreamTlsVerificationMode {
     match raw {
         Some(value) if value.eq_ignore_ascii_case("insecure") => {
@@ -95,18 +95,4 @@ pub(super) fn parse_upstream_tls_verify_mode(raw: Option<&str>) -> UpstreamTlsVe
         }
         _ => UpstreamTlsVerificationMode::Strict,
     }
-}
-
-pub(super) fn upstream_tls_verify_mode_from_env() -> UpstreamTlsVerificationMode {
-    let raw = std::env::var("NEUWERK_TLS_INTERCEPT_UPSTREAM_VERIFY").ok();
-    let mode = parse_upstream_tls_verify_mode(raw.as_deref());
-    if let Some(value) = raw {
-        if !value.eq_ignore_ascii_case("strict") && !value.eq_ignore_ascii_case("insecure") {
-            warn!(
-                raw = %value,
-                "trafficd tls intercept unknown NEUWERK_TLS_INTERCEPT_UPSTREAM_VERIFY; defaulting to strict"
-            );
-        }
-    }
-    mode
 }

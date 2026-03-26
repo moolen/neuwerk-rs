@@ -12,6 +12,10 @@
 - Neuwerk-originated cluster replication traffic
 - Traffic under policy (DPDK data plane)
 
+## Packaged Runtime Config
+- Treat `/etc/neuwerk/config.yaml` as the canonical operator-facing packaged runtime contract.
+- Do not reintroduce `/etc/neuwerk/appliance.env`, `/etc/neuwerk/neuwerk.env`, or shell env-to-CLI bootstrap wrappers in packaging/docs work.
+
 ## DPDK Build And Cloud-Test Notes
 - Azure cloud tests expect a DPDK-enabled Neuwerk binary. Build it with `cargo build --release --features dpdk`.
 - Do not deploy a plain `cargo build --release` binary to DPDK test VMs. The service will fail at startup with `dpdk io backend not available`.

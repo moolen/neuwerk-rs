@@ -68,10 +68,12 @@ fn init_local_controlplane_state_with_store(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, SocketAddr};
+    use std::net::Ipv4Addr;
 
     use neuwerk::controlplane::cloud::types::IntegrationMode;
     use neuwerk::controlplane::cluster::config::ClusterConfig;
+    use neuwerk::controlplane::trafficd::TlsInterceptSettings;
+    use neuwerk::dataplane::engine::EngineRuntimeConfig;
     use neuwerk::controlplane::policy_config::{PolicyConfig, PolicyMode};
     use neuwerk::controlplane::policy_repository::PolicyRecord;
     use neuwerk::dataplane::policy::DefaultPolicy;
@@ -105,15 +107,17 @@ mod tests {
             encap_udp_port_internal: None,
             encap_udp_port_external: None,
             encap_mtu: 1500,
-            http_bind: None,
-            http_advertise: None,
             http_external_url: None,
             http_tls_dir,
             http_cert_path: None,
             http_key_path: None,
             http_ca_path: None,
             http_tls_san: Vec::new(),
-            metrics_bind: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 8080))),
+            allow_public_metrics_bind: false,
+            tls_intercept: TlsInterceptSettings::default(),
+            engine_runtime: EngineRuntimeConfig::default(),
+            runtime: crate::runtime::config::RuntimeBehaviorSettings::default(),
+            dpdk: crate::runtime::config::RuntimeDpdkConfig::default(),
             cloud_provider: crate::runtime::cli::CloudProviderKind::None,
             cluster: ClusterConfig::disabled(),
             cluster_migrate_from_local: false,

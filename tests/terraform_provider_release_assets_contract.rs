@@ -29,7 +29,13 @@ Passphrase: neuwerk-provider-ci-passphrase
 
     let status = Command::new("gpg")
         .env("GNUPGHOME", gnupg_home.path())
-        .args(["--batch", "--pinentry-mode", "loopback", "--passphrase", passphrase])
+        .args([
+            "--batch",
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase",
+            passphrase,
+        ])
         .arg("--generate-key")
         .arg(&config_path)
         .status()
@@ -113,7 +119,9 @@ fn build_provider_release_assets_emits_registry_compatible_checksums() {
         command.env(name, value);
     }
 
-    let status = command.status().expect("run provider release asset builder");
+    let status = command
+        .status()
+        .expect("run provider release asset builder");
     assert!(
         status.success(),
         "provider release asset builder failed: {status}"

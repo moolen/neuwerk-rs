@@ -53,7 +53,6 @@ use crate::controlplane::threat_intel::store::ThreatStore;
 use crate::controlplane::wiretap::{DnsMap, WiretapFilter, WiretapHub, WiretapQuery};
 use crate::controlplane::PolicyStore;
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
-const ALLOW_PUBLIC_METRICS_BIND_ENV: &str = "NEUWERK_ALLOW_PUBLIC_METRICS_BIND";
 const AUTH_COOKIE_NAME: &str = "neuwerk_auth";
 const AUTH_SSO_COOKIE_NAME: &str = "neuwerk_sso";
 const AUTH_SSO_STATE_TTL_SECS: i64 = 300;
@@ -127,6 +126,7 @@ pub struct HttpApiConfig {
     pub bind_addr: SocketAddr,
     pub advertise_addr: SocketAddr,
     pub metrics_bind: SocketAddr,
+    pub allow_public_metrics_bind: bool,
     pub tls_dir: PathBuf,
     pub cert_path: Option<PathBuf>,
     pub key_path: Option<PathBuf>,
@@ -389,12 +389,7 @@ async fn run_http_api_with_shutdown_impl(
         tls_dir = %cfg.tls_dir.display(),
         "http api starting"
     );
-    if metrics_bind_requires_guardrail(cfg.metrics_bind) && !allow_public_metrics_bind_override() {
-        return Err(format!(
-            "metrics bind {} appears public; set {}=1 to override",
-            cfg.metrics_bind, ALLOW_PUBLIC_METRICS_BIND_ENV
-        ));
-    }
+    validate_metrics_bind_policy(cfg.metrics_bind, cfg.allow_public_metrics_bind)?;
     let tls = ensure_http_tls(HttpTlsConfig {
         tls_dir: cfg.tls_dir.clone(),
         cert_path: cfg.cert_path.clone(),
@@ -689,12 +684,16 @@ fn metrics_bind_requires_guardrail(bind: SocketAddr) -> bool {
     }
 }
 
-fn allow_public_metrics_bind_override() -> bool {
-    std::env::var(ALLOW_PUBLIC_METRICS_BIND_ENV)
-        .map(|value| parse_truthy_env(&value))
-        .unwrap_or(false)
+fn validate_metrics_bind_policy(bind: SocketAddr, allow_public_bind: bool) -> Result<(), String> {
+    if metrics_bind_requires_guardrail(bind) && !allow_public_bind {
+        return Err(format!(
+            "metrics bind {bind} appears public; set metrics.allow_public_bind=true to override"
+        ));
+    }
+    Ok(())
 }
 
+#[cfg(test)]
 fn parse_truthy_env(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),

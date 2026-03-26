@@ -5,8 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStartPre=__RUNTIME_BINARY_DIR__/neuwerk-bootstrap
-ExecStart=__RUNTIME_BINARY_DIR__/neuwerk-launch
+Environment=LD_LIBRARY_PATH=__RUNTIME_PREFIX__/current/lib:__RUNTIME_PREFIX__/current/lib/x86_64-linux-gnu:__RUNTIME_PREFIX__/current/lib64
+Environment=RTE_EAL_PMD_PATH=__RUNTIME_PREFIX__/current/lib/dpdk
+ExecStart=__RUNTIME_BINARY_DIR__/neuwerk
 Restart=on-failure
 RestartSec=5
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_SYS_ADMIN CAP_IPC_LOCK
@@ -16,7 +17,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/etc/neuwerk /var/lib/neuwerk /var/log /run /tmp __RUNTIME_PREFIX__
+ReadWritePaths=/var/lib/neuwerk /var/log /run /tmp __RUNTIME_PREFIX__
 
 [Install]
 WantedBy=multi-user.target

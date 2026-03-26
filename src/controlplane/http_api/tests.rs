@@ -970,6 +970,26 @@ fn metrics_bind_guardrail_requires_override_for_unspecified_and_public_bind() {
     assert!(!parse_truthy_env("false"));
 }
 
+#[test]
+fn validate_metrics_bind_policy_rejects_public_bind_without_allow_flag() {
+    let err = validate_metrics_bind_policy(
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 8080),
+        false,
+    )
+    .expect_err("public bind must be rejected without explicit allow flag");
+
+    assert!(err.contains("metrics bind"));
+}
+
+#[test]
+fn validate_metrics_bind_policy_allows_public_bind_with_allow_flag() {
+    validate_metrics_bind_policy(
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 8080),
+        true,
+    )
+    .expect("public bind should be allowed when explicitly configured");
+}
+
 fn test_auth_setup(dir: &TempDir) -> std::path::PathBuf {
     let tls_dir = dir.path().join("http-tls");
     std::fs::create_dir_all(&tls_dir).unwrap();

@@ -27,10 +27,9 @@ impl DpdkAdapter {
             }
         }
         self.service_lane_tap_last_attempt = Some(Instant::now());
-        let iface = std::env::var("NEUWERK_DPDK_SERVICE_LANE_IFACE")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "svc0".to_string());
+        let iface = crate::support::runtime_knobs::current_runtime_knobs()
+            .dpdk
+            .service_lane_interface;
         match open_tap(&iface) {
             Ok(file) => {
                 match read_interface_mac(&iface) {

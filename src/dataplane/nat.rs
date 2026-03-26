@@ -10,6 +10,19 @@ const NAT_TABLE_DEFAULT_CAPACITY: usize = 1 << 15;
 const NAT_TABLE_MIN_CAPACITY: usize = 1 << 10;
 const NAT_TABLE_MAX_CAPACITY: usize = 1 << 26;
 const NAT_TABLE_MAX_LOAD_PERCENT: usize = 70;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NatTableRuntimeConfig {
+    pub capacity: usize,
+}
+
+impl Default for NatTableRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            capacity: NAT_TABLE_DEFAULT_CAPACITY,
+        }
+    }
+}
 const PORT_RANGE_LEN: usize = (PORT_MAX as usize) - (PORT_MIN as usize) + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -430,7 +443,14 @@ impl NatTable {
     }
 
     pub fn new_with_timeout(idle_timeout_secs: u64) -> Self {
-        let capacity = env_capacity("NEUWERK_NAT_TABLE_CAPACITY", NAT_TABLE_DEFAULT_CAPACITY);
+        Self::new_with_timeout_and_config(idle_timeout_secs, NatTableRuntimeConfig::default())
+    }
+
+    pub fn new_with_timeout_and_config(
+        idle_timeout_secs: u64,
+        cfg: NatTableRuntimeConfig,
+    ) -> Self {
+        let capacity = normalize_capacity(cfg.capacity);
         Self {
             map: OpenMap::new_with_capacity(capacity, flow_hash),
             reverse: OpenMap::new_with_capacity(capacity, reverse_hash),
@@ -671,14 +691,6 @@ fn prefetch_read<T>(ptr: *const T) {
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     let _ = ptr;
-}
-
-fn env_capacity(name: &str, default: usize) -> usize {
-    let parsed = std::env::var(name)
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .unwrap_or(default);
-    normalize_capacity(parsed)
 }
 
 fn normalize_capacity(raw: usize) -> usize {

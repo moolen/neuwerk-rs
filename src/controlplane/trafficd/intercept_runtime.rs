@@ -1,4 +1,47 @@
-fn build_intercept_listener(bind_addr: SocketAddr) -> Result<TcpListener, String> {
+fn tls_intercept_listen_backlog(settings: &TlsInterceptSettings) -> u32 {
+    settings.listen_backlog
+}
+
+fn tls_io_timeout(settings: &TlsInterceptSettings) -> Duration {
+    settings.io_timeout
+}
+
+fn tls_h2_body_idle_timeout(settings: &TlsInterceptSettings) -> Duration {
+    settings.h2.body_timeout
+}
+
+fn tls_h2_max_concurrent_streams(settings: &TlsInterceptSettings) -> u32 {
+    settings.h2.max_concurrent_streams
+}
+
+fn tls_h2_max_requests_per_connection(settings: &TlsInterceptSettings) -> usize {
+    settings.h2.max_requests_per_connection
+}
+
+fn tls_h2_pool_shards(settings: &TlsInterceptSettings) -> usize {
+    settings.h2.pool_shards
+}
+
+fn tls_h2_detailed_metrics_enabled(settings: &TlsInterceptSettings) -> bool {
+    settings.h2.detailed_metrics
+}
+
+fn tls_h2_selection_inflight_weight(settings: &TlsInterceptSettings) -> u64 {
+    settings.h2.selection_inflight_weight
+}
+
+fn tls_h2_reconnect_backoff_base_ms(settings: &TlsInterceptSettings) -> u64 {
+    settings.h2.reconnect_backoff_base_ms
+}
+
+fn tls_h2_reconnect_backoff_max_ms(settings: &TlsInterceptSettings) -> u64 {
+    settings.h2.reconnect_backoff_max_ms
+}
+
+fn build_intercept_listener(
+    bind_addr: SocketAddr,
+    settings: &TlsInterceptSettings,
+) -> Result<TcpListener, String> {
     let socket = match bind_addr {
         SocketAddr::V4(_) => TcpSocket::new_v4(),
         SocketAddr::V6(_) => TcpSocket::new_v6(),
@@ -12,7 +55,7 @@ fn build_intercept_listener(bind_addr: SocketAddr) -> Result<TcpListener, String
         .bind(bind_addr)
         .map_err(|err| format!("trafficd tls intercept bind failed: {err}"))?;
     socket
-        .listen(tls_intercept_listen_backlog())
+        .listen(tls_intercept_listen_backlog(settings))
         .map_err(|err| format!("trafficd tls intercept listen failed: {err}"))
 }
 
@@ -310,7 +353,10 @@ fn upstream_h2_reconnect_backoff_wait(pool_key: &str) -> Duration {
         .unwrap_or_else(|| Duration::from_millis(0))
 }
 
-fn upstream_h2_reconnect_backoff_record_failure(pool_key: &str) -> Duration {
+fn upstream_h2_reconnect_backoff_record_failure(
+    pool_key: &str,
+    settings: &TlsInterceptSettings,
+) -> Duration {
     let map = upstream_h2_reconnect_backoff_map();
     let mut lock = map
         .lock()
@@ -324,8 +370,8 @@ fn upstream_h2_reconnect_backoff_record_failure(pool_key: &str) -> Duration {
             next_allowed_at: now,
         });
     state.failures = state.failures.saturating_add(1);
-    let base_ms = tls_h2_reconnect_backoff_base_ms();
-    let max_ms = tls_h2_reconnect_backoff_max_ms();
+    let base_ms = tls_h2_reconnect_backoff_base_ms(settings);
+    let max_ms = tls_h2_reconnect_backoff_max_ms(settings);
     let shift = state.failures.saturating_sub(1).min(12);
     let backoff_ms = base_ms
         .saturating_mul(1u64 << shift)
@@ -368,36 +414,33 @@ fn is_benign_h2_response_body_termination(err: &h2::Error) -> bool {
 
 pub async fn run_tls_intercept_runtime(cfg: TlsInterceptRuntimeConfig) -> Result<(), String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
+    let settings = Arc::new(cfg.settings);
     let acceptor = build_tls_intercept_acceptor(
         &cfg.intercept_ca_cert_pem,
         &cfg.intercept_ca_key_der,
         INTERCEPT_LEAF_CACHE_TTL,
         INTERCEPT_LEAF_CACHE_MAX_ENTRIES,
     )?;
-    let verify_mode = if cfg.upstream_tls_insecure {
-        upstream_tls::UpstreamTlsVerificationMode::Insecure
-    } else {
-        upstream_tls::UpstreamTlsVerificationMode::Strict
-    };
+    let verify_mode = settings.upstream_verify;
     let connector_h1 = upstream_tls::build_tls_connector(Vec::new(), verify_mode)?;
     let connector_h2 = upstream_tls::build_tls_connector(vec![b"h2".to_vec()], verify_mode)?;
-    let h2_pool_shards = tls_h2_pool_shards();
+    let h2_pool_shards = tls_h2_pool_shards(settings.as_ref());
     let upstream_h2_pool: UpstreamH2Pool = Arc::new(UpstreamH2PoolState::new(h2_pool_shards));
     let upstream_h2_connect_inflight: UpstreamH2ConnectInFlight =
         Arc::new(UpstreamH2ConnectInFlightState::new(h2_pool_shards));
-    let listener = build_intercept_listener(cfg.bind_addr)?;
+    let listener = build_intercept_listener(cfg.bind_addr, settings.as_ref())?;
     info!(
         bind_addr = %cfg.bind_addr,
-        io_timeout_secs = tls_io_timeout().as_secs(),
-        h2_body_idle_timeout_secs = tls_h2_body_idle_timeout().as_secs(),
-        h2_max_concurrent_streams = tls_h2_max_concurrent_streams(),
-        h2_max_requests_per_connection = tls_h2_max_requests_per_connection(),
-        h2_selection_inflight_weight = tls_h2_selection_inflight_weight(),
-        h2_pool_shards = tls_h2_pool_shards(),
-        h2_reconnect_backoff_base_ms = tls_h2_reconnect_backoff_base_ms(),
-        h2_reconnect_backoff_max_ms = tls_h2_reconnect_backoff_max_ms(),
-        h2_detailed_metrics = tls_h2_detailed_metrics_enabled(),
-        listen_backlog = tls_intercept_listen_backlog(),
+        io_timeout_secs = tls_io_timeout(settings.as_ref()).as_secs(),
+        h2_body_idle_timeout_secs = tls_h2_body_idle_timeout(settings.as_ref()).as_secs(),
+        h2_max_concurrent_streams = tls_h2_max_concurrent_streams(settings.as_ref()),
+        h2_max_requests_per_connection = tls_h2_max_requests_per_connection(settings.as_ref()),
+        h2_selection_inflight_weight = tls_h2_selection_inflight_weight(settings.as_ref()),
+        h2_pool_shards = tls_h2_pool_shards(settings.as_ref()),
+        h2_reconnect_backoff_base_ms = tls_h2_reconnect_backoff_base_ms(settings.as_ref()),
+        h2_reconnect_backoff_max_ms = tls_h2_reconnect_backoff_max_ms(settings.as_ref()),
+        h2_detailed_metrics = tls_h2_detailed_metrics_enabled(settings.as_ref()),
+        listen_backlog = tls_intercept_listen_backlog(settings.as_ref()),
         "trafficd tls intercept runtime configured"
     );
 
@@ -423,12 +466,14 @@ pub async fn run_tls_intercept_runtime(cfg: TlsInterceptRuntimeConfig) -> Result
         let policy_snapshot = cfg.policy_snapshot.clone();
         let intercept_demux = cfg.intercept_demux.clone();
         let upstream_override = cfg.upstream_override;
+        let settings = settings.clone();
         tokio::spawn(async move {
             match std::panic::AssertUnwindSafe(handle_tls_intercept_client(
                 stream,
                 acceptor,
                 connector_h1,
                 connector_h2,
+                settings,
                 upstream_h2_pool,
                 upstream_h2_connect_inflight,
                 metrics.clone(),
@@ -473,6 +518,7 @@ async fn handle_tls_intercept_client(
     acceptor: TlsAcceptor,
     connector_h1: TlsConnector,
     connector_h2: TlsConnector,
+    settings: Arc<TlsInterceptSettings>,
     upstream_h2_pool: UpstreamH2Pool,
     upstream_h2_connect_inflight: UpstreamH2ConnectInFlight,
     metrics: Metrics,
@@ -546,10 +592,11 @@ async fn handle_tls_intercept_client(
     };
 
     let client_tls_start = std::time::Instant::now();
-    let mut client_tls = tokio::time::timeout(tls_io_timeout(), acceptor.accept(stream))
-        .await
-        .map_err(|_| "tls intercept: client tls handshake timed out".to_string())?
-        .map_err(|err| format!("tls intercept: client tls handshake failed: {err}"))?;
+    let mut client_tls =
+        tokio::time::timeout(tls_io_timeout(settings.as_ref()), acceptor.accept(stream))
+            .await
+            .map_err(|_| "tls intercept: client tls handshake timed out".to_string())?
+            .map_err(|err| format!("tls intercept: client tls handshake failed: {err}"))?;
     metrics.observe_svc_tls_intercept_phase("client_tls_accept", client_tls_start.elapsed());
     let client_alpn = client_tls
         .get_ref()
@@ -561,6 +608,7 @@ async fn handle_tls_intercept_client(
         return handle_tls_intercept_h2(
             client_tls,
             connector_h2,
+            settings.clone(),
             upstream_h2_pool,
             upstream_h2_connect_inflight,
             metrics,
@@ -575,6 +623,7 @@ async fn handle_tls_intercept_client(
     handle_tls_intercept_http1(
         &mut client_tls,
         connector_h1,
+        settings.as_ref(),
         &metrics,
         policy.http_policy,
         policy.enforce_http_policy,
@@ -610,12 +659,16 @@ async fn connect_upstream_tls(
     upstream_addr: SocketAddr,
     host: &str,
     metrics: &Metrics,
+    settings: &TlsInterceptSettings,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
     let tcp_connect_start = std::time::Instant::now();
-    let upstream_tcp = tokio::time::timeout(tls_io_timeout(), TcpStream::connect(upstream_addr))
-        .await
-        .map_err(|_| "tls intercept: upstream tcp connect timed out".to_string())?
-        .map_err(|err| format!("tls intercept: upstream tcp connect failed: {err}"))?;
+    let upstream_tcp = tokio::time::timeout(
+        tls_io_timeout(settings),
+        TcpStream::connect(upstream_addr),
+    )
+    .await
+    .map_err(|_| "tls intercept: upstream tcp connect timed out".to_string())?
+    .map_err(|err| format!("tls intercept: upstream tcp connect failed: {err}"))?;
     metrics.observe_svc_tls_intercept_phase("upstream_tcp_connect", tcp_connect_start.elapsed());
     let server_name_raw = if host.is_empty() {
         upstream_addr.ip().to_string()
@@ -626,7 +679,7 @@ async fn connect_upstream_tls(
         .map_err(|_| format!("tls intercept: invalid server name '{server_name_raw}'"))?;
     let tls_connect_start = std::time::Instant::now();
     let tls = tokio::time::timeout(
-        tls_io_timeout(),
+        tls_io_timeout(settings),
         connector.connect(server_name, upstream_tcp),
     )
     .await
@@ -641,14 +694,18 @@ async fn connect_upstream_h2_client(
     upstream_addr: SocketAddr,
     host: &str,
     metrics: &Metrics,
+    settings: &TlsInterceptSettings,
 ) -> Result<Arc<UpstreamH2Client>, String> {
-    let upstream_tls = connect_upstream_tls(connector, upstream_addr, host, metrics).await?;
+    let upstream_tls =
+        connect_upstream_tls(connector, upstream_addr, host, metrics, settings).await?;
     let h2_handshake_start = std::time::Instant::now();
-    let (send_request, upstream_conn) =
-        tokio::time::timeout(tls_io_timeout(), client::handshake(upstream_tls))
-            .await
-            .map_err(|_| "tls intercept: h2 upstream handshake timed out".to_string())?
-            .map_err(|err| format!("tls intercept: h2 upstream handshake failed: {err}"))?;
+    let (send_request, upstream_conn) = tokio::time::timeout(
+        tls_io_timeout(settings),
+        client::handshake(upstream_tls),
+    )
+    .await
+    .map_err(|_| "tls intercept: h2 upstream handshake timed out".to_string())?
+    .map_err(|err| format!("tls intercept: h2 upstream handshake failed: {err}"))?;
     metrics.observe_svc_tls_intercept_phase("upstream_h2_handshake", h2_handshake_start.elapsed());
     let session_guard = InflightMetricGuard::new(metrics, "upstream_h2_sessions");
     let metrics_task = metrics.clone();
@@ -716,8 +773,9 @@ fn select_upstream_h2_client(
     max_streams_per_client: usize,
     max_requests_per_connection: usize,
     metrics: &Metrics,
+    settings: &TlsInterceptSettings,
 ) -> Option<Arc<UpstreamH2Client>> {
-    let inflight_weight = tls_h2_selection_inflight_weight();
+    let inflight_weight = tls_h2_selection_inflight_weight(settings);
     let mut remove_host = false;
     let mut pruned = 0usize;
     let mut retired_pruned = 0usize;
@@ -741,7 +799,7 @@ fn select_upstream_h2_client(
             remove_host = true;
             return None;
         }
-        if tls_h2_detailed_metrics_enabled() {
+        if tls_h2_detailed_metrics_enabled(settings) {
             metrics.observe_svc_tls_intercept_upstream_h2_pool_width(clients.len());
         }
         clients
@@ -763,7 +821,7 @@ fn select_upstream_h2_client(
             .min_by_key(|(score, in_flight, _)| (*score, *in_flight))
             .map(|(_, in_flight, client)| {
                 observe_selected_inflight_peak(metrics, in_flight);
-                if tls_h2_detailed_metrics_enabled() {
+                if tls_h2_detailed_metrics_enabled(settings) {
                     metrics.observe_svc_tls_intercept_upstream_h2_selected_inflight(in_flight);
                 }
                 client
@@ -787,14 +845,15 @@ async fn get_or_connect_upstream_h2_client_with<Connect, ConnectFuture>(
     connect_inflight: &UpstreamH2ConnectInFlight,
     pool_key: &str,
     metrics: &Metrics,
+    settings: &TlsInterceptSettings,
     connect: Connect,
 ) -> Result<(Arc<UpstreamH2Client>, UpstreamH2StreamGuard), String>
 where
     Connect: FnOnce() -> ConnectFuture,
     ConnectFuture: std::future::Future<Output = Result<Arc<UpstreamH2Client>, String>>,
 {
-    let max_streams_per_client = tls_h2_max_concurrent_streams() as usize;
-    let max_requests_per_connection = tls_h2_max_requests_per_connection();
+    let max_streams_per_client = tls_h2_max_concurrent_streams(settings) as usize;
+    let max_requests_per_connection = tls_h2_max_requests_per_connection(settings);
     loop {
         let lock_wait_start = std::time::Instant::now();
         let mut lock = pool.lock_key(pool_key).await;
@@ -808,6 +867,7 @@ where
             max_streams_per_client,
             max_requests_per_connection,
             metrics,
+            settings,
         ) {
             metrics.inc_svc_tls_intercept_upstream_h2_pool("hit");
             let guard = UpstreamH2StreamGuard::new(existing.clone());
@@ -857,6 +917,7 @@ where
             max_streams_per_client,
             max_requests_per_connection,
             metrics,
+            settings,
         ) {
             created.is_closed.store(true, Ordering::Release);
             metrics.inc_svc_tls_intercept_upstream_h2_pool("connect_raced");
@@ -881,10 +942,16 @@ async fn get_or_connect_upstream_h2_client(
     host: &str,
     pool_key: &str,
     metrics: &Metrics,
+    settings: &TlsInterceptSettings,
 ) -> Result<(Arc<UpstreamH2Client>, UpstreamH2StreamGuard), String> {
-    get_or_connect_upstream_h2_client_with(pool, connect_inflight, pool_key, metrics, || {
-        connect_upstream_h2_client(connector, upstream_addr, host, metrics)
-    })
+    get_or_connect_upstream_h2_client_with(
+        pool,
+        connect_inflight,
+        pool_key,
+        metrics,
+        settings,
+        || connect_upstream_h2_client(connector, upstream_addr, host, metrics, settings),
+    )
     .await
 }
 
@@ -893,6 +960,7 @@ async fn send_upstream_h2_request(
     request: axum::http::Request<()>,
     end_of_stream: bool,
     metrics: &Metrics,
+    settings: &TlsInterceptSettings,
 ) -> Result<(h2::client::ResponseFuture, h2::SendStream<Bytes>), String> {
     if client.is_closed.load(Ordering::Acquire) {
         return Err(
@@ -908,14 +976,14 @@ async fn send_upstream_h2_request(
     let send_lock_wait = lock_wait_start.elapsed();
     update_upstream_h2_send_wait_ewma(client, send_lock_wait);
     metrics.observe_svc_tls_intercept_phase("upstream_h2_send_lock_wait", send_lock_wait);
-    if tls_h2_detailed_metrics_enabled() {
+    if tls_h2_detailed_metrics_enabled(settings) {
         metrics.observe_svc_tls_intercept_upstream_h2_send_wait(
             "sender_clone_lock_wait",
             send_lock_wait,
         );
         let ready_wait_start = std::time::Instant::now();
         let ready_result =
-            tokio::time::timeout(tls_io_timeout(), send_request.clone().ready()).await;
+            tokio::time::timeout(tls_io_timeout(settings), send_request.clone().ready()).await;
         let ready_wait = ready_wait_start.elapsed();
         metrics.observe_svc_tls_intercept_phase("upstream_h2_ready_wait", ready_wait);
         metrics.observe_svc_tls_intercept_upstream_h2_send_wait("ready_wait", ready_wait);
@@ -927,10 +995,13 @@ async fn send_upstream_h2_request(
             return Err(err);
         }
     } else {
-        if let Err(err) = tokio::time::timeout(tls_io_timeout(), send_request.clone().ready())
-            .await
-            .map_err(|_| "tls intercept: h2 upstream ready timed out".to_string())?
-            .map_err(|err| format!("tls intercept: h2 upstream ready failed: {err}"))
+        if let Err(err) = tokio::time::timeout(
+            tls_io_timeout(settings),
+            send_request.clone().ready(),
+        )
+        .await
+        .map_err(|_| "tls intercept: h2 upstream ready timed out".to_string())?
+        .map_err(|err| format!("tls intercept: h2 upstream ready failed: {err}"))
         {
             client.is_closed.store(true, Ordering::Release);
             return Err(err);
@@ -962,8 +1033,12 @@ fn upstream_h2_pool_keys_for_shard_count(
     keys
 }
 
-fn upstream_h2_pool_keys(host: &str, upstream_addr: SocketAddr) -> (Vec<(String, usize)>, usize) {
-    let shard_count = tls_h2_pool_shards();
+fn upstream_h2_pool_keys(
+    host: &str,
+    upstream_addr: SocketAddr,
+    settings: &TlsInterceptSettings,
+) -> (Vec<(String, usize)>, usize) {
+    let shard_count = tls_h2_pool_shards(settings);
     if shard_count <= 1 {
         return (vec![(format!("{host}@{upstream_addr}"), 0)], shard_count);
     }
@@ -978,9 +1053,10 @@ async fn try_get_existing_upstream_h2_client(
     pool: &UpstreamH2Pool,
     pool_key: &str,
     metrics: &Metrics,
+    settings: &TlsInterceptSettings,
 ) -> Option<(Arc<UpstreamH2Client>, UpstreamH2StreamGuard)> {
-    let max_streams_per_client = tls_h2_max_concurrent_streams() as usize;
-    let max_requests_per_connection = tls_h2_max_requests_per_connection();
+    let max_streams_per_client = tls_h2_max_concurrent_streams(settings) as usize;
+    let max_requests_per_connection = tls_h2_max_requests_per_connection(settings);
     let lock_wait_start = std::time::Instant::now();
     let mut lock = pool.lock_key(pool_key).await;
     metrics
@@ -991,6 +1067,7 @@ async fn try_get_existing_upstream_h2_client(
         max_streams_per_client,
         max_requests_per_connection,
         metrics,
+        settings,
     )?;
     metrics.inc_svc_tls_intercept_upstream_h2_pool("hit");
     let guard = UpstreamH2StreamGuard::new(selected.clone());
@@ -1010,7 +1087,11 @@ async fn evict_unhealthy_upstream_h2_client(
     metrics.inc_svc_tls_intercept_upstream_h2_pool(reason);
 }
 
-async fn maybe_wait_upstream_h2_reconnect_backoff(pool_key: &str, metrics: &Metrics) {
+async fn maybe_wait_upstream_h2_reconnect_backoff(
+    pool_key: &str,
+    metrics: &Metrics,
+    _settings: &TlsInterceptSettings,
+) {
     let wait = upstream_h2_reconnect_backoff_wait(pool_key);
     if wait.is_zero() {
         return;
@@ -1030,6 +1111,7 @@ async fn send_upstream_h2_request_via_pool(
     request: axum::http::Request<()>,
     end_of_stream: bool,
     metrics: &Metrics,
+    settings: &TlsInterceptSettings,
 ) -> Result<
     (
         String,
@@ -1040,7 +1122,7 @@ async fn send_upstream_h2_request_via_pool(
     ),
     String,
 > {
-    let (pool_keys, shard_count) = upstream_h2_pool_keys(host, upstream_addr);
+    let (pool_keys, shard_count) = upstream_h2_pool_keys(host, upstream_addr, settings);
     let (primary_pool_key, primary_shard) = &pool_keys[0];
     if shard_count > 1 {
         metrics.inc_svc_tls_intercept_upstream_h2_shard_select(*primary_shard);
@@ -1051,14 +1133,16 @@ async fn send_upstream_h2_request_via_pool(
             metrics.inc_svc_tls_intercept_upstream_h2_pool("cross_shard_probe");
         }
         let Some((client, guard)) =
-            try_get_existing_upstream_h2_client(pool, pool_key, metrics).await
+            try_get_existing_upstream_h2_client(pool, pool_key, metrics, settings).await
         else {
             continue;
         };
         if idx > 0 {
             metrics.inc_svc_tls_intercept_upstream_h2_pool("cross_shard_hit");
         }
-        match send_upstream_h2_request(&client, request.clone(), end_of_stream, metrics).await {
+        match send_upstream_h2_request(&client, request.clone(), end_of_stream, metrics, settings)
+            .await
+        {
             Ok((response_fut, send_stream)) => {
                 upstream_h2_reconnect_backoff_record_success(pool_key);
                 return Ok((pool_key.clone(), client, guard, response_fut, send_stream));
@@ -1080,7 +1164,7 @@ async fn send_upstream_h2_request_via_pool(
         }
     }
 
-    maybe_wait_upstream_h2_reconnect_backoff(primary_pool_key, metrics).await;
+    maybe_wait_upstream_h2_reconnect_backoff(primary_pool_key, metrics, settings).await;
 
     let (client, guard) = get_or_connect_upstream_h2_client(
         pool,
@@ -1090,9 +1174,12 @@ async fn send_upstream_h2_request_via_pool(
         host,
         primary_pool_key,
         metrics,
+        settings,
     )
     .await?;
-    match send_upstream_h2_request(&client, request.clone(), end_of_stream, metrics).await {
+    match send_upstream_h2_request(&client, request.clone(), end_of_stream, metrics, settings)
+        .await
+    {
         Ok((response_fut, send_stream)) => {
             upstream_h2_reconnect_backoff_record_success(primary_pool_key);
             Ok((
@@ -1117,7 +1204,8 @@ async fn send_upstream_h2_request_via_pool(
                 &first_err,
             ));
             metrics.inc_svc_tls_intercept_upstream_h2_pool("reconnect");
-            let reconnect_backoff = upstream_h2_reconnect_backoff_record_failure(primary_pool_key);
+            let reconnect_backoff =
+                upstream_h2_reconnect_backoff_record_failure(primary_pool_key, settings);
             if !reconnect_backoff.is_zero() {
                 metrics.observe_svc_tls_intercept_phase(
                     "upstream_h2_reconnect_backoff_wait",
@@ -1126,7 +1214,8 @@ async fn send_upstream_h2_request_via_pool(
                 tokio::time::sleep(reconnect_backoff).await;
             }
             let reconnected =
-                connect_upstream_h2_client(connector, upstream_addr, host, metrics).await?;
+                connect_upstream_h2_client(connector, upstream_addr, host, metrics, settings)
+                    .await?;
             {
                 let mut lock = pool.lock_key(primary_pool_key).await;
                 lock.entry(primary_pool_key.clone())
@@ -1134,7 +1223,15 @@ async fn send_upstream_h2_request_via_pool(
                     .push(reconnected.clone());
             }
             let reconnect_guard = UpstreamH2StreamGuard::new(reconnected.clone());
-            match send_upstream_h2_request(&reconnected, request, end_of_stream, metrics).await {
+            match send_upstream_h2_request(
+                &reconnected,
+                request,
+                end_of_stream,
+                metrics,
+                settings,
+            )
+            .await
+            {
                 Ok((response_fut, send_stream)) => {
                     upstream_h2_reconnect_backoff_record_success(primary_pool_key);
                     Ok((
@@ -1155,7 +1252,8 @@ async fn send_upstream_h2_request_via_pool(
                         "unhealthy_retry_evict",
                     )
                     .await;
-                    let _ = upstream_h2_reconnect_backoff_record_failure(primary_pool_key);
+                    let _ =
+                        upstream_h2_reconnect_backoff_record_failure(primary_pool_key, settings);
                     metrics.inc_svc_tls_intercept_upstream_h2_pool("retry_failed");
                     Err(format!("{first_err}; retry failed: {retry_err}"))
                 }
@@ -1173,6 +1271,7 @@ async fn get_or_connect_upstream_h2_client_releases_pool_lock_before_connect() {
     let connect_inflight: UpstreamH2ConnectInFlight =
         Arc::new(UpstreamH2ConnectInFlightState::new(1));
     let metrics = Metrics::new().expect("metrics");
+    let settings = TlsInterceptSettings::default();
     let connect_started = Arc::new(Barrier::new(2));
     let release_connect = Arc::new(Notify::new());
 
@@ -1187,6 +1286,7 @@ async fn get_or_connect_upstream_h2_client_releases_pool_lock_before_connect() {
                 &connect_inflight,
                 "foo.allowed@127.0.0.1:443",
                 &metrics,
+                &settings,
                 move || async move {
                     connect_started.wait().await;
                     release_connect.notified().await;
@@ -1243,6 +1343,7 @@ fn upstream_h2_pool_keys_for_shard_count_covers_all_shards_from_primary() {
 #[cfg(test)]
 #[test]
 fn upstream_h2_reconnect_backoff_progresses_and_resets() {
+    let settings = TlsInterceptSettings::default();
     let key = format!(
         "unit-test-backoff-{}",
         std::time::SystemTime::now()
@@ -1256,7 +1357,7 @@ fn upstream_h2_reconnect_backoff_progresses_and_resets() {
         "backoff wait should be zero when no failure has been recorded"
     );
 
-    let first = upstream_h2_reconnect_backoff_record_failure(&key);
+    let first = upstream_h2_reconnect_backoff_record_failure(&key, &settings);
     let first_wait = upstream_h2_reconnect_backoff_wait(&key);
     assert!(
         !first_wait.is_zero(),
@@ -1267,7 +1368,7 @@ fn upstream_h2_reconnect_backoff_progresses_and_resets() {
         "remaining wait should not exceed configured delay"
     );
 
-    let second = upstream_h2_reconnect_backoff_record_failure(&key);
+    let second = upstream_h2_reconnect_backoff_record_failure(&key, &settings);
     assert!(
         second >= first,
         "subsequent failures should not reduce reconnect backoff"
@@ -1287,6 +1388,7 @@ async fn get_or_connect_upstream_h2_client_singleflights_connect_per_pool_key() 
     let connect_inflight: UpstreamH2ConnectInFlight =
         Arc::new(UpstreamH2ConnectInFlightState::new(1));
     let metrics = Metrics::new().expect("metrics");
+    let settings = Arc::new(TlsInterceptSettings::default());
     let release_connect = Arc::new(Notify::new());
     let (first_started_tx, first_started_rx) = oneshot::channel();
     let first_started_tx = Arc::new(std::sync::Mutex::new(Some(first_started_tx)));
@@ -1298,6 +1400,7 @@ async fn get_or_connect_upstream_h2_client_singleflights_connect_per_pool_key() 
     let run_connect = |pool: UpstreamH2Pool,
                        connect_inflight: UpstreamH2ConnectInFlight,
                        metrics: Metrics,
+                       settings: Arc<TlsInterceptSettings>,
                        release_connect: Arc<Notify>,
                        release_open: Arc<AtomicBool>,
                        first_started_tx: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
@@ -1310,6 +1413,7 @@ async fn get_or_connect_upstream_h2_client_singleflights_connect_per_pool_key() 
                 &connect_inflight,
                 "foo.allowed@127.0.0.1:443",
                 &metrics,
+                settings.as_ref(),
                 move || async move {
                     connect_calls.fetch_add(1, Ordering::AcqRel);
                     let now = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
@@ -1343,6 +1447,7 @@ async fn get_or_connect_upstream_h2_client_singleflights_connect_per_pool_key() 
         pool.clone(),
         connect_inflight.clone(),
         metrics.clone(),
+        settings.clone(),
         release_connect.clone(),
         release_open.clone(),
         first_started_tx.clone(),
@@ -1354,6 +1459,7 @@ async fn get_or_connect_upstream_h2_client_singleflights_connect_per_pool_key() 
         pool.clone(),
         connect_inflight.clone(),
         metrics.clone(),
+        settings,
         release_connect.clone(),
         release_open.clone(),
         first_started_tx,
@@ -1388,6 +1494,7 @@ async fn get_or_connect_upstream_h2_client_singleflights_connect_per_pool_key() 
 async fn handle_tls_intercept_http1(
     client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
     connector: TlsConnector,
+    settings: &TlsInterceptSettings,
     metrics: &Metrics,
     policy: Option<TlsInterceptHttpPolicy>,
     enforce_http_policy: bool,
@@ -1395,10 +1502,12 @@ async fn handle_tls_intercept_http1(
     upstream_override: Option<SocketAddr>,
 ) -> Result<(), String> {
     let request_read_start = std::time::Instant::now();
-    let req_bytes =
-        tokio::time::timeout(tls_io_timeout(), http_match::read_http_message(client_tls))
-            .await
-            .map_err(|_| "tls intercept: client request read timed out".to_string())??;
+    let req_bytes = tokio::time::timeout(
+        tls_io_timeout(settings),
+        http_match::read_http_message(client_tls),
+    )
+    .await
+    .map_err(|_| "tls intercept: client request read timed out".to_string())??;
     metrics.observe_svc_tls_intercept_phase("http1_request_read", request_read_start.elapsed());
     let request = http_match::parse_http_request(&req_bytes)?;
 
@@ -1422,7 +1531,7 @@ async fn handle_tls_intercept_http1(
 
     let upstream_addr = upstream_override.unwrap_or(orig_dst);
     let mut upstream_tls =
-        connect_upstream_tls(connector, upstream_addr, &request.host, metrics).await?;
+        connect_upstream_tls(connector, upstream_addr, &request.host, metrics, settings).await?;
     upstream_tls
         .write_all(&request.raw)
         .await
@@ -1430,7 +1539,7 @@ async fn handle_tls_intercept_http1(
 
     let response_read_start = std::time::Instant::now();
     let response_bytes = tokio::time::timeout(
-        tls_io_timeout(),
+        tls_io_timeout(settings),
         http_match::read_http_message(&mut upstream_tls),
     )
     .await
@@ -1465,6 +1574,7 @@ async fn handle_tls_intercept_http1(
 async fn read_h2_request_body_with_conn_progress(
     client_conn: &mut server::Connection<tokio_rustls::server::TlsStream<TcpStream>, Bytes>,
     mut body: h2::RecvStream,
+    body_idle_timeout: Duration,
 ) -> Result<Vec<u8>, String> {
     enum ReadProgress {
         Continue,
@@ -1472,7 +1582,6 @@ async fn read_h2_request_body_with_conn_progress(
     }
 
     let mut out = Vec::new();
-    let body_idle_timeout = tls_h2_body_idle_timeout();
     loop {
         let progress = match tokio::time::timeout(body_idle_timeout, async {
             tokio::select! {
@@ -1563,8 +1672,10 @@ async fn read_h2_request_body_with_timeout(
     Ok(out)
 }
 
-async fn drain_h2_request_body(mut body: h2::RecvStream) -> Result<usize, String> {
-    let body_idle_timeout = tls_h2_body_idle_timeout();
+async fn drain_h2_request_body(
+    mut body: h2::RecvStream,
+    body_idle_timeout: Duration,
+) -> Result<usize, String> {
     let mut body_bytes = 0usize;
     while let Some(next) = tokio::time::timeout(body_idle_timeout, body.data())
         .await
@@ -1595,8 +1706,9 @@ async fn drain_h2_request_body(mut body: h2::RecvStream) -> Result<usize, String
 
 async fn await_h2_upstream_response(
     response_fut: std::pin::Pin<&mut h2::client::ResponseFuture>,
+    io_timeout: Duration,
 ) -> Result<axum::http::Response<h2::RecvStream>, String> {
-    tokio::time::timeout(tls_io_timeout(), response_fut)
+    tokio::time::timeout(io_timeout, response_fut)
         .await
         .map_err(|_| "tls intercept: h2 upstream response timed out".to_string())?
         .map_err(|err| format!("tls intercept: h2 upstream response failed: {err}"))
@@ -1606,8 +1718,10 @@ async fn forward_h2_request_body(
     mut body: h2::RecvStream,
     mut upstream_send_stream: h2::SendStream<Bytes>,
     response_fut: h2::client::ResponseFuture,
+    settings: &TlsInterceptSettings,
 ) -> Result<(usize, axum::http::Response<h2::RecvStream>), String> {
-    let body_idle_timeout = tls_h2_body_idle_timeout();
+    let body_idle_timeout = tls_h2_body_idle_timeout(settings);
+    let io_timeout = tls_io_timeout(settings);
     let mut body_bytes = 0usize;
     let mut response_fut = std::pin::pin!(response_fut);
 
@@ -1616,7 +1730,8 @@ async fn forward_h2_request_body(
             upstream_response = &mut response_fut => {
                 let upstream_response = upstream_response
                     .map_err(|err| format!("tls intercept: h2 upstream response failed: {err}"))?;
-                body_bytes = body_bytes.saturating_add(drain_h2_request_body(body).await?);
+                body_bytes = body_bytes
+                    .saturating_add(drain_h2_request_body(body, body_idle_timeout).await?);
                 return Ok((body_bytes, upstream_response));
             }
             next = tokio::time::timeout(body_idle_timeout, body.data()) => {
@@ -1630,14 +1745,16 @@ async fn forward_h2_request_body(
                     })?
                 else {
                     if body.is_end_stream() {
-                        let upstream_response = await_h2_upstream_response(response_fut.as_mut()).await?;
+                        let upstream_response =
+                            await_h2_upstream_response(response_fut.as_mut(), io_timeout).await?;
                         return Ok((body_bytes, upstream_response));
                     }
 
                     upstream_send_stream
                         .send_data(Bytes::new(), true)
                         .map_err(|err| format!("tls intercept: h2 upstream body send failed: {err}"))?;
-                    let upstream_response = await_h2_upstream_response(response_fut.as_mut()).await?;
+                    let upstream_response =
+                        await_h2_upstream_response(response_fut.as_mut(), io_timeout).await?;
                     return Ok((body_bytes, upstream_response));
                 };
                 let chunk =
@@ -1657,15 +1774,21 @@ async fn forward_h2_request_body(
                 match send_result {
                     Ok(()) => {
                         if end_stream {
-                            let upstream_response = await_h2_upstream_response(response_fut.as_mut()).await?;
+                            let upstream_response =
+                                await_h2_upstream_response(response_fut.as_mut(), io_timeout)
+                                    .await?;
                             return Ok((body_bytes, upstream_response));
                         }
                     }
                     Err(err) => {
                         let err_string = err.to_string();
                         if err_string.contains("inactive stream") {
-                            let upstream_response = await_h2_upstream_response(response_fut.as_mut()).await?;
-                            body_bytes = body_bytes.saturating_add(drain_h2_request_body(body).await?);
+                            let upstream_response =
+                                await_h2_upstream_response(response_fut.as_mut(), io_timeout)
+                                    .await?;
+                            body_bytes = body_bytes.saturating_add(
+                                drain_h2_request_body(body, body_idle_timeout).await?,
+                            );
                             return Ok((body_bytes, upstream_response));
                         }
                         return Err(format!("tls intercept: h2 upstream body send failed: {err}"));
@@ -1681,6 +1804,7 @@ async fn handle_tls_intercept_h2_stream(
     request: axum::http::Request<h2::RecvStream>,
     mut respond: h2::server::SendResponse<Bytes>,
     connector_h2: TlsConnector,
+    settings: Arc<TlsInterceptSettings>,
     upstream_pool: UpstreamH2Pool,
     upstream_connect_inflight: UpstreamH2ConnectInFlight,
     metrics: Metrics,
@@ -1753,14 +1877,19 @@ async fn handle_tls_intercept_h2_stream(
         upstream_req,
         request_body_end_stream,
         &metrics,
+        settings.as_ref(),
     )
     .await?;
     let upstream_response = if !request_body_end_stream {
         let request_body_start = std::time::Instant::now();
-        let (request_body_bytes, upstream_response) =
-            match forward_h2_request_body(request.into_body(), upstream_send_stream, response_fut)
-                .await
-            {
+        let (request_body_bytes, upstream_response) = match forward_h2_request_body(
+            request.into_body(),
+            upstream_send_stream,
+            response_fut,
+            settings.as_ref(),
+        )
+        .await
+        {
                 Ok(value) => value,
                 Err(err) => {
                     evict_unhealthy_upstream_h2_client(
@@ -1781,7 +1910,7 @@ async fn handle_tls_intercept_h2_stream(
         }
         upstream_response
     } else {
-        match tokio::time::timeout(tls_io_timeout(), response_fut).await {
+        match tokio::time::timeout(tls_io_timeout(settings.as_ref()), response_fut).await {
             Ok(Ok(response)) => response,
             Ok(Err(err)) => {
                 evict_unhealthy_upstream_h2_client(
@@ -1828,7 +1957,7 @@ async fn handle_tls_intercept_h2_stream(
         .send_response(downstream_response, downstream_end_stream)
         .map_err(|err| format!("tls intercept: h2 downstream send failed: {err}"))?;
     let mut downstream_stream_closed = downstream_end_stream;
-    let body_idle_timeout = tls_h2_body_idle_timeout();
+    let body_idle_timeout = tls_h2_body_idle_timeout(settings.as_ref());
     let mut body_bytes = 0usize;
     while let Some(next) = match tokio::time::timeout(body_idle_timeout, upstream_body.data()).await
     {
@@ -1893,6 +2022,7 @@ async fn handle_tls_intercept_h2_stream(
 async fn handle_tls_intercept_h2(
     client_tls: tokio_rustls::server::TlsStream<TcpStream>,
     connector_h2: TlsConnector,
+    settings: Arc<TlsInterceptSettings>,
     upstream_pool: UpstreamH2Pool,
     upstream_connect_inflight: UpstreamH2ConnectInFlight,
     metrics: Metrics,
@@ -1902,11 +2032,14 @@ async fn handle_tls_intercept_h2(
     upstream_override: Option<SocketAddr>,
 ) -> Result<(), String> {
     let mut h2_builder = server::Builder::new();
-    h2_builder.max_concurrent_streams(tls_h2_max_concurrent_streams());
-    let mut client_conn = tokio::time::timeout(tls_io_timeout(), h2_builder.handshake(client_tls))
-        .await
-        .map_err(|_| "tls intercept: h2 server handshake timed out".to_string())?
-        .map_err(|err| format!("tls intercept: h2 server handshake failed: {err}"))?;
+    h2_builder.max_concurrent_streams(tls_h2_max_concurrent_streams(settings.as_ref()));
+    let mut client_conn = tokio::time::timeout(
+        tls_io_timeout(settings.as_ref()),
+        h2_builder.handshake(client_tls),
+    )
+    .await
+    .map_err(|_| "tls intercept: h2 server handshake timed out".to_string())?
+    .map_err(|err| format!("tls intercept: h2 server handshake failed: {err}"))?;
     let mut saw_request = false;
     let mut client_closed = false;
     let mut stream_tasks: tokio::task::JoinSet<Result<(), String>> = tokio::task::JoinSet::new();
@@ -1930,7 +2063,9 @@ async fn handle_tls_intercept_h2(
 
         if stream_tasks.is_empty() {
             let next = if saw_request {
-                match tokio::time::timeout(tls_io_timeout(), client_conn.accept()).await {
+                match tokio::time::timeout(tls_io_timeout(settings.as_ref()), client_conn.accept())
+                    .await
+                {
                     Ok(next) => next,
                     Err(_) => {
                         client_conn.graceful_shutdown();
@@ -1938,7 +2073,7 @@ async fn handle_tls_intercept_h2(
                     }
                 }
             } else {
-                tokio::time::timeout(tls_io_timeout(), client_conn.accept())
+                tokio::time::timeout(tls_io_timeout(settings.as_ref()), client_conn.accept())
                     .await
                     .map_err(|_| "tls intercept: h2 client request timed out".to_string())?
             };
@@ -1956,6 +2091,7 @@ async fn handle_tls_intercept_h2(
                 request,
                 respond,
                 connector_h2.clone(),
+                settings.clone(),
                 upstream_pool.clone(),
                 upstream_connect_inflight.clone(),
                 metrics.clone(),
@@ -1984,6 +2120,7 @@ async fn handle_tls_intercept_h2(
                             request,
                             respond,
                             connector_h2.clone(),
+                            settings.clone(),
                             upstream_pool.clone(),
                             upstream_connect_inflight.clone(),
                             metrics.clone(),

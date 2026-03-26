@@ -86,11 +86,7 @@ The `ubuntu-24.04-minimal-amd64` build produces:
 - a vendored DPDK `23.11.2` runtime under `/opt/neuwerk/runtime`
 - a release-mode Neuwerk binary compiled against that vendored DPDK
 - the built UI under `/opt/neuwerk/ui`
-- a generated runtime bootstrap flow:
-  - `/opt/neuwerk/bin/neuwerk-bootstrap`
-  - `/opt/neuwerk/bin/neuwerk-launch`
-  - `/etc/neuwerk/appliance.env`
-  - `/etc/neuwerk/neuwerk.env`
+- a packaged runtime config at `/etc/neuwerk/config.yaml`
 - a systemd service at `/etc/systemd/system/neuwerk.service`
 - release-side metadata artifacts downloaded from the guest into `artifacts/image-build/release/<target>/`
 
@@ -189,7 +185,7 @@ The workflow:
 
 This host-prebuild path exists to avoid compiling DPDK and the Rust workspace inside a software-emulated guest on GitHub-hosted runners. Local builds still default to the original in-guest compile path unless `USE_PREBUILT_ARTIFACTS=true` is passed to `make package.image.build.qemu`.
 
-The workflow currently publishes the generic `qcow2` release bundle only. Cloud-provider import, disk conversion, and first-boot appliance configuration remain operator-facing steps documented in [Appliance Image Usage](./appliance-image-usage.md).
+The workflow currently publishes the generic `qcow2` release bundle only. Cloud-provider import, disk conversion, and first-boot YAML configuration remain operator-facing steps documented in [Appliance Image Usage](./appliance-image-usage.md).
 
 ## Current Artifact Sizes
 
@@ -204,20 +200,23 @@ From the current local Ubuntu 24.04 qemu build:
 - `linkage.json`: `1819` bytes
 - `packer-manifest.json`: `436` bytes
 
-## Runtime Bootstrap Model
+## Runtime Config Contract
 
-The baked image is not tied to fixed interface names or DNS values at image-build time.
+The packaged runtime contract is one canonical YAML file:
 
-At service start:
+- `/etc/neuwerk/config.yaml`
 
-- `neuwerk-bootstrap` detects the cloud provider from metadata when possible
-- management and dataplane interfaces are derived from `mgmt0`/`data0` when present, otherwise from the system routing view
-- Azure dataplane selection prefers `mac:<addr>` selectors so the runtime can map MANA/NetVSC correctly
-- DNS target IPs default to the management IPv4 address
-- DNS upstreams default to non-loopback resolvers from `/etc/resolv.conf`
-- `/etc/neuwerk/neuwerk.env` is regenerated from `/etc/neuwerk/appliance.env`
+Image packaging stages that file directly and the systemd unit starts `neuwerk` without a shell bootstrap or env-to-CLI launcher layer.
 
-Operator overrides belong in `/etc/neuwerk/appliance.env`. Use `NEUWERK_BOOTSTRAP_*` keys for derived runtime settings and plain `NEUWERK_*` keys for advanced passthrough runtime variables.
+Operators express runtime intent with subsystem YAML paths such as:
+
+- `bootstrap.management_interface`
+- `bootstrap.data_plane_selector`
+- `dns.upstreams`
+- `metrics.bind`
+- `integration.mode`
+
+Any runtime-only defaults, semantic validation, machine discovery, or derived settings now belong inside the Neuwerk binary rather than in packaging shell assets.
 
 ## Hardening
 

@@ -645,7 +645,9 @@ mod tests {
         not_after: OffsetDateTime,
     ) -> Vec<u8> {
         let mut params = CertificateParams::default();
-        params.distinguished_name.push(DnType::CommonName, common_name);
+        params
+            .distinguished_name
+            .push(DnType::CommonName, common_name);
         params.not_before = not_before;
         params.not_after = not_after;
         Certificate::from_params(params)

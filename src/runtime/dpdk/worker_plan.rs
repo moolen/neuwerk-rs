@@ -1,17 +1,11 @@
 use neuwerk::dataplane::Packet;
-use tracing::warn;
 
+#[cfg(test)]
 pub fn parse_truthy_flag(raw: &str) -> bool {
     matches!(
         raw.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
-}
-
-pub fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name)
-        .map(|raw| parse_truthy_flag(&raw))
-        .unwrap_or(false)
 }
 
 pub fn shard_index_for_packet(pkt: &Packet, shard_count: usize) -> usize {
@@ -66,22 +60,6 @@ pub enum DpdkSingleQueueStrategy {
 }
 
 impl DpdkSingleQueueStrategy {
-    pub fn from_env() -> Self {
-        let Ok(raw) = std::env::var("NEUWERK_DPDK_SINGLE_QUEUE_MODE") else {
-            return Self::SharedDemux;
-        };
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "" | "demux" | "shared-demux" | "shared_rx_demux" => Self::SharedDemux,
-            "single" | "single-worker" | "single_worker" => Self::SingleWorker,
-            _ => {
-                warn!(
-                    raw = %raw,
-                    "unknown NEUWERK_DPDK_SINGLE_QUEUE_MODE (expected demux|single); defaulting to demux"
-                );
-                Self::SharedDemux
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -149,32 +127,6 @@ pub enum DpdkPerfMode {
 }
 
 impl DpdkPerfMode {
-    pub fn from_env() -> Self {
-        let Ok(raw) = std::env::var("NEUWERK_DPDK_PERF_MODE") else {
-            return Self::Standard;
-        };
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "" | "standard" | "default" | "off" => Self::Standard,
-            "aggressive" | "on" | "1" | "true" | "yes" => Self::Aggressive,
-            _ => {
-                warn!(
-                    raw = %raw,
-                    "unknown NEUWERK_DPDK_PERF_MODE (expected standard|aggressive); defaulting to standard"
-                );
-                Self::Standard
-            }
-        }
-    }
-}
-
-pub fn dpdk_force_shared_rx_demux() -> bool {
-    env_flag_enabled("NEUWERK_DPDK_FORCE_SHARED_RX_DEMUX")
-}
-
-pub fn dpdk_pin_https_demux_owner() -> bool {
-    std::env::var("NEUWERK_DPDK_PIN_HTTPS_OWNER")
-        .map(|raw| parse_truthy_flag(&raw))
-        .unwrap_or(false)
 }
 
 pub fn service_lane_enabled_with_override(
@@ -185,19 +137,6 @@ pub fn service_lane_enabled_with_override(
     // TLS intercept relies on this path.
     let _ = perf_mode;
     !disable_service_lane
-}
-
-pub fn dpdk_service_lane_enabled(perf_mode: DpdkPerfMode) -> bool {
-    service_lane_enabled_with_override(
-        perf_mode,
-        env_flag_enabled("NEUWERK_DPDK_DISABLE_SERVICE_LANE"),
-    )
-}
-
-pub fn dpdk_lockless_queue_per_worker_enabled() -> bool {
-    std::env::var("NEUWERK_DPDK_LOCKLESS_QPW")
-        .map(|val| !matches!(val.as_str(), "0" | "false" | "FALSE" | "no" | "NO"))
-        .unwrap_or(false)
 }
 
 pub fn shared_demux_owner_for_packet_with_policy(
@@ -232,40 +171,4 @@ pub fn shared_demux_owner_for_packet(
 
 pub fn flow_steer_payload(pkt: &mut Packet) -> Vec<u8> {
     pkt.take_transfer_bytes()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn with_env_var<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let old = std::env::var(name).ok();
-        match value {
-            Some(v) => std::env::set_var(name, v),
-            None => std::env::remove_var(name),
-        }
-        let result = f();
-        match old {
-            Some(v) => std::env::set_var(name, v),
-            None => std::env::remove_var(name),
-        }
-        result
-    }
-
-    #[test]
-    fn dpdk_pin_https_demux_owner_defaults_to_disabled() {
-        with_env_var("NEUWERK_DPDK_PIN_HTTPS_OWNER", None, || {
-            assert!(!dpdk_pin_https_demux_owner());
-        });
-    }
-
-    #[test]
-    fn dpdk_pin_https_demux_owner_honors_truthy_override() {
-        with_env_var("NEUWERK_DPDK_PIN_HTTPS_OWNER", Some("true"), || {
-            assert!(dpdk_pin_https_demux_owner());
-        });
-    }
 }

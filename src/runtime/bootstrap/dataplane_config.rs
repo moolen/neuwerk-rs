@@ -1,4 +1,3 @@
-use std::env;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
@@ -121,39 +120,32 @@ pub async fn imds_dataplane_from_mgmt_ip(
     dataplane.ok_or_else(|| "imds dataplane nic not found".to_string())
 }
 
-pub fn dpdk_static_config_from_env() -> Result<Option<neuwerk::dataplane::DataplaneConfig>, String>
-{
-    let ip_raw = match env::var("NEUWERK_DPDK_STATIC_IP") {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
+pub fn dpdk_static_config_from_runtime(
+    cfg: &crate::runtime::config::DerivedRuntimeConfig,
+) -> Result<Option<neuwerk::dataplane::DataplaneConfig>, String> {
+    let Some(dpdk) = cfg.operator.dpdk.as_ref() else {
+        return Ok(None);
     };
-    let prefix_raw = env::var("NEUWERK_DPDK_STATIC_PREFIX").map_err(|_| {
-        "NEUWERK_DPDK_STATIC_PREFIX is required when NEUWERK_DPDK_STATIC_IP is set".to_string()
+    let Some(ip) = dpdk.static_ip else {
+        return Ok(None);
+    };
+    let prefix = dpdk.static_prefix_len.ok_or_else(|| {
+        "config validation error: dpdk.static_prefix_len is required when dpdk.static_ip is set"
+            .to_string()
     })?;
-    let gateway_raw = env::var("NEUWERK_DPDK_STATIC_GATEWAY").map_err(|_| {
-        "NEUWERK_DPDK_STATIC_GATEWAY is required when NEUWERK_DPDK_STATIC_IP is set".to_string()
-    })?;
-    let mac_raw = env::var("NEUWERK_DPDK_STATIC_MAC").map_err(|_| {
-        "NEUWERK_DPDK_STATIC_MAC is required when NEUWERK_DPDK_STATIC_IP is set".to_string()
-    })?;
-
-    let ip = ip_raw
-        .trim()
-        .parse::<Ipv4Addr>()
-        .map_err(|_| format!("invalid NEUWERK_DPDK_STATIC_IP={ip_raw}"))?;
-    let prefix = prefix_raw
-        .trim()
-        .parse::<u8>()
-        .map_err(|_| format!("invalid NEUWERK_DPDK_STATIC_PREFIX={prefix_raw}"))?;
     if prefix == 0 || prefix > 32 {
-        return Err(format!("invalid NEUWERK_DPDK_STATIC_PREFIX={prefix_raw}"));
+        return Err(format!("invalid dpdk.static_prefix_len={prefix}"));
     }
-    let gateway = gateway_raw
-        .trim()
-        .parse::<Ipv4Addr>()
-        .map_err(|_| format!("invalid NEUWERK_DPDK_STATIC_GATEWAY={gateway_raw}"))?;
+    let gateway = dpdk.static_gateway.ok_or_else(|| {
+        "config validation error: dpdk.static_gateway is required when dpdk.static_ip is set"
+            .to_string()
+    })?;
+    let mac_raw = dpdk.static_mac.as_deref().ok_or_else(|| {
+        "config validation error: dpdk.static_mac is required when dpdk.static_ip is set"
+            .to_string()
+    })?;
     let mac = crate::runtime::cli::parse_mac(mac_raw.trim())
-        .ok_or_else(|| format!("invalid NEUWERK_DPDK_STATIC_MAC={mac_raw}"))?;
+        .ok_or_else(|| format!("invalid dpdk.static_mac={mac_raw}"))?;
 
     Ok(Some(neuwerk::dataplane::DataplaneConfig {
         ip,

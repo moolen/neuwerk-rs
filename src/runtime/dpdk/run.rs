@@ -9,6 +9,7 @@ use neuwerk::dataplane::policy::{
 };
 #[cfg(feature = "dpdk")]
 use neuwerk::dataplane::DpdkTransferredRxPacket;
+use neuwerk::dataplane::engine::EngineRuntimeConfig;
 use neuwerk::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo, DrainControl,
     EngineState, FrameIo, FrameOut, OverlayConfig, Packet, SharedArpState,
@@ -21,13 +22,14 @@ use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
 use crate::runtime::cli::DataPlaneMode;
+use crate::runtime::config::{RuntimeDpdkConfig, RuntimeDpdkPerfMode, RuntimeDpdkSingleQueueMode};
+use neuwerk::support::runtime_knobs::{current_runtime_knobs, CloudProvider};
 
 use super::affinity::{choose_dpdk_worker_core_ids, cpu_core_count, pin_thread_to_core};
 use super::worker_plan::{
-    choose_dpdk_worker_plan, dpdk_force_shared_rx_demux, dpdk_lockless_queue_per_worker_enabled,
-    dpdk_pin_https_demux_owner, dpdk_service_lane_enabled, env_flag_enabled, flow_steer_payload,
-    parse_truthy_flag, shard_index_for_packet, shared_demux_owner_for_packet_with_policy,
-    DpdkPerfMode, DpdkSingleQueueStrategy, DpdkWorkerMode,
+    choose_dpdk_worker_plan, flow_steer_payload, service_lane_enabled_with_override,
+    shard_index_for_packet, shared_demux_owner_for_packet_with_policy, DpdkPerfMode,
+    DpdkSingleQueueStrategy, DpdkWorkerMode,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -237,28 +239,23 @@ fn direct_rx_poll_enabled(shared_rx_owner_only: bool, worker_id: usize) -> bool 
 fn shared_rx_owner_only_enabled(
     shared_io_present: bool,
     shared_rx_demux: bool,
-    env_value: Option<&str>,
+    configured: bool,
 ) -> bool {
     if !shared_io_present || !shared_rx_demux {
         return false;
     }
-    env_value.map(parse_truthy_flag).unwrap_or(true)
+    configured
 }
 
-fn requested_dpdk_workers_target(max_workers: usize, env_value: Option<&str>) -> (usize, bool) {
+fn requested_dpdk_workers_target(max_workers: usize, configured: Option<usize>) -> usize {
     let max_workers = max_workers.max(1);
-    let auto_target = if max_workers <= 2 {
+    if let Some(value) = configured {
+        return value.max(1).min(max_workers);
+    }
+    if max_workers <= 2 {
         max_workers
     } else {
         max_workers - 1
-    };
-    match env_value.map(str::trim) {
-        None | Some("") | Some("0") => (auto_target, false),
-        Some(value) if value.eq_ignore_ascii_case("auto") => (auto_target, false),
-        Some(value) => match value.parse::<usize>() {
-            Ok(n) if n > 0 => (n, false),
-            Ok(_) | Err(_) => (auto_target, true),
-        },
     }
 }
 
@@ -580,7 +577,9 @@ impl FrameIo for DpdkWorkerIo {
 pub fn run_dataplane(
     data_plane_iface: String,
     data_plane_mode: DataPlaneMode,
+    dpdk: RuntimeDpdkConfig,
     idle_timeout_secs: u64,
+    engine_runtime: EngineRuntimeConfig,
     policy: Arc<RwLock<PolicySnapshot>>,
     policy_snapshot: SharedPolicySnapshot,
     exact_source_group_index: SharedExactSourceGroupIndex,
@@ -603,6 +602,7 @@ pub fn run_dataplane(
     shared_intercept_demux: Arc<SharedInterceptDemuxState>,
     metrics: Metrics,
 ) -> Result<(), String> {
+    let detailed_lock_observability = engine_runtime.detailed_observability;
     let observer_policy = policy_snapshot.clone();
     let observer_applied = policy_applied_generation.clone();
     std::thread::Builder::new()
@@ -619,13 +619,14 @@ pub fn run_dataplane(
             }
         })
         .map_err(|err| format!("policy observer start failed: {err}"))?;
-    let mut state = EngineState::new_with_idle_timeout(
+    let mut state = EngineState::new_with_idle_timeout_and_config(
         policy,
         internal_net,
         internal_prefix,
         public_ip,
         data_port,
         idle_timeout_secs,
+        engine_runtime,
     );
     state.set_policy_snapshot(policy_snapshot);
     state.set_exact_source_policy_index(exact_source_group_index);
@@ -639,7 +640,10 @@ pub fn run_dataplane(
         state.set_drain_control(control);
     }
     let dpdk_perf_mode = if matches!(data_plane_mode, DataPlaneMode::Dpdk) {
-        DpdkPerfMode::from_env()
+        match dpdk.perf_mode {
+            RuntimeDpdkPerfMode::Standard => DpdkPerfMode::Standard,
+            RuntimeDpdkPerfMode::Aggressive => DpdkPerfMode::Aggressive,
+        }
     } else {
         DpdkPerfMode::Standard
     };
@@ -664,38 +668,30 @@ pub fn run_dataplane(
         DataPlaneMode::Dpdk => {
             info!(perf_mode = ?dpdk_perf_mode, "dpdk perf mode selected");
             let max_workers = cpu_core_count();
-            let requested_workers_env = std::env::var("NEUWERK_DPDK_WORKERS")
-                .ok()
-                .map(|value| value.trim().to_string());
-            let requested_workers_raw = requested_workers_env.as_deref().unwrap_or("unset");
-            let (requested_workers_target, invalid_workers_env) =
-                requested_dpdk_workers_target(max_workers, requested_workers_env.as_deref());
-            if invalid_workers_env {
-                warn!(
-                    value = requested_workers_raw,
-                    "invalid NEUWERK_DPDK_WORKERS value; falling back to auto worker count"
-                );
-            }
-            let mut worker_core_ids =
-                choose_dpdk_worker_core_ids(requested_workers_target, max_workers.max(1));
+            let requested_workers_target = requested_dpdk_workers_target(max_workers, dpdk.workers);
+            let requested_workers_raw = dpdk
+                .workers
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "auto".to_string());
+            let mut worker_core_ids = if dpdk.core_ids.is_empty() {
+                choose_dpdk_worker_core_ids(requested_workers_target, max_workers.max(1))
+            } else {
+                let mut ids = dpdk.core_ids.clone();
+                ids.truncate(requested_workers_target);
+                ids
+            };
             if worker_core_ids.is_empty() {
                 worker_core_ids.push(0);
             }
             let mut requested_workers = requested_workers_target.min(worker_core_ids.len()).max(1);
-            let running_on_azure = matches!(
-                std::env::var("NEUWERK_CLOUD_PROVIDER")
-                    .ok()
-                    .as_deref()
-                    .map(|v| v.to_ascii_lowercase()),
-                Some(ref v) if v == "azure"
-            );
+            let running_on_azure = current_runtime_knobs().cloud_provider == CloudProvider::Azure;
             let azure_reliability_guard = running_on_azure
                 && requested_workers > 1
-                && !env_flag_enabled("NEUWERK_DPDK_ALLOW_AZURE_MULTIWORKER");
+                && !dpdk.allow_azure_multiworker;
             if azure_reliability_guard {
                 warn!(
                     requested_workers,
-                    "dpdk azure reliability guard active; forcing single worker (set NEUWERK_DPDK_ALLOW_AZURE_MULTIWORKER=1 to override)"
+                    "dpdk azure reliability guard active; forcing single worker"
                 );
                 requested_workers = 1;
             }
@@ -716,7 +712,6 @@ pub fn run_dataplane(
                 .map(|id| id.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            std::env::set_var("NEUWERK_DPDK_CORE_IDS", &worker_core_list);
             if requested_workers_target > requested_workers {
                 info!(
                     requested_workers_target,
@@ -730,7 +725,7 @@ pub fn run_dataplane(
                 core_ids = %worker_core_list,
                 "dpdk worker configuration"
             );
-            let force_shared_rx_demux = dpdk_force_shared_rx_demux();
+            let force_shared_rx_demux = dpdk.force_shared_rx_demux;
             if force_shared_rx_demux && requested_workers > 1 {
                 info!(
                     "dpdk shared rx demux forced; skipping queue probe and using a single shared rx queue"
@@ -753,7 +748,10 @@ pub fn run_dataplane(
             } else {
                 1
             };
-            let single_queue_strategy = DpdkSingleQueueStrategy::from_env();
+            let single_queue_strategy = match dpdk.single_queue_mode {
+                RuntimeDpdkSingleQueueMode::Demux => DpdkSingleQueueStrategy::SharedDemux,
+                RuntimeDpdkSingleQueueMode::SingleWorker => DpdkSingleQueueStrategy::SingleWorker,
+            };
             let plan = match choose_dpdk_worker_plan(
                 requested_workers,
                 max_workers,
@@ -829,10 +827,11 @@ pub fn run_dataplane(
                 let worker_count = plan.worker_count;
                 let queue_per_worker = matches!(plan.mode, DpdkWorkerMode::QueuePerWorker);
                 let shared_rx_demux = matches!(plan.mode, DpdkWorkerMode::SharedRxDemux);
-                let pin_https_demux_owner = dpdk_pin_https_demux_owner();
-                let service_lane_enabled = dpdk_service_lane_enabled(dpdk_perf_mode);
+                let pin_https_demux_owner = dpdk.pin_https_demux_owner;
+                let service_lane_enabled =
+                    service_lane_enabled_with_override(dpdk_perf_mode, dpdk.disable_service_lane);
                 let lockless_qpw =
-                    perf_aggressive && queue_per_worker && dpdk_lockless_queue_per_worker_enabled();
+                    perf_aggressive && queue_per_worker && dpdk.lockless_queue_per_worker;
                 info!(worker_count, mode = ?plan.mode, "dpdk starting worker threads");
                 if shared_rx_demux {
                     info!(
@@ -842,39 +841,21 @@ pub fn run_dataplane(
                 }
                 if !service_lane_enabled {
                     warn!(
-                        "dpdk service lane disabled via NEUWERK_DPDK_DISABLE_SERVICE_LANE; TLS intercept steering is bypassed"
+                        "dpdk service lane disabled; TLS intercept steering is bypassed"
                     );
                 }
                 if lockless_qpw {
                     info!("dpdk lockless queue-per-worker enabled");
                 }
-                let housekeeping_interval_packets =
-                    std::env::var("NEUWERK_DPDK_HOUSEKEEPING_INTERVAL_PACKETS")
-                        .ok()
-                        .and_then(|val| val.parse::<u64>().ok())
-                        .filter(|val| *val > 0)
-                        .unwrap_or(64);
-                let housekeeping_interval_us =
-                    std::env::var("NEUWERK_DPDK_HOUSEKEEPING_INTERVAL_US")
-                        .ok()
-                        .and_then(|val| val.parse::<u64>().ok())
-                        .filter(|val| *val > 0)
-                        .unwrap_or(250);
+                let housekeeping_interval_packets = dpdk.housekeeping_interval_packets;
+                let housekeeping_interval_us = dpdk.housekeeping_interval_us;
                 let housekeeping_interval = Duration::from_micros(housekeeping_interval_us);
                 info!(
                     housekeeping_interval_packets,
                     housekeeping_interval_us, "dpdk housekeeping interval configured"
                 );
-                let pin_state_shard_guard = std::env::var("NEUWERK_DPDK_PIN_STATE_SHARD_GUARD")
-                    .map(|val| !matches!(val.as_str(), "0" | "false" | "FALSE" | "no" | "NO"))
-                    .unwrap_or(false);
-                let pin_state_shard_burst = std::env::var("NEUWERK_DPDK_PIN_STATE_SHARD_BURST")
-                    .ok()
-                    .and_then(|val| val.parse::<u32>().ok())
-                    .filter(|val| *val > 0)
-                    .unwrap_or(64);
-                let detailed_lock_observability =
-                    env_flag_enabled("NEUWERK_DP_DETAILED_OBSERVABILITY");
+                let pin_state_shard_guard = dpdk.pin_state_shard_guard;
+                let pin_state_shard_burst = dpdk.pin_state_shard_burst;
                 info!(
                     pin_state_shard_guard,
                     pin_state_shard_burst, "dpdk state shard guard configuration"
@@ -887,11 +868,7 @@ pub fn run_dataplane(
                 let shard_count = if owner_local_state {
                     worker_count
                 } else {
-                    std::env::var("NEUWERK_DPDK_STATE_SHARDS")
-                        .ok()
-                        .and_then(|val| val.parse::<usize>().ok())
-                        .unwrap_or(worker_count)
-                        .max(1)
+                    dpdk.state_shards.unwrap_or(worker_count).max(1)
                 };
                 info!(shard_count, "dpdk state shard count");
                 let base_state = state;
@@ -925,14 +902,10 @@ pub fn run_dataplane(
                     )?)))
                 };
                 // Shared-I/O plus software demux contends heavily if every worker polls RX.
-                // Default to owner-only polling here, with an explicit opt-out via
-                // NEUWERK_DPDK_SHARED_RX_OWNER_ONLY=false.
                 let shared_rx_owner_only = shared_rx_owner_only_enabled(
                     shared_io.is_some(),
                     shared_rx_demux,
-                    std::env::var("NEUWERK_DPDK_SHARED_RX_OWNER_ONLY")
-                        .ok()
-                        .as_deref(),
+                    dpdk.shared_rx_owner_only,
                 );
                 info!(shared_rx_owner_only, "dpdk shared rx owner-only polling");
                 let enable_flow_steer = shared_rx_demux;
@@ -1539,17 +1512,15 @@ mod tests {
 
     #[test]
     fn shared_rx_owner_only_defaults_on_for_shared_io_demux() {
-        assert!(shared_rx_owner_only_enabled(true, true, None));
-        assert!(!shared_rx_owner_only_enabled(false, true, None));
-        assert!(!shared_rx_owner_only_enabled(true, false, None));
+        assert!(shared_rx_owner_only_enabled(true, true, true));
+        assert!(!shared_rx_owner_only_enabled(false, true, true));
+        assert!(!shared_rx_owner_only_enabled(true, false, true));
     }
 
     #[test]
-    fn shared_rx_owner_only_env_can_disable_or_enable() {
-        assert!(!shared_rx_owner_only_enabled(true, true, Some("0")));
-        assert!(!shared_rx_owner_only_enabled(true, true, Some("false")));
-        assert!(shared_rx_owner_only_enabled(true, true, Some("1")));
-        assert!(shared_rx_owner_only_enabled(true, true, Some("true")));
+    fn shared_rx_owner_only_honors_typed_override() {
+        assert!(!shared_rx_owner_only_enabled(true, true, false));
+        assert!(shared_rx_owner_only_enabled(true, true, true));
     }
 
     #[test]
@@ -1561,28 +1532,19 @@ mod tests {
 
     #[test]
     fn requested_dpdk_workers_target_defaults_to_auto_core_count() {
-        assert_eq!(requested_dpdk_workers_target(8, None), (7, false));
-        assert_eq!(requested_dpdk_workers_target(8, Some("")), (7, false));
-        assert_eq!(requested_dpdk_workers_target(8, Some("0")), (7, false));
-        assert_eq!(requested_dpdk_workers_target(8, Some("auto")), (7, false));
-        assert_eq!(requested_dpdk_workers_target(8, Some("AUTO")), (7, false));
+        assert_eq!(requested_dpdk_workers_target(8, None), 7);
     }
 
     #[test]
     fn requested_dpdk_workers_target_keeps_full_cores_for_tiny_nodes() {
-        assert_eq!(requested_dpdk_workers_target(1, None), (1, false));
-        assert_eq!(requested_dpdk_workers_target(2, None), (2, false));
+        assert_eq!(requested_dpdk_workers_target(1, None), 1);
+        assert_eq!(requested_dpdk_workers_target(2, None), 2);
     }
 
     #[test]
     fn requested_dpdk_workers_target_respects_valid_override() {
-        assert_eq!(requested_dpdk_workers_target(8, Some("1")), (1, false));
-        assert_eq!(requested_dpdk_workers_target(8, Some("6")), (6, false));
-    }
-
-    #[test]
-    fn requested_dpdk_workers_target_rejects_invalid_override() {
-        assert_eq!(requested_dpdk_workers_target(8, Some("nope")), (7, true));
-        assert_eq!(requested_dpdk_workers_target(8, Some("-1")), (7, true));
+        assert_eq!(requested_dpdk_workers_target(8, Some(1)), 1);
+        assert_eq!(requested_dpdk_workers_target(8, Some(6)), 6);
+        assert_eq!(requested_dpdk_workers_target(8, Some(99)), 8);
     }
 }
