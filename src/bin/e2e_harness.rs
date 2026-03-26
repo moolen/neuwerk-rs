@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::os::fd::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,13 @@ use neuwerk::e2e::topology::{Topology, TopologyConfig};
 const RUNTIME_CONFIG_DIR: &str = "/etc/neuwerk";
 const RUNTIME_CONFIG_PATH: &str = "/etc/neuwerk/config.yaml";
 const RUNTIME_CONFIG_LOCK_PATH: &str = "/tmp/neuwerk-runtime-config.lock";
+
+#[derive(Clone, Debug)]
+struct RuntimeConfigPaths {
+    dir: PathBuf,
+    config: PathBuf,
+    lock: PathBuf,
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_root()?;
@@ -525,16 +532,23 @@ fn build_runtime_config_yaml(cfg: &TopologyConfig, overlay: &OverlayConfigOverri
 }
 
 fn install_runtime_config(yaml: &str) -> Result<InstalledRuntimeConfig, String> {
+    install_runtime_config_with_paths(&default_runtime_config_paths(), yaml)
+}
+
+fn install_runtime_config_with_paths(
+    paths: &RuntimeConfigPaths,
+    yaml: &str,
+) -> Result<InstalledRuntimeConfig, String> {
     let lock_file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(RUNTIME_CONFIG_LOCK_PATH)
+        .open(&paths.lock)
         .map_err(|err| format!("open runtime config lock failed: {err}"))?;
     flock_exclusive(&lock_file)?;
 
-    let config_dir = Path::new(RUNTIME_CONFIG_DIR);
+    let config_dir = paths.dir.as_path();
     let created_dir = if config_dir.exists() {
         false
     } else {
@@ -543,17 +557,17 @@ fn install_runtime_config(yaml: &str) -> Result<InstalledRuntimeConfig, String> 
         true
     };
 
-    let config_path = Path::new(RUNTIME_CONFIG_PATH);
-    let previous = match fs::read(config_path) {
+    let previous = match fs::read(&paths.config) {
         Ok(raw) => Some(raw),
         Err(err) if err.kind() == ErrorKind::NotFound => None,
         Err(err) => return Err(format!("read existing runtime config failed: {err}")),
     };
 
-    fs::write(config_path, yaml)
-        .map_err(|err| format!("write runtime config {} failed: {err}", config_path.display()))?;
+    fs::write(&paths.config, yaml)
+        .map_err(|err| format!("write runtime config {} failed: {err}", paths.config.display()))?;
 
     Ok(InstalledRuntimeConfig {
+        paths: paths.clone(),
         lock_file,
         previous,
         created_dir,
@@ -593,6 +607,7 @@ impl Drop for NeuwerkProcess {
 }
 
 struct InstalledRuntimeConfig {
+    paths: RuntimeConfigPaths,
     lock_file: File,
     previous: Option<Vec<u8>>,
     created_dir: bool,
@@ -600,16 +615,23 @@ struct InstalledRuntimeConfig {
 
 impl Drop for InstalledRuntimeConfig {
     fn drop(&mut self) {
-        let config_path = PathBuf::from(RUNTIME_CONFIG_PATH);
         if let Some(previous) = &self.previous {
-            let _ = fs::write(&config_path, previous);
+            let _ = fs::write(&self.paths.config, previous);
         } else {
-            let _ = fs::remove_file(&config_path);
+            let _ = fs::remove_file(&self.paths.config);
             if self.created_dir {
-                let _ = fs::remove_dir(Path::new(RUNTIME_CONFIG_DIR));
+                let _ = fs::remove_dir(&self.paths.dir);
             }
         }
         let _ = flock_unlock(&self.lock_file);
+    }
+}
+
+fn default_runtime_config_paths() -> RuntimeConfigPaths {
+    RuntimeConfigPaths {
+        dir: PathBuf::from(RUNTIME_CONFIG_DIR),
+        config: PathBuf::from(RUNTIME_CONFIG_PATH),
+        lock: PathBuf::from(RUNTIME_CONFIG_LOCK_PATH),
     }
 }
 
@@ -736,7 +758,10 @@ mod tests {
     #[test]
     fn neuwerk_process_kill_releases_runtime_config_lock() {
         let cfg = TopologyConfig::default();
-        let runtime_config = install_runtime_config(
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let paths = test_runtime_config_paths(tempdir.path());
+        let runtime_config = install_runtime_config_with_paths(
+            &paths,
             &build_runtime_config_yaml(&cfg, &OverlayConfigOverrides::default()),
         )
         .expect("runtime config install");
@@ -753,16 +778,19 @@ mod tests {
 
         neuwerk.kill();
 
-        assert!(runtime_config_lock_available(), "runtime config lock is still held");
+        assert!(
+            runtime_config_lock_available(&paths),
+            "runtime config lock is still held"
+        );
     }
 
-    fn runtime_config_lock_available() -> bool {
+    fn runtime_config_lock_available(paths: &RuntimeConfigPaths) -> bool {
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(RUNTIME_CONFIG_LOCK_PATH)
+            .open(&paths.lock)
             .expect("open runtime config lock");
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if rc == 0 {
@@ -770,6 +798,14 @@ mod tests {
             true
         } else {
             false
+        }
+    }
+
+    fn test_runtime_config_paths(root: &std::path::Path) -> RuntimeConfigPaths {
+        RuntimeConfigPaths {
+            dir: root.join("etc-neuwerk"),
+            config: root.join("etc-neuwerk/config.yaml"),
+            lock: root.join("neuwerk-runtime-config.lock"),
         }
     }
 }
