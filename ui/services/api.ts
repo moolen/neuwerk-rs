@@ -6,6 +6,7 @@ export {
   createPolicy,
   deletePolicy,
   getPolicy,
+  getPolicyTelemetry,
   getPolicyYaml,
   listPolicies,
   updatePolicy,

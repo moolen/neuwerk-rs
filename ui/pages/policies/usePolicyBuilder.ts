@@ -1,6 +1,11 @@
 import { useEffect } from 'react';
 import { createPolicyBuilderDraftActions } from './policyBuilderDraftActions';
 import { createPolicyBuilderLifecycleHandlers } from './policyBuilderLifecycle';
+import {
+  buildCloseSourceGroupEditor,
+  buildOpenSourceGroupEditor,
+  buildSelectPolicy,
+} from './policyBuilderLifecycleLoad';
 import { createUpdateDraft } from './usePolicyBuilderDraft';
 import { usePolicyBuilderDerived } from './usePolicyBuilderDerived';
 import { usePolicyBuilderState } from './usePolicyBuilderState';
@@ -12,8 +17,8 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     setPolicies,
     integrations,
     setIntegrations,
-    selectedId,
-    setSelectedId,
+    selectedPolicyId,
+    setSelectedPolicyId,
     loading,
     setLoading,
     error,
@@ -24,6 +29,10 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     setEditorMode,
     editorTargetId,
     setEditorTargetId,
+    overlayMode,
+    setOverlayMode,
+    overlaySourceGroupId,
+    setOverlaySourceGroupId,
     saving,
     setSaving,
     editorError,
@@ -41,14 +50,18 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     handleDelete,
     handleSave,
   } = createPolicyBuilderLifecycleHandlers({
-    selectedId,
+    selectedPolicyId,
     editorMode,
     editorTargetId,
+    overlayMode,
+    overlaySourceGroupId,
     draft,
     integrationNames,
     setPolicies,
     setIntegrations,
-    setSelectedId,
+    setSelectedPolicyId,
+    setOverlayMode,
+    setOverlaySourceGroupId,
     setLoading,
     setError,
     setDraft,
@@ -58,9 +71,39 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     setEditorError,
   });
 
+  const selectPolicy = buildSelectPolicy({
+    setSelectedPolicyId,
+    setOverlayMode,
+    setOverlaySourceGroupId,
+  });
+  const openSourceGroupEditor = buildOpenSourceGroupEditor({
+    setOverlayMode,
+    setOverlaySourceGroupId,
+  });
+  const closeSourceGroupEditor = buildCloseSourceGroupEditor({
+    setOverlayMode,
+    setOverlaySourceGroupId,
+  });
+  const handleCreateWithOverlay = () => {
+    closeSourceGroupEditor();
+    handleCreate();
+  };
+  const loadEditorForPolicyWithOverlay = async (policyId: string) => {
+    closeSourceGroupEditor();
+    await loadEditorForPolicy(policyId);
+  };
+
   useEffect(() => {
     void loadAll();
   }, []);
+
+  useEffect(() => {
+    if (!selectedPolicyId || editorTargetId === selectedPolicyId) {
+      return;
+    }
+
+    void loadEditorForPolicyWithOverlay(selectedPolicyId);
+  }, [selectedPolicyId, editorTargetId]);
 
   const {
     addGroup,
@@ -77,20 +120,25 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     state: {
       policies,
       integrations,
-      selectedId,
+      selectedPolicyId,
       loading,
       error,
       draft,
       editorMode,
       editorTargetId,
+      overlayMode,
+      overlaySourceGroupId,
       saving,
       editorError,
       validationIssues,
     },
     actions: {
       loadAll,
-      loadEditorForPolicy,
-      handleCreate,
+      loadEditorForPolicy: loadEditorForPolicyWithOverlay,
+      selectPolicy,
+      openSourceGroupEditor,
+      closeSourceGroupEditor,
+      handleCreate: handleCreateWithOverlay,
       handleDelete,
       handleSave,
       updateDraft,

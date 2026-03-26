@@ -103,9 +103,9 @@ describe('policyBuilderRemote', () => {
 
     expect(created.editorMode).toBe('edit');
     expect(created.editorTargetId).toBe('new-id');
-    expect(created.selectedId).toBe('new-id');
+    expect(created.selectedPolicyId).toBe('new-id');
     expect(updated.editorTargetId).toBe('existing-id');
-    expect(updated.selectedId).toBeNull();
+    expect(updated.selectedPolicyId).toBeNull();
     expect(updated.draft.mode).toBe('audit');
   });
 

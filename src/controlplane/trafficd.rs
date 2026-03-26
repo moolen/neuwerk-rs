@@ -10,6 +10,7 @@ use crate::controlplane::dns_proxy;
 use crate::controlplane::intercept_tls::{load_intercept_ca_signer, InterceptCaSource};
 use crate::controlplane::metrics::Metrics;
 use crate::controlplane::policy_config::DnsPolicy;
+use crate::controlplane::policy_telemetry::PolicyTelemetryStore;
 use crate::controlplane::threat_intel::runtime::ThreatRuntimeSlot;
 use crate::controlplane::wiretap::DnsMap;
 use crate::controlplane::PolicyStore;
@@ -132,6 +133,7 @@ pub struct TrafficdConfig {
     pub intercept_demux: Arc<SharedInterceptDemuxState>,
     pub policy_store: PolicyStore,
     pub audit_store: Option<AuditStore>,
+    pub policy_telemetry_store: Option<PolicyTelemetryStore>,
     pub threat_runtime: Option<ThreatRuntimeSlot>,
     pub node_id: String,
     pub startup_status_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
@@ -760,6 +762,7 @@ pub async fn run(cfg: TrafficdConfig) -> Result<(), String> {
         cfg.metrics,
         Some(cfg.policy_store),
         cfg.audit_store,
+        cfg.policy_telemetry_store,
         cfg.threat_runtime,
         cfg.node_id,
         cfg.startup_status_tx,

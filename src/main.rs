@@ -382,6 +382,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_shutdown,
         wiretap_emitter,
         audit_emitter,
+        policy_telemetry_emitter,
         shared_intercept_demux,
     } = controlplane_runtime;
 
@@ -430,6 +431,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dns_target_ips: cfg.dns_target_ips.clone(),
         wiretap_emitter: Some(wiretap_emitter),
         audit_emitter: Some(audit_emitter),
+        policy_telemetry_emitter: Some(policy_telemetry_emitter),
         internal_net,
         internal_prefix,
         public_ip,

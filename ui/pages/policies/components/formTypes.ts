@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 
 import type { IntegrationView, PolicyCreateRequest } from '../../../types';
+import type { PolicyOverlayMode } from '../policyBuilderTypes';
 
 export type UpdateDraft = (mutator: (next: PolicyCreateRequest) => void) => void;
 export type SetDraft = Dispatch<SetStateAction<PolicyCreateRequest>>;
@@ -24,4 +25,12 @@ export interface PolicyBuilderFormSharedProps extends PolicyBuilderFormMutations
   setDraft: SetDraft;
   updateDraft: UpdateDraft;
   onDelete: (policyId: string) => void;
+}
+
+export interface ScopedSourceGroupEditorProps extends PolicyBuilderFormMutations {
+  draft: PolicyCreateRequest;
+  integrations: IntegrationView[];
+  updateDraft: UpdateDraft;
+  overlayMode: PolicyOverlayMode;
+  sourceGroupId: string | null;
 }

@@ -541,6 +541,7 @@ source_groups:
             None,
             Some(seed_audit_store.clone()),
             None,
+            None,
             "seed-node".to_string(),
             Some(seed_start_tx),
         ));
@@ -560,6 +561,7 @@ source_groups:
             Metrics::new().map_err(|err| format!("metrics init failed: {err}"))?,
             None,
             Some(joiner_audit_store.clone()),
+            None,
             None,
             "join-node".to_string(),
             Some(joiner_start_tx),

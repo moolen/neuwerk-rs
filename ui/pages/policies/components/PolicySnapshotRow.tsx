@@ -1,10 +1,7 @@
 import React from 'react';
 
 import type { PolicyRecord } from '../../../types';
-import {
-  policyDisplayName,
-  snapshotShortId,
-} from './policySnapshotHelpers';
+import { policyDisplayName } from './policySnapshotHelpers';
 
 interface PolicySnapshotRowProps {
   policy: PolicyRecord;
@@ -29,17 +26,18 @@ export const PolicySnapshotRow: React.FC<PolicySnapshotRowProps> = ({
     <div
       className="p-4 cursor-pointer transition-colors"
       style={{
-        background: selected ? 'var(--bg-glass-strong)' : 'transparent',
+        background: selected
+          ? 'linear-gradient(145deg, rgba(79,110,247,0.14), rgba(79,110,247,0.05))'
+          : 'transparent',
+        border: selected ? '1px solid rgba(79,110,247,0.22)' : '1px solid transparent',
+        boxShadow: selected ? 'var(--shadow-glass)' : 'none',
       }}
       onClick={() => onSelect(policy.id)}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="space-y-1 min-w-0">
+        <div className="min-w-0">
           <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
             {policyDisplayName(policy)}
-          </div>
-          <div className="text-xs uppercase tracking-[0.2em]" style={{ color: 'var(--text-muted)' }}>
-            Snapshot {snapshotShortId(policy.id)}
           </div>
         </div>
         <div

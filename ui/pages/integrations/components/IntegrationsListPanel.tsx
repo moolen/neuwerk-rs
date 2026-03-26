@@ -22,7 +22,7 @@ export const IntegrationsListPanel: React.FC<IntegrationsListPanelProps> = ({
       boxShadow: 'var(--shadow-glass)',
     }}
   >
-    <div className="flex items-start justify-between gap-3">
+    <div>
       <div>
         <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
           Configured Integrations
@@ -30,16 +30,6 @@ export const IntegrationsListPanel: React.FC<IntegrationsListPanelProps> = ({
         <div className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
           Choose the inventory source backing dynamic selectors in policy rules.
         </div>
-      </div>
-      <div
-        className="px-2.5 py-1 rounded-full text-xs font-semibold"
-        style={{
-          background: 'var(--bg-glass-strong)',
-          border: '1px solid var(--border-glass)',
-          color: 'var(--text-secondary)',
-        }}
-      >
-        {integrations.length}
       </div>
     </div>
 
@@ -69,7 +59,7 @@ export const IntegrationsListPanel: React.FC<IntegrationsListPanelProps> = ({
                 boxShadow: selected ? 'var(--shadow-glass)' : 'none',
               }}
             >
-              <div className="flex items-start justify-between gap-3">
+              <div>
                 <div>
                   <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
                     {item.name}
@@ -78,32 +68,15 @@ export const IntegrationsListPanel: React.FC<IntegrationsListPanelProps> = ({
                     {item.kind}
                   </div>
                 </div>
-                <div
-                  className="px-2.5 py-1 rounded-full text-[11px] font-semibold"
-                  style={{
-                    background: selected ? 'rgba(79,110,247,0.16)' : 'var(--bg-input)',
-                    color: selected ? 'var(--accent)' : 'var(--text-secondary)',
-                  }}
-                >
-                  {selected ? 'Selected' : 'Available'}
-                </div>
               </div>
 
-              <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+              <dl className="mt-4">
                 <div>
                   <dt className="text-[11px] uppercase tracking-[0.18em]" style={{ color: 'var(--text-muted)' }}>
                     API server
                   </dt>
                   <dd className="mt-1 text-xs break-all" style={{ color: 'var(--text-secondary)' }}>
                     {item.api_server_url}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-[11px] uppercase tracking-[0.18em]" style={{ color: 'var(--text-muted)' }}>
-                    Auth
-                  </dt>
-                  <dd className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                    {item.token_configured ? 'Service account token configured' : 'Service account token missing'}
                   </dd>
                 </div>
               </dl>

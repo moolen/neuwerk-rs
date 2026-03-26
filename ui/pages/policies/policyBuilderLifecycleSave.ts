@@ -19,7 +19,7 @@ export function buildHandleSave(
     setDraft,
     setEditorMode,
     setEditorTargetId,
-    setSelectedId,
+    setSelectedPolicyId,
   } = deps;
 
   return async () => {
@@ -36,8 +36,8 @@ export function buildHandleSave(
       setDraft(saved.draft);
       setEditorMode(saved.editorMode);
       setEditorTargetId(saved.editorTargetId);
-      if (saved.selectedId) {
-        setSelectedId(saved.selectedId);
+      if (saved.selectedPolicyId) {
+        setSelectedPolicyId(saved.selectedPolicyId);
       }
       await loadAll();
     } catch (err) {

@@ -3,15 +3,15 @@ import type { Dispatch, SetStateAction } from 'react';
 
 import type { IntegrationView, PolicyCreateRequest, PolicyRecord } from '../../types';
 import { createEmptyPolicyRequest } from '../../utils/policyModel';
-import type { PolicyEditorMode } from './policyBuilderTypes';
+import type { PolicyEditorMode, PolicyOverlayMode } from './policyBuilderTypes';
 
 export interface PolicyBuilderStateStore {
   policies: PolicyRecord[];
   setPolicies: Dispatch<SetStateAction<PolicyRecord[]>>;
   integrations: IntegrationView[];
   setIntegrations: Dispatch<SetStateAction<IntegrationView[]>>;
-  selectedId: string | null;
-  setSelectedId: Dispatch<SetStateAction<string | null>>;
+  selectedPolicyId: string | null;
+  setSelectedPolicyId: Dispatch<SetStateAction<string | null>>;
   loading: boolean;
   setLoading: Dispatch<SetStateAction<boolean>>;
   error: string | null;
@@ -23,6 +23,10 @@ export interface PolicyBuilderStateStore {
   setEditorMode: Dispatch<SetStateAction<PolicyEditorMode>>;
   editorTargetId: string | null;
   setEditorTargetId: Dispatch<SetStateAction<string | null>>;
+  overlayMode: PolicyOverlayMode;
+  setOverlayMode: Dispatch<SetStateAction<PolicyOverlayMode>>;
+  overlaySourceGroupId: string | null;
+  setOverlaySourceGroupId: Dispatch<SetStateAction<string | null>>;
   saving: boolean;
   setSaving: Dispatch<SetStateAction<boolean>>;
   editorError: string | null;
@@ -32,13 +36,15 @@ export interface PolicyBuilderStateStore {
 export function usePolicyBuilderState(): PolicyBuilderStateStore {
   const [policies, setPolicies] = useState<PolicyRecord[]>([]);
   const [integrations, setIntegrations] = useState<IntegrationView[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedPolicyId, setSelectedPolicyId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [draft, setDraft] = useState<PolicyCreateRequest>(createEmptyPolicyRequest());
   const [editorMode, setEditorMode] = useState<PolicyEditorMode>('create');
   const [editorTargetId, setEditorTargetId] = useState<string | null>(null);
+  const [overlayMode, setOverlayMode] = useState<PolicyOverlayMode>('closed');
+  const [overlaySourceGroupId, setOverlaySourceGroupId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
 
@@ -47,8 +53,8 @@ export function usePolicyBuilderState(): PolicyBuilderStateStore {
     setPolicies,
     integrations,
     setIntegrations,
-    selectedId,
-    setSelectedId,
+    selectedPolicyId,
+    setSelectedPolicyId,
     loading,
     setLoading,
     error,
@@ -59,6 +65,10 @@ export function usePolicyBuilderState(): PolicyBuilderStateStore {
     setEditorMode,
     editorTargetId,
     setEditorTargetId,
+    overlayMode,
+    setOverlayMode,
+    overlaySourceGroupId,
+    setOverlaySourceGroupId,
     saving,
     setSaving,
     editorError,

@@ -12,6 +12,7 @@ use crate::controlplane::audit::{
 };
 use crate::controlplane::metrics::Metrics;
 use crate::controlplane::policy_config::DnsPolicy;
+use crate::controlplane::policy_telemetry::PolicyTelemetryStore;
 use crate::controlplane::threat_intel::runtime::{ThreatObservation, ThreatRuntimeSlot};
 use crate::controlplane::wiretap::DnsMap;
 use crate::controlplane::PolicyStore;
@@ -28,6 +29,7 @@ pub async fn run_dns_proxy(
     metrics: Metrics,
     policy_store: Option<PolicyStore>,
     audit_store: Option<AuditStore>,
+    policy_telemetry_store: Option<PolicyTelemetryStore>,
     threat_runtime: Option<ThreatRuntimeSlot>,
     node_id: String,
     mut startup_status_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
@@ -77,6 +79,7 @@ pub async fn run_dns_proxy(
     let tcp_upstreams = upstream_addrs.clone();
     let tcp_policy_store = policy_store.clone();
     let tcp_audit_store = audit_store.clone();
+    let tcp_policy_telemetry_store = policy_telemetry_store.clone();
     let tcp_threat_runtime = threat_runtime.clone();
     let tcp_node_id = node_id.clone();
     tokio::spawn(async move {
@@ -88,6 +91,7 @@ pub async fn run_dns_proxy(
             tcp_metrics,
             tcp_policy_store,
             tcp_audit_store,
+            tcp_policy_telemetry_store,
             tcp_threat_runtime,
             tcp_node_id,
         )
@@ -146,6 +150,19 @@ pub async fn run_dns_proxy(
         let policy_id = policy_store
             .as_ref()
             .and_then(|store| store.active_policy_id());
+        let observed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        if matches!(peer.ip(), IpAddr::V4(_)) {
+            ingest_dns_policy_hit(
+                policy_telemetry_store.as_ref(),
+                policy_id,
+                &source_group,
+                observed_at,
+            );
+        }
 
         if matches!(peer.ip(), IpAddr::V4(_)) && would_deny {
             ingest_dns_deny_audit(
@@ -154,6 +171,7 @@ pub async fn run_dns_proxy(
                 &node_id,
                 &source_group,
                 &question,
+                observed_at,
             );
         }
 
@@ -327,6 +345,7 @@ async fn run_dns_proxy_tcp(
     metrics: Metrics,
     policy_store: Option<PolicyStore>,
     audit_store: Option<AuditStore>,
+    policy_telemetry_store: Option<PolicyTelemetryStore>,
     threat_runtime: Option<ThreatRuntimeSlot>,
     node_id: String,
 ) -> io::Result<()> {
@@ -338,6 +357,7 @@ async fn run_dns_proxy_tcp(
         let upstream_addrs = upstream_addrs.clone();
         let policy_store = policy_store.clone();
         let audit_store = audit_store.clone();
+        let policy_telemetry_store = policy_telemetry_store.clone();
         let threat_runtime = threat_runtime.clone();
         let node_id = node_id.clone();
         tokio::spawn(async move {
@@ -350,6 +370,7 @@ async fn run_dns_proxy_tcp(
                 metrics,
                 policy_store,
                 audit_store,
+                policy_telemetry_store,
                 threat_runtime,
                 node_id,
             )
@@ -371,6 +392,7 @@ async fn handle_dns_tcp_client(
     metrics: Metrics,
     policy_store: Option<PolicyStore>,
     audit_store: Option<AuditStore>,
+    policy_telemetry_store: Option<PolicyTelemetryStore>,
     threat_runtime: Option<ThreatRuntimeSlot>,
     node_id: String,
 ) -> Result<(), String> {
@@ -434,6 +456,19 @@ async fn handle_dns_tcp_client(
         let policy_id = policy_store
             .as_ref()
             .and_then(|store| store.active_policy_id());
+        let observed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        if matches!(peer.ip(), IpAddr::V4(_)) {
+            ingest_dns_policy_hit(
+                policy_telemetry_store.as_ref(),
+                policy_id,
+                &source_group,
+                observed_at,
+            );
+        }
 
         if matches!(peer.ip(), IpAddr::V4(_)) && would_deny {
             ingest_dns_deny_audit(
@@ -442,6 +477,7 @@ async fn handle_dns_tcp_client(
                 &node_id,
                 &source_group,
                 &question,
+                observed_at,
             );
         }
 
@@ -619,6 +655,7 @@ fn ingest_dns_deny_audit(
     node_id: &str,
     source_group: &str,
     question: &DnsQuestion,
+    observed_at: u64,
 ) {
     let Some(audit_store) = audit_store else {
         return;
@@ -626,10 +663,6 @@ fn ingest_dns_deny_audit(
     if question.name.is_empty() {
         return;
     }
-    let observed_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
     let event = ControlplaneAuditEvent {
         finding_type: AuditFindingType::DnsDeny,
         source_group: source_group.to_string(),
@@ -645,6 +678,21 @@ fn ingest_dns_deny_audit(
         observed_at,
     };
     audit_store.ingest(event, policy_id, node_id);
+}
+
+fn ingest_dns_policy_hit(
+    policy_telemetry_store: Option<&PolicyTelemetryStore>,
+    policy_id: Option<Uuid>,
+    source_group: &str,
+    observed_at: u64,
+) {
+    let Some(policy_telemetry_store) = policy_telemetry_store else {
+        return;
+    };
+    let Some(policy_id) = policy_id else {
+        return;
+    };
+    policy_telemetry_store.record_hit(policy_id, source_group, observed_at);
 }
 
 #[derive(Debug, Clone)]

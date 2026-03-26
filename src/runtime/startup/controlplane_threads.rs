@@ -4,6 +4,7 @@ use std::sync::Arc;
 use neuwerk::controlplane;
 use neuwerk::controlplane::audit::AuditStore;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
+use neuwerk::controlplane::policy_telemetry::PolicyTelemetryStore;
 use neuwerk::controlplane::ready::ReadinessState;
 use neuwerk::controlplane::threat_intel::store::ThreatStore;
 use neuwerk::controlplane::wiretap::{DnsMap, WiretapHub};
@@ -17,6 +18,7 @@ pub struct HttpRuntimeThreadConfig {
     pub local_store: PolicyDiskStore,
     pub cluster: Option<controlplane::http_api::HttpApiCluster>,
     pub audit_store: Option<AuditStore>,
+    pub policy_telemetry_store: Option<PolicyTelemetryStore>,
     pub threat_store: Option<ThreatStore>,
     pub wiretap_hub: Option<WiretapHub>,
     pub dns_map: Option<DnsMap>,
@@ -92,6 +94,7 @@ pub fn spawn_http_runtime_thread(
                     cfg.local_store,
                     cfg.cluster,
                     cfg.audit_store,
+                    cfg.policy_telemetry_store,
                     cfg.threat_store,
                     cfg.wiretap_hub,
                     cfg.dns_map,

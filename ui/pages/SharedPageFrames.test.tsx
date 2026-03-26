@@ -40,16 +40,18 @@ vi.mock('./dashboard/components/DashboardStatsView', () => ({
   DashboardStatsView: () => <div>Dashboard stats view</div>,
 }));
 
-vi.mock('./policies/components/PolicyEditorActions', () => ({
-  PolicyEditorActions: () => <div>Policy editor actions</div>,
+vi.mock('./policies/components/PolicySelector', () => ({
+  PolicySelector: () => <div>Policy selector</div>,
 }));
 
-vi.mock('./policies/components/PolicyEditorCard', () => ({
-  PolicyEditorCard: () => <div>Policy editor card</div>,
+vi.mock('./policies/components/PolicySourceGroupsTable', () => ({
+  PolicySourceGroupsTable: () => <div>Source group table</div>,
 }));
 
-vi.mock('./policies/components/PolicySnapshotsPanel', () => ({
-  PolicySnapshotsPanel: () => <div>Policy snapshots</div>,
+vi.mock('./policies/components/PolicySourceGroupEditorOverlay', () => ({
+  PolicySourceGroupEditorOverlay: ({ children }: { children: React.ReactNode }) => (
+    <div>Source group overlay{children}</div>
+  ),
 }));
 
 vi.mock('../components/service-accounts/CreateServiceAccountModal', () => ({
@@ -125,12 +127,14 @@ describe('shared page frames', () => {
       state: {
         policies: [],
         integrations: [],
-        selectedId: null,
+        selectedPolicyId: null,
         loading: false,
         error: null,
         draft: createEmptyPolicyRequest(),
         editorMode: 'create',
         editorTargetId: null,
+        overlayMode: 'closed',
+        overlaySourceGroupId: null,
         saving: false,
         editorError: null,
         validationIssues: [],
@@ -138,6 +142,9 @@ describe('shared page frames', () => {
       actions: {
         loadAll: async () => {},
         loadEditorForPolicy: async () => {},
+        selectPolicy: () => {},
+        openSourceGroupEditor: () => {},
+        closeSourceGroupEditor: () => {},
         handleCreate: () => {},
         handleDelete: async () => {},
         handleSave: async () => {},
@@ -192,9 +199,8 @@ describe('shared page frames', () => {
     expect(html).toContain('Form-driven policy builder with live validation.');
     expect(html).toContain('Refresh');
     expect(html).toContain('New Policy');
-    expect(html).toContain('Policy snapshots');
-    expect(html).toContain('Policy editor card');
-    expect(html).toContain('xl:grid-cols-[minmax(16rem,20rem)_minmax(0,1fr)]');
+    expect(html).toContain('Policy selector');
+    expect(html).toContain('Source group table');
     expect(html).toContain('lg:flex-row');
   });
 });

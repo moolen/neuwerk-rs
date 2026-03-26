@@ -1,19 +1,21 @@
 import type { PolicyRecord } from '../../types';
 
 export type LoadAllFollowUp =
-  | { kind: 'open-first'; policyId: string }
+  | { kind: 'select-first'; policyId: string }
   | { kind: 'create' }
   | { kind: 'none' };
 
 export function deriveLoadAllFollowUp(
   policies: PolicyRecord[],
-  selectedId: string | null,
+  selectedPolicyId: string | null,
 ): LoadAllFollowUp {
   if (!policies.length) return { kind: 'create' };
-  if (!selectedId) {
-    return { kind: 'open-first', policyId: policies[0].id };
+  if (!selectedPolicyId) {
+    return { kind: 'select-first', policyId: policies[0].id };
   }
-  return { kind: 'none' };
+  return policies.some((policy) => policy.id === selectedPolicyId)
+    ? { kind: 'none' }
+    : { kind: 'select-first', policyId: policies[0].id };
 }
 
 export function errorMessage(err: unknown, fallback: string): string {
