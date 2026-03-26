@@ -215,11 +215,13 @@ The packaged runtime contract is:
 
 Edit subsystem YAML paths directly in that file, then restart `neuwerk.service`.
 
+For the canonical operator-facing reference for supported YAML runtime paths, defaults, and guidance, see [Runtime Knobs](./runtime-knobs.md).
+
 At minimum, verify or set:
 
 - `bootstrap.cloud_provider` when runtime discovery needs an explicit provider hint
 - `bootstrap.management_interface`
-- `bootstrap.data_interface` or `bootstrap.data_plane_selector`
+- `bootstrap.data_interface`
 - `dns.upstreams` reachable from the management network
 
 Example starter configuration:
@@ -243,22 +245,7 @@ dataplane:
 EOF
 ```
 
-If the dataplane NIC is not stable by interface name, prefer an explicit selector:
-
-```bash
-sudo python3 - <<'PY'
-from pathlib import Path
-
-path = Path("/etc/neuwerk/config.yaml")
-text = path.read_text(encoding="utf-8")
-text = text.replace(
-    "  data_interface: eth1\n",
-    "  data_interface: eth1\n  data_plane_selector: mac:aa:bb:cc:dd:ee:ff\n",
-    1,
-)
-path.write_text(text, encoding="utf-8")
-PY
-```
+If the dataplane NIC comes up under a different name than expected, update `bootstrap.data_interface` to match the actual interface before restarting `neuwerk.service`.
 
 Other operator-tunable subsystem YAML paths live in the same file, for example:
 
