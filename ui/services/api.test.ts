@@ -293,7 +293,16 @@ describe('wiretap stream auth transport', () => {
     expect(url).toBe('/api/v1/wiretap/stream');
     expect(url).not.toContain('access_token=');
     expect(options).toEqual({ withCredentials: true });
-    expect(addEventListener).toHaveBeenCalledTimes(2);
+    expect(addEventListener).toHaveBeenNthCalledWith(
+      1,
+      'flow',
+      expect.any(Function)
+    );
+    expect(addEventListener).toHaveBeenNthCalledWith(
+      2,
+      'flow_end',
+      expect.any(Function)
+    );
 
     unsubscribe();
     expect(close).toHaveBeenCalledOnce();

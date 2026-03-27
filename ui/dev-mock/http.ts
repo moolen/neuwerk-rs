@@ -77,3 +77,19 @@ export function sseResponse(body: string, init: MockResponseInit = {}): MockResp
     text: body,
   };
 }
+
+export function sseStreamResponse(
+  stream: NonNullable<MockResponse['stream']>,
+  init: MockResponseInit = {}
+): MockResponse {
+  return {
+    ...createResponse('sse-stream', init),
+    headers: {
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+      'content-type': 'text/event-stream; charset=utf-8',
+      ...normalizeHeaders(init.headers),
+    },
+    stream,
+  };
+}

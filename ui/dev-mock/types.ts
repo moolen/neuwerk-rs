@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-export type MockResponseKind = 'json' | 'text' | 'blob' | 'sse';
+export type MockResponseKind = 'json' | 'text' | 'blob' | 'sse' | 'sse-stream';
 
 export type MockHeaders = Record<string, string>;
 
@@ -22,6 +22,7 @@ export interface MockResponse {
   json?: unknown;
   text?: string;
   body?: Uint8Array;
+  stream?: (req: IncomingMessage, res: ServerResponse) => void;
 }
 
 export interface MockResponseInit {

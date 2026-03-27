@@ -6,6 +6,7 @@ import { createPolicyRoutes } from './routes/policies';
 import { createServiceAccountRoutes } from './routes/serviceAccounts';
 import { createSettingsWriteRoutes } from './routes/settings-write';
 import { createSsoRoutes } from './routes/sso';
+import { createWiretapRoutes } from './routes/wiretap';
 import { createReadDomainRoutes } from './seed';
 import { createMockState } from './state';
 import type {
@@ -46,7 +47,11 @@ function readBody(req: IncomingMessage): Promise<Buffer | undefined> {
   });
 }
 
-function writeNodeResponse(res: ServerResponse, response: MockResponse): void {
+function writeNodeResponse(
+  req: IncomingMessage,
+  res: ServerResponse,
+  response: MockResponse
+): void {
   res.statusCode = response.status;
   for (const [name, value] of Object.entries(response.headers)) {
     res.setHeader(name, value);
@@ -58,6 +63,10 @@ function writeNodeResponse(res: ServerResponse, response: MockResponse): void {
   }
   if (response.kind === 'blob') {
     res.end(response.body ? Buffer.from(response.body) : Buffer.alloc(0));
+    return;
+  }
+  if (response.kind === 'sse-stream') {
+    response.stream?.(req, res);
     return;
   }
   res.end(response.text ?? '');
@@ -126,6 +135,7 @@ export function createMockRouter(options: MockRouterOptions = {}): MockRouter {
     ...createServiceAccountRoutes(state),
     ...createSettingsWriteRoutes(state),
     ...createSsoRoutes(state),
+    ...createWiretapRoutes(),
   ]) {
     addRoute(route);
   }
@@ -173,7 +183,7 @@ export function createMockRouter(options: MockRouterOptions = {}): MockRouter {
         return false;
       }
 
-      writeNodeResponse(res, response);
+      writeNodeResponse(req, res, response);
       return true;
     },
   };
