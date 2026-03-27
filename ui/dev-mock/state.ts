@@ -2,7 +2,11 @@ import type {
   AuditFinding,
   AuthUser,
   DNSCacheResponse,
+  IntegrationView,
   PerformanceModeStatus,
+  PolicyRecord,
+  ServiceAccount,
+  ServiceAccountToken,
   SsoProviderView,
   SsoSupportedProvider,
   StatsResponse,
@@ -27,9 +31,10 @@ export interface MockState {
   threatIntelSettings: ThreatIntelSettingsStatus;
   ssoSupportedProviders: SsoSupportedProvider[];
   ssoProviders: SsoProviderView[];
-  policies: unknown[];
-  integrations: unknown[];
-  serviceAccounts: unknown[];
+  policies: PolicyRecord[];
+  integrations: IntegrationView[];
+  serviceAccounts: ServiceAccount[];
+  serviceAccountTokens: Record<string, ServiceAccountToken[]>;
 }
 
 export function createMockState(now = Date.now()): MockState {
@@ -390,5 +395,6 @@ export function createMockState(now = Date.now()): MockState {
     policies: [],
     integrations: [],
     serviceAccounts: [],
+    serviceAccountTokens: {},
   };
 }

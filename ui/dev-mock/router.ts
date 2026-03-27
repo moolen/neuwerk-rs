@@ -1,6 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { jsonResponse } from './http';
+import { createIntegrationRoutes } from './routes/integrations';
+import { createPolicyRoutes } from './routes/policies';
+import { createServiceAccountRoutes } from './routes/serviceAccounts';
+import { createSettingsWriteRoutes } from './routes/settings-write';
+import { createSsoRoutes } from './routes/sso';
 import { createReadDomainRoutes } from './seed';
 import { createMockState } from './state';
 import type {
@@ -62,6 +67,23 @@ function routeKey(method: string, pathname: string): string {
   return `${method.toUpperCase()} ${pathname}`;
 }
 
+function escapeRegex(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function compilePattern(pathname: string): RegExp | undefined {
+  if (!pathname.includes(':')) {
+    return undefined;
+  }
+  const parts = pathname.split('/').map((segment) => {
+    if (segment.startsWith(':')) {
+      return '[^/]+';
+    }
+    return escapeRegex(segment);
+  });
+  return new RegExp(`^${parts.join('/')}$`);
+}
+
 function normalizeRequest(raw: MockIncomingRequest): MockRequest {
   const parsed = new URL(raw.url, 'http://neuwerk.dev');
   return {
@@ -77,13 +99,38 @@ function isApiPath(pathname: string): boolean {
 }
 
 export function createMockRouter(options: MockRouterOptions = {}): MockRouter {
-  const routes = new Map<string, MockRoute>();
+  const exactRoutes = new Map<string, MockRoute>();
+  const patternRoutes: Array<{ method: string; pattern: RegExp; route: MockRoute }> = [];
   const state = createMockState();
-  for (const route of createReadDomainRoutes(state)) {
-    routes.set(routeKey(route.method, route.pathname), route);
+
+  function addRoute(route: MockRoute): void {
+    const pattern = compilePattern(route.pathname);
+    if (pattern) {
+      const method = route.method.toUpperCase();
+      const index = patternRoutes.findIndex(
+        (entry) => entry.method === method && entry.route.pathname === route.pathname
+      );
+      if (index >= 0) {
+        patternRoutes.splice(index, 1);
+      }
+      patternRoutes.push({ method, pattern, route });
+      return;
+    }
+    exactRoutes.set(routeKey(route.method, route.pathname), route);
+  }
+
+  for (const route of [
+    ...createReadDomainRoutes(state),
+    ...createPolicyRoutes(state),
+    ...createIntegrationRoutes(state),
+    ...createServiceAccountRoutes(state),
+    ...createSettingsWriteRoutes(state),
+    ...createSsoRoutes(state),
+  ]) {
+    addRoute(route);
   }
   for (const route of options.routes ?? []) {
-    routes.set(routeKey(route.method, route.pathname), route);
+    addRoute(route);
   }
 
   return {
@@ -94,7 +141,14 @@ export function createMockRouter(options: MockRouterOptions = {}): MockRouter {
         return undefined;
       }
 
-      const route = routes.get(routeKey(normalized.method, normalized.pathname));
+      let route = exactRoutes.get(routeKey(normalized.method, normalized.pathname));
+      if (!route) {
+        route = patternRoutes.find(
+          (entry) =>
+            entry.method === normalized.method &&
+            entry.pattern.test(normalized.pathname)
+        )?.route;
+      }
       if (!route) {
         return jsonResponse({ error: 'Not found' }, { status: 404 });
       }
