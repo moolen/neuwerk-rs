@@ -80,4 +80,20 @@ describe('createMockState', () => {
       created_at: Math.floor(now / 1000) - 3600,
     });
   });
+
+  it('seeds dns audit linkage keys in the same contract shape used by the audit page', () => {
+    const state = createMockState(1_710_000_000_000);
+    const dnsFinding = state.auditFindings.find((item) => item.finding_type === 'dns_deny');
+    const linkedThreat = state.threatFindings.find((item) =>
+      item.audit_links.includes('dns:policy-egress-dns:branch-office:malware-update.bad')
+    );
+
+    expect(dnsFinding).toMatchObject({
+      finding_type: 'dns_deny',
+      policy_id: 'policy-egress-dns',
+      source_group: 'branch-office',
+      hostname: 'malware-update.bad',
+    });
+    expect(linkedThreat).toBeDefined();
+  });
 });

@@ -136,7 +136,7 @@ export function createMockState(now = Date.now()): MockState {
         finding_type: 'dns_deny',
         policy_id: 'policy-egress-dns',
         source_group: 'branch-office',
-        fqdn: 'malware-update.bad',
+        hostname: 'malware-update.bad',
         query_type: 1,
         first_seen: nowSeconds - 3_000,
         last_seen: nowSeconds - 120,
@@ -191,7 +191,7 @@ export function createMockState(now = Date.now()): MockState {
         count: 9,
         sample_node_ids: ['node-a'],
         alertable: true,
-        audit_links: ['dns_deny|branch-office|malware-update.bad'],
+        audit_links: ['dns:policy-egress-dns:branch-office:malware-update.bad'],
         enrichment_status: 'completed',
       },
       {
