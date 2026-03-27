@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { jsonResponse } from './http';
+import { createReadDomainRoutes } from './seed';
+import { createMockState } from './state';
 import type {
   MockIncomingRequest,
   MockRequest,
@@ -76,6 +78,10 @@ function isApiPath(pathname: string): boolean {
 
 export function createMockRouter(options: MockRouterOptions = {}): MockRouter {
   const routes = new Map<string, MockRoute>();
+  const state = createMockState();
+  for (const route of createReadDomainRoutes(state)) {
+    routes.set(routeKey(route.method, route.pathname), route);
+  }
   for (const route of options.routes ?? []) {
     routes.set(routeKey(route.method, route.pathname), route);
   }
