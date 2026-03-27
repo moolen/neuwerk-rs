@@ -4,11 +4,15 @@ export type MockResponseKind = 'json' | 'text' | 'blob' | 'sse';
 
 export type MockHeaders = Record<string, string>;
 
-export interface MockRequest {
+export interface MockIncomingRequest {
   method: string;
   url: string;
   headers: MockHeaders;
   body: Buffer | undefined;
+}
+
+export interface MockRequest extends MockIncomingRequest {
+  pathname: string;
 }
 
 export interface MockResponse {
@@ -40,7 +44,7 @@ export interface MockRouterOptions {
 }
 
 export interface MockRouter {
-  handle(request: MockRequest): Promise<MockResponse | undefined>;
+  handle(request: MockIncomingRequest): Promise<MockResponse | undefined>;
   handleNodeRequest(
     req: IncomingMessage,
     res: ServerResponse

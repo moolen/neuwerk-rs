@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { jsonResponse } from './http';
 import type {
+  MockIncomingRequest,
   MockRequest,
   MockResponse,
   MockRoute,
@@ -59,10 +60,12 @@ function routeKey(method: string, pathname: string): string {
   return `${method.toUpperCase()} ${pathname}`;
 }
 
-function normalizeRequest(raw: MockRequest): { method: string; pathname: string } {
+function normalizeRequest(raw: MockIncomingRequest): MockRequest {
   const parsed = new URL(raw.url, 'http://neuwerk.dev');
   return {
+    ...raw,
     method: raw.method.toUpperCase(),
+    headers: normalizeHeaders(raw.headers),
     pathname: parsed.pathname,
   };
 }
@@ -74,7 +77,7 @@ export function createMockRouter(options: MockRouterOptions = {}): MockRouter {
   }
 
   return {
-    async handle(request: MockRequest): Promise<MockResponse | undefined> {
+    async handle(request: MockIncomingRequest): Promise<MockResponse | undefined> {
       const normalized = normalizeRequest(request);
 
       if (
@@ -89,10 +92,7 @@ export function createMockRouter(options: MockRouterOptions = {}): MockRouter {
         return jsonResponse({ error: 'Not found' }, { status: 404 });
       }
 
-      return route.handler({
-        ...request,
-        method: normalized.method,
-      });
+      return route.handler(normalized);
     },
 
     async handleNodeRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean> {

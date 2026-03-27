@@ -65,4 +65,47 @@ describe('createMockRouter', () => {
       json: { ok: true },
     });
   });
+
+  it('passes normalized request shape to handlers', async () => {
+    let seen:
+      | {
+          method: string;
+          pathname: string;
+          headers: Record<string, string>;
+        }
+      | undefined;
+    const router = createMockRouter({
+      routes: [
+        {
+          method: 'GET',
+          pathname: '/api/v1/example',
+          handler: async (request) => {
+            seen = {
+              method: request.method,
+              pathname: request.pathname,
+              headers: request.headers,
+            };
+            return jsonResponse({ ok: true });
+          },
+        },
+      ],
+    });
+
+    await router.handle({
+      method: 'get',
+      url: '/api/v1/example?foo=bar',
+      headers: {
+        'X-Custom-Header': 'value',
+      },
+      body: undefined,
+    });
+
+    expect(seen).toEqual({
+      method: 'GET',
+      pathname: '/api/v1/example',
+      headers: {
+        'x-custom-header': 'value',
+      },
+    });
+  });
 });
