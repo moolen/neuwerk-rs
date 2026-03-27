@@ -65,7 +65,27 @@ export function createWiretapRoutes(): MockRoute[] {
       handler: () =>
         sseStreamResponse((req, res) => {
           let index = 0;
+          let interval: ReturnType<typeof setInterval> | undefined;
+          const isClosed = () => res.destroyed || res.writableEnded;
+
+          const cleanup = () => {
+            if (interval) {
+              clearInterval(interval);
+              interval = undefined;
+            }
+            req.off('close', cleanup);
+            res.off('close', cleanup);
+            res.off('error', cleanup);
+            if (!isClosed()) {
+              res.end();
+            }
+          };
+
           const writeSample = () => {
+            if (isClosed()) {
+              cleanup();
+              return;
+            }
             const base = withTimestamp(SAMPLE_FLOWS[index % SAMPLE_FLOWS.length]);
             const flow = base;
             const flowEnd = withTimestamp({
@@ -79,19 +99,11 @@ export function createWiretapRoutes(): MockRoute[] {
           };
 
           writeSample();
-          const interval = setInterval(writeSample, EVENT_INTERVAL_MS);
-
-          const cleanup = () => {
-            clearInterval(interval);
-            req.off('close', cleanup);
-            res.off('close', cleanup);
-            if (!res.writableEnded) {
-              res.end();
-            }
-          };
+          interval = setInterval(writeSample, EVENT_INTERVAL_MS);
 
           req.on('close', cleanup);
           res.on('close', cleanup);
+          res.on('error', cleanup);
         }),
     },
   ];

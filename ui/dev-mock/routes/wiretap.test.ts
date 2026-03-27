@@ -175,4 +175,48 @@ describe('dev mock wiretap stream route', () => {
       vi.useRealTimers();
     }
   });
+
+  it('stops writing after response stream errors', async () => {
+    vi.useFakeTimers();
+    try {
+      const [route] = createWiretapRoutes();
+      const response = await route.handler({
+        method: 'GET',
+        url: '/api/v1/wiretap/stream',
+        headers: {},
+        body: undefined,
+        pathname: '/api/v1/wiretap/stream',
+      });
+      expect(response.kind).toBe('sse-stream');
+
+      const req = new EventEmitter();
+      const res = new EventEmitter() as EventEmitter & {
+        write: ReturnType<typeof vi.fn>;
+        end: ReturnType<typeof vi.fn>;
+        writableEnded: boolean;
+        destroyed: boolean;
+      };
+      res.write = vi.fn();
+      res.end = vi.fn(() => {
+        res.writableEnded = true;
+      });
+      res.writableEnded = false;
+      res.destroyed = false;
+
+      response.stream?.(req as never, res as never);
+      const writesAfterStart = res.write.mock.calls.length;
+
+      vi.advanceTimersByTime(3_000);
+      expect(res.write.mock.calls.length).toBeGreaterThan(writesAfterStart);
+
+      res.emit('error', new Error('socket hang up'));
+      const writesAtError = res.write.mock.calls.length;
+
+      vi.advanceTimersByTime(9_000);
+      expect(res.write.mock.calls.length).toBe(writesAtError);
+      expect(res.end).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
