@@ -53,7 +53,7 @@ function createTestMockServer() {
 }
 
 describe('dev mock CRUD domain routes', () => {
-  it('persists policy creates and updates in memory', async () => {
+  it('persists policy creates updates and deletes in memory', async () => {
     const server = createTestMockServer();
 
     const created = await server.requestJson<{ id: string; name: string; mode: string }>(
@@ -88,6 +88,12 @@ describe('dev mock CRUD domain routes', () => {
       'GET',
       `/api/v1/policies/${created.id}/telemetry`
     );
+    const deleteResponse = await server.request('DELETE', `/api/v1/policies/${created.id}`);
+    const afterDeleteRead = await server.request('GET', `/api/v1/policies/${created.id}`);
+    const listAfterDelete = await server.requestJson<Array<{ id: string }>>(
+      'GET',
+      '/api/v1/policies'
+    );
 
     expect(updated.name).toBe('Renamed policy');
     expect(updated.mode).toBe('enforce');
@@ -96,9 +102,12 @@ describe('dev mock CRUD domain routes', () => {
       items: expect.any(Array),
       partial: expect.any(Boolean),
     });
+    expect(deleteResponse.status).toBeLessThan(400);
+    expect(afterDeleteRead.status).toBe(404);
+    expect(listAfterDelete.some((policy) => policy.id === created.id)).toBe(false);
   });
 
-  it('persists integrations and returns edits in list results', async () => {
+  it('persists integrations edits and deletes in list results', async () => {
     const server = createTestMockServer();
     const created = await server.requestJson<{ name: string; token_configured: boolean }>(
       'POST',
@@ -137,6 +146,16 @@ describe('dev mock CRUD domain routes', () => {
         }),
       ])
     );
+
+    const deleteResponse = await server.request('DELETE', '/api/v1/integrations/cluster-a');
+    const afterDeleteRead = await server.request('GET', '/api/v1/integrations/cluster-a');
+    const listAfterDelete = await server.requestJson<Array<{ name: string }>>(
+      'GET',
+      '/api/v1/integrations'
+    );
+    expect(deleteResponse.status).toBeLessThan(400);
+    expect(afterDeleteRead.status).toBe(404);
+    expect(listAfterDelete.some((integration) => integration.name === 'cluster-a')).toBe(false);
   });
 
   it('creates updates and disables service accounts with token lifecycle', async () => {
@@ -252,6 +271,36 @@ describe('dev mock CRUD domain routes', () => {
 
     expect(updated.name).toBe('Local OIDC Updated');
     expect(providers.some((provider) => provider.id === created.id)).toBe(false);
+  });
+
+  it('returns 400 for malformed SSO update payloads instead of crashing', async () => {
+    const server = createTestMockServer();
+    const created = await server.requestJson<{ id: string }>(
+      'POST',
+      '/api/v1/settings/sso/providers',
+      {
+        name: 'Strict SSO',
+        kind: 'generic-oidc',
+        enabled: true,
+        issuer_url: 'https://strict.example.test',
+        client_id: 'strict-client',
+        client_secret: 'strict-secret',
+      }
+    );
+
+    const malformedNameResponse = await server.request(
+      'PUT',
+      `/api/v1/settings/sso/providers/${created.id}`,
+      { name: null }
+    );
+    const malformedClientIdResponse = await server.request(
+      'PUT',
+      `/api/v1/settings/sso/providers/${created.id}`,
+      { client_id: null }
+    );
+
+    expect(malformedNameResponse.status).toBe(400);
+    expect(malformedClientIdResponse.status).toBe(400);
   });
 
   it('writes performance and threat-intel toggles and handles TLS CA workflows', async () => {

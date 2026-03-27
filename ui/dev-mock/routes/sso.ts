@@ -143,11 +143,15 @@ export function createSsoRoutes(state: MockState): MockRoute[] {
           return jsonResponse({ error: 'Not found' }, { status: 404 });
         }
         const payload = parseJsonBody(request) as SsoProviderPatchRequest | undefined;
-        if (payload?.name !== undefined && !payload.name.trim()) {
-          return jsonResponse({ error: 'Name is required' }, { status: 400 });
+        if (payload?.name !== undefined) {
+          if (typeof payload.name !== 'string' || !payload.name.trim()) {
+            return jsonResponse({ error: 'Name is required' }, { status: 400 });
+          }
         }
-        if (payload?.client_id !== undefined && !payload.client_id.trim()) {
-          return jsonResponse({ error: 'Client ID is required' }, { status: 400 });
+        if (payload?.client_id !== undefined) {
+          if (typeof payload.client_id !== 'string' || !payload.client_id.trim()) {
+            return jsonResponse({ error: 'Client ID is required' }, { status: 400 });
+          }
         }
 
         const updated: SsoProviderView = {
