@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { PassThrough } from 'node:stream';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { jsonResponse } from './http';
 import { createMockRouter } from './router';
@@ -107,5 +109,22 @@ describe('createMockRouter', () => {
         'x-custom-header': 'value',
       },
     });
+  });
+
+  it('falls through non-api node requests without draining stream', async () => {
+    const router = createMockRouter();
+    const req = new PassThrough() as IncomingMessage;
+    req.method = 'POST';
+    req.url = '/healthz';
+    req.headers = {
+      'x-custom-header': 'value',
+    };
+    const res = {} as ServerResponse;
+
+    const handled = await router.handleNodeRequest(req, res);
+
+    expect(handled).toBe(false);
+    expect(req.listenerCount('data')).toBe(0);
+    expect(req.listenerCount('end')).toBe(0);
   });
 });

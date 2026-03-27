@@ -70,6 +70,10 @@ function normalizeRequest(raw: MockIncomingRequest): MockRequest {
   };
 }
 
+function isApiPath(pathname: string): boolean {
+  return pathname === API_PREFIX || pathname.startsWith(`${API_PREFIX}/`);
+}
+
 export function createMockRouter(options: MockRouterOptions = {}): MockRouter {
   const routes = new Map<string, MockRoute>();
   for (const route of options.routes ?? []) {
@@ -80,10 +84,7 @@ export function createMockRouter(options: MockRouterOptions = {}): MockRouter {
     async handle(request: MockIncomingRequest): Promise<MockResponse | undefined> {
       const normalized = normalizeRequest(request);
 
-      if (
-        normalized.pathname !== API_PREFIX &&
-        !normalized.pathname.startsWith(`${API_PREFIX}/`)
-      ) {
+      if (!isApiPath(normalized.pathname)) {
         return undefined;
       }
 
@@ -96,6 +97,11 @@ export function createMockRouter(options: MockRouterOptions = {}): MockRouter {
     },
 
     async handleNodeRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+      const pathname = new URL(req.url ?? '/', 'http://neuwerk.dev').pathname;
+      if (!isApiPath(pathname)) {
+        return false;
+      }
+
       const response = await this.handle({
         method: req.method ?? 'GET',
         url: req.url ?? '/',
