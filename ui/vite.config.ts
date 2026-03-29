@@ -1,16 +1,11 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+import { neuwerkDevMockPlugin } from './dev-mock/plugin';
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-    },
-  },
+export default defineConfig(({ command }) => ({
+  plugins: [react(), command === 'serve' ? neuwerkDevMockPlugin() : null].filter(
+    (plugin): plugin is NonNullable<typeof plugin> => plugin !== null
+  ),
   build: {
     outDir: 'dist',
     emptyOutDir: true,
@@ -19,4 +14,4 @@ export default defineConfig({
     environment: 'node',
     include: ['**/*.test.ts', '**/*.test.tsx'],
   },
-});
+}));
