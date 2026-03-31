@@ -1,7 +1,11 @@
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -26,6 +30,7 @@ const URLHAUS_TEXT_URL: &str = "https://urlhaus.abuse.ch/downloads/text/";
 const SPAMHAUS_DROP_V4_URL: &str = "https://www.spamhaus.org/drop/drop_v4.json";
 const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 30;
 const FAILED_REFRESH_RETRY_SECS: u64 = 60;
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -228,8 +233,7 @@ pub fn load_cluster_snapshot(
     let Some(raw) = cluster_store.get_state_value(THREAT_INTEL_SNAPSHOT_KEY)? else {
         return Ok(None);
     };
-    let snapshot = serde_json::from_slice(&raw)
-        .map_err(|err| format!("parse replicated threat snapshot: {err}"))?;
+    let snapshot = decode_cluster_snapshot_payload(&raw)?;
     Ok(Some(snapshot))
 }
 
@@ -262,26 +266,64 @@ pub fn load_effective_feed_status(
     local_data_root: &Path,
     settings: &ThreatIntelSettings,
 ) -> Result<Option<ThreatFeedRefreshState>, String> {
+    let local_state = load_local_feed_status(local_data_root)?;
     let cluster_state = if let Some(store) = cluster_store {
         load_cluster_feed_status(store)?
     } else {
         None
     };
-    if let Some(state) = cluster_state.as_ref() {
-        persist_local_feed_status(local_data_root, state)?;
-    }
-    let local_state = match cluster_state {
-        Some(state) => Some(state),
-        None => load_local_feed_status(local_data_root)?,
-    };
+    let preferred_state = prefer_feed_status_state(cluster_state, local_state.clone());
     let snapshot = load_effective_snapshot(cluster_store, local_data_root)?;
-    let effective = reconcile_feed_status_with_snapshot(local_state.clone(), snapshot, settings);
+    let effective = reconcile_feed_status_with_snapshot(preferred_state, snapshot, settings);
     if let Some(state) = effective.as_ref() {
         if local_state.as_ref() != Some(state) {
             persist_local_feed_status(local_data_root, state)?;
         }
     }
     Ok(effective)
+}
+
+fn prefer_feed_status_state(
+    cluster_state: Option<ThreatFeedRefreshState>,
+    local_state: Option<ThreatFeedRefreshState>,
+) -> Option<ThreatFeedRefreshState> {
+    match (cluster_state, local_state) {
+        (Some(cluster), Some(local)) => {
+            if feed_status_preference_key(&local) >= feed_status_preference_key(&cluster) {
+                Some(local)
+            } else {
+                Some(cluster)
+            }
+        }
+        (Some(cluster), None) => Some(cluster),
+        (None, Some(local)) => Some(local),
+        (None, None) => None,
+    }
+}
+
+fn feed_status_preference_key(state: &ThreatFeedRefreshState) -> (u64, usize, u64, u64) {
+    (
+        state.snapshot_version,
+        feed_status_metadata_score(state),
+        state
+            .last_refresh_completed_at
+            .or(state.last_successful_refresh_at)
+            .or(state.snapshot_generated_at)
+            .unwrap_or(0),
+        state.last_refresh_started_at.unwrap_or(0),
+    )
+}
+
+fn feed_status_metadata_score(state: &ThreatFeedRefreshState) -> usize {
+    [
+        state.last_refresh_started_at.is_some(),
+        state.last_refresh_completed_at.is_some(),
+        state.last_successful_refresh_at.is_some(),
+        state.last_refresh_outcome.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count()
 }
 
 fn reconcile_feed_status_with_snapshot(
@@ -291,9 +333,6 @@ fn reconcile_feed_status_with_snapshot(
 ) -> Option<ThreatFeedRefreshState> {
     let now = unix_now();
     match (state, snapshot) {
-        (Some(state), Some(snapshot)) if state.snapshot_version == snapshot.version => {
-            Some(state_with_current_ages(&state, now))
-        }
         (state, Some(snapshot)) if snapshot.version > 0 => Some(snapshot_only_feed_status(
             settings,
             &snapshot,
@@ -313,15 +352,28 @@ fn snapshot_only_feed_status(
     now: u64,
     previous_state: Option<&ThreatFeedRefreshState>,
 ) -> ThreatFeedRefreshState {
+    let synthesized_refresh_at = (snapshot.generated_at > 0).then_some(snapshot.generated_at);
+    let matching_state = previous_state.filter(|state| state.snapshot_version == snapshot.version);
+    let last_refresh_started_at = matching_state
+        .and_then(|state| state.last_refresh_started_at)
+        .or(synthesized_refresh_at);
+    let last_refresh_completed_at = matching_state
+        .and_then(|state| state.last_refresh_completed_at)
+        .or(synthesized_refresh_at);
+    let last_successful_refresh_at = matching_state
+        .and_then(|state| state.last_successful_refresh_at)
+        .or(synthesized_refresh_at);
+    let last_refresh_outcome = matching_state
+        .and_then(|state| state.last_refresh_outcome)
+        .or(synthesized_refresh_at.map(|_| ThreatRefreshOutcome::Success));
+
     ThreatFeedRefreshState {
         snapshot_version: snapshot.version,
-        snapshot_generated_at: (snapshot.generated_at > 0).then_some(snapshot.generated_at),
-        last_refresh_started_at: None,
-        last_refresh_completed_at: None,
-        last_successful_refresh_at: previous_state
-            .filter(|state| state.snapshot_version == snapshot.version)
-            .and_then(|state| state.last_successful_refresh_at),
-        last_refresh_outcome: None,
+        snapshot_generated_at: synthesized_refresh_at,
+        last_refresh_started_at,
+        last_refresh_completed_at,
+        last_successful_refresh_at,
+        last_refresh_outcome,
         feeds: compute_snapshot_status(settings, snapshot, now),
         disabled: false,
     }
@@ -333,8 +385,7 @@ pub async fn publish_cluster_state(
     state: &ThreatFeedRefreshState,
 ) -> Result<(), String> {
     if let Some(snapshot) = snapshot {
-        let payload = serde_json::to_vec(snapshot)
-            .map_err(|err| format!("serialize threat snapshot: {err}"))?;
+        let payload = encode_cluster_snapshot_payload(snapshot)?;
         cluster
             .raft
             .client_write(ClusterCommand::Put {
@@ -356,6 +407,33 @@ pub async fn publish_cluster_state(
         .await
         .map_err(|err| err.to_string())?;
     Ok(())
+}
+
+fn encode_cluster_snapshot_payload(snapshot: &ThreatSnapshot) -> Result<Vec<u8>, String> {
+    let payload =
+        serde_json::to_vec(snapshot).map_err(|err| format!("serialize threat snapshot: {err}"))?;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder
+        .write_all(&payload)
+        .map_err(|err| format!("compress threat snapshot: {err}"))?;
+    encoder
+        .finish()
+        .map_err(|err| format!("finish threat snapshot compression: {err}"))
+}
+
+fn decode_cluster_snapshot_payload(raw: &[u8]) -> Result<ThreatSnapshot, String> {
+    let payload = if raw.starts_with(&GZIP_MAGIC) {
+        let mut decoder = GzDecoder::new(raw);
+        let mut decoded = Vec::new();
+        decoder
+            .read_to_end(&mut decoded)
+            .map_err(|err| format!("decompress replicated threat snapshot: {err}"))?;
+        decoded
+    } else {
+        raw.to_vec()
+    };
+    serde_json::from_slice(&payload)
+        .map_err(|err| format!("parse replicated threat snapshot: {err}"))
 }
 
 pub fn compute_snapshot_status(
@@ -755,9 +833,11 @@ fn read_json_file<T: for<'de> Deserialize<'de>>(
 mod tests {
     use std::path::PathBuf;
 
-    use crate::controlplane::threat_intel::feeds::{snapshot_with_cidr, snapshot_with_hostname};
+    use crate::controlplane::threat_intel::feeds::{
+        snapshot_with_cidr, snapshot_with_hostname, ThreatIndicatorSnapshotItem, ThreatSnapshot,
+    };
     use crate::controlplane::threat_intel::settings::ThreatIntelSettings;
-    use crate::controlplane::threat_intel::types::ThreatSeverity;
+    use crate::controlplane::threat_intel::types::{ThreatIndicatorType, ThreatSeverity};
     use crate::metrics::Metrics;
     use reqwest::Client;
     use uuid::Uuid;
@@ -922,10 +1002,140 @@ mod tests {
 
         assert_eq!(loaded.snapshot_version, snapshot.version);
         assert_eq!(loaded.snapshot_generated_at, Some(snapshot.generated_at));
+        assert_eq!(
+            loaded.last_refresh_completed_at,
+            Some(snapshot.generated_at)
+        );
+        assert_eq!(
+            loaded.last_successful_refresh_at,
+            Some(snapshot.generated_at)
+        );
+        assert_eq!(
+            loaded.last_refresh_outcome,
+            Some(ThreatRefreshOutcome::Success)
+        );
         assert!(loaded
             .feeds
             .iter()
             .any(|feed| feed.feed == "threatfox" && feed.indicator_counts.hostname == 1));
+    }
+
+    #[test]
+    fn load_effective_feed_status_repairs_same_version_snapshot_only_state() {
+        let root = temp_root();
+        let snapshot = snapshot_with_hostname("bad.example.com", ThreatSeverity::High, "threatfox");
+        persist_local_snapshot(&root, &snapshot).expect("persist snapshot");
+        persist_local_feed_status(
+            &root,
+            &ThreatFeedRefreshState {
+                snapshot_version: snapshot.version,
+                snapshot_generated_at: Some(snapshot.generated_at),
+                last_refresh_started_at: None,
+                last_refresh_completed_at: None,
+                last_successful_refresh_at: None,
+                last_refresh_outcome: None,
+                feeds: Vec::new(),
+                disabled: false,
+            },
+        )
+        .expect("persist snapshot-only state");
+
+        let loaded =
+            super::load_effective_feed_status(None, &root, &ThreatIntelSettings::default())
+                .expect("load state")
+                .expect("effective state");
+
+        assert_eq!(loaded.snapshot_version, snapshot.version);
+        assert_eq!(
+            loaded.last_refresh_completed_at,
+            Some(snapshot.generated_at)
+        );
+        assert_eq!(
+            loaded.last_successful_refresh_at,
+            Some(snapshot.generated_at)
+        );
+        assert_eq!(
+            loaded.last_refresh_outcome,
+            Some(ThreatRefreshOutcome::Success)
+        );
+        assert!(loaded
+            .feeds
+            .iter()
+            .any(|feed| feed.feed == "threatfox" && feed.indicator_counts.hostname == 1));
+    }
+
+    #[test]
+    fn prefer_feed_status_state_keeps_richer_local_metadata() {
+        let local = ThreatFeedRefreshState {
+            snapshot_version: 12,
+            snapshot_generated_at: Some(1_700_000_000),
+            last_refresh_started_at: Some(1_700_000_000),
+            last_refresh_completed_at: Some(1_700_000_010),
+            last_successful_refresh_at: Some(1_700_000_010),
+            last_refresh_outcome: Some(ThreatRefreshOutcome::Failed),
+            feeds: Vec::new(),
+            disabled: false,
+        };
+        let cluster = ThreatFeedRefreshState {
+            snapshot_version: 12,
+            snapshot_generated_at: Some(1_700_000_000),
+            last_refresh_started_at: None,
+            last_refresh_completed_at: None,
+            last_successful_refresh_at: None,
+            last_refresh_outcome: None,
+            feeds: Vec::new(),
+            disabled: false,
+        };
+
+        let preferred = super::prefer_feed_status_state(Some(cluster), Some(local.clone()))
+            .expect("preferred state");
+
+        assert_eq!(preferred, local);
+    }
+
+    #[test]
+    fn cluster_snapshot_payload_round_trips() {
+        let snapshot = snapshot_with_hostname("bad.example.com", ThreatSeverity::High, "threatfox");
+
+        let payload = super::encode_cluster_snapshot_payload(&snapshot).expect("encode payload");
+        let decoded = super::decode_cluster_snapshot_payload(&payload).expect("decode payload");
+
+        assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn cluster_snapshot_payload_accepts_legacy_uncompressed_json() {
+        let snapshot = snapshot_with_hostname("bad.example.com", ThreatSeverity::High, "threatfox");
+        let payload = serde_json::to_vec(&snapshot).expect("legacy payload");
+
+        let decoded = super::decode_cluster_snapshot_payload(&payload).expect("decode payload");
+
+        assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn cluster_snapshot_payload_is_smaller_than_compact_json() {
+        let mut items = Vec::new();
+        for idx in 0..8_000usize {
+            items.push(ThreatIndicatorSnapshotItem {
+                indicator: format!("bad-{idx}.example.com"),
+                indicator_type: ThreatIndicatorType::Hostname,
+                feed: "urlhaus".to_string(),
+                severity: ThreatSeverity::High,
+                confidence: Some(90),
+                tags: vec!["malware".to_string(), "bulk".to_string()],
+                reference_url: Some("https://example.invalid/feed".to_string()),
+                feed_first_seen: Some(1_700_000_000),
+                feed_last_seen: Some(1_700_000_100),
+                expires_at: None,
+            });
+        }
+        let snapshot = ThreatSnapshot::new(77, 1_700_000_123, items);
+        let compact = serde_json::to_vec(&snapshot).expect("compact json");
+
+        let payload = super::encode_cluster_snapshot_payload(&snapshot).expect("encode payload");
+
+        assert!(payload.len() < compact.len());
     }
 
     #[tokio::test]

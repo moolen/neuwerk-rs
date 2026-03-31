@@ -14,6 +14,8 @@ pub use management::{
 };
 pub use raft_transport::{RaftGrpcNetwork, RaftGrpcNetworkFactory, RaftServer};
 
+pub const RAFT_GRPC_MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Clone)]
 pub struct RaftTlsConfig {
     identity: Identity,

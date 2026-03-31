@@ -33,7 +33,7 @@ use crate::controlplane::cluster::integration_admin::IntegrationService;
 use crate::controlplane::cluster::policy_admin::PolicyService;
 use crate::controlplane::cluster::rpc::{
     AuthServer, IntegrationServer, JoinClient, JoinServer, PolicyServer, RaftGrpcNetworkFactory,
-    RaftServer, RaftTlsConfig, WiretapServer,
+    RaftServer, RaftTlsConfig, WiretapServer, RAFT_GRPC_MAX_MESSAGE_BYTES,
 };
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::JoinRequest;
@@ -119,7 +119,13 @@ pub async fn run_cluster(
     let mut raft_builder = Server::builder()
         .tls_config(tls.server_config())
         .map_err(|err| io::Error::other(format!("raft tls config: {err}")))?
-        .add_service(crate::controlplane::cluster::rpc::proto::raft_service_server::RaftServiceServer::new(raft_service))
+        .add_service(
+            crate::controlplane::cluster::rpc::proto::raft_service_server::RaftServiceServer::new(
+                raft_service,
+            )
+            .max_decoding_message_size(RAFT_GRPC_MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(RAFT_GRPC_MAX_MESSAGE_BYTES),
+        )
         .add_service(crate::controlplane::cluster::rpc::proto::policy_management_server::PolicyManagementServer::new(policy_service))
         .add_service(crate::controlplane::cluster::rpc::proto::auth_management_server::AuthManagementServer::new(auth_service))
         .add_service(crate::controlplane::cluster::rpc::proto::integration_management_server::IntegrationManagementServer::new(integration_service));

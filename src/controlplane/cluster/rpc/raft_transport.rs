@@ -22,7 +22,7 @@ use tracing::warn;
 use crate::controlplane::cluster::types::{ClusterTypeConfig, Node, NodeId};
 use crate::controlplane::metrics::Metrics;
 
-use super::{proto, RaftTlsConfig};
+use super::{proto, RaftTlsConfig, RAFT_GRPC_MAX_MESSAGE_BYTES};
 
 #[derive(Clone)]
 pub struct RaftGrpcNetwork {
@@ -66,7 +66,9 @@ impl RaftNetworkFactory<ClusterTypeConfig> for RaftGrpcNetworkFactory {
             }
         };
         let channel = endpoint.connect_lazy();
-        let client = proto::raft_service_client::RaftServiceClient::new(channel);
+        let client = proto::raft_service_client::RaftServiceClient::new(channel)
+            .max_decoding_message_size(RAFT_GRPC_MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(RAFT_GRPC_MAX_MESSAGE_BYTES);
         RaftGrpcNetwork {
             peer_id: target.to_string(),
             _addr: addr,
