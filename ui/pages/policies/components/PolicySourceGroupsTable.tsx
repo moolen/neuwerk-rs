@@ -38,7 +38,7 @@ export const PolicySourceGroupsTable: React.FC<PolicySourceGroupsTableProps> = (
   onSelectGroup,
 }) => (
   <section
-    className="rounded-[1.5rem] overflow-hidden"
+    className="rounded-[1.5rem] overflow-visible"
     style={{
       background: 'linear-gradient(180deg, var(--bg-glass-strong), rgba(255,255,255,0.04))',
       border: '1px solid var(--border-glass)',

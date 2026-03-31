@@ -104,4 +104,20 @@ describe('PolicySourceGroupsTable', () => {
     expect(html).toContain('2 of 3 nodes responded');
     expect(html).toContain('1 node error');
   });
+
+  it('keeps the table shell overflow visible so row action menus are not clipped', () => {
+    const html = renderToStaticMarkup(
+      <PolicySourceGroupsTable
+        groups={[buildGroup()]}
+        activeSourceGroupId={null}
+        onCreateGroup={() => undefined}
+        onDeleteGroup={() => undefined}
+        onMoveGroup={() => undefined}
+        onSelectGroup={() => undefined}
+      />
+    );
+
+    expect(html).toContain('overflow-visible');
+    expect(html).not.toContain('overflow-hidden');
+  });
 });
