@@ -200,8 +200,10 @@ describe('shared page frames', () => {
     expect(html).toContain('Refresh');
     expect(html).toContain('New Policy');
     expect(html).toContain('Policy Builder');
-    expect(html).toContain('Decision defaults');
-    expect(html).toContain('Policy scope');
+    expect(html).toContain('Policy');
+    expect(html).toContain('Enforcement Mode');
+    expect(html).toContain('Global Fallback Action');
+    expect(html).toContain('Source groups');
     expect(html).toContain('Save');
     expect(html).toContain('lg:flex-row');
   });

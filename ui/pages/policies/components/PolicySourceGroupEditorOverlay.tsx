@@ -35,7 +35,7 @@ export const PolicySourceGroupEditorOverlay: React.FC<PolicySourceGroupEditorOve
     >
       <section
         data-overlay-surface="full-page"
-        className="flex h-full w-full flex-col overflow-hidden rounded-[1.6rem]"
+        className="mx-auto flex h-full w-full max-w-[92rem] flex-col overflow-hidden rounded-[1.6rem]"
         style={{
           background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-glass-strong) 94%, var(--bg) 6%), rgba(255,255,255,0.04))',
           border: '1px solid var(--border-glass)',
