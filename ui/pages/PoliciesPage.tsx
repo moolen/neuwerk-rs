@@ -191,31 +191,31 @@ export const PoliciesPage: React.FC = () => {
   };
 
   return (
-    <PageLayout
-      title="Policies"
-      description="Form-driven policy builder with live validation."
-      actions={
-        <PoliciesPageHeader
-          onRefresh={loadAll}
-          onCreate={handleCreate}
-          onDelete={
-            canDeleteSelectedPolicy
-              ? () => {
-                  void handleDelete(selectedPolicyId);
-                }
-              : undefined
-          }
-        />
-      }
-    >
+    <div className="relative" data-policies-page-root="true">
+      <PageLayout
+        title="Policies"
+        description="Form-driven policy builder with live validation."
+        actions={
+          <PoliciesPageHeader
+            onRefresh={loadAll}
+            onCreate={handleCreate}
+            onDelete={
+              canDeleteSelectedPolicy
+                ? () => {
+                    void handleDelete(selectedPolicyId);
+                  }
+                : undefined
+            }
+          />
+        }
+      >
+        {error && (
+          <div className="rounded-lg p-4" style={{ background: 'var(--red-bg)', border: '1px solid var(--red-border)', color: 'var(--red)' }}>
+            {error}
+          </div>
+        )}
 
-      {error && (
-        <div className="rounded-lg p-4" style={{ background: 'var(--red-bg)', border: '1px solid var(--red-border)', color: 'var(--red)' }}>
-          {error}
-        </div>
-      )}
-
-      <div className="relative space-y-5" data-policies-main-content="true">
+        <div className="space-y-5" data-policies-main-content="true">
         {showCreatePolicyEditor ? (
           <>
             <PolicyEditorCard
@@ -304,40 +304,42 @@ export const PoliciesPage: React.FC = () => {
           </>
         )}
 
-        <PolicySourceGroupEditorOverlay
-          open={overlayOpen}
-          policyLabel={selectedPolicyLabel}
-          sourceGroupLabel={overlaySourceGroupLabel}
-          saving={saving}
-          validationIssueCount={validationIssues.length}
-          onClose={closeSourceGroupEditor}
-          onSave={() => {
-            void handleSave();
-          }}
-        >
-          <ScopedSourceGroupEditor
-            draft={draft}
-            integrations={integrations}
-            updateDraft={updateDraft}
-            overlayMode={overlayMode}
-            sourceGroupId={overlaySourceGroupId}
-            duplicateGroup={duplicateGroup}
-            moveGroup={moveGroup}
-            deleteGroup={deleteGroup}
-            addRule={addRule}
-            duplicateRule={duplicateRule}
-            moveRule={moveRule}
-            deleteRule={deleteRule}
-          />
+        </div>
+      </PageLayout>
 
-          <div className="mt-4">
-            <PolicyEditorMessages
-              validationIssues={validationIssues}
-              editorError={editorError}
-            />
-          </div>
-        </PolicySourceGroupEditorOverlay>
-      </div>
-    </PageLayout>
+      <PolicySourceGroupEditorOverlay
+        open={overlayOpen}
+        policyLabel={selectedPolicyLabel}
+        sourceGroupLabel={overlaySourceGroupLabel}
+        saving={saving}
+        validationIssueCount={validationIssues.length}
+        onClose={closeSourceGroupEditor}
+        onSave={() => {
+          void handleSave();
+        }}
+      >
+        <ScopedSourceGroupEditor
+          draft={draft}
+          integrations={integrations}
+          updateDraft={updateDraft}
+          overlayMode={overlayMode}
+          sourceGroupId={overlaySourceGroupId}
+          duplicateGroup={duplicateGroup}
+          moveGroup={moveGroup}
+          deleteGroup={deleteGroup}
+          addRule={addRule}
+          duplicateRule={duplicateRule}
+          moveRule={moveRule}
+          deleteRule={deleteRule}
+        />
+
+        <div className="mt-4">
+          <PolicyEditorMessages
+            validationIssues={validationIssues}
+            editorError={editorError}
+          />
+        </div>
+      </PolicySourceGroupEditorOverlay>
+    </div>
   );
 };

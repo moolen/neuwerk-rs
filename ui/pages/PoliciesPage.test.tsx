@@ -75,7 +75,7 @@ describe('PoliciesPage', () => {
     expect(html).not.toContain('Policy editor card');
   });
 
-  it('anchors the source-group overlay to the policies page main content area', () => {
+  it('anchors the source-group overlay to the full policies page shell', () => {
     const draft = createEmptyPolicyRequest();
     draft.name = 'Terraform policy';
     draft.policy.source_groups = [createEmptySourceGroup('apps')];
@@ -128,8 +128,9 @@ describe('PoliciesPage', () => {
 
     const html = renderToStaticMarkup(<PoliciesPage />);
 
-    expect(html).toContain('data-policies-main-content="true"');
-    expect(html).toContain('data-overlay-anchor="policy-main-content"');
+    expect(html).toContain('data-policies-page-root="true"');
+    expect(html).toContain('data-overlay-anchor="policies-page-root"');
+    expect(html).not.toContain('data-overlay-anchor="policy-main-content"');
   });
 
   it('renders the policy builder when create mode is active without a selected policy', () => {

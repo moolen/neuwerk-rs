@@ -30,12 +30,12 @@ export const PolicySourceGroupEditorOverlay: React.FC<PolicySourceGroupEditorOve
 
   return (
     <div
-      data-overlay-anchor="policy-main-content"
-      className="absolute inset-0 z-20 flex items-start justify-end p-4 sm:p-6"
+      data-overlay-anchor="policies-page-root"
+      className="absolute inset-0 z-20"
     >
       <section
-        data-overlay-surface="inline"
-        className="w-full max-w-5xl overflow-hidden rounded-[1.6rem]"
+        data-overlay-surface="full-page"
+        className="flex h-full w-full flex-col overflow-hidden rounded-[1.6rem]"
         style={{
           background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-glass-strong) 94%, var(--bg) 6%), rgba(255,255,255,0.04))',
           border: '1px solid var(--border-glass)',
@@ -74,7 +74,7 @@ export const PolicySourceGroupEditorOverlay: React.FC<PolicySourceGroupEditorOve
           </button>
         </div>
 
-        <div className="max-h-[calc(100vh-15rem)] overflow-y-auto px-4 py-4 sm:px-5">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">{children}</div>
 
         <div
           className="flex flex-col gap-3 border-t px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5"

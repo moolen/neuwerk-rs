@@ -7,7 +7,7 @@ import { PolicySourceGroupEditorOverlay } from './PolicySourceGroupEditorOverlay
 import { ScopedSourceGroupEditor } from './ScopedSourceGroupEditor';
 
 describe('PolicySourceGroupEditorOverlay', () => {
-  it('renders an inline overlay surface without modal backdrop markup', () => {
+  it('renders a full-page overlay surface without modal backdrop markup', () => {
     const html = renderToStaticMarkup(
       <PolicySourceGroupEditorOverlay
         open={true}
@@ -24,7 +24,9 @@ describe('PolicySourceGroupEditorOverlay', () => {
 
     expect(html).toContain('Editing apps');
     expect(html).toContain('Terraform policy');
-    expect(html).toContain('data-overlay-surface="inline"');
+    expect(html).toContain('data-overlay-surface="full-page"');
+    expect(html).not.toContain('data-overlay-surface="inline"');
+    expect(html).toContain('w-full');
     expect(html).not.toContain('data-overlay-backdrop');
   });
 
