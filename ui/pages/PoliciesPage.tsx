@@ -191,7 +191,7 @@ export const PoliciesPage: React.FC = () => {
   };
 
   return (
-    <div className="relative" data-policies-page-root="true">
+    <div className="relative min-h-full" data-policies-page-root="true">
       <PageLayout
         title="Policies"
         description="Form-driven policy builder with live validation."

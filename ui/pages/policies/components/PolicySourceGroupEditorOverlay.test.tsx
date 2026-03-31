@@ -24,9 +24,10 @@ describe('PolicySourceGroupEditorOverlay', () => {
 
     expect(html).toContain('Editing apps');
     expect(html).toContain('Terraform policy');
-    expect(html).toContain('data-overlay-surface="full-page"');
+    expect(html).toContain(
+      'data-overlay-surface="full-page" class="flex h-full w-full flex-col overflow-hidden rounded-[1.6rem]"',
+    );
     expect(html).not.toContain('data-overlay-surface="inline"');
-    expect(html).toContain('w-full');
     expect(html).not.toContain('data-overlay-backdrop');
   });
 
