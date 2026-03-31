@@ -1,6 +1,6 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { PolicySourceGroup, PolicySourceGroupTelemetry } from '../../../types';
 import { PolicySourceGroupsTable } from './PolicySourceGroupsTable';
@@ -119,5 +119,40 @@ describe('PolicySourceGroupsTable', () => {
 
     expect(html).toContain('overflow-visible');
     expect(html).not.toContain('overflow-hidden');
+  });
+
+  it('renders compact row action labels in the source-group menu', async () => {
+    vi.resetModules();
+    vi.doMock('react', async () => {
+      const actual = await vi.importActual<typeof import('react')>('react');
+      return {
+        ...actual,
+        useState: () => [true, vi.fn()],
+      };
+    });
+
+    try {
+      const { PolicySourceGroupsTable: PolicySourceGroupsTableWithMenuOpen } = await import(
+        './PolicySourceGroupsTable'
+      );
+      const html = renderToStaticMarkup(
+        <PolicySourceGroupsTableWithMenuOpen
+          groups={[buildGroup()]}
+          activeSourceGroupId={null}
+          onCreateGroup={() => undefined}
+          onDeleteGroup={() => undefined}
+          onMoveGroup={() => undefined}
+          onSelectGroup={() => undefined}
+        />
+      );
+
+      expect(html).toContain('Edit');
+      expect(html).toContain('Delete');
+      expect(html).not.toContain('Edit source group');
+      expect(html).not.toContain('Delete source group');
+    } finally {
+      vi.doUnmock('react');
+      vi.resetModules();
+    }
   });
 });

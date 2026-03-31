@@ -238,7 +238,7 @@ export const PolicySourceGroupRow: React.FC<PolicySourceGroupRowProps> = ({
                 style={{ color: 'var(--text)' }}
               >
                 <PencilLine className="h-4 w-4" />
-                Edit source group
+                Edit
               </button>
               <button
                 type="button"
@@ -251,7 +251,7 @@ export const PolicySourceGroupRow: React.FC<PolicySourceGroupRowProps> = ({
                 style={{ color: 'var(--red)' }}
               >
                 <Trash2 className="h-4 w-4" />
-                Delete source group
+                Delete
               </button>
             </div>
           ) : null}
