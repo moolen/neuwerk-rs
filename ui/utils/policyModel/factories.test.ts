@@ -9,6 +9,8 @@ import {
 
 describe('policy model factories', () => {
   it('creates deterministic empty defaults', () => {
+    const sourceGroup = createEmptySourceGroup('group-9');
+
     expect(createEmptyRule('rule-42')).toEqual({
       id: 'rule-42',
       action: 'allow',
@@ -23,13 +25,14 @@ describe('policy model factories', () => {
       },
     });
 
-    expect(createEmptySourceGroup('group-9')).toEqual({
+    expect(sourceGroup).toMatchObject({
       id: 'group-9',
       priority: 0,
       sources: { cidrs: [], ips: [], kubernetes: [] },
       rules: [],
       default_action: 'deny',
     });
+    expect(sourceGroup.client_key).toEqual(expect.any(String));
 
     expect(createEmptyPolicyRequest()).toEqual({
       name: '',

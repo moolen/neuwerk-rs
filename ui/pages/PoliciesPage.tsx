@@ -2,8 +2,9 @@ import React from 'react';
 
 import { PageLayout } from '../components/layout/PageLayout';
 import type { PolicySourceGroupTelemetry } from '../types';
-import { nextNamedId } from '../utils/policyModel';
 import { PoliciesPageHeader } from './policies/components/PoliciesPageHeader';
+import { PolicyEditorActions } from './policies/components/PolicyEditorActions';
+import { PolicyEditorCard } from './policies/components/PolicyEditorCard';
 import { PolicyEditorMessages } from './policies/components/PolicyEditorMessages';
 import { PolicySelector } from './policies/components/PolicySelector';
 import { PolicySourceGroupEditorOverlay } from './policies/components/PolicySourceGroupEditorOverlay';
@@ -36,6 +37,7 @@ export const PoliciesPage: React.FC = () => {
     loading,
     error,
     draft,
+    editorMode,
     editorTargetId,
     overlayMode,
     overlaySourceGroupId,
@@ -49,8 +51,10 @@ export const PoliciesPage: React.FC = () => {
     openSourceGroupEditor,
     closeSourceGroupEditor,
     handleCreate,
+    handleDelete,
     handleSave,
     updateDraft,
+    setDraft,
     addGroup,
     duplicateGroup,
     moveGroup,
@@ -63,14 +67,21 @@ export const PoliciesPage: React.FC = () => {
 
   const selectedPolicy = policies.find((policy) => policy.id === selectedPolicyId) ?? null;
   const selectedPolicyLabel = selectedPolicy?.name?.trim() || selectedPolicy?.id || 'No policy selected';
+  const canDeleteSelectedPolicy =
+    editorMode === 'edit' &&
+    selectedPolicyId !== null &&
+    editorTargetId === selectedPolicyId;
   const selectedSourceGroups =
     editorTargetId === selectedPolicyId
       ? draft.policy.source_groups
       : selectedPolicy?.policy.source_groups ?? [];
   const overlayOpen = overlayMode !== 'closed';
   const activeSourceGroupId = overlayOpen ? overlaySourceGroupId : null;
+  const showCreatePolicyEditor = editorMode === 'create' && selectedPolicyId === null;
   const overlaySourceGroupLabel =
-    selectedSourceGroups.find((group) => group.id === overlaySourceGroupId)?.id ??
+    selectedSourceGroups.find(
+      (group) => (group.client_key ?? group.id) === overlaySourceGroupId,
+    )?.id ??
     overlaySourceGroupId ??
     'source group';
 
@@ -136,12 +147,12 @@ export const PoliciesPage: React.FC = () => {
     void loadEditorForPolicy(policyId);
   };
 
-  const handleOpenSourceGroup = async (groupId: string) => {
+  const handleOpenSourceGroup = async (groupClientKey: string) => {
     if (selectedPolicyId && editorTargetId !== selectedPolicyId) {
       await loadEditorForPolicy(selectedPolicyId);
     }
 
-    openSourceGroupEditor(groupId);
+    openSourceGroupEditor(groupClientKey);
   };
 
   const handleCreateSourceGroup = async () => {
@@ -150,32 +161,31 @@ export const PoliciesPage: React.FC = () => {
       return;
     }
 
-    const nextGroupId = nextNamedId(
-      'group',
-      selectedSourceGroups.map((group) => group.id),
-    );
-
     if (editorTargetId !== selectedPolicyId) {
       await loadEditorForPolicy(selectedPolicyId);
     }
 
     addGroup();
-    openSourceGroupEditor(nextGroupId);
+    openSourceGroupEditor(null);
   };
 
-  const handleMoveSourceGroup = (groupId: string, direction: -1 | 1) => {
+  const handleMoveSourceGroup = (groupClientKey: string, direction: -1 | 1) => {
     if (editorTargetId !== selectedPolicyId) return;
-    const groupIndex = draft.policy.source_groups.findIndex((group) => group.id === groupId);
+    const groupIndex = draft.policy.source_groups.findIndex(
+      (group) => (group.client_key ?? group.id) === groupClientKey,
+    );
     if (groupIndex < 0) return;
     moveGroup(groupIndex, direction);
   };
 
-  const handleDeleteSourceGroup = (groupId: string) => {
+  const handleDeleteSourceGroup = (groupClientKey: string) => {
     if (editorTargetId !== selectedPolicyId) return;
-    const groupIndex = draft.policy.source_groups.findIndex((group) => group.id === groupId);
+    const groupIndex = draft.policy.source_groups.findIndex(
+      (group) => (group.client_key ?? group.id) === groupClientKey,
+    );
     if (groupIndex < 0) return;
     deleteGroup(groupIndex);
-    if (overlaySourceGroupId === groupId) {
+    if (overlaySourceGroupId === groupClientKey) {
       closeSourceGroupEditor();
     }
   };
@@ -184,7 +194,19 @@ export const PoliciesPage: React.FC = () => {
     <PageLayout
       title="Policies"
       description="Form-driven policy builder with live validation."
-      actions={<PoliciesPageHeader onRefresh={loadAll} onCreate={handleCreate} />}
+      actions={
+        <PoliciesPageHeader
+          onRefresh={loadAll}
+          onCreate={handleCreate}
+          onDelete={
+            canDeleteSelectedPolicy
+              ? () => {
+                  void handleDelete(selectedPolicyId);
+                }
+              : undefined
+          }
+        />
+      }
     >
 
       {error && (
@@ -194,50 +216,92 @@ export const PoliciesPage: React.FC = () => {
       )}
 
       <div className="relative space-y-5" data-policies-main-content="true">
-        <PolicySelector
-          policies={policies}
-          selectedPolicyId={selectedPolicyId}
-          onSelect={handleSelectPolicy}
-        />
+        {showCreatePolicyEditor ? (
+          <>
+            <PolicyEditorCard
+              editorMode={editorMode}
+              editorTargetId={editorTargetId}
+              draft={draft}
+              integrations={integrations}
+              setDraft={setDraft}
+              updateDraft={updateDraft}
+              addGroup={addGroup}
+              duplicateGroup={duplicateGroup}
+              moveGroup={moveGroup}
+              deleteGroup={deleteGroup}
+              addRule={addRule}
+              duplicateRule={duplicateRule}
+              moveRule={moveRule}
+              deleteRule={deleteRule}
+              validationIssues={validationIssues}
+              editorError={editorError}
+              onDelete={(policyId) => {
+                void handleDelete(policyId);
+              }}
+            />
 
-        {loading ? (
-          <div
-            className="rounded-[1.5rem] px-4 py-6 text-sm"
-            style={{
-              background: 'var(--bg-glass-subtle)',
-              border: '1px solid var(--border-glass)',
-              color: 'var(--text-muted)',
-            }}
-          >
-            Loading policies...
-          </div>
+            <PolicyEditorActions
+              editorMode={editorMode}
+              editorTargetId={editorTargetId}
+              saving={saving}
+              validationIssueCount={validationIssues.length}
+              onReloadEditor={(policyId) => {
+                void loadEditorForPolicy(policyId);
+              }}
+              onCreate={handleCreate}
+              onSave={() => {
+                void handleSave();
+              }}
+            />
+          </>
         ) : (
-          <PolicySourceGroupsTable
-            groups={selectedSourceGroups}
-            activeSourceGroupId={activeSourceGroupId}
-            telemetryBySourceGroupId={telemetryState.bySourceGroupId}
-            telemetryPartial={telemetryState.partial}
-            telemetryNodesQueried={telemetryState.nodesQueried}
-            telemetryNodesResponded={telemetryState.nodesResponded}
-            telemetryNodeErrorCount={telemetryState.nodeErrorCount}
-            createActionLabel={selectedPolicyId ? 'Add source group' : 'Create first policy'}
-            emptyStateDescription={
-              selectedPolicyId
-                ? 'Create the first source group to start shaping the selected policy.'
-                : 'Create a policy first, then start organizing traffic by source group.'
-            }
-            emptyStateTitle={
-              selectedPolicyId ? 'No source groups configured' : 'No policy selected'
-            }
-            onCreateGroup={() => {
-              void handleCreateSourceGroup();
-            }}
-            onDeleteGroup={handleDeleteSourceGroup}
-            onMoveGroup={handleMoveSourceGroup}
-            onSelectGroup={(groupId) => {
-              void handleOpenSourceGroup(groupId);
-            }}
-          />
+          <>
+            <PolicySelector
+              policies={policies}
+              selectedPolicyId={selectedPolicyId}
+              onSelect={handleSelectPolicy}
+            />
+
+            {loading ? (
+              <div
+                className="rounded-[1.5rem] px-4 py-6 text-sm"
+                style={{
+                  background: 'var(--bg-glass-subtle)',
+                  border: '1px solid var(--border-glass)',
+                  color: 'var(--text-muted)',
+                }}
+              >
+                Loading policies...
+              </div>
+            ) : (
+              <PolicySourceGroupsTable
+                groups={selectedSourceGroups}
+                activeSourceGroupId={activeSourceGroupId}
+                telemetryBySourceGroupId={telemetryState.bySourceGroupId}
+                telemetryPartial={telemetryState.partial}
+                telemetryNodesQueried={telemetryState.nodesQueried}
+                telemetryNodesResponded={telemetryState.nodesResponded}
+                telemetryNodeErrorCount={telemetryState.nodeErrorCount}
+                createActionLabel={selectedPolicyId ? 'Add source group' : 'Create first policy'}
+                emptyStateDescription={
+                  selectedPolicyId
+                    ? 'Create the first source group to start shaping the selected policy.'
+                    : 'Create a policy first, then start organizing traffic by source group.'
+                }
+                emptyStateTitle={
+                  selectedPolicyId ? 'No source groups configured' : 'No policy selected'
+                }
+                onCreateGroup={() => {
+                  void handleCreateSourceGroup();
+                }}
+                onDeleteGroup={handleDeleteSourceGroup}
+                onMoveGroup={handleMoveSourceGroup}
+                onSelectGroup={(groupId) => {
+                  void handleOpenSourceGroup(groupId);
+                }}
+              />
+            )}
+          </>
         )}
 
         <PolicySourceGroupEditorOverlay

@@ -199,8 +199,10 @@ describe('shared page frames', () => {
     expect(html).toContain('Form-driven policy builder with live validation.');
     expect(html).toContain('Refresh');
     expect(html).toContain('New Policy');
-    expect(html).toContain('Policy selector');
-    expect(html).toContain('Source group table');
+    expect(html).toContain('Policy Builder');
+    expect(html).toContain('Decision defaults');
+    expect(html).toContain('Policy scope');
+    expect(html).toContain('Save');
     expect(html).toContain('lg:flex-row');
   });
 });

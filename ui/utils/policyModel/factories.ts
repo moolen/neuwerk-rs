@@ -5,6 +5,15 @@ import type {
 } from '../../types';
 import { createRuleFromTemplate, type PolicyRuleTemplate } from './ruleTemplates';
 
+let nextSourceGroupClientKey = 1;
+
+export function createSourceGroupClientKey(seed = 'group'): string {
+  const normalizedSeed = seed.trim() || 'group';
+  const key = `${normalizedSeed}-${nextSourceGroupClientKey}`;
+  nextSourceGroupClientKey += 1;
+  return key;
+}
+
 export function createEmptyRule(id = 'rule-1'): PolicyRule {
   return {
     id,
@@ -30,6 +39,7 @@ export function createRuleTemplate(
 
 export function createEmptySourceGroup(id = 'group-1'): PolicySourceGroup {
   return {
+    client_key: createSourceGroupClientKey(id),
     id,
     priority: 0,
     sources: {

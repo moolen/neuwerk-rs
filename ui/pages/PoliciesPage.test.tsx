@@ -67,6 +67,8 @@ describe('PoliciesPage', () => {
     const html = renderToStaticMarkup(<PoliciesPage />);
 
     expect(html).toContain('Policy selector');
+    expect(html).toContain('Delete policy');
+    expect(html).not.toContain('Open policy');
     expect(html).toContain('Source Identity');
     expect(html).toContain('L3/L4/DNS/DPI Rules');
     expect(html).not.toContain('Snapshot rail');
@@ -128,5 +130,54 @@ describe('PoliciesPage', () => {
 
     expect(html).toContain('data-policies-main-content="true"');
     expect(html).toContain('data-overlay-anchor="policy-main-content"');
+  });
+
+  it('renders the policy builder when create mode is active without a selected policy', () => {
+    const draft = createEmptyPolicyRequest();
+
+    vi.mocked(usePolicyBuilder).mockReturnValue({
+      state: {
+        policies: [],
+        integrations: [],
+        selectedPolicyId: null,
+        loading: false,
+        error: null,
+        draft,
+        editorMode: 'create',
+        editorTargetId: null,
+        overlayMode: 'closed',
+        overlaySourceGroupId: null,
+        saving: false,
+        editorError: null,
+        validationIssues: [],
+      },
+      actions: {
+        loadAll: async () => undefined,
+        loadEditorForPolicy: async () => undefined,
+        selectPolicy: () => undefined,
+        openSourceGroupEditor: () => undefined,
+        closeSourceGroupEditor: () => undefined,
+        handleCreate: () => undefined,
+        handleDelete: async () => undefined,
+        handleSave: async () => undefined,
+        updateDraft: () => undefined,
+        setDraft: () => draft,
+        addGroup: () => undefined,
+        duplicateGroup: () => undefined,
+        moveGroup: () => undefined,
+        deleteGroup: () => undefined,
+        addRule: () => undefined,
+        duplicateRule: () => undefined,
+        moveRule: () => undefined,
+        deleteRule: () => undefined,
+      },
+    });
+
+    const html = renderToStaticMarkup(<PoliciesPage />);
+
+    expect(html).toContain('Policy Builder');
+    expect(html).toContain('Decision defaults');
+    expect(html).toContain('Policy scope');
+    expect(html).toContain('Save');
   });
 });

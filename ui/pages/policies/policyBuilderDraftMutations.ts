@@ -2,6 +2,7 @@ import type { PolicyCreateRequest, PolicyRule, PolicySourceGroup } from '../../t
 import {
   createEmptyRule,
   createEmptySourceGroup,
+  createSourceGroupClientKey,
   createRuleTemplate,
   nextNamedId,
 } from '../../utils/policyModel';
@@ -30,6 +31,7 @@ export function duplicateGroupInDraft(draft: PolicyCreateRequest, groupIndex: nu
   }
   const existingIds = draft.policy.source_groups.map((entry) => entry.id);
   const copy = cloneGroup(group);
+  copy.client_key = createSourceGroupClientKey(copy.id);
   copy.id = duplicateId(copy.id, existingIds);
   draft.policy.source_groups.splice(groupIndex + 1, 0, copy);
 }

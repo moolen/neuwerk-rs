@@ -29,10 +29,13 @@ describe('policyBuilderDraftMutations', () => {
     const draft = makeDraft();
     addGroupToDraft(draft);
     expect(draft.policy.source_groups.at(-1)?.id).toBe('group-3');
+    expect(draft.policy.source_groups.at(-1)?.client_key).toEqual(expect.any(String));
 
     duplicateGroupInDraft(draft, 0);
     expect(draft.policy.source_groups[1].id).toBe('group-4');
     expect(draft.policy.source_groups[1].rules[0].id).toBe('rule-1');
+    expect(draft.policy.source_groups[1].client_key).toEqual(expect.any(String));
+    expect(draft.policy.source_groups[1].client_key).not.toBe(draft.policy.source_groups[0].client_key);
   });
 
   it('moves and deletes groups', () => {

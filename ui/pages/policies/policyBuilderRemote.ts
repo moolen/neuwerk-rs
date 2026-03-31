@@ -7,7 +7,11 @@ import {
   listPolicies,
   updatePolicy,
 } from '../../services/api';
-import { normalizePolicyRequest, sanitizePolicyRequestForApi } from '../../utils/policyModel';
+import {
+  normalizePolicyConfig,
+  normalizePolicyRequest,
+  sanitizePolicyRequestForApi,
+} from '../../utils/policyModel';
 
 export function sortPoliciesByCreatedAt(items: PolicyRecord[]): PolicyRecord[] {
   return [...items].sort((a, b) => b.created_at.localeCompare(a.created_at));
@@ -23,7 +27,12 @@ export async function loadPolicyBuilderRemote(): Promise<{
 }> {
   const [policies, integrations] = await Promise.all([listPolicies(), listIntegrations()]);
   return {
-    policies: sortPoliciesByCreatedAt(policies),
+    policies: sortPoliciesByCreatedAt(
+      policies.map((record) => ({
+        ...record,
+        policy: normalizePolicyConfig(record.policy),
+      })),
+    ),
     integrations: filterKubernetesIntegrations(integrations),
   };
 }

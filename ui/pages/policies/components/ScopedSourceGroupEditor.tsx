@@ -17,8 +17,10 @@ export const ScopedSourceGroupEditor: React.FC<ScopedSourceGroupEditorProps> = (
   moveRule,
   deleteRule,
 }) => {
-  const groupIndex = sourceGroupId
-    ? draft.policy.source_groups.findIndex((group) => group.id === sourceGroupId)
+  let groupIndex = sourceGroupId
+    ? draft.policy.source_groups.findIndex(
+        (group) => (group.client_key ?? group.id) === sourceGroupId,
+      )
     : draft.policy.source_groups.length - 1;
 
   if (groupIndex < 0) {

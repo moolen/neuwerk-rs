@@ -3,6 +3,7 @@ import type {
   PolicyRuleMatch,
   PolicySourceGroup,
 } from '../../../types';
+import { createSourceGroupClientKey } from '../factories';
 import {
   asNumberList,
   asPolicyAction,
@@ -78,6 +79,7 @@ export function normalizeSourceGroup(value: unknown, index: number): PolicySourc
   const defaultAction = asString(value.default_action);
 
   return {
+    client_key: asString(value.client_key) ?? createSourceGroupClientKey(asString(value.id) ?? `group-${index + 1}`),
     id: asString(value.id) ?? `group-${index + 1}`,
     ...(typeof priority === 'number' ? { priority } : {}),
     sources: normalizeSources(value.sources),

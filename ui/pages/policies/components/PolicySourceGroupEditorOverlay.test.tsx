@@ -34,13 +34,15 @@ describe('PolicySourceGroupEditorOverlay', () => {
       createEmptySourceGroup('apps'),
       createEmptySourceGroup('db'),
     ];
+    const sourceGroupKey = draft.policy.source_groups[0].client_key ?? draft.policy.source_groups[0].id;
 
     const html = renderToStaticMarkup(
       <ScopedSourceGroupEditor
-        sourceGroupId="apps"
+        sourceGroupId={sourceGroupKey}
         draft={draft}
         integrations={[]}
         updateDraft={() => undefined}
+        overlayMode="edit-group"
         duplicateGroup={() => undefined}
         moveGroup={() => undefined}
         deleteGroup={() => undefined}
@@ -54,5 +56,36 @@ describe('PolicySourceGroupEditorOverlay', () => {
     expect(html).toContain('apps');
     expect(html).not.toContain('db');
     expect(html).toContain('Rule stack');
+  });
+
+  it('keeps rendering the edited source group after its name changes', () => {
+    const draft = createEmptyPolicyRequest();
+    draft.policy.source_groups = [
+      createEmptySourceGroup('apps'),
+      createEmptySourceGroup('db'),
+    ];
+    const sourceGroupKey = draft.policy.source_groups[0].client_key ?? draft.policy.source_groups[0].id;
+
+    draft.policy.source_groups[0].id = 'apps-renamed';
+
+    const html = renderToStaticMarkup(
+      <ScopedSourceGroupEditor
+        sourceGroupId={sourceGroupKey}
+        draft={draft}
+        integrations={[]}
+        updateDraft={() => undefined}
+        overlayMode="edit-group"
+        duplicateGroup={() => undefined}
+        moveGroup={() => undefined}
+        deleteGroup={() => undefined}
+        addRule={() => undefined}
+        duplicateRule={() => undefined}
+        moveRule={() => undefined}
+        deleteRule={() => undefined}
+      />
+    );
+
+    expect(html).toContain('apps-renamed');
+    expect(html).not.toContain('The selected source group is no longer available.');
   });
 });

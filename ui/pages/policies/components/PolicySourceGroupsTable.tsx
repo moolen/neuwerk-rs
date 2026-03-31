@@ -111,10 +111,10 @@ export const PolicySourceGroupsTable: React.FC<PolicySourceGroupsTableProps> = (
         <div>
           {groups.map((group, groupIndex) => (
             <PolicySourceGroupRow
-              key={`${group.id}-${groupIndex}`}
+              key={group.client_key ?? `${group.id}-${groupIndex}`}
               group={group}
               groupIndex={groupIndex}
-              isActive={activeSourceGroupId === group.id}
+              isActive={activeSourceGroupId === (group.client_key ?? group.id)}
               telemetry={telemetryBySourceGroupId[group.id]}
               onDeleteGroup={onDeleteGroup}
               onMoveGroup={onMoveGroup}

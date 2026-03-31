@@ -45,7 +45,7 @@ export const SourceGroupsSection: React.FC<PolicyBuilderFormSharedProps> = ({
 
     {draft.policy.source_groups.map((group, groupIndex) => (
       <SourceGroupCard
-        key={`${group.id}-${groupIndex}`}
+        key={group.client_key ?? `${group.id}-${groupIndex}`}
         group={group}
         groupIndex={groupIndex}
         integrations={integrations}

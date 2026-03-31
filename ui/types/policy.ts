@@ -13,6 +13,7 @@ export interface PolicyConfig {
 }
 
 export interface PolicySourceGroup {
+  client_key?: string;
   id: string;
   priority?: number;
   sources: PolicySources;

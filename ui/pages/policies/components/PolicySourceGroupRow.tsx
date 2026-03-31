@@ -63,6 +63,7 @@ export const PolicySourceGroupRow: React.FC<PolicySourceGroupRowProps> = ({
   onSelectGroup,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const groupKey = group.client_key ?? group.id;
   const identity = summarizeSourceIdentity(group);
   const rulePills = summarizeRulePills(group);
   const action = summarizeGroupAction(group);
@@ -95,7 +96,7 @@ export const PolicySourceGroupRow: React.FC<PolicySourceGroupRowProps> = ({
   return (
     <div
       className="grid gap-3 px-4 py-4 lg:grid-cols-[minmax(0,1.65fr)_minmax(0,1.45fr)_8rem_10rem_8rem] lg:items-center"
-      onClick={() => onSelectGroup(group.id)}
+      onClick={() => onSelectGroup(groupKey)}
       style={{
         cursor: 'pointer',
         background: isActive
@@ -181,7 +182,7 @@ export const PolicySourceGroupRow: React.FC<PolicySourceGroupRowProps> = ({
             type="button"
             onClick={(event) => {
               event.stopPropagation();
-              onMoveGroup(group.id, -1);
+              onMoveGroup(groupKey, -1);
             }}
             className="rounded-lg p-2"
             style={{ color: 'var(--text-muted)' }}
@@ -193,7 +194,7 @@ export const PolicySourceGroupRow: React.FC<PolicySourceGroupRowProps> = ({
             type="button"
             onClick={(event) => {
               event.stopPropagation();
-              onMoveGroup(group.id, 1);
+              onMoveGroup(groupKey, 1);
             }}
             className="rounded-lg p-2"
             style={{ color: 'var(--text-muted)' }}
@@ -231,7 +232,7 @@ export const PolicySourceGroupRow: React.FC<PolicySourceGroupRowProps> = ({
                 onClick={(event) => {
                   event.stopPropagation();
                   setMenuOpen(false);
-                  onSelectGroup(group.id);
+                  onSelectGroup(groupKey);
                 }}
                 className="flex w-full items-center gap-2 rounded-[0.8rem] px-3 py-2 text-sm"
                 style={{ color: 'var(--text)' }}
@@ -244,7 +245,7 @@ export const PolicySourceGroupRow: React.FC<PolicySourceGroupRowProps> = ({
                 onClick={(event) => {
                   event.stopPropagation();
                   setMenuOpen(false);
-                  onDeleteGroup(group.id);
+                  onDeleteGroup(groupKey);
                 }}
                 className="flex w-full items-center gap-2 rounded-[0.8rem] px-3 py-2 text-sm"
                 style={{ color: 'var(--red)' }}

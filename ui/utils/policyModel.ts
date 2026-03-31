@@ -3,6 +3,7 @@ import {
   createEmptyPolicyRequest,
   createEmptyRule,
   createEmptySourceGroup,
+  createSourceGroupClientKey,
   createRuleTemplate,
 } from './policyModel/factories';
 import { nextNamedId } from './policyModel/ids';
@@ -20,6 +21,7 @@ export {
   createEmptyPolicyRequest,
   createEmptyRule,
   createEmptySourceGroup,
+  createSourceGroupClientKey,
   createRuleTemplate,
   nextNamedId,
   normalizePolicyConfig,
