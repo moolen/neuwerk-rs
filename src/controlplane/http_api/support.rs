@@ -14,6 +14,8 @@ use tar::{Archive, Builder, Header};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+use crate::controlplane::cluster::types::{Node, NodeId};
+
 use super::{error_response, maybe_proxy, ApiState, AUTHORIZATION, COOKIE};
 
 const CLUSTER_SYSDUMP_FANOUT_HEADER: &str = "x-neuwerk-cluster-sysdump-fanout";
@@ -129,12 +131,7 @@ pub(super) async fn cluster_sysdump(
     };
 
     let metrics = cluster.raft.metrics().borrow().clone();
-    let leader_node_id = metrics.id.to_string();
-    let voter_ids = metrics
-        .membership_config
-        .membership()
-        .voter_ids()
-        .collect::<std::collections::BTreeSet<_>>();
+    let (leader_node_id, roles) = cluster_sysdump_roles_from_metrics(&metrics);
     let now = OffsetDateTime::now_utc();
 
     let mut nodes = Vec::new();
@@ -143,13 +140,10 @@ pub(super) async fn cluster_sysdump(
 
     for (node_id, node) in metrics.membership_config.membership().nodes() {
         let node_id_string = node_id.to_string();
-        let role = if *node_id == metrics.id {
-            "leader".to_string()
-        } else if voter_ids.contains(node_id) {
-            "follower".to_string()
-        } else {
-            "learner".to_string()
-        };
+        let role = roles
+            .get(node_id)
+            .cloned()
+            .unwrap_or_else(|| "follower".to_string());
 
         let bundle = if *node_id == metrics.id {
             match crate::support::sysdump::build_local_sysdump_archive().await {
@@ -470,4 +464,67 @@ fn extract_sysdump_json<T: for<'de> Deserialize<'de>>(
         return serde_json::from_slice(&bytes).ok();
     }
     None
+}
+
+fn cluster_sysdump_roles_from_metrics(
+    metrics: &openraft::RaftMetrics<NodeId, Node>,
+) -> (String, std::collections::BTreeMap<NodeId, String>) {
+    let leader_id = metrics.current_leader.unwrap_or(metrics.id);
+    let voter_ids = metrics
+        .membership_config
+        .membership()
+        .voter_ids()
+        .collect::<std::collections::BTreeSet<_>>();
+    let roles = metrics
+        .membership_config
+        .membership()
+        .nodes()
+        .map(|(node_id, _)| {
+            let role = if *node_id == leader_id {
+                "leader"
+            } else if voter_ids.contains(node_id) {
+                "follower"
+            } else {
+                "learner"
+            };
+            (*node_id, role.to_string())
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    (leader_id.to_string(), roles)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
+
+    use openraft::{BasicNode, Membership, RaftMetrics, StoredMembership};
+
+    use super::*;
+
+    fn test_metrics() -> RaftMetrics<u128, BasicNode> {
+        let mut metrics = RaftMetrics::new_initial(2);
+        let mut nodes = BTreeMap::new();
+        nodes.insert(1, BasicNode::new("10.0.0.1:9600"));
+        nodes.insert(2, BasicNode::new("10.0.0.2:9600"));
+        nodes.insert(3, BasicNode::new("10.0.0.3:9600"));
+        metrics.current_leader = Some(1);
+        metrics.membership_config = Arc::new(StoredMembership::new(
+            None,
+            Membership::new(vec![BTreeSet::from([1, 2])], nodes),
+        ));
+        metrics
+    }
+
+    #[test]
+    fn cluster_sysdump_uses_current_leader_for_roles() {
+        let metrics = test_metrics();
+
+        let (leader_node_id, roles) = cluster_sysdump_roles_from_metrics(&metrics);
+
+        assert_eq!(leader_node_id, "1");
+        assert_eq!(roles.get(&1).map(String::as_str), Some("leader"));
+        assert_eq!(roles.get(&2).map(String::as_str), Some("follower"));
+        assert_eq!(roles.get(&3).map(String::as_str), Some("learner"));
+    }
 }

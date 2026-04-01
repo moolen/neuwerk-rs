@@ -190,7 +190,7 @@ impl ReadinessState {
         };
         let metrics = raft.metrics();
         let snapshot = metrics.borrow().clone();
-        snapshot.current_leader.is_some()
+        cluster_membership_ready_from_metrics(&snapshot, raft.config().election_timeout_min)
     }
 
     fn policy_replication_ready(&self) -> bool {
@@ -210,13 +210,50 @@ impl ReadinessState {
     }
 }
 
+fn cluster_membership_ready_from_metrics(
+    metrics: &openraft::RaftMetrics<
+        crate::controlplane::cluster::types::NodeId,
+        crate::controlplane::cluster::types::Node,
+    >,
+    election_timeout_min_ms: u64,
+) -> bool {
+    if metrics.running_state.is_err() {
+        return false;
+    }
+
+    let Some(leader_id) = metrics.current_leader else {
+        return false;
+    };
+    if metrics
+        .membership_config
+        .membership()
+        .get_node(&leader_id)
+        .is_none()
+    {
+        return false;
+    }
+
+    match metrics.state {
+        openraft::ServerState::Leader => {
+            leader_id == metrics.id
+                && metrics
+                    .millis_since_quorum_ack
+                    .is_some_and(|ms| ms <= election_timeout_min_ms)
+        }
+        openraft::ServerState::Follower | openraft::ServerState::Learner => leader_id != metrics.id,
+        openraft::ServerState::Candidate | openraft::ServerState::Shutdown => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::net::Ipv4Addr;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use crate::controlplane::cluster;
@@ -228,7 +265,7 @@ mod tests {
     use crate::dataplane::DataplaneConfig;
     use openraft::entry::EntryPayload;
     use openraft::storage::RaftStateMachine;
-    use openraft::RaftMetrics;
+    use openraft::{BasicNode, Membership, RaftMetrics, ServerState, StoredMembership};
     use openraft::{Entry, LogId};
     use tempfile::TempDir;
     use uuid::Uuid;
@@ -559,5 +596,45 @@ mod tests {
         }
 
         surviving_runtime.shutdown().await;
+    }
+
+    fn test_cluster_metrics() -> RaftMetrics<u128, BasicNode> {
+        let mut metrics = RaftMetrics::new_initial(2);
+        let mut nodes = BTreeMap::new();
+        nodes.insert(1, BasicNode::new("10.0.0.1:9600"));
+        nodes.insert(2, BasicNode::new("10.0.0.2:9600"));
+        metrics.membership_config = Arc::new(StoredMembership::new(
+            None,
+            Membership::new(vec![BTreeSet::from([1, 2])], nodes),
+        ));
+        metrics
+    }
+
+    #[test]
+    fn cluster_membership_requires_non_candidate_with_known_leader() {
+        let mut metrics = test_cluster_metrics();
+        metrics.state = ServerState::Candidate;
+        metrics.current_leader = Some(1);
+
+        assert!(!cluster_membership_ready_from_metrics(&metrics, 2_000));
+    }
+
+    #[test]
+    fn cluster_membership_requires_recent_quorum_ack_for_leader() {
+        let mut metrics = test_cluster_metrics();
+        metrics.state = ServerState::Leader;
+        metrics.current_leader = Some(2);
+        metrics.millis_since_quorum_ack = Some(2_500);
+
+        assert!(!cluster_membership_ready_from_metrics(&metrics, 2_000));
+    }
+
+    #[test]
+    fn cluster_membership_accepts_follower_with_known_member_leader() {
+        let mut metrics = test_cluster_metrics();
+        metrics.state = ServerState::Follower;
+        metrics.current_leader = Some(1);
+
+        assert!(cluster_membership_ready_from_metrics(&metrics, 2_000));
     }
 }

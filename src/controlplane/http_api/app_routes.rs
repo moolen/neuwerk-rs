@@ -8,6 +8,7 @@ use mime_guess::MimeGuess;
 use serde_json::json;
 use utoipa::ToSchema;
 
+use crate::controlplane::cluster::types::{Node, NodeId};
 use crate::controlplane::metrics::{ClusterNodeCatchup, StatsSnapshot};
 use crate::controlplane::wiretap::DnsCacheEntry;
 
@@ -130,6 +131,17 @@ pub(super) async fn stats_handler(State(state): State<ApiState>, request: Reques
 
 fn enrich_cluster_stats(snapshot: &mut StatsSnapshot, cluster: &HttpApiCluster) {
     let raft_metrics = cluster.raft.metrics().borrow().clone();
+    let (follower_count, followers_caught_up, nodes) = cluster_catchup_from_metrics(&raft_metrics);
+    snapshot.cluster.node_count = nodes.len() as u64;
+    snapshot.cluster.follower_count = follower_count;
+    snapshot.cluster.followers_caught_up = followers_caught_up;
+    snapshot.cluster.nodes = nodes;
+}
+
+fn cluster_catchup_from_metrics(
+    raft_metrics: &openraft::RaftMetrics<NodeId, Node>,
+) -> (u64, u64, Vec<ClusterNodeCatchup>) {
+    let leader_id = raft_metrics.current_leader.unwrap_or(raft_metrics.id);
     let leader_last_log_index = raft_metrics.last_log_index.unwrap_or(0);
     let replication = raft_metrics.replication.clone();
     let mut follower_count = 0u64;
@@ -137,7 +149,7 @@ fn enrich_cluster_stats(snapshot: &mut StatsSnapshot, cluster: &HttpApiCluster) 
     let mut nodes = Vec::new();
 
     for (node_id, node) in raft_metrics.membership_config.membership().nodes() {
-        let is_leader = *node_id == raft_metrics.id;
+        let is_leader = *node_id == leader_id;
         let (matched_index, lag_entries, caught_up) = if is_leader {
             (Some(leader_last_log_index), Some(0), true)
         } else {
@@ -172,8 +184,74 @@ fn enrich_cluster_stats(snapshot: &mut StatsSnapshot, cluster: &HttpApiCluster) 
         (a.role != "leader", a.node_id.as_str()).cmp(&(b.role != "leader", b.node_id.as_str()))
     });
 
-    snapshot.cluster.node_count = nodes.len() as u64;
-    snapshot.cluster.follower_count = follower_count;
-    snapshot.cluster.followers_caught_up = followers_caught_up;
-    snapshot.cluster.nodes = nodes;
+    (follower_count, followers_caught_up, nodes)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
+
+    use openraft::{BasicNode, Membership, RaftMetrics, StoredMembership};
+
+    use super::*;
+
+    fn test_metrics() -> RaftMetrics<u128, BasicNode> {
+        let mut metrics = RaftMetrics::new_initial(2);
+        let mut nodes = BTreeMap::new();
+        nodes.insert(1, BasicNode::new("10.0.0.1:9600"));
+        nodes.insert(2, BasicNode::new("10.0.0.2:9600"));
+        nodes.insert(3, BasicNode::new("10.0.0.3:9600"));
+        metrics.current_leader = Some(1);
+        metrics.last_log_index = Some(10);
+        metrics.membership_config = Arc::new(StoredMembership::new(
+            None,
+            Membership::new(vec![BTreeSet::from([1, 2, 3])], nodes),
+        ));
+
+        let mut replication = BTreeMap::new();
+        replication.insert(
+            2,
+            Some(openraft::LogId::new(
+                openraft::CommittedLeaderId::new(1, 1),
+                8,
+            )),
+        );
+        replication.insert(
+            3,
+            Some(openraft::LogId::new(
+                openraft::CommittedLeaderId::new(1, 1),
+                10,
+            )),
+        );
+        metrics.replication = Some(replication);
+        metrics
+    }
+
+    #[test]
+    fn cluster_catchup_uses_current_leader_for_roles_and_lag() {
+        let mut snapshot = crate::controlplane::metrics::Metrics::new()
+            .unwrap()
+            .snapshot();
+        let metrics = test_metrics();
+
+        let (follower_count, followers_caught_up, nodes) = cluster_catchup_from_metrics(&metrics);
+        snapshot.cluster.follower_count = follower_count;
+        snapshot.cluster.followers_caught_up = followers_caught_up;
+        snapshot.cluster.nodes = nodes;
+
+        assert_eq!(snapshot.cluster.follower_count, 2);
+        assert_eq!(snapshot.cluster.followers_caught_up, 1);
+        assert_eq!(snapshot.cluster.nodes[0].node_id, "1");
+        assert_eq!(snapshot.cluster.nodes[0].role, "leader");
+        assert_eq!(snapshot.cluster.nodes[0].matched_index, Some(10));
+        assert_eq!(snapshot.cluster.nodes[1].node_id, "2");
+        assert_eq!(snapshot.cluster.nodes[1].role, "follower");
+        assert_eq!(snapshot.cluster.nodes[1].lag_entries, Some(2));
+        assert!(!snapshot.cluster.nodes[1].caught_up);
+        assert_eq!(snapshot.cluster.nodes[2].node_id, "3");
+        assert_eq!(snapshot.cluster.nodes[2].role, "follower");
+        assert_eq!(snapshot.cluster.nodes[2].lag_entries, Some(0));
+        assert!(snapshot.cluster.nodes[2].caught_up);
+    }
 }
