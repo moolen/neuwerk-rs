@@ -53,6 +53,22 @@ function actionPillStyle(action: ReturnType<typeof summarizeGroupAction>): React
   };
 }
 
+function modePillStyle(mode: PolicySourceGroup['mode']): React.CSSProperties {
+  if (mode === 'audit') {
+    return {
+      background: 'var(--amber-bg)',
+      border: '1px solid var(--amber-border)',
+      color: 'var(--amber)',
+    };
+  }
+
+  return {
+    background: 'var(--accent-light)',
+    border: '1px solid rgba(79,110,247,0.3)',
+    color: 'var(--accent)',
+  };
+}
+
 export const PolicySourceGroupRow: React.FC<PolicySourceGroupRowProps> = ({
   group,
   groupIndex,
@@ -67,6 +83,7 @@ export const PolicySourceGroupRow: React.FC<PolicySourceGroupRowProps> = ({
   const identity = summarizeSourceIdentity(group);
   const rulePills = summarizeRulePills(group);
   const action = summarizeGroupAction(group);
+  const mode = group.mode ?? 'enforce';
   const hitsTrend = formatHitsTrend(telemetry);
 
   let trendIcon = <Minus className="h-3 w-3" />;
@@ -154,12 +171,18 @@ export const PolicySourceGroupRow: React.FC<PolicySourceGroupRowProps> = ({
         )}
       </div>
 
-      <div>
+      <div className="flex flex-wrap items-center gap-1.5">
         <span
           className="inline-flex rounded-full px-2.5 py-1 text-xs font-semibold"
           style={actionPillStyle(action)}
         >
           {action.charAt(0).toUpperCase() + action.slice(1)}
+        </span>
+        <span
+          className="inline-flex rounded-full px-2.5 py-1 text-xs font-medium"
+          style={modePillStyle(mode)}
+        >
+          {mode === 'audit' ? 'Audit' : 'Enforce'}
         </span>
       </div>
 

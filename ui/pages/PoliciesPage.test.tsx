@@ -14,6 +14,7 @@ describe('PoliciesPage', () => {
   beforeEach(() => {
     const draft = createEmptyPolicyRequest();
     draft.policy.source_groups = [createEmptySourceGroup('apps')];
+    draft.policy.source_groups[0].mode = 'audit';
 
     vi.mocked(usePolicyBuilder).mockReturnValue({
       state: {
@@ -69,6 +70,7 @@ describe('PoliciesPage', () => {
     expect(html).not.toContain('Open policy');
     expect(html).toContain('Source Identity');
     expect(html).toContain('L3/L4/DNS/DPI Rules');
+    expect(html).toContain('Audit');
     expect(html).not.toContain('Snapshot rail');
     expect(html).toContain('Save');
   });

@@ -9,6 +9,7 @@ function buildGroup(overrides: Partial<PolicySourceGroup> = {}): PolicySourceGro
   return {
     id: 'apps',
     priority: 0,
+    mode: 'audit',
     default_action: 'allow',
     sources: {
       cidrs: ['10.0.0.0/24'],
@@ -64,6 +65,7 @@ describe('PolicySourceGroupsTable', () => {
     expect(html).toContain('192.168.1.10');
     expect(html).toContain('TCP:443');
     expect(html).toContain('Allow');
+    expect(html).toContain('Audit');
     expect(html).toContain('120 hits');
     expect(html).toContain('+20%');
   });
