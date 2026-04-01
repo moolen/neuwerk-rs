@@ -392,7 +392,17 @@ export function createMockState(now = Date.now()): MockState {
         session_ttl_secs: 28_800,
       },
     ],
-    policies: [],
+    policies: [
+      {
+        id: 'singleton',
+        created_at: new Date(now).toISOString(),
+        mode: 'enforce',
+        policy: {
+          default_policy: 'deny',
+          source_groups: [],
+        },
+      },
+    ],
     integrations: [],
     serviceAccounts: [],
     serviceAccountTokens: {},

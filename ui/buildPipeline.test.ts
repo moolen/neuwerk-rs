@@ -1,21 +1,21 @@
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, test } from 'vitest';
 
 const uiDir = new URL('.', import.meta.url).pathname;
-const distAssetsDir = join(uiDir, 'dist', 'assets');
-const distHtmlPath = join(uiDir, 'dist', 'index.html');
 
-function buildUi() {
-  execFileSync('npm', ['run', 'build'], {
+function buildUi(outDir: string) {
+  execFileSync('npm', ['run', 'build', '--', '--outDir', outDir, '--emptyOutDir'], {
     cwd: uiDir,
     stdio: 'pipe',
   });
 }
 
-function readBundledCss(): string {
+function readBundledCss(outDir: string): string {
+  const distAssetsDir = join(outDir, 'assets');
   const cssFile = readdirSync(distAssetsDir).find((name) => name.endsWith('.css'));
   if (!cssFile) {
     throw new Error('expected a bundled CSS asset');
@@ -25,13 +25,19 @@ function readBundledCss(): string {
 
 describe('UI build pipeline', () => {
   test('emits local utility CSS required by the layout shell', () => {
-    buildUi();
+    const outDir = mkdtempSync(join(tmpdir(), 'neuwerk-ui-build-'));
 
-    const html = readFileSync(distHtmlPath, 'utf8');
-    const css = readBundledCss();
+    try {
+      buildUi(outDir);
 
-    expect(html).toContain('/assets/');
-    expect(css).toMatch(/\.flex\{display:flex/);
-    expect(css).toMatch(/\.h-screen\{height:100vh/);
+      const html = readFileSync(join(outDir, 'index.html'), 'utf8');
+      const css = readBundledCss(outDir);
+
+      expect(html).toContain('/assets/');
+      expect(css).toMatch(/\.flex\{display:flex/);
+      expect(css).toMatch(/\.h-screen\{height:100vh/);
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
   }, 20000);
 });

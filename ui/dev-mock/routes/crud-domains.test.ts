@@ -60,6 +60,28 @@ function createTestMockServer() {
 }
 
 describe("dev mock CRUD domain routes", () => {
+  it("bootstraps a singleton policy for fresh reads", async () => {
+    const server = createTestMockServer();
+
+    const fetched = await server.requestJson<{
+      default_policy?: string;
+      source_groups: Array<{ id: string }>;
+    }>("GET", "/api/v1/policy");
+    const telemetry = await server.requestJson<{
+      items: unknown[];
+      partial: boolean;
+    }>("GET", "/api/v1/policy/telemetry");
+
+    expect(fetched).toEqual({
+      default_policy: "deny",
+      source_groups: [],
+    });
+    expect(telemetry).toMatchObject({
+      items: [],
+      partial: false,
+    });
+  });
+
   it("persists singleton policy updates in memory", async () => {
     const server = createTestMockServer();
 
