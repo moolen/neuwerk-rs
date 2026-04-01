@@ -14,7 +14,6 @@ describe('policy model factories', () => {
     expect(createEmptyRule('rule-42')).toEqual({
       id: 'rule-42',
       action: 'allow',
-      mode: 'enforce',
       match: {
         dst_cidrs: [],
         dst_ips: [],
