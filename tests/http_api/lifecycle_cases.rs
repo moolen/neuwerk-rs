@@ -51,7 +51,9 @@ async fn http_api_local_lifecycle() {
     wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(2))
         .await
         .unwrap();
-    wait_for_tcp(bind_addr, Duration::from_secs(2)).await.unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
     let auth_path = api_auth::local_keyset_path(&tls_dir);
     wait_for_file(&auth_path, Duration::from_secs(2))
         .await
@@ -82,6 +84,7 @@ async fn http_api_local_lifecycle() {
             "source_groups": [
                 {
                     "id": "local",
+                    "mode": "enforce",
                     "sources": { "ips": ["10.0.0.5"] },
                     "rules": [
                         {
@@ -106,6 +109,12 @@ async fn http_api_local_lifecycle() {
     assert!(resp.status().is_success());
     let record: PolicyRecord = resp.json().await.unwrap();
     assert_eq!(record.mode, PolicyMode::Enforce);
+    let stored = local_store_check
+        .read_state()
+        .unwrap()
+        .expect("stored singleton after create");
+    assert_eq!(stored.record().id, record.id);
+    assert_eq!(stored.record().mode, PolicyMode::Enforce);
 
     let resp = client
         .get(format!("https://{bind_addr}/api/v1/policies"))
@@ -126,6 +135,7 @@ async fn http_api_local_lifecycle() {
             "source_groups": [
                 {
                     "id": "local",
+                    "mode": "enforce",
                     "sources": { "ips": ["10.0.0.5"] },
                     "rules": [
                         {
@@ -151,6 +161,12 @@ async fn http_api_local_lifecycle() {
     assert_eq!(updated.mode, PolicyMode::Disabled);
     assert_eq!(local_store_check.active_id().unwrap(), None);
     assert_eq!(policy_store_check.active_policy_id(), None);
+    let stored = local_store_check
+        .read_state()
+        .unwrap()
+        .expect("stored singleton after disable");
+    assert_eq!(stored.record().id, updated.id);
+    assert_eq!(stored.record().mode, PolicyMode::Disabled);
 
     let missing = client
         .get(format!("https://{bind_addr}/api/v1/policies"))
@@ -228,7 +244,9 @@ async fn http_api_policy_by_name_upsert_reuses_record_id_and_rejects_duplicates(
     wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(2))
         .await
         .unwrap();
-    wait_for_tcp(bind_addr, Duration::from_secs(2)).await.unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
     let auth_path = api_auth::local_keyset_path(&tls_dir);
     wait_for_file(&auth_path, Duration::from_secs(2))
         .await
@@ -247,6 +265,7 @@ async fn http_api_policy_by_name_upsert_reuses_record_id_and_rejects_duplicates(
             "source_groups": [
                 {
                     "id": "local",
+                    "mode": "enforce",
                     "sources": { "ips": ["10.0.0.5"] },
                     "rules": [
                         {
@@ -274,6 +293,12 @@ async fn http_api_policy_by_name_upsert_reuses_record_id_and_rejects_duplicates(
     assert_eq!(created.name.as_deref(), Some("prod-default"));
     assert_eq!(created.mode, PolicyMode::Enforce);
     assert_eq!(local_store_check.active_id().unwrap(), Some(created.id));
+    let stored = local_store_check
+        .read_state()
+        .unwrap()
+        .expect("stored singleton after create");
+    assert_eq!(stored.record().id, created.id);
+    assert_eq!(stored.record().name.as_deref(), Some("prod-default"));
 
     let fetch = client
         .get(format!(
@@ -391,7 +416,9 @@ async fn http_api_integrations_lifecycle_and_policy_ref_validation() {
     wait_for_file(&tls_dir.join("ca.crt"), Duration::from_secs(2))
         .await
         .unwrap();
-    wait_for_tcp(bind_addr, Duration::from_secs(2)).await.unwrap();
+    wait_for_tcp(bind_addr, Duration::from_secs(2))
+        .await
+        .unwrap();
     let auth_path = api_auth::local_keyset_path(&tls_dir);
     wait_for_file(&auth_path, Duration::from_secs(2))
         .await
@@ -506,6 +533,7 @@ async fn http_api_integrations_lifecycle_and_policy_ref_validation() {
             "source_groups": [
                 {
                     "id": "pods",
+                    "mode": "enforce",
                     "sources": {
                         "kubernetes": [
                             {
@@ -546,6 +574,7 @@ async fn http_api_integrations_lifecycle_and_policy_ref_validation() {
             "source_groups": [
                 {
                     "id": "pods",
+                    "mode": "enforce",
                     "sources": {
                         "kubernetes": [
                             {
@@ -588,6 +617,7 @@ async fn http_api_integrations_lifecycle_and_policy_ref_validation() {
             "source_groups": [
                 {
                     "id": "pods",
+                    "mode": "enforce",
                     "sources": {
                         "kubernetes": [
                             {
@@ -666,6 +696,7 @@ async fn http_api_shutdown_transitions_readiness_closes_listeners_and_allows_res
 default_policy: deny
 source_groups:
   - id: local
+    mode: enforce
     sources:
       ips:
         - 10.0.0.5

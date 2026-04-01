@@ -538,28 +538,26 @@ async fn write_policy_and_apply(
         wait_for_policy_activation(&state.policy_store, state.readiness.as_ref(), generation)
             .await
             .map_err(|err| error_response(StatusCode::SERVICE_UNAVAILABLE, err))?;
-    } else if let Ok(active_id) = state.local_store.active_id() {
-        if active_id == Some(record.id) {
-            if let Err(err) = state.local_store.set_active(None) {
-                return Err(error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    err.to_string(),
-                ));
-            }
-            let generation = state
-                .policy_store
-                .rebuild(
-                    Vec::new(),
-                    crate::controlplane::policy_config::DnsPolicy::new(Vec::new()),
-                    None,
-                    EnforcementMode::Enforce,
-                )
-                .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err))?;
-            state.policy_store.set_active_policy_id(None);
-            wait_for_policy_activation(&state.policy_store, state.readiness.as_ref(), generation)
-                .await
-                .map_err(|err| error_response(StatusCode::SERVICE_UNAVAILABLE, err))?;
+    } else {
+        if let Err(err) = state.local_store.set_active(None) {
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                err.to_string(),
+            ));
         }
+        let generation = state
+            .policy_store
+            .rebuild(
+                Vec::new(),
+                crate::controlplane::policy_config::DnsPolicy::new(Vec::new()),
+                None,
+                EnforcementMode::Enforce,
+            )
+            .map_err(|err| error_response(StatusCode::INTERNAL_SERVER_ERROR, err))?;
+        state.policy_store.set_active_policy_id(None);
+        wait_for_policy_activation(&state.policy_store, state.readiness.as_ref(), generation)
+            .await
+            .map_err(|err| error_response(StatusCode::SERVICE_UNAVAILABLE, err))?;
     }
 
     if let Some(cluster) = &state.cluster {

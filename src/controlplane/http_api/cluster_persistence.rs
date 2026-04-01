@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::controlplane::policy_repository::{singleton_policy_id, StoredPolicy, POLICY_STATE_KEY};
+use crate::controlplane::policy_repository::{StoredPolicy, POLICY_STATE_KEY};
 
 pub(super) async fn persist_cluster_policy(
     cluster: &HttpApiCluster,
@@ -15,9 +15,7 @@ async fn persist_cluster_policy_with_step_delay(
     record: &PolicyRecord,
     step_delay: Option<Duration>,
 ) -> Result<(), String> {
-    let state = StoredPolicy {
-        policy: record.policy.clone(),
-    };
+    let state = StoredPolicy::from_record(record);
     let state_bytes = serde_json::to_vec(&state).map_err(|err| err.to_string())?;
     let commands = vec![ClusterCommand::Put {
         key: POLICY_STATE_KEY.to_vec(),
@@ -62,14 +60,9 @@ pub(super) fn read_cluster_index(store: &ClusterStore) -> Result<PolicyIndex, St
     let raw = store.get_state_value(POLICY_STATE_KEY)?;
     match raw {
         Some(raw) => {
-            let _: StoredPolicy = serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
+            let state: StoredPolicy = serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
             Ok(PolicyIndex {
-                policies: vec![PolicyMeta {
-                    id: singleton_policy_id(),
-                    created_at: "1970-01-01T00:00:00Z".to_string(),
-                    name: None,
-                    mode: crate::controlplane::policy_config::PolicyMode::Enforce,
-                }],
+                policies: vec![PolicyMeta::from(&state.record())],
             })
         }
         None => Ok(PolicyIndex::default()),
@@ -81,10 +74,8 @@ pub(super) fn read_cluster_active(store: &ClusterStore) -> Result<Option<PolicyA
     let raw = store.get_state_value(POLICY_STATE_KEY)?;
     match raw {
         Some(raw) => {
-            let _: StoredPolicy = serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
-            Ok(Some(PolicyActive {
-                id: singleton_policy_id(),
-            }))
+            let state: StoredPolicy = serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
+            Ok(state.active_id().map(|id| PolicyActive { id }))
         }
         None => Ok(None),
     }

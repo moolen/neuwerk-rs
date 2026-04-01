@@ -14,8 +14,36 @@ pub const POLICY_INDEX_KEY: &[u8] = b"policies/index";
 pub const POLICY_ACTIVE_KEY: &[u8] = b"policies/active";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredPolicyCompat {
+    #[serde(default = "singleton_policy_id")]
+    id: Uuid,
+    #[serde(default = "default_created_at")]
+    created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default)]
+    mode: PolicyMode,
+    #[serde(default = "default_active")]
+    active: bool,
+}
+
+impl Default for StoredPolicyCompat {
+    fn default() -> Self {
+        Self {
+            id: singleton_policy_id(),
+            created_at: default_created_at(),
+            name: None,
+            mode: PolicyMode::Enforce,
+            active: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredPolicy {
     pub policy: PolicyConfig,
+    #[serde(default)]
+    compat: StoredPolicyCompat,
 }
 
 impl Default for StoredPolicy {
@@ -25,7 +53,29 @@ impl Default for StoredPolicy {
                 default_policy: Some(PolicyValue::String("deny".to_string())),
                 source_groups: Vec::new(),
             },
+            compat: StoredPolicyCompat::default(),
         }
+    }
+}
+
+impl StoredPolicy {
+    pub fn from_policy(policy: PolicyConfig) -> Self {
+        Self {
+            policy,
+            ..Self::default()
+        }
+    }
+
+    pub fn from_record(record: &PolicyRecord) -> Self {
+        stored_policy_from_record(record)
+    }
+
+    pub fn record(&self) -> PolicyRecord {
+        compat_record(self.clone())
+    }
+
+    pub fn active_id(&self) -> Option<Uuid> {
+        self.compat.active.then_some(self.compat.id)
     }
 }
 
@@ -135,49 +185,106 @@ impl PolicyDiskStore {
     }
 
     pub fn write_record(&self, record: &PolicyRecord) -> io::Result<()> {
-        self.write_state(&StoredPolicy {
-            policy: record.policy.clone(),
-        })
+        self.ensure()?;
+        let mut state = self.read_state()?.unwrap_or_default();
+        state.policy = record.policy.clone();
+        state.compat = StoredPolicyCompat {
+            id: record.id,
+            created_at: record.created_at.clone(),
+            name: sanitize_policy_name(record.name.clone()),
+            mode: record.mode,
+            active: record.mode.is_active(),
+        };
+        self.write_state(&state)
     }
 
     pub fn list_records(&self) -> io::Result<Vec<PolicyRecord>> {
-        Ok(vec![compat_record(self.load_or_bootstrap_singleton()?)])
+        self.read_state()?
+            .map(|state| vec![compat_record(state)])
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "singleton policy missing"))
+            .or_else(|err| {
+                if err.kind() == io::ErrorKind::NotFound {
+                    Ok(vec![compat_record(self.load_or_bootstrap_singleton()?)])
+                } else {
+                    Err(err)
+                }
+            })
     }
 
-    pub fn delete_record(&self, _id: Uuid) -> io::Result<()> {
-        self.write_state(&StoredPolicy::default())
+    pub fn delete_record(&self, id: Uuid) -> io::Result<()> {
+        let Some(state) = self.read_state()? else {
+            return Ok(());
+        };
+        if state.compat.id != id {
+            return Ok(());
+        }
+        match fs::remove_file(self.state_path()) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err),
+        }
     }
 
     pub fn read_record(&self, id: Uuid) -> io::Result<Option<PolicyRecord>> {
-        if id != singleton_policy_id() {
+        let Some(state) = self.read_state()? else {
+            return Ok(None);
+        };
+        if id != state.compat.id {
             return Ok(None);
         }
-        Ok(Some(compat_record(self.load_or_bootstrap_singleton()?)))
+        Ok(Some(compat_record(state)))
     }
 
-    pub fn read_record_by_name(&self, _name: &str) -> io::Result<Option<PolicyRecord>> {
+    pub fn read_record_by_name(&self, name: &str) -> io::Result<Option<PolicyRecord>> {
+        let Some(state) = self.read_state()? else {
+            return Ok(None);
+        };
+        if state
+            .compat
+            .name
+            .as_deref()
+            .is_some_and(|candidate| policy_names_equal(candidate, name))
+        {
+            return Ok(Some(compat_record(state)));
+        }
         Ok(None)
     }
 
     pub fn name_in_use_by_other_record(
         &self,
-        _name: &str,
-        _exclude_id: Option<Uuid>,
+        name: &str,
+        exclude_id: Option<Uuid>,
     ) -> io::Result<bool> {
-        Ok(false)
+        let Some(state) = self.read_state()? else {
+            return Ok(false);
+        };
+        Ok(exclude_id.map(|id| id != state.compat.id).unwrap_or(true)
+            && state
+                .compat
+                .name
+                .as_deref()
+                .is_some_and(|candidate| policy_names_equal(candidate, name)))
     }
 
     pub fn set_active(&self, id: Option<Uuid>) -> io::Result<()> {
+        let mut state = self.load_or_bootstrap_singleton()?;
         match id {
-            Some(_) => self.load_or_bootstrap_singleton().map(|_| ()),
-            None => self.write_state(&StoredPolicy::default()),
-        }
+            Some(id) => {
+                if state.compat.id == id {
+                    state.compat.active = true;
+                }
+            }
+            None => state.compat.active = false,
+        };
+        self.write_state(&state)
     }
 
     pub fn active_id(&self) -> io::Result<Option<Uuid>> {
-        let state = self.read_state()?;
-        if state.is_some() || self.read_legacy_active_state()?.is_some() {
-            return Ok(Some(singleton_policy_id()));
+        if let Some(state) = self.read_state()? {
+            return Ok(state.compat.active.then_some(state.compat.id));
+        }
+        if let Some(state) = self.read_legacy_active_state()? {
+            return Ok(state.compat.active.then_some(state.compat.id));
         }
         Ok(None)
     }
@@ -194,10 +301,6 @@ impl PolicyDiskStore {
     #[allow(dead_code)]
     fn write_index(&self, _index: &PolicyIndex) -> io::Result<()> {
         self.load_or_bootstrap_singleton().map(|_| ())
-    }
-
-    fn index_path(&self) -> PathBuf {
-        self.base_dir.join("index.json")
     }
 
     fn active_path(&self) -> PathBuf {
@@ -219,9 +322,7 @@ impl PolicyDiskStore {
         };
         let record: Option<PolicyRecord> = read_json(&self.policy_path(active.id))?;
         match record {
-            Some(record) if record.mode.is_active() => Ok(Some(StoredPolicy {
-                policy: record.policy,
-            })),
+            Some(record) if record.mode.is_active() => Ok(Some(stored_policy_from_record(&record))),
             _ => Ok(None),
         }
     }
@@ -237,12 +338,33 @@ pub fn singleton_policy_id() -> Uuid {
 
 fn compat_record(state: StoredPolicy) -> PolicyRecord {
     PolicyRecord {
-        id: singleton_policy_id(),
-        created_at: "1970-01-01T00:00:00Z".to_string(),
-        name: None,
-        mode: PolicyMode::Enforce,
+        id: state.compat.id,
+        created_at: state.compat.created_at,
+        name: state.compat.name,
+        mode: state.compat.mode,
         policy: state.policy,
     }
+}
+
+fn stored_policy_from_record(record: &PolicyRecord) -> StoredPolicy {
+    StoredPolicy {
+        policy: record.policy.clone(),
+        compat: StoredPolicyCompat {
+            id: record.id,
+            created_at: record.created_at.clone(),
+            name: sanitize_policy_name(record.name.clone()),
+            mode: record.mode,
+            active: record.mode.is_active(),
+        },
+    }
+}
+
+fn default_created_at() -> String {
+    "1970-01-01T00:00:00Z".to_string()
+}
+
+fn default_active() -> bool {
+    true
 }
 
 fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
@@ -314,39 +436,23 @@ default_policy: deny
     }
 
     #[test]
-    fn read_index_rejects_invalid_json() {
+    fn read_state_rejects_invalid_json() {
         let dir = TempDir::new().unwrap();
         let store = PolicyDiskStore::new(dir.path().to_path_buf());
-        fs::write(store.index_path(), b"{not-json").unwrap();
+        fs::write(store.state_path(), b"{not-json").unwrap();
 
-        let err = store.read_index().expect_err("expected invalid index json");
+        let err = store.read_state().expect_err("expected invalid singleton json");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
-    fn list_records_errors_when_index_references_missing_record() {
+    fn list_records_bootstraps_singleton_when_missing() {
         let dir = TempDir::new().unwrap();
         let store = PolicyDiskStore::new(dir.path().to_path_buf());
-        store.ensure().unwrap();
 
-        let record = sample_record();
-        let index = PolicyIndex {
-            policies: vec![PolicyMeta::from(&record)],
-        };
-        fs::write(
-            store.index_path(),
-            serde_json::to_vec_pretty(&index).unwrap(),
-        )
-        .unwrap();
-
-        let err = store
-            .list_records()
-            .expect_err("expected missing referenced record");
-        assert_eq!(err.kind(), io::ErrorKind::NotFound);
-        assert!(
-            err.to_string().contains("missing policy record"),
-            "unexpected error: {err}"
-        );
+        let records = store.list_records().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, singleton_policy_id());
     }
 
     #[test]
@@ -366,7 +472,7 @@ default_policy: deny
         let mut record = sample_record();
         store.write_record(&record).unwrap();
 
-        let path = store.policy_path(record.id);
+        let path = store.state_path();
         let first = fs::read_to_string(&path).unwrap();
         assert!(first.contains("test-policy"));
 
@@ -405,7 +511,7 @@ default_policy: deny
     }
 
     #[test]
-    fn read_record_by_name_rejects_duplicates() {
+    fn read_record_by_name_reuses_latest_singleton_name() {
         let dir = TempDir::new().unwrap();
         let store = PolicyDiskStore::new(dir.path().to_path_buf());
         let first = sample_record();
@@ -418,44 +524,39 @@ default_policy: deny
         store.write_record(&first).unwrap();
         store.write_record(&second).unwrap();
 
-        let err = store
+        let fetched = store
             .read_record_by_name("test-policy")
-            .expect_err("expected duplicate-name error");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("duplicate policy name"));
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.id, second.id);
+        assert_eq!(fetched.mode, PolicyMode::Audit);
     }
 
     #[test]
-    fn name_in_use_by_other_record_excludes_target_record() {
+    fn name_in_use_by_other_record_matches_singleton_name() {
         let dir = TempDir::new().unwrap();
         let store = PolicyDiskStore::new(dir.path().to_path_buf());
         let first = sample_record();
-        let second = PolicyRecord::new(
-            PolicyMode::Audit,
-            sample_policy(),
-            Some("other-policy".to_string()),
-        )
-        .unwrap();
         store.write_record(&first).unwrap();
-        store.write_record(&second).unwrap();
 
         assert!(!store
             .name_in_use_by_other_record("TEST-policy", Some(first.id))
             .unwrap());
         assert!(store
-            .name_in_use_by_other_record("test-policy", Some(second.id))
+            .name_in_use_by_other_record("test-policy", None)
             .unwrap());
     }
 
     #[test]
-    fn write_record_returns_io_error_when_policies_path_is_blocked() {
+    fn write_record_returns_io_error_when_base_path_is_blocked() {
         let dir = TempDir::new().unwrap();
-        let store = PolicyDiskStore::new(dir.path().to_path_buf());
-        fs::write(dir.path().join("policies"), b"not-a-directory").unwrap();
+        let blocked = dir.path().join("blocked");
+        fs::write(&blocked, b"not-a-directory").unwrap();
+        let store = PolicyDiskStore::new(blocked);
 
         let err = store
             .write_record(&sample_record())
-            .expect_err("expected policies path collision to fail");
+            .expect_err("expected base path collision to fail");
         assert!(matches!(
             err.kind(),
             io::ErrorKind::AlreadyExists | io::ErrorKind::NotADirectory
@@ -463,23 +564,17 @@ default_policy: deny
     }
 
     #[test]
-    fn disk_store_reads_legacy_record_and_index_with_schema_compatibility() {
+    fn disk_store_reads_legacy_active_record_with_schema_compatibility() {
         let dir = TempDir::new().unwrap();
         let store = PolicyDiskStore::new(dir.path().to_path_buf());
         store.ensure().unwrap();
 
         let id = Uuid::new_v4();
-        let policy_value = serde_json::to_value(sample_policy()).unwrap();
         fs::write(
-            store.index_path(),
+            store.active_path(),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "policies": [{
-                    "id": id,
-                    "created_at": "2026-03-09T12:00:00Z",
-                    "mode": "enforce",
-                    "ignored_meta_field": "compat"
-                }],
-                "ignored_index_field": true
+                "id": id,
+                "ignored_active_field": true
             }))
             .unwrap(),
         )
@@ -490,20 +585,16 @@ default_policy: deny
                 "id": id,
                 "created_at": "2026-03-09T12:00:00Z",
                 "mode": "enforce",
-                "policy": policy_value,
+                "policy": serde_json::to_value(sample_policy()).unwrap(),
                 "ignored_record_field": { "future": true }
             }))
             .unwrap(),
         )
         .unwrap();
 
-        let records = store.list_records().unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].id, id);
-        assert_eq!(records[0].name, None);
-        assert_eq!(records[0].mode, PolicyMode::Enforce);
+        let state = store.load_or_bootstrap_singleton().unwrap();
         assert!(matches!(
-            records[0].policy.default_policy,
+            state.policy.default_policy,
             Some(crate::controlplane::policy_config::PolicyValue::String(ref value))
                 if value == "deny"
         ));

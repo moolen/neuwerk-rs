@@ -335,7 +335,7 @@ source_groups:
 "#,
         )
         .unwrap();
-        let state = StoredPolicy { policy };
+        let state = StoredPolicy::from_policy(policy);
         put_cluster_policy_state(&cluster.raft, &state).await;
 
         let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::UNSPECIFIED, 32);
@@ -486,9 +486,7 @@ default_policy: allow
 "#,
         )
         .unwrap();
-        let mut state = StoredPolicy {
-            policy: initial_policy,
-        };
+        let mut state = StoredPolicy::from_policy(initial_policy);
         put_cluster_policy_state(&cluster.raft, &state).await;
 
         let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::UNSPECIFIED, 32);
@@ -698,9 +696,7 @@ source_groups:
 "#,
         )
         .unwrap();
-        let state = StoredPolicy {
-            policy: policy.clone(),
-        };
+        let state = StoredPolicy::from_policy(policy.clone());
         put_cluster_policy_state(&cluster.raft, &state).await;
 
         let compiled = policy.compile().unwrap();
@@ -792,7 +788,7 @@ source_groups:
 "#,
         )
         .unwrap();
-        let state = StoredPolicy { policy: bad_policy };
+        let state = StoredPolicy::from_policy(bad_policy);
         put_cluster_policy_state(&cluster.raft, &state).await;
 
         let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::UNSPECIFIED, 32);
@@ -856,7 +852,7 @@ source_groups:
 "#,
         )
         .unwrap();
-        let state = StoredPolicy { policy };
+        let state = StoredPolicy::from_policy(policy);
         put_cluster_policy_state(&cluster.raft, &state).await;
 
         let broken_path = local_dir.path().join("not-a-directory");

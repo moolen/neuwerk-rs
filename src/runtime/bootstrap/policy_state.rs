@@ -141,7 +141,9 @@ mod tests {
     }
 
     fn write_state(store: &PolicyDiskStore, policy: PolicyConfig) {
-        store.write_state(&StoredPolicy { policy }).expect("write state");
+        store
+            .write_state(&StoredPolicy::from_policy(policy))
+            .expect("write state");
     }
 
     #[test]

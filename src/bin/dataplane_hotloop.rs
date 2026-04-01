@@ -347,6 +347,7 @@ fn policy_with_allowlist(
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,
@@ -390,6 +391,7 @@ fn policy_with_many_rules_for_source(
         groups.push(SourceGroup {
             id: format!("group-{group_idx}"),
             priority: group_idx as u32,
+            mode: RuleMode::Enforce,
             sources,
             rules,
             default_action: None,
@@ -428,6 +430,7 @@ fn policy_with_many_groups_unique_sources(group_count: usize) -> (PolicySnapshot
         groups.push(SourceGroup {
             id: format!("unique-group-{group_idx}"),
             priority: group_idx as u32,
+            mode: RuleMode::Enforce,
             sources,
             rules: vec![rule],
             default_action: None,

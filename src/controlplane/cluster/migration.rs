@@ -233,6 +233,11 @@ async fn cleanup_policy_extras(
     raft: &openraft::Raft<ClusterTypeConfig>,
     store: &ClusterStore,
 ) -> Result<(), String> {
+    let raw = store.get_state_value(POLICY_INDEX_KEY)?;
+    let existing: Option<PolicyIndex> = raw
+        .map(|raw| serde_json::from_slice(&raw).map_err(|err| err.to_string()))
+        .transpose()?;
+
     raft.client_write(ClusterCommand::Delete {
         key: POLICY_INDEX_KEY.to_vec(),
     })
@@ -243,13 +248,7 @@ async fn cleanup_policy_extras(
     })
     .await
     .map_err(|err| err.to_string())?;
-
-    let raw = store.get_state_value(POLICY_INDEX_KEY)?;
-    let Some(raw) = raw else {
-        return Ok(());
-    };
-    let existing: PolicyIndex = serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
-    for meta in existing.policies {
+    for meta in existing.unwrap_or_default().policies {
         raft.client_write(ClusterCommand::Delete {
             key: policy_item_key(meta.id),
         })
@@ -643,9 +642,7 @@ source_groups:
         let keyset = api_auth::ensure_local_keyset(&cfg.http_tls_dir).unwrap();
 
         cfg.local_policy_store
-            .write_state(&StoredPolicy {
-                policy: sample_policy(),
-            })
+            .write_state(&StoredPolicy::from_policy(sample_policy()))
             .unwrap();
 
         let local_service_accounts =
