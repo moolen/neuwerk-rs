@@ -1,6 +1,8 @@
 use super::*;
 use crate::controlplane::cluster::types::{ClusterTypeConfig, Node};
+use openraft::network::RPCOption;
 use openraft::network::RaftNetworkFactory;
+use std::time::Duration;
 use tonic::transport::{Certificate, Identity};
 
 #[test]
@@ -22,6 +24,21 @@ async fn raft_network_factory_handles_invalid_addr_without_panic() {
         &node,
     )
     .await;
+}
+
+#[test]
+fn raft_rpc_timeout_floor() {
+    let short = RPCOption::new(Duration::from_millis(50));
+    let long = RPCOption::new(Duration::from_millis(900));
+
+    assert_eq!(
+        super::raft_transport::effective_rpc_timeout(&short),
+        Duration::from_millis(250)
+    );
+    assert_eq!(
+        super::raft_transport::effective_rpc_timeout(&long),
+        Duration::from_millis(900)
+    );
 }
 
 fn test_tls_config() -> RaftTlsConfig {

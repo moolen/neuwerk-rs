@@ -24,6 +24,8 @@ use crate::controlplane::metrics::Metrics;
 
 use super::{proto, RaftTlsConfig, RAFT_GRPC_MAX_MESSAGE_BYTES};
 
+const MIN_RAFT_RPC_TIMEOUT: Duration = Duration::from_millis(250);
+
 #[derive(Clone)]
 pub struct RaftGrpcNetwork {
     peer_id: String,
@@ -90,6 +92,10 @@ fn unreachable_fallback_endpoint() -> Endpoint {
     Endpoint::from_static("http://127.0.0.1:1").connect_timeout(Duration::from_secs(1))
 }
 
+pub(crate) fn effective_rpc_timeout(option: &RPCOption) -> Duration {
+    option.hard_ttl().max(MIN_RAFT_RPC_TIMEOUT)
+}
+
 impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
     async fn append_entries(
         &mut self,
@@ -106,7 +112,11 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
         let start = Instant::now();
         let payload = encode_rpc(&rpc)?;
         let req = proto::RaftRequest { payload };
-        let resp = timeout(option.hard_ttl(), self.client.append_entries(req)).await;
+        let resp = timeout(
+            effective_rpc_timeout(&option),
+            self.client.append_entries(req),
+        )
+        .await;
         let elapsed = start.elapsed();
         match resp {
             Err(_) => {
@@ -155,7 +165,11 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
         let start = Instant::now();
         let payload = encode_rpc(&rpc)?;
         let req = proto::RaftRequest { payload };
-        let resp = timeout(option.hard_ttl(), self.client.install_snapshot(req)).await;
+        let resp = timeout(
+            effective_rpc_timeout(&option),
+            self.client.install_snapshot(req),
+        )
+        .await;
         let elapsed = start.elapsed();
         match resp {
             Err(_) => {
@@ -201,7 +215,7 @@ impl RaftNetwork<ClusterTypeConfig> for RaftGrpcNetwork {
         let start = Instant::now();
         let payload = encode_rpc(&rpc)?;
         let req = proto::RaftRequest { payload };
-        let resp = timeout(option.hard_ttl(), self.client.vote(req)).await;
+        let resp = timeout(effective_rpc_timeout(&option), self.client.vote(req)).await;
         let elapsed = start.elapsed();
         match resp {
             Err(_) => {
