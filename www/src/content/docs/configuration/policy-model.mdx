@@ -16,7 +16,7 @@ fields into behavior.
 
 A policy has three layers:
 
-1. a top-level policy mode
+1. a top-level singleton policy document
 2. one or more source groups
 3. ordered rules inside each source group
 
@@ -26,22 +26,6 @@ The control plane compiles that input into:
 - DNS policy for hostname-based decisions
 
 Those products share the same source-group model, but they do not use the same fallback behavior.
-
-## Top-Level Policy Mode
-
-Every stored policy record has one of these modes:
-
-- `disabled`
-- `audit`
-- `enforce`
-
-Behavior:
-
-- `disabled` keeps the record in storage without making it the active policy
-- `enforce` applies normal allow and deny behavior
-- `audit` evaluates the policy but converts final deny outcomes into allow
-
-Audit mode is therefore a dry run of policy logic, not a bypass around policy evaluation.
 
 ## Source Groups
 
@@ -53,6 +37,11 @@ Source groups bind traffic sources to policy intent. A source group can match tr
 
 Source groups are evaluated in ascending priority. If no explicit priority is given, list order is
 used instead.
+
+Each source group also carries a required rollout mode:
+
+- `enforce` applies normal allow and deny behavior
+- `audit` evaluates matching denies but converts them into allow
 
 Practical rule:
 
@@ -67,13 +56,13 @@ wins.
 Each rule has:
 
 - an `action` of `allow` or `deny`
-- a `mode` of `enforce` or `audit`
+- an optional `mode` of `enforce` or `audit`
 - a `match` block
 
-Rule mode and policy mode do different jobs:
+Rule mode and source-group mode do different jobs:
 
-- policy mode changes what happens to the final decision
-- rule mode decides whether a rule participates in enforce logic or only in audit evaluation
+- source-group mode supplies the default rollout posture
+- rule mode overrides that posture for the individual rule when needed
 
 ## Packet Evaluation Order
 
@@ -83,8 +72,9 @@ For packet traffic, the Neuwerk evaluates policy like this:
 2. walk matching source groups in priority order
 3. walk rules in each matching source group in priority order
 4. stop at the first matching rule
-5. if no rule matches, use the source group's `default_action` if it has one
-6. if no source group produces a decision, use the top-level `default_policy`
+5. apply the effective mode from the source group or matching rule override
+6. if no rule matches, use the source group's `default_action` if it has one
+7. if no source group produces a decision, use the top-level `default_policy`
 
 This means `default_action` is stronger than `default_policy` once a source group has claimed the
 source IP.

@@ -8,8 +8,8 @@ This page collects the main terms used throughout the Neuwerk documentation.
 
 ## Active Policy
 
-The currently selected stored policy record that is being replayed into the local `PolicyStore` and
-used for enforcement. In storage terms, this is the policy referenced by the active policy pointer.
+The singleton policy document that is currently being replayed into the local `PolicyStore` and
+used for enforcement. There is no separate active-policy pointer.
 
 ## Audit Finding
 
@@ -49,8 +49,8 @@ resolution or lifecycle coordination. The currently implemented integration kind
 
 ## Local Policy Store
 
-The on-disk repository under `local-policy-store/` that persists policy records, policy metadata,
-and the active policy pointer on a node.
+The on-disk repository under `local-policy-store/` that persists the singleton policy document and
+its compiled local state on a node.
 
 ## Performance Mode
 
@@ -60,14 +60,13 @@ disabled.
 
 ## Policy Record
 
-A stored policy object with an ID, creation timestamp, optional name, top-level policy mode, and
-the full policy document payload.
+Legacy term for the old multi-record storage model. Current Neuwerk stores one singleton policy
+document without user-visible ID, name, or top-level mode.
 
 ## Policy Replication
 
-The background process that watches replicated cluster policy state, compiles the active policy
-locally, rebuilds the node's `PolicyStore`, and updates readiness once enforcement state is caught
-up.
+The background process that watches replicated singleton policy state, compiles the policy locally,
+rebuilds the node's `PolicyStore`, and updates readiness once enforcement state is caught up.
 
 ## PolicyStore
 
@@ -76,9 +75,8 @@ This is the enforcement-ready product, not just the raw stored policy document.
 
 ## Rule Mode
 
-The per-rule mode inside a policy rule, currently `enforce` or `audit`. This is different from the
-top-level policy mode and controls whether a rule participates in the enforce path or the audit
-path.
+The optional per-rule mode inside a policy rule, currently `enforce` or `audit`. This overrides the
+containing source-group mode for that rule.
 
 ## Seed Node
 
@@ -98,8 +96,8 @@ dataplane packet engine.
 
 ## Source Group
 
-A policy structure that binds a set of traffic sources to ordered rules and an optional
-group-specific default action. Source groups are the main unit of policy intent.
+A policy structure that binds a set of traffic sources to ordered rules, a required rollout mode,
+and an optional group-specific default action. Source groups are the main unit of policy intent.
 
 ## SSO Provider
 

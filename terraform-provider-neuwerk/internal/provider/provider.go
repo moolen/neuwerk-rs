@@ -162,7 +162,6 @@ func (p *neuwerkProvider) Configure(ctx context.Context, req provider.ConfigureR
 
 func (p *neuwerkProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
-		newPolicyResource,
 		newKubernetesIntegrationResource,
 		newTLSInterceptCAResource,
 		newServiceAccountResource,

@@ -1,50 +1,38 @@
-import type { IntegrationView, PolicyCreateRequest, PolicyRecord } from '../../types';
+import type { IntegrationView, PolicyCreateRequest } from '../../types';
 import {
-  createPolicy,
-  deletePolicy,
   getPolicy,
   listIntegrations,
-  listPolicies,
   updatePolicy,
 } from '../../services/api';
 import {
-  normalizePolicyConfig,
   normalizePolicyRequest,
   sanitizePolicyRequestForApi,
 } from '../../utils/policyModel';
 
-export function sortPoliciesByCreatedAt(items: PolicyRecord[]): PolicyRecord[] {
-  return [...items].sort((a, b) => b.created_at.localeCompare(a.created_at));
-}
+export const SINGLETON_POLICY_ID = 'singleton';
 
 export function filterKubernetesIntegrations(items: IntegrationView[]): IntegrationView[] {
   return items.filter((entry) => entry.kind === 'kubernetes');
 }
 
 export async function loadPolicyBuilderRemote(): Promise<{
-  policies: PolicyRecord[];
+  draft: PolicyCreateRequest;
   integrations: IntegrationView[];
 }> {
-  const [policies, integrations] = await Promise.all([listPolicies(), listIntegrations()]);
+  const [policy, integrations] = await Promise.all([getPolicy(), listIntegrations()]);
   return {
-    policies: sortPoliciesByCreatedAt(
-      policies.map((record) => ({
-        ...record,
-        policy: normalizePolicyConfig(record.policy),
-      })),
-    ),
+    draft: normalizePolicyRequest(policy),
     integrations: filterKubernetesIntegrations(integrations),
   };
 }
 
-export async function loadPolicyDraftRemote(policyId: string): Promise<PolicyCreateRequest> {
-  const record = await getPolicy(policyId);
-  return normalizePolicyRequest({ name: record.name, mode: record.mode, policy: record.policy });
+export async function loadPolicyDraftRemote(_policyId: string): Promise<PolicyCreateRequest> {
+  return normalizePolicyRequest(await getPolicy());
 }
 
 export async function savePolicyRemote(
-  editorMode: 'create' | 'edit',
-  editorTargetId: string | null,
+  _editorMode: 'create' | 'edit',
+  _editorTargetId: string | null,
   draft: PolicyCreateRequest
 ): Promise<{
   editorMode: 'create' | 'edit';
@@ -52,35 +40,12 @@ export async function savePolicyRemote(
   selectedPolicyId: string | null;
   draft: PolicyCreateRequest;
 }> {
-  const request = sanitizePolicyRequestForApi(draft);
-  if (editorMode === 'create') {
-    const created = await createPolicy(request);
-    return {
-      editorMode: 'edit',
-      editorTargetId: created.id,
-      selectedPolicyId: created.id,
-      draft: normalizePolicyRequest({ name: created.name, mode: created.mode, policy: created.policy }),
-    };
-  }
-
-  if (editorTargetId) {
-    const updated = await updatePolicy(editorTargetId, request);
-    return {
-      editorMode: 'edit',
-      editorTargetId,
-      selectedPolicyId: null,
-      draft: normalizePolicyRequest({ name: updated.name, mode: updated.mode, policy: updated.policy }),
-    };
-  }
+  const updated = await updatePolicy(sanitizePolicyRequestForApi(draft).policy);
 
   return {
-    editorMode,
-    editorTargetId,
-    selectedPolicyId: null,
-    draft,
+    editorMode: 'edit',
+    editorTargetId: SINGLETON_POLICY_ID,
+    selectedPolicyId: SINGLETON_POLICY_ID,
+    draft: normalizePolicyRequest(updated),
   };
-}
-
-export async function deletePolicyRemote(policyId: string): Promise<void> {
-  await deletePolicy(policyId);
 }

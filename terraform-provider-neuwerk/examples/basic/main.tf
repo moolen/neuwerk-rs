@@ -37,32 +37,6 @@ resource "neuwerk_tls_intercept_ca" "main" {
   generate = true
 }
 
-resource "neuwerk_policy" "main" {
-  name           = "prod-default"
-  mode           = "enforce"
-  default_action = "deny"
-
-  source_group = [
-    {
-      id = "corp-clients"
-
-      sources = {
-        cidrs = ["10.20.0.0/16"]
-      }
-
-      rule = [
-        {
-          id     = "allow-dns"
-          action = "allow"
-          dns = {
-            exact = ["github.com"]
-          }
-        }
-      ]
-    }
-  ]
-}
-
 variable "k8s_service_account_token" {
   type      = string
   sensitive = true

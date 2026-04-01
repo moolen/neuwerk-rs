@@ -86,7 +86,7 @@ If the cluster has no known leader, leader-routed requests fail with `503` and a
 }
 ```
 
-- Policy records can also be fetched as YAML with `?format=yaml`.
+- The singleton policy document can also be fetched as YAML with `?format=yaml`.
 - Streaming endpoints use Server-Sent Events.
 - Sysdump endpoints return `application/gzip`.
 
@@ -131,35 +131,29 @@ If the cluster has no known leader, leader-routed requests fail with `503` and a
 
 ### Policies
 
-Policies are stored as records containing metadata plus a full `PolicyConfig` payload. The write
-paths validate referenced Kubernetes integrations, compile the policy before persisting it, and
-wait for policy activation before returning success.
+Neuwerk exposes exactly one policy document. It is automatically provisioned if none exists yet,
+it is always active, and it has no user-visible record metadata. The write path validates
+referenced Kubernetes integrations, compiles the policy before persisting it, and waits for the
+singleton policy to activate before returning success.
 
 | Method | Path | Purpose | Notes |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/policies` | List policy records | Returns full policy records, not just metadata. |
-| `POST` | `/api/v1/policies` | Create a policy | Requires `admin`. JSON only. |
-| `GET` | `/api/v1/policies/:id` | Fetch a policy by id | Supports `?format=yaml`. |
-| `PUT` | `/api/v1/policies/:id` | Replace a policy by id | Requires `admin`. |
-| `DELETE` | `/api/v1/policies/:id` | Delete a policy by id | Requires `admin`. |
-| `GET` | `/api/v1/policies/by-name/:name` | Fetch a policy by stable name | Supports `?format=yaml`. |
-| `PUT` | `/api/v1/policies/by-name/:name` | Create or replace a policy by stable name | Requires `admin`. |
+| `GET` | `/api/v1/policy` | Fetch the singleton policy document | Supports `?format=yaml`. |
+| `PUT` | `/api/v1/policy` | Replace the singleton policy document | Requires `admin`. JSON only. |
+| `GET` | `/api/v1/policy/telemetry` | Fetch cluster-scoped source-group telemetry for the singleton policy | Leader aggregates node results. |
+| `GET` | `/api/v1/policy/telemetry/local` | Fetch local-node source-group telemetry for the singleton policy | Local/internal scope. |
 
-Create and update requests use this envelope:
+The singleton write request body is the policy document itself:
 
 ```json
 {
-  "mode": "enforce",
-  "name": "office-egress",
-  "policy": {
-    "default_policy": "deny",
-    "source_groups": []
-  }
+  "default_policy": "deny",
+  "source_groups": []
 }
 ```
 
-The `policy` object is the full Neuwerk policy model. That schema is large enough to deserve its
-own dedicated reference page.
+`PolicyConfig` is the full Neuwerk policy model. That schema is large enough to deserve its own
+dedicated reference page.
 
 ### Integrations
 

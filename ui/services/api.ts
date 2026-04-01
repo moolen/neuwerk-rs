@@ -3,12 +3,9 @@ export { APIError, clearAuthToken } from './apiClient/transport';
 export { loginWithToken, logout, whoAmI } from './apiClient/auth';
 export { getStats } from './apiClient/stats';
 export {
-  createPolicy,
-  deletePolicy,
   getPolicy,
   getPolicyTelemetry,
   getPolicyYaml,
-  listPolicies,
   updatePolicy,
 } from './apiClient/policies';
 export {

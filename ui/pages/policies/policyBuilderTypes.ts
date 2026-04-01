@@ -28,9 +28,7 @@ export interface PolicyBuilderLifecycleDeps {
 }
 
 export interface PolicyBuilderLifecycleHandlers {
-  handleCreate: () => void;
   loadEditorForPolicy: (policyId: string) => Promise<void>;
   loadAll: () => Promise<void>;
-  handleDelete: (policyId: string) => Promise<void>;
   handleSave: () => Promise<void>;
 }

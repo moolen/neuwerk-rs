@@ -60,67 +60,45 @@ function createTestMockServer() {
 }
 
 describe("dev mock CRUD domain routes", () => {
-  it("persists policy creates updates and deletes in memory", async () => {
+  it("persists singleton policy updates in memory", async () => {
     const server = createTestMockServer();
 
-    const created = await server.requestJson<{
-      id: string;
-      name: string;
-      mode: string;
-    }>("POST", "/api/v1/policies", {
-      name: "Local policy",
-      mode: "audit",
-      policy: {
-        source_groups: [],
-      },
-    });
-
     const updated = await server.requestJson<{
-      id: string;
-      name: string;
-      mode: string;
-    }>("PUT", `/api/v1/policies/${created.id}`, {
-      name: "Renamed policy",
-      mode: "enforce",
-      policy: {
-        source_groups: [],
-      },
+      default_policy?: string;
+      source_groups: Array<{ id: string }>;
+    }>("PUT", "/api/v1/policy", {
+      default_policy: "deny",
+      source_groups: [
+        {
+          id: "singleton-group",
+          mode: "enforce",
+          sources: {
+            cidrs: ["10.0.0.0/24"],
+          },
+          rules: [],
+        },
+      ],
     });
 
     const fetched = await server.requestJson<{
-      id: string;
-      name: string;
-      mode: string;
-    }>("GET", `/api/v1/policies/${created.id}`);
+      default_policy?: string;
+      source_groups: Array<{ id: string }>;
+    }>("GET", "/api/v1/policy");
+    const yaml = await server.requestText("GET", "/api/v1/policy?format=yaml");
     const telemetry = await server.requestJson<{
       items: unknown[];
       partial: boolean;
     }>("GET", "/api/v1/policy/telemetry");
-    const deleteResponse = await server.request(
-      "DELETE",
-      `/api/v1/policies/${created.id}`,
-    );
-    const afterDeleteRead = await server.request(
-      "GET",
-      `/api/v1/policies/${created.id}`,
-    );
-    const listAfterDelete = await server.requestJson<Array<{ id: string }>>(
-      "GET",
-      "/api/v1/policies",
-    );
 
-    expect(updated.name).toBe("Renamed policy");
-    expect(updated.mode).toBe("enforce");
-    expect(fetched.name).toBe("Renamed policy");
+    expect(updated.default_policy).toBe("deny");
+    expect(updated.source_groups).toHaveLength(1);
+    expect(fetched.source_groups[0]?.id).toBe("singleton-group");
+    expect(yaml).toContain("default_policy: deny");
+    expect(yaml).toContain("source_groups: 1");
     expect(telemetry).toMatchObject({
       items: expect.any(Array),
       partial: expect.any(Boolean),
     });
-    expect(deleteResponse.status).toBeLessThan(400);
-    expect(afterDeleteRead.status).toBe(404);
-    expect(listAfterDelete.some((policy) => policy.id === created.id)).toBe(
-      false,
-    );
   });
 
   it("persists integrations edits and deletes in list results", async () => {

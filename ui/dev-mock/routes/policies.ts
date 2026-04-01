@@ -1,7 +1,7 @@
 import { jsonResponse, textResponse } from "../http";
 import type { MockState } from "../state";
 import type { MockRequest, MockRoute } from "../types";
-import type { PolicyCreateRequest, PolicyRecord } from "../../types";
+import type { PolicyConfig, PolicyRecord } from "../../types";
 
 function parseJsonBody(request: MockRequest): unknown {
   if (!request.body || request.body.length === 0) {
@@ -14,79 +14,17 @@ function parseJsonBody(request: MockRequest): unknown {
   }
 }
 
-function readPolicyId(pathname: string): string | null {
-  const prefix = "/api/v1/policies/";
-  if (!pathname.startsWith(prefix)) {
-    return null;
-  }
-  const tail = pathname.slice(prefix.length);
-  if (!tail || tail.includes("/")) {
-    return null;
-  }
-  try {
-    return decodeURIComponent(tail);
-  } catch {
-    return tail;
-  }
-}
-
-function findPolicy(state: MockState, id: string): PolicyRecord | undefined {
-  return state.policies.find((entry) => entry.id === id);
+function singletonPolicy(state: MockState): PolicyRecord | undefined {
+  return state.policies[0];
 }
 
 export function createPolicyRoutes(state: MockState): MockRoute[] {
-  let nextId = state.policies.length + 1;
-
   return [
     {
       method: "GET",
-      pathname: "/api/v1/policies",
-      handler: () => jsonResponse(state.policies),
-    },
-    {
-      method: "POST",
-      pathname: "/api/v1/policies",
+      pathname: "/api/v1/policy",
       handler: (request) => {
-        const payload = parseJsonBody(request) as
-          | PolicyCreateRequest
-          | undefined;
-        if (
-          !payload ||
-          !payload.policy ||
-          !Array.isArray(payload.policy.source_groups)
-        ) {
-          return jsonResponse(
-            { error: "Policy source_groups are required" },
-            { status: 400 },
-          );
-        }
-        if (!payload.mode) {
-          return jsonResponse(
-            { error: "Policy mode is required" },
-            { status: 400 },
-          );
-        }
-
-        const created: PolicyRecord = {
-          id: `policy-${nextId++}`,
-          created_at: new Date().toISOString(),
-          name: payload.name?.trim() || undefined,
-          mode: payload.mode,
-          policy: payload.policy,
-        };
-        state.policies.unshift(created);
-        return jsonResponse(created, { status: 201 });
-      },
-    },
-    {
-      method: "GET",
-      pathname: "/api/v1/policies/:id",
-      handler: (request) => {
-        const id = readPolicyId(request.pathname);
-        if (!id) {
-          return jsonResponse({ error: "Not found" }, { status: 404 });
-        }
-        const policy = findPolicy(state, id);
+        const policy = singletonPolicy(state);
         if (!policy) {
           return jsonResponse({ error: "Not found" }, { status: 404 });
         }
@@ -97,11 +35,8 @@ export function createPolicyRoutes(state: MockState): MockRoute[] {
         ).searchParams.get("format");
         if (format === "yaml") {
           const yaml = [
-            `id: ${policy.id}`,
-            `mode: ${policy.mode}`,
-            `name: ${policy.name ?? ""}`,
-            "policy:",
-            `  source_groups: ${policy.policy.source_groups.length}`,
+            `default_policy: ${policy.policy.default_policy ?? "deny"}`,
+            `source_groups: ${policy.policy.source_groups.length}`,
             "",
           ].join("\n");
           return textResponse(yaml, {
@@ -109,66 +44,34 @@ export function createPolicyRoutes(state: MockState): MockRoute[] {
           });
         }
 
-        return jsonResponse(policy);
+        return jsonResponse(policy.policy);
       },
     },
     {
       method: "PUT",
-      pathname: "/api/v1/policies/:id",
+      pathname: "/api/v1/policy",
       handler: (request) => {
-        const id = readPolicyId(request.pathname);
-        if (!id) {
-          return jsonResponse({ error: "Not found" }, { status: 404 });
-        }
-        const existing = findPolicy(state, id);
-        if (!existing) {
-          return jsonResponse({ error: "Not found" }, { status: 404 });
-        }
-        const payload = parseJsonBody(request) as
-          | PolicyCreateRequest
-          | undefined;
-        if (
-          !payload ||
-          !payload.policy ||
-          !Array.isArray(payload.policy.source_groups)
-        ) {
+        const payload = parseJsonBody(request) as PolicyConfig | undefined;
+        if (!payload || !Array.isArray(payload.source_groups)) {
           return jsonResponse(
             { error: "Policy source_groups are required" },
             { status: 400 },
           );
         }
-        if (!payload.mode) {
-          return jsonResponse(
-            { error: "Policy mode is required" },
-            { status: 400 },
-          );
-        }
 
+        const existing = singletonPolicy(state);
         const updated: PolicyRecord = {
-          ...existing,
-          name: payload.name?.trim() || undefined,
-          mode: payload.mode,
-          policy: payload.policy,
+          id: existing?.id ?? "policy-1",
+          created_at: existing?.created_at ?? new Date().toISOString(),
+          mode: "enforce",
+          policy: payload,
         };
-        const index = state.policies.findIndex((item) => item.id === id);
-        state.policies[index] = updated;
-        return jsonResponse(updated);
-      },
-    },
-    {
-      method: "DELETE",
-      pathname: "/api/v1/policies/:id",
-      handler: (request) => {
-        const id = readPolicyId(request.pathname);
-        if (!id) {
-          return jsonResponse({ error: "Not found" }, { status: 404 });
+        if (existing) {
+          state.policies[0] = updated;
+        } else {
+          state.policies.unshift(updated);
         }
-        const index = state.policies.findIndex((item) => item.id === id);
-        if (index < 0) {
-          return jsonResponse({ error: "Not found" }, { status: 404 });
-        }
-        state.policies.splice(index, 1);
-        return jsonResponse(undefined, { status: 204 });
+        return jsonResponse(payload);
       },
     },
     {

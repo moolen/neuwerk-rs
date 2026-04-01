@@ -11,7 +11,7 @@ The workflow is:
 
 1. create a Kubernetes integration
 2. reference it from a source group
-3. activate the policy
+3. write the singleton policy
 4. verify that the control plane resolves the expected source IPs
 
 ## Step 1: Create The Integration
@@ -38,41 +38,38 @@ Reference the integration from policy. Pod selector example:
 
 ```json
 {
-  "mode": "enforce",
-  "name": "payments-egress",
-  "policy": {
-    "default_policy": "deny",
-    "source_groups": [
-      {
-        "id": "payments-pods",
-        "sources": {
-          "kubernetes": [
-            {
-              "integration": "cluster-a",
-              "pod_selector": {
-                "namespace": "payments",
-                "match_labels": {
-                  "app": "api"
-                }
-              }
-            }
-          ]
-        },
-        "default_action": "deny",
-        "rules": [
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "payments-pods",
+      "mode": "enforce",
+      "sources": {
+        "kubernetes": [
           {
-            "id": "allow-webhook",
-            "action": "allow",
-            "match": {
-              "proto": "tcp",
-              "dst_ips": ["203.0.113.20"],
-              "dst_ports": [443]
+            "integration": "cluster-a",
+            "pod_selector": {
+              "namespace": "payments",
+              "match_labels": {
+                "app": "api"
+              }
             }
           }
         ]
-      }
-    ]
-  }
+      },
+      "default_action": "deny",
+      "rules": [
+        {
+          "id": "allow-webhook",
+          "action": "allow",
+          "match": {
+            "proto": "tcp",
+            "dst_ips": ["203.0.113.20"],
+            "dst_ports": [443]
+          }
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -95,16 +92,16 @@ Rules:
 - `pod_selector.namespace` is required for pod selectors
 - `match_labels` keys and values must be non-empty
 
-## Step 3: Activate The Policy
+## Step 3: Write The Policy
 
-Write the policy through the normal policy API:
+Write the singleton policy through the normal policy API:
 
 ```bash
 curl -sk \
   -H "Authorization: Bearer $NEUWERK_TOKEN" \
   -H "Content-Type: application/json" \
   -X PUT \
-  https://neuwerk.example/api/v1/policies/by-name/payments-egress \
+  https://neuwerk.example/api/v1/policy \
   --data @policy.json
 ```
 
@@ -112,7 +109,7 @@ The write fails if the referenced integration does not exist.
 
 ## Step 4: Verify Resolution
 
-After activation, verify:
+After the write succeeds, verify:
 
 ```text
 GET /ready

@@ -47,8 +47,7 @@ Run these checks against a restored copy before calling the backup usable:
 3. Verify `/ready` reports the expected state for the restored mode.
    - Local mode without dataplane traffic may remain not-ready until DHCP/bootstrap conditions are satisfied.
 4. Verify policy state is present.
-   - `GET /api/v1/policies`
-   - `GET /api/v1/policies/active`
+   - `GET /api/v1/policy`
 5. Verify authentication state is present.
    - Existing API auth still works.
    - Service accounts/tokens list successfully.

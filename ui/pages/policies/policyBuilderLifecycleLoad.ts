@@ -1,15 +1,16 @@
-import { createEmptyPolicyRequest } from '../../utils/policyModel';
-import { loadPolicyBuilderRemote, loadPolicyDraftRemote } from './policyBuilderRemote';
-import { deriveLoadAllFollowUp, errorMessage } from './policyBuilderLifecycleHelpers';
+import {
+  loadPolicyBuilderRemote,
+  loadPolicyDraftRemote,
+  SINGLETON_POLICY_ID,
+} from './policyBuilderRemote';
+import { errorMessage } from './policyBuilderLifecycleHelpers';
 import type { PolicyBuilderLifecycleDeps } from './policyBuilderTypes';
 
-type HandleCreate = () => void;
 type LoadEditorForPolicy = (policyId: string) => Promise<void>;
 type OverlayDeps = Pick<
   PolicyBuilderLifecycleDeps,
   'setOverlayMode' | 'setOverlaySourceGroupId'
 >;
-type SelectPolicyDeps = OverlayDeps & Pick<PolicyBuilderLifecycleDeps, 'setSelectedPolicyId'>;
 
 export function buildCloseSourceGroupEditor(deps: OverlayDeps): () => void {
   const { setOverlayMode, setOverlaySourceGroupId } = deps;
@@ -26,26 +27,6 @@ export function buildOpenSourceGroupEditor(
   return (sourceGroupId: string | null) => {
     setOverlayMode(sourceGroupId ? 'edit-group' : 'create-group');
     setOverlaySourceGroupId(sourceGroupId);
-  };
-}
-
-export function buildSelectPolicy(deps: SelectPolicyDeps): (policyId: string) => void {
-  const { setSelectedPolicyId } = deps;
-  const closeSourceGroupEditor = buildCloseSourceGroupEditor(deps);
-  return (policyId: string) => {
-    setSelectedPolicyId(policyId);
-    closeSourceGroupEditor();
-  };
-}
-
-export function buildHandleCreate(deps: PolicyBuilderLifecycleDeps): HandleCreate {
-  const { setEditorMode, setEditorTargetId, setSelectedPolicyId, setDraft, setEditorError } = deps;
-  return () => {
-    setEditorMode('create');
-    setEditorTargetId(null);
-    setSelectedPolicyId(null);
-    setDraft(createEmptyPolicyRequest());
-    setEditorError(null);
   };
 }
 
@@ -70,25 +51,37 @@ export function buildLoadEditorForPolicy(deps: PolicyBuilderLifecycleDeps): Load
   };
 }
 
-export function buildLoadAll(
-  deps: PolicyBuilderLifecycleDeps,
-  handleCreate: HandleCreate,
-): () => Promise<void> {
-  const { selectedPolicyId, setLoading, setError, setPolicies, setIntegrations, setSelectedPolicyId } = deps;
+export function buildLoadAll(deps: PolicyBuilderLifecycleDeps): () => Promise<void> {
+  const {
+    setLoading,
+    setError,
+    setPolicies,
+    setIntegrations,
+    setSelectedPolicyId,
+    setDraft,
+    setEditorMode,
+    setEditorTargetId,
+    setEditorError,
+  } = deps;
   return async () => {
     try {
       setLoading(true);
       setError(null);
-      const { policies, integrations } = await loadPolicyBuilderRemote();
-      setPolicies(policies);
+      const { draft, integrations } = await loadPolicyBuilderRemote();
+      setDraft(draft);
+      setPolicies([
+        {
+          id: SINGLETON_POLICY_ID,
+          created_at: '',
+          mode: draft.mode,
+          policy: draft.policy,
+        },
+      ]);
       setIntegrations(integrations);
-
-      const followUp = deriveLoadAllFollowUp(policies, selectedPolicyId);
-      if (followUp.kind === 'select-first') {
-        setSelectedPolicyId(followUp.policyId);
-      } else if (followUp.kind === 'create') {
-        handleCreate();
-      }
+      setSelectedPolicyId(SINGLETON_POLICY_ID);
+      setEditorMode('edit');
+      setEditorTargetId(SINGLETON_POLICY_ID);
+      setEditorError(null);
     } catch (err) {
       setError(errorMessage(err, 'Failed to load policies'));
     } finally {

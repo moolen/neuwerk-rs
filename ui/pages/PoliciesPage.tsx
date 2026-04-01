@@ -2,11 +2,9 @@ import React from "react";
 
 import { PageLayout } from "../components/layout/PageLayout";
 import type { PolicySourceGroupTelemetry } from "../types";
-import { PoliciesPageHeader } from "./policies/components/PoliciesPageHeader";
+import { PolicyBasicsSection } from "./policies/components/PolicyBasicsSection";
 import { PolicyEditorActions } from "./policies/components/PolicyEditorActions";
-import { PolicyEditorCard } from "./policies/components/PolicyEditorCard";
 import { PolicyEditorMessages } from "./policies/components/PolicyEditorMessages";
-import { PolicySelector } from "./policies/components/PolicySelector";
 import { PolicySourceGroupEditorOverlay } from "./policies/components/PolicySourceGroupEditorOverlay";
 import { PolicySourceGroupsTable } from "./policies/components/PolicySourceGroupsTable";
 import { ScopedSourceGroupEditor } from "./policies/components/ScopedSourceGroupEditor";
@@ -31,13 +29,11 @@ export const PoliciesPage: React.FC = () => {
     nodeErrorCount: 0,
   });
   const {
-    policies,
     integrations,
     selectedPolicyId,
     loading,
     error,
     draft,
-    editorMode,
     editorTargetId,
     overlayMode,
     overlaySourceGroupId,
@@ -46,12 +42,9 @@ export const PoliciesPage: React.FC = () => {
     validationIssues,
   } = state;
   const {
-    loadAll,
     loadEditorForPolicy,
     openSourceGroupEditor,
     closeSourceGroupEditor,
-    handleCreate,
-    handleDelete,
     handleSave,
     updateDraft,
     setDraft,
@@ -65,22 +58,9 @@ export const PoliciesPage: React.FC = () => {
     deleteRule,
   } = actions;
 
-  const selectedPolicy =
-    policies.find((policy) => policy.id === selectedPolicyId) ?? null;
-  const selectedPolicyLabel =
-    selectedPolicy?.name?.trim() || selectedPolicy?.id || "No policy selected";
-  const canDeleteSelectedPolicy =
-    editorMode === "edit" &&
-    selectedPolicyId !== null &&
-    editorTargetId === selectedPolicyId;
-  const selectedSourceGroups =
-    editorTargetId === selectedPolicyId
-      ? draft.policy.source_groups
-      : (selectedPolicy?.policy.source_groups ?? []);
+  const selectedSourceGroups = draft.policy.source_groups;
   const overlayOpen = overlayMode !== "closed";
   const activeSourceGroupId = overlayOpen ? overlaySourceGroupId : null;
-  const showCreatePolicyEditor =
-    editorMode === "create" && selectedPolicyId === null;
   const overlaySourceGroupLabel =
     selectedSourceGroups.find(
       (group) => (group.client_key ?? group.id) === overlaySourceGroupId,
@@ -146,10 +126,6 @@ export const PoliciesPage: React.FC = () => {
     };
   }, [selectedPolicyId]);
 
-  const handleSelectPolicy = (policyId: string) => {
-    void loadEditorForPolicy(policyId);
-  };
-
   const handleOpenSourceGroup = async (groupClientKey: string) => {
     if (selectedPolicyId && editorTargetId !== selectedPolicyId) {
       await loadEditorForPolicy(selectedPolicyId);
@@ -160,7 +136,6 @@ export const PoliciesPage: React.FC = () => {
 
   const handleCreateSourceGroup = async () => {
     if (!selectedPolicyId) {
-      handleCreate();
       return;
     }
 
@@ -197,20 +172,7 @@ export const PoliciesPage: React.FC = () => {
     <div className="relative min-h-full" data-policies-page-root="true">
       <PageLayout
         title="Policies"
-        description="Form-driven policy builder with live validation."
-        actions={
-          <PoliciesPageHeader
-            onRefresh={loadAll}
-            onCreate={handleCreate}
-            onDelete={
-              canDeleteSelectedPolicy
-                ? () => {
-                    void handleDelete(selectedPolicyId);
-                  }
-                : undefined
-            }
-          />
-        }
+        description="Form-driven singleton policy editor with live validation."
       >
         {error && (
           <div
@@ -226,97 +188,91 @@ export const PoliciesPage: React.FC = () => {
         )}
 
         <div className="space-y-5" data-policies-main-content="true">
-          {showCreatePolicyEditor ? (
+          <section
+            className="rounded-[1.5rem] p-4 sm:p-5 space-y-5"
+            style={{
+              background:
+                "linear-gradient(180deg, var(--bg-glass-strong), rgba(255,255,255,0.04))",
+              border: "1px solid var(--border-glass)",
+              boxShadow: "var(--shadow-glass)",
+            }}
+          >
+            <div className="space-y-1.5">
+              <div
+                className="text-xs uppercase tracking-[0.24em]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Policy defaults
+              </div>
+              <h2
+                className="text-base font-semibold"
+                style={{ color: "var(--text)" }}
+              >
+                Always-active singleton policy
+              </h2>
+              <p
+                className="text-sm leading-6"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                Neuwerk now provisions one canonical policy document
+                automatically. Save writes that document in place while
+                source-group and rule modes control rollout behavior.
+              </p>
+            </div>
+
+            <PolicyBasicsSection draft={draft} setDraft={setDraft} />
+          </section>
+
+          {loading ? (
+            <div
+              className="rounded-[1.5rem] px-4 py-6 text-sm"
+              style={{
+                background: "var(--bg-glass-subtle)",
+                border: "1px solid var(--border-glass)",
+                color: "var(--text-muted)",
+              }}
+            >
+              Loading policy...
+            </div>
+          ) : (
             <>
-              <PolicyEditorCard
-                editorMode={editorMode}
-                editorTargetId={editorTargetId}
-                draft={draft}
-                integrations={integrations}
-                setDraft={setDraft}
-                updateDraft={updateDraft}
-                addGroup={addGroup}
-                duplicateGroup={duplicateGroup}
-                moveGroup={moveGroup}
-                deleteGroup={deleteGroup}
-                addRule={addRule}
-                duplicateRule={duplicateRule}
-                moveRule={moveRule}
-                deleteRule={deleteRule}
-                validationIssues={validationIssues}
-                editorError={editorError}
-                onDelete={(policyId) => {
-                  void handleDelete(policyId);
+              <PolicySourceGroupsTable
+                groups={selectedSourceGroups}
+                activeSourceGroupId={activeSourceGroupId}
+                telemetryBySourceGroupId={telemetryState.bySourceGroupId}
+                telemetryPartial={telemetryState.partial}
+                telemetryNodesQueried={telemetryState.nodesQueried}
+                telemetryNodesResponded={telemetryState.nodesResponded}
+                telemetryNodeErrorCount={telemetryState.nodeErrorCount}
+                createActionLabel="Add source group"
+                emptyStateDescription="Create the first source group to start organizing traffic under the singleton policy."
+                emptyStateTitle="No source groups configured"
+                onCreateGroup={() => {
+                  void handleCreateSourceGroup();
+                }}
+                onDeleteGroup={handleDeleteSourceGroup}
+                onMoveGroup={handleMoveSourceGroup}
+                onSelectGroup={(groupId) => {
+                  void handleOpenSourceGroup(groupId);
                 }}
               />
 
               <PolicyEditorActions
-                editorMode={editorMode}
-                editorTargetId={editorTargetId}
+                editorTargetId={selectedPolicyId}
                 saving={saving}
                 validationIssueCount={validationIssues.length}
                 onReloadEditor={(policyId) => {
                   void loadEditorForPolicy(policyId);
                 }}
-                onCreate={handleCreate}
                 onSave={() => {
                   void handleSave();
                 }}
               />
-            </>
-          ) : (
-            <>
-              <PolicySelector
-                policies={policies}
-                selectedPolicyId={selectedPolicyId}
-                onSelect={handleSelectPolicy}
-              />
 
-              {loading ? (
-                <div
-                  className="rounded-[1.5rem] px-4 py-6 text-sm"
-                  style={{
-                    background: "var(--bg-glass-subtle)",
-                    border: "1px solid var(--border-glass)",
-                    color: "var(--text-muted)",
-                  }}
-                >
-                  Loading policies...
-                </div>
-              ) : (
-                <PolicySourceGroupsTable
-                  groups={selectedSourceGroups}
-                  activeSourceGroupId={activeSourceGroupId}
-                  telemetryBySourceGroupId={telemetryState.bySourceGroupId}
-                  telemetryPartial={telemetryState.partial}
-                  telemetryNodesQueried={telemetryState.nodesQueried}
-                  telemetryNodesResponded={telemetryState.nodesResponded}
-                  telemetryNodeErrorCount={telemetryState.nodeErrorCount}
-                  createActionLabel={
-                    selectedPolicyId
-                      ? "Add source group"
-                      : "Create first policy"
-                  }
-                  emptyStateDescription={
-                    selectedPolicyId
-                      ? "Create the first source group to start shaping the selected policy."
-                      : "Create a policy first, then start organizing traffic by source group."
-                  }
-                  emptyStateTitle={
-                    selectedPolicyId
-                      ? "No source groups configured"
-                      : "No policy selected"
-                  }
-                  onCreateGroup={() => {
-                    void handleCreateSourceGroup();
-                  }}
-                  onDeleteGroup={handleDeleteSourceGroup}
-                  onMoveGroup={handleMoveSourceGroup}
-                  onSelectGroup={(groupId) => {
-                    void handleOpenSourceGroup(groupId);
-                  }}
-                />
-              )}
+              <PolicyEditorMessages
+                validationIssues={validationIssues}
+                editorError={editorError}
+              />
             </>
           )}
         </div>
@@ -324,7 +280,7 @@ export const PoliciesPage: React.FC = () => {
 
       <PolicySourceGroupEditorOverlay
         open={overlayOpen}
-        policyLabel={selectedPolicyLabel}
+        policyLabel="Active policy"
         sourceGroupLabel={overlaySourceGroupLabel}
         saving={saving}
         validationIssueCount={validationIssues.length}

@@ -1,8 +1,8 @@
 # Terraform Provider Docs
 
-The Neuwerk Terraform provider manages Neuwerk control-plane resources such as policies,
-Kubernetes integrations, service accounts, service account tokens, TLS intercept CA settings, and
-SSO providers.
+The Neuwerk Terraform provider manages Neuwerk control-plane resources such as Kubernetes
+integrations, service accounts, service account tokens, TLS intercept CA settings, and SSO
+providers.
 
 The intended provider source address is:
 
@@ -59,12 +59,12 @@ resource "neuwerk_service_account" "terraform" {
 ```
 
 Start with an admin-capable service account token, create Terraform-managed service accounts and
-tokens for long-lived automation, and then move on to policies, Kubernetes integrations, or SSO.
+tokens for long-lived automation, and then move on to Kubernetes integrations, TLS interception, or
+SSO.
 
 ## Reference Pages
 
 - [Provider Configuration](./provider.md)
-- [Policy Resource](./resources/policy.md)
 - [Kubernetes Integration Resource](./resources/kubernetes_integration.md)
 - [TLS Intercept CA Resource](./resources/tls_intercept_ca.md)
 - [Service Account Resource](./resources/service_account.md)

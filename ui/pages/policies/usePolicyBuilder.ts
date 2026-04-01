@@ -4,7 +4,6 @@ import { createPolicyBuilderLifecycleHandlers } from './policyBuilderLifecycle';
 import {
   buildCloseSourceGroupEditor,
   buildOpenSourceGroupEditor,
-  buildSelectPolicy,
 } from './policyBuilderLifecycleLoad';
 import { createUpdateDraft } from './usePolicyBuilderDraft';
 import { usePolicyBuilderDerived } from './usePolicyBuilderDerived';
@@ -44,10 +43,8 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
   const updateDraft = createUpdateDraft(setDraft);
 
   const {
-    handleCreate,
     loadEditorForPolicy,
     loadAll,
-    handleDelete,
     handleSave,
   } = createPolicyBuilderLifecycleHandlers({
     selectedPolicyId,
@@ -71,11 +68,6 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     setEditorError,
   });
 
-  const selectPolicy = buildSelectPolicy({
-    setSelectedPolicyId,
-    setOverlayMode,
-    setOverlaySourceGroupId,
-  });
   const openSourceGroupEditor = buildOpenSourceGroupEditor({
     setOverlayMode,
     setOverlaySourceGroupId,
@@ -84,10 +76,6 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     setOverlayMode,
     setOverlaySourceGroupId,
   });
-  const handleCreateWithOverlay = () => {
-    closeSourceGroupEditor();
-    handleCreate();
-  };
   const loadEditorForPolicyWithOverlay = async (policyId: string) => {
     closeSourceGroupEditor();
     await loadEditorForPolicy(policyId);
@@ -135,11 +123,8 @@ export function usePolicyBuilder(): UsePolicyBuilderResult {
     actions: {
       loadAll,
       loadEditorForPolicy: loadEditorForPolicyWithOverlay,
-      selectPolicy,
       openSourceGroupEditor,
       closeSourceGroupEditor,
-      handleCreate: handleCreateWithOverlay,
-      handleDelete,
       handleSave,
       updateDraft,
       setDraft,

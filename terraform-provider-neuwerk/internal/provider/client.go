@@ -62,14 +62,6 @@ type apiTLSInterceptCAStatus struct {
 	FingerprintSHA256 *string `json:"fingerprint_sha256"`
 }
 
-type apiPolicyRecord struct {
-	ID        string          `json:"id"`
-	CreatedAt string          `json:"created_at"`
-	Name      *string         `json:"name"`
-	Mode      string          `json:"mode"`
-	Policy    json.RawMessage `json:"policy"`
-}
-
 type apiServiceAccount struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
@@ -191,12 +183,6 @@ type putTLSInterceptCARequest struct {
 	CAKeyDERB64 *string `json:"ca_key_der_b64,omitempty"`
 }
 
-type upsertPolicyByNameRequest struct {
-	Mode   string          `json:"mode"`
-	Policy json.RawMessage `json:"policy"`
-	Name   string          `json:"name"`
-}
-
 func newAPIClient(cfg apiClientConfig) (*apiClient, error) {
 	normalized := make([]string, 0, len(cfg.endpoints))
 	for _, raw := range cfg.endpoints {
@@ -312,26 +298,6 @@ func (c *apiClient) PutTLSInterceptCA(ctx context.Context, req putTLSInterceptCA
 
 func (c *apiClient) DeleteTLSInterceptCA(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/settings/tls-intercept-ca", nil, nil)
-}
-
-func (c *apiClient) GetPolicyByName(ctx context.Context, name string) (*apiPolicyRecord, error) {
-	var out apiPolicyRecord
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/policies/by-name/"+url.PathEscape(name), nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-func (c *apiClient) UpsertPolicyByName(ctx context.Context, name string, req upsertPolicyByNameRequest) (*apiPolicyRecord, error) {
-	var out apiPolicyRecord
-	if err := c.doJSON(ctx, http.MethodPut, "/api/v1/policies/by-name/"+url.PathEscape(name), req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-func (c *apiClient) DeletePolicy(ctx context.Context, id string) error {
-	return c.doJSON(ctx, http.MethodDelete, "/api/v1/policies/"+url.PathEscape(id), nil, nil)
 }
 
 func (c *apiClient) ListServiceAccounts(ctx context.Context) ([]apiServiceAccount, error) {

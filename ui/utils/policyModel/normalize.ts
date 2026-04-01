@@ -24,9 +24,10 @@ export function normalizePolicyRequest(value: unknown): PolicyCreateRequest {
   if (!isObject(value)) {
     return createEmptyPolicyRequest();
   }
+  const policyValue = isObject(value.policy) ? value.policy : value;
   return {
     ...(asString(value.name) ? { name: asString(value.name) } : {}),
     mode: asPolicyMode(value.mode),
-    policy: normalizePolicyConfig(value.policy),
+    policy: normalizePolicyConfig(policyValue),
   };
 }

@@ -6,11 +6,11 @@ order: 2
 
 This tutorial shows a safe first policy workflow:
 
-1. create a named hostname-aware policy through the management API
-2. start in `audit` mode so traffic still flows while you verify the intent
+1. create a hostname-aware singleton policy through the management API
+2. start the source group in `audit` mode so traffic still flows while you verify the intent
 3. confirm that DNS policy and runtime state look correct
 4. optionally tighten the allow path with TLS metadata
-5. promote the policy to `enforce` when the observed behavior matches your intent
+5. promote the source group to `enforce` when the observed behavior matches your intent
 
 This tutorial assumes:
 
@@ -27,37 +27,34 @@ Neuwerk exists to provide: explicit DNS-aware enforcement, not just static desti
 
 ```json
 {
-  "mode": "audit",
-  "name": "hostname-egress",
-  "policy": {
-    "default_policy": "deny",
-    "source_groups": [
-      {
-        "id": "office-users",
-        "sources": {
-          "cidrs": ["10.10.0.0/16"]
-        },
-        "default_action": "deny",
-        "rules": [
-          {
-            "id": "allow-api-example-dns",
-            "action": "allow",
-            "match": {
-              "dns_hostname": "^api\\.example\\.com$"
-            }
-          },
-          {
-            "id": "allow-api-example-https",
-            "action": "allow",
-            "match": {
-              "proto": "tcp",
-              "dst_ports": [443]
-            }
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "office-users",
+      "mode": "audit",
+      "sources": {
+        "cidrs": ["10.10.0.0/16"]
+      },
+      "default_action": "deny",
+      "rules": [
+        {
+          "id": "allow-api-example-dns",
+          "action": "allow",
+          "match": {
+            "dns_hostname": "^api\\.example\\.com$"
           }
-        ]
-      }
-    ]
-  }
+        },
+        {
+          "id": "allow-api-example-https",
+          "action": "allow",
+          "match": {
+            "proto": "tcp",
+            "dst_ports": [443]
+          }
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -66,33 +63,33 @@ Why start here:
 - the source population is explicit
 - the allowed destination is expressed as a hostname, not a fragile IP list
 - the default behavior is deny
-- audit mode lets you observe the behavior before you block production traffic
+- source-group audit mode lets you observe the behavior before you block production traffic
 
 Important detail: hostname access needs an explicit DNS allow rule. The HTTPS rule alone does not
 grant hostname-based access.
 
 ## Upload The Policy
 
-Write the policy by stable name:
+Write the singleton policy document:
 
 ```bash
 curl -sk \
   -H "Authorization: Bearer $NEUWERK_TOKEN" \
   -H "Content-Type: application/json" \
   -X PUT \
-  https://neuwerk.example/api/v1/policies/by-name/hostname-egress \
+  https://neuwerk.example/api/v1/policy \
   --data @policy.json
 ```
 
-Using `mode: audit` makes this policy the active logic while still converting final deny outcomes
-into allow.
+Using `source_groups[].mode: "audit"` keeps the group active while converting deny outcomes for
+that group into allow.
 
 ## Verify That The Policy Became Active
 
-Check the stored record:
+Check the stored policy document:
 
 ```text
-GET /api/v1/policies/by-name/hostname-egress
+GET /api/v1/policy
 ```
 
 Then check node readiness and runtime state:
@@ -104,7 +101,7 @@ GET /api/v1/stats
 
 What you want to see:
 
-- the policy record exists
+- the policy document exists
 - the node is ready
 - stats show the dataplane and policy state as healthy
 
@@ -163,12 +160,11 @@ If the Neuwerk denies more than you expected, inspect:
 
 ## Promote The Policy To Enforce
 
-When the audit evidence matches your intent, change the top-level mode to `enforce` and write the
-same policy again:
+When the audit evidence matches your intent, change the source-group mode to `enforce` and write
+the same policy again:
 
-- keep the same `name`
-- keep the same `policy` body
-- change only the top-level `mode` from `audit` to `enforce`
+- keep the same policy body
+- change only the source-group `mode` from `audit` to `enforce`
 
 ## Warning
 

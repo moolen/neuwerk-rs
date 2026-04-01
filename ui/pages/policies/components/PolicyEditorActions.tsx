@@ -3,22 +3,18 @@ import React from 'react';
 import { isPolicySaveDisabled } from './policiesPageHelpers';
 
 interface PolicyEditorActionsProps {
-  editorMode: 'create' | 'edit';
   editorTargetId: string | null;
   saving: boolean;
   validationIssueCount: number;
   onReloadEditor: (policyId: string) => void;
-  onCreate: () => void;
   onSave: () => void;
 }
 
 export const PolicyEditorActions: React.FC<PolicyEditorActionsProps> = ({
-  editorMode,
   editorTargetId,
   saving,
   validationIssueCount,
   onReloadEditor,
-  onCreate,
   onSave,
 }) => {
   const saveDisabled = isPolicySaveDisabled(saving, validationIssueCount);
@@ -31,16 +27,14 @@ export const PolicyEditorActions: React.FC<PolicyEditorActionsProps> = ({
       }}
     >
       <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-        Review validation feedback before saving changes to the active policy snapshot.
+        Review validation feedback before saving changes to the singleton policy document.
       </div>
       <div className="flex justify-end gap-2">
         <button
           disabled={saving}
           onClick={() => {
-            if (editorMode === 'edit' && editorTargetId) {
+            if (editorTargetId) {
               onReloadEditor(editorTargetId);
-            } else {
-              onCreate();
             }
           }}
           className="px-4 py-2 text-sm rounded-xl"

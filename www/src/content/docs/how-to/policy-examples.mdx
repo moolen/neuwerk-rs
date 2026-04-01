@@ -11,7 +11,7 @@ environment.
 Unless noted otherwise, each example is shown as the full request body for:
 
 ```text
-PUT /api/v1/policies/by-name/{name}
+PUT /api/v1/policy
 ```
 
 ## 1. Narrow HTTPS Egress For One CIDR
@@ -20,31 +20,28 @@ This allows one source CIDR to reach one HTTPS destination and denies everything
 
 ```json
 {
-  "mode": "enforce",
-  "name": "office-egress",
-  "policy": {
-    "default_policy": "deny",
-    "source_groups": [
-      {
-        "id": "branch-office",
-        "sources": {
-          "cidrs": ["10.10.0.0/16"]
-        },
-        "default_action": "deny",
-        "rules": [
-          {
-            "id": "allow-web",
-            "action": "allow",
-            "match": {
-              "dst_ips": ["203.0.113.10"],
-              "proto": "tcp",
-              "dst_ports": [443]
-            }
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "branch-office",
+      "mode": "enforce",
+      "sources": {
+        "cidrs": ["10.10.0.0/16"]
+      },
+      "default_action": "deny",
+      "rules": [
+        {
+          "id": "allow-web",
+          "action": "allow",
+          "match": {
+            "dst_ips": ["203.0.113.10"],
+            "proto": "tcp",
+            "dst_ports": [443]
           }
-        ]
-      }
-    ]
-  }
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -58,37 +55,34 @@ not just packet allow rules.
 
 ```json
 {
-  "mode": "enforce",
-  "name": "hostname-egress",
-  "policy": {
-    "default_policy": "deny",
-    "source_groups": [
-      {
-        "id": "office-users",
-        "sources": {
-          "cidrs": ["10.20.0.0/16"]
-        },
-        "default_action": "deny",
-        "rules": [
-          {
-            "id": "allow-example-dns",
-            "action": "allow",
-            "match": {
-              "dns_hostname": "^api\\.example\\.com$"
-            }
-          },
-          {
-            "id": "allow-example-https",
-            "action": "allow",
-            "match": {
-              "proto": "tcp",
-              "dst_ports": [443]
-            }
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "office-users",
+      "mode": "enforce",
+      "sources": {
+        "cidrs": ["10.20.0.0/16"]
+      },
+      "default_action": "deny",
+      "rules": [
+        {
+          "id": "allow-example-dns",
+          "action": "allow",
+          "match": {
+            "dns_hostname": "^api\\.example\\.com$"
           }
-        ]
-      }
-    ]
-  }
+        },
+        {
+          "id": "allow-example-https",
+          "action": "allow",
+          "match": {
+            "proto": "tcp",
+            "dst_ports": [443]
+          }
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -97,38 +91,35 @@ Neuwerk resolve and allowlist the destination IP.
 
 ## 3. Audit-First Rollout
 
-Use the same policy logic you intend to enforce, but start at the top level in `audit` mode.
+Use the same policy logic you intend to enforce, but start the source group in `audit` mode.
 
 ```json
 {
-  "mode": "audit",
-  "name": "candidate-policy",
-  "policy": {
-    "default_policy": "deny",
-    "source_groups": [
-      {
-        "id": "test-scope",
-        "sources": {
-          "cidrs": ["10.30.0.0/24"]
-        },
-        "default_action": "deny",
-        "rules": [
-          {
-            "id": "allow-https",
-            "action": "allow",
-            "match": {
-              "proto": "tcp",
-              "dst_ports": [443]
-            }
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "test-scope",
+      "mode": "audit",
+      "sources": {
+        "cidrs": ["10.30.0.0/24"]
+      },
+      "default_action": "deny",
+      "rules": [
+        {
+          "id": "allow-https",
+          "action": "allow",
+          "match": {
+            "proto": "tcp",
+            "dst_ports": [443]
           }
-        ]
-      }
-    ]
-  }
+        }
+      ]
+    }
+  ]
 }
 ```
 
-After reviewing the audit evidence, promote the same policy to `mode: "enforce"`.
+After reviewing the audit evidence, promote the same source group to `mode: "enforce"`.
 
 ## 4. TLS Metadata Match On SNI
 
@@ -136,37 +127,34 @@ Use metadata mode when SNI or certificate fields are enough and you do not want 
 
 ```json
 {
-  "mode": "enforce",
-  "name": "tls-metadata",
-  "policy": {
-    "default_policy": "deny",
-    "source_groups": [
-      {
-        "id": "tls-users",
-        "sources": {
-          "cidrs": ["10.40.0.0/24"]
-        },
-        "default_action": "deny",
-        "rules": [
-          {
-            "id": "allow-api-sni",
-            "action": "allow",
-            "match": {
-              "dst_ips": ["203.0.113.20"],
-              "proto": "tcp",
-              "dst_ports": [443],
-              "tls": {
-                "mode": "metadata",
-                "sni": {
-                  "exact": ["api.example.com"]
-                }
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "tls-users",
+      "mode": "enforce",
+      "sources": {
+        "cidrs": ["10.40.0.0/24"]
+      },
+      "default_action": "deny",
+      "rules": [
+        {
+          "id": "allow-api-sni",
+          "action": "allow",
+          "match": {
+            "dst_ips": ["203.0.113.20"],
+            "proto": "tcp",
+            "dst_ports": [443],
+            "tls": {
+              "mode": "metadata",
+              "sni": {
+                "exact": ["api.example.com"]
               }
             }
           }
-        ]
-      }
-    ]
-  }
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -177,44 +165,41 @@ CA.
 
 ```json
 {
-  "mode": "enforce",
-  "name": "tls-intercept-http",
-  "policy": {
-    "default_policy": "deny",
-    "source_groups": [
-      {
-        "id": "intercept-users",
-        "sources": {
-          "cidrs": ["10.50.0.0/24"]
-        },
-        "default_action": "deny",
-        "rules": [
-          {
-            "id": "allow-admin-api",
-            "action": "allow",
-            "match": {
-              "proto": "tcp",
-              "dst_ports": [443],
-              "tls": {
-                "mode": "intercept",
-                "http": {
-                  "request": {
-                    "host": {
-                      "exact": ["api.example.com"]
-                    },
-                    "methods": ["GET"],
-                    "path": {
-                      "prefix": ["/admin/"]
-                    }
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "intercept-users",
+      "mode": "enforce",
+      "sources": {
+        "cidrs": ["10.50.0.0/24"]
+      },
+      "default_action": "deny",
+      "rules": [
+        {
+          "id": "allow-admin-api",
+          "action": "allow",
+          "match": {
+            "proto": "tcp",
+            "dst_ports": [443],
+            "tls": {
+              "mode": "intercept",
+              "http": {
+                "request": {
+                  "host": {
+                    "exact": ["api.example.com"]
+                  },
+                  "methods": ["GET"],
+                  "path": {
+                    "prefix": ["/admin/"]
                   }
                 }
               }
             }
           }
-        ]
-      }
-    ]
-  }
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -224,48 +209,45 @@ Use this when source identity should follow pods instead of static IP lists.
 
 ```json
 {
-  "mode": "enforce",
-  "name": "payments-egress",
-  "policy": {
-    "default_policy": "deny",
-    "source_groups": [
-      {
-        "id": "payments-pods",
-        "sources": {
-          "kubernetes": [
-            {
-              "integration": "cluster-a",
-              "pod_selector": {
-                "namespace": "payments",
-                "match_labels": {
-                  "app": "api"
-                }
-              }
-            }
-          ]
-        },
-        "default_action": "deny",
-        "rules": [
+  "default_policy": "deny",
+  "source_groups": [
+    {
+      "id": "payments-pods",
+      "mode": "enforce",
+      "sources": {
+        "kubernetes": [
           {
-            "id": "allow-webhook",
-            "action": "allow",
-            "match": {
-              "proto": "tcp",
-              "dst_ips": ["203.0.113.20"],
-              "dst_ports": [443]
+            "integration": "cluster-a",
+            "pod_selector": {
+              "namespace": "payments",
+              "match_labels": {
+                "app": "api"
+              }
             }
           }
         ]
-      }
-    ]
-  }
+      },
+      "default_action": "deny",
+      "rules": [
+        {
+          "id": "allow-webhook",
+          "action": "allow",
+          "match": {
+            "proto": "tcp",
+            "dst_ips": ["203.0.113.20"],
+            "dst_ports": [443]
+          }
+        }
+      ]
+    }
+  ]
 }
 ```
 
 ## How To Use These Safely
 
 - start with the narrowest possible source scope
-- prefer top-level `audit` mode before broad enforcement
+- prefer source-group `audit` mode before broad enforcement
 - add explicit DNS rules when hostname policy is involved
 - verify readiness and runtime state after every write
 

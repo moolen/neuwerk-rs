@@ -40,10 +40,6 @@ vi.mock('./dashboard/components/DashboardStatsView', () => ({
   DashboardStatsView: () => <div>Dashboard stats view</div>,
 }));
 
-vi.mock('./policies/components/PolicySelector', () => ({
-  PolicySelector: () => <div>Policy selector</div>,
-}));
-
 vi.mock('./policies/components/PolicySourceGroupsTable', () => ({
   PolicySourceGroupsTable: () => <div>Source group table</div>,
 }));
@@ -142,11 +138,8 @@ describe('shared page frames', () => {
       actions: {
         loadAll: async () => {},
         loadEditorForPolicy: async () => {},
-        selectPolicy: () => {},
         openSourceGroupEditor: () => {},
         closeSourceGroupEditor: () => {},
-        handleCreate: () => {},
-        handleDelete: async () => {},
         handleSave: async () => {},
         updateDraft: () => {},
         setDraft: () => createEmptyPolicyRequest(),
@@ -196,15 +189,16 @@ describe('shared page frames', () => {
     const html = renderToStaticMarkup(<PoliciesPage />);
 
     expect(html).toContain('Policies');
-    expect(html).toContain('Form-driven policy builder with live validation.');
-    expect(html).toContain('Refresh');
-    expect(html).toContain('New Policy');
-    expect(html).toContain('Policy Builder');
-    expect(html).toContain('Policy');
-    expect(html).toContain('Enforcement Mode');
+    expect(html).toContain(
+      'Form-driven singleton policy editor with live validation.'
+    );
+    expect(html).toContain('Policy defaults');
+    expect(html).toContain('Always-active singleton policy');
     expect(html).toContain('Global Fallback Action');
-    expect(html).toContain('Source groups');
+    expect(html).toContain('Source group table');
     expect(html).toContain('Save');
+    expect(html).not.toContain('Refresh');
+    expect(html).not.toContain('New Policy');
     expect(html).toContain('lg:flex-row');
   });
 });

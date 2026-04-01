@@ -2,13 +2,10 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { PolicyRecord } from '../../types';
 import { createEmptyPolicyRequest } from '../../utils/policyModel';
-import { deriveLoadAllFollowUp, errorMessage } from './policyBuilderLifecycle';
-import { buildHandleDelete } from './policyBuilderLifecycleDelete';
+import { errorMessage } from './policyBuilderLifecycle';
 import { buildHandleSave } from './policyBuilderLifecycleSave';
 import {
-  deletePolicyRemote,
   loadPolicyBuilderRemote,
   savePolicyRemote,
 } from './policyBuilderRemote';
@@ -16,35 +13,22 @@ import {
   buildCloseSourceGroupEditor,
   buildLoadAll,
   buildOpenSourceGroupEditor,
-  buildSelectPolicy,
 } from './policyBuilderLifecycleLoad';
 import type { PolicyBuilderLifecycleDeps } from './policyBuilderTypes';
 import { usePolicyBuilder } from './usePolicyBuilder';
 import { usePolicyBuilderState } from './usePolicyBuilderState';
 
 vi.mock('./policyBuilderRemote', () => ({
-  deletePolicyRemote: vi.fn(),
   loadPolicyBuilderRemote: vi.fn(),
   loadPolicyDraftRemote: vi.fn(),
   savePolicyRemote: vi.fn(),
+  SINGLETON_POLICY_ID: 'singleton',
 }));
 
 describe('policyBuilderLifecycle helpers', () => {
   beforeEach(() => {
     vi.mocked(loadPolicyBuilderRemote).mockReset();
-    vi.mocked(deletePolicyRemote).mockReset();
     vi.mocked(savePolicyRemote).mockReset();
-  });
-
-  it('derives initial load follow-up action', () => {
-    const policies = [{ id: 'p-1' }, { id: 'p-2' }] as PolicyRecord[];
-    expect(deriveLoadAllFollowUp(policies, null)).toEqual({ kind: 'select-first', policyId: 'p-1' });
-    expect(deriveLoadAllFollowUp(policies, 'p-2')).toEqual({ kind: 'none' });
-    expect(deriveLoadAllFollowUp([{ id: 'p-2' }] as PolicyRecord[], 'p-1')).toEqual({
-      kind: 'select-first',
-      policyId: 'p-2',
-    });
-    expect(deriveLoadAllFollowUp([], null)).toEqual({ kind: 'create' });
   });
 
   it('normalizes unknown errors to fallback message', () => {
@@ -79,25 +63,6 @@ describe('policyBuilderLifecycle helpers', () => {
     expect(capturedStore?.selectedPolicyId).toBeNull();
     expect(capturedStore?.editorTargetId).toBeNull();
     expect(capturedStore?.setSelectedPolicyId).not.toBe(capturedStore?.setEditorTargetId);
-  });
-
-  it('buildSelectPolicy closes overlay on policy switch', () => {
-    const selectedPolicyIds: Array<string | null> = [];
-    const overlayModes: Array<'closed' | 'create-group' | 'edit-group'> = [];
-    const overlaySourceGroupIds: Array<string | null> = [];
-
-    const selectPolicy = buildSelectPolicy({
-      setSelectedPolicyId: (value) => selectedPolicyIds.push(value),
-      setOverlayMode: (value) =>
-        overlayModes.push(value),
-      setOverlaySourceGroupId: (value) => overlaySourceGroupIds.push(value),
-    });
-
-    selectPolicy('p-2');
-
-    expect(selectedPolicyIds).toEqual(['p-2']);
-    expect(overlayModes).toEqual(['closed']);
-    expect(overlaySourceGroupIds).toEqual([null]);
   });
 
   it('starts overlay closed in hook state and can open edit/create modes', () => {
@@ -135,13 +100,15 @@ describe('policyBuilderLifecycle helpers', () => {
     expect(overlaySourceGroupIds).toEqual([null, null, 'group-1']);
   });
 
-  it('uses selectedPolicyId for load follow-up, not legacy selectedId alias', async () => {
+  it('loads the singleton editor state from the singleton policy document', async () => {
     vi.mocked(loadPolicyBuilderRemote).mockResolvedValue({
-      policies: [{ id: 'p-1' }] as PolicyRecord[],
+      draft: createEmptyPolicyRequest(),
       integrations: [],
     });
 
     const selectedPolicyIds: Array<string | null> = [];
+    const editorModes: Array<'create' | 'edit'> = [];
+    const editorTargetIds: Array<string | null> = [];
     const deps: PolicyBuilderLifecycleDeps = {
       selectedPolicyId: null,
       editorMode: 'create',
@@ -158,76 +125,26 @@ describe('policyBuilderLifecycle helpers', () => {
       setLoading: () => undefined,
       setError: () => undefined,
       setDraft: () => undefined,
-      setEditorMode: () => undefined,
-      setEditorTargetId: () => undefined,
-      setSaving: () => undefined,
-      setEditorError: () => undefined,
-    };
-
-    const loadAll = buildLoadAll(deps, () => undefined);
-
-    await loadAll();
-
-    expect(selectedPolicyIds).toEqual(['p-1']);
-  });
-
-  it('resets the editor after deleting the edited policy without clearing the refreshed selection', async () => {
-    vi.mocked(deletePolicyRemote).mockResolvedValue(undefined);
-    const confirmSpy = vi.fn(() => true);
-    vi.stubGlobal('window', { confirm: confirmSpy });
-
-    const selectedPolicyIds: Array<string | null> = [];
-    const editorModes: Array<'create' | 'edit'> = [];
-    const editorTargetIds: Array<string | null> = [];
-    const drafts = new Array<ReturnType<typeof createEmptyPolicyRequest>>();
-    const deps: PolicyBuilderLifecycleDeps = {
-      selectedPolicyId: 'p-deleted',
-      editorMode: 'edit',
-      editorTargetId: 'p-deleted',
-      overlayMode: 'closed',
-      overlaySourceGroupId: null,
-      draft: createEmptyPolicyRequest(),
-      integrationNames: new Set<string>(),
-      setPolicies: () => undefined,
-      setIntegrations: () => undefined,
-      setSelectedPolicyId: (value) => selectedPolicyIds.push(value),
-      setOverlayMode: () => undefined,
-      setOverlaySourceGroupId: () => undefined,
-      setLoading: () => undefined,
-      setError: () => undefined,
-      setDraft: (value) => {
-        drafts.push(typeof value === 'function' ? value(createEmptyPolicyRequest()) : value);
-      },
       setEditorMode: (value) => editorModes.push(value),
       setEditorTargetId: (value) => editorTargetIds.push(value),
       setSaving: () => undefined,
       setEditorError: () => undefined,
     };
 
-    const handleDelete = buildHandleDelete(
-      deps,
-      async () => {
-        selectedPolicyIds.push('p-remaining');
-      },
-      () => undefined,
-    );
+    const loadAll = buildLoadAll(deps);
 
-    await handleDelete('p-deleted');
+    await loadAll();
 
-    expect(selectedPolicyIds).toEqual(['p-remaining']);
-    expect(editorModes).toEqual(['create']);
-    expect(editorTargetIds).toEqual([null]);
-    expect(drafts).toEqual([createEmptyPolicyRequest()]);
-    expect(confirmSpy).toHaveBeenCalledWith('Delete this policy?');
-
-    vi.unstubAllGlobals();
+    expect(selectedPolicyIds).toEqual(['singleton']);
+    expect(editorModes).toEqual(['edit']);
+    expect(editorTargetIds).toEqual(['singleton']);
   });
 
-  it('selects the created policy after save without relying on legacy selectedId wiring', async () => {
+  it('selects the singleton policy after save without legacy list state wiring', async () => {
     vi.mocked(savePolicyRemote).mockResolvedValue({
       editorMode: 'edit',
-      editorTargetId: 'p-new',
-      selectedPolicyId: 'p-new',
+      editorTargetId: 'singleton',
+      selectedPolicyId: 'singleton',
       draft: createEmptyPolicyRequest(),
     });
 
@@ -258,6 +175,6 @@ describe('policyBuilderLifecycle helpers', () => {
 
     await handleSave();
 
-    expect(selectedPolicyIds).toEqual(['p-new']);
+    expect(selectedPolicyIds).toEqual(['singleton']);
   });
 });

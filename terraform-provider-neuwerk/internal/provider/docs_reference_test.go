@@ -10,7 +10,6 @@ func TestTerraformDocsReferenceLayout(t *testing.T) {
 	t.Parallel()
 
 	resourceDocs := []string{
-		"../../docs/resources/policy.md",
 		"../../docs/resources/kubernetes_integration.md",
 		"../../docs/resources/tls_intercept_ca.md",
 		"../../docs/resources/service_account.md",

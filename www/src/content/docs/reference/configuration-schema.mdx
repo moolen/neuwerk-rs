@@ -4,11 +4,10 @@ description: Reference for Neuwerk policy payloads accepted by the management AP
 order: 1
 ---
 
-This page documents the policy configuration payloads accepted by the management API. The
-authoritative machine-readable source is the generated OpenAPI document at
-`/openapi/neuwerk-v1.json`, especially these components:
+This page documents the singleton policy payload accepted by the management API. The authoritative
+machine-readable source is the generated OpenAPI document at `/openapi/neuwerk-v1.json`,
+especially these components:
 
-- `OpenApiPolicyUpsertRequest`
 - `PolicyConfig`
 - `SourceGroupConfig`
 - `SourcesConfig`
@@ -18,28 +17,19 @@ authoritative machine-readable source is the generated OpenAPI document at
 
 ## Scope
 
-The current configuration schema is the payload accepted by the policy management API:
+The current configuration schema is the payload accepted by the singleton policy API:
 
-- `POST /api/v1/policies`
-- `PUT /api/v1/policies/:id`
-- `PUT /api/v1/policies/by-name/:name`
+- `GET /api/v1/policy`
+- `PUT /api/v1/policy`
 
-Those endpoints accept a request envelope with three fields:
+`PUT /api/v1/policy` accepts the policy document directly:
 
 ```json
 {
-  "mode": "enforce",
-  "name": "office-egress",
-  "policy": {
-    "default_policy": "deny",
-    "source_groups": []
-  }
+  "default_policy": "deny",
+  "source_groups": []
 }
 ```
-
-- `mode` controls whether the policy is `disabled`, `audit`, or `enforce`
-- `name` is optional metadata for lookup by stable name
-- `policy` is the actual Neuwerk policy object documented below
 
 ## Top-Level PolicyConfig
 
@@ -51,6 +41,7 @@ Those endpoints accept a request envelope with three fields:
   "source_groups": [
     {
       "id": "branch-office",
+      "mode": "enforce",
       "sources": {
         "cidrs": ["10.10.0.0/16"]
       },
@@ -74,6 +65,7 @@ Each source group defines a source population and the rules applied to that popu
 ```json
 {
   "id": "branch-office",
+  "mode": "enforce",
   "priority": 100,
   "sources": {
     "cidrs": ["10.10.0.0/16"],
@@ -88,6 +80,8 @@ Fields:
 
 - `id`
   Required stable identifier for the source group
+- `mode`
+  Required rollout mode for the source group, either `audit` or `enforce`
 - `priority`
   Optional explicit evaluation priority
   If omitted, the control plane falls back to list order
@@ -167,7 +161,8 @@ Node selector form:
 
 ## RuleConfig
 
-Each rule combines metadata, an action, an optional mode override, and a `match` block.
+Each rule combines metadata, an action, an optional mode override, and a `match` block. Rule mode,
+when present, overrides the containing source-group mode.
 
 ```json
 {

@@ -156,9 +156,7 @@ impl Drop for NetworkCleanup {
     }
 }
 
-fn spawn_neuwerk(
-    local_root: &Path,
-) -> Result<Child, String> {
+fn spawn_neuwerk(local_root: &Path) -> Result<Child, String> {
     Command::new(env!("CARGO_BIN_EXE_neuwerk"))
         .env("NEUWERK_LOCAL_DATA_DIR", local_root)
         .stdin(Stdio::null())
@@ -530,32 +528,6 @@ fn sanitize_label(label: &str) -> String {
         .collect()
 }
 
-fn read_expected_json(fixture: &str, file: &str) -> Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("terraform_provider_golden")
-        .join(fixture)
-        .join(file);
-    serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
-}
-
-fn prune_policy_value(value: &mut Value) -> bool {
-    match value {
-        Value::Null => true,
-        Value::Array(items) => {
-            for item in items.iter_mut() {
-                let _ = prune_policy_value(item);
-            }
-            items.is_empty()
-        }
-        Value::Object(map) => {
-            map.retain(|_, child| !prune_policy_value(child));
-            map.is_empty()
-        }
-        _ => false,
-    }
-}
-
 fn fixture_replacements(
     harness: &NeuwerkHarness,
     extra: BTreeMap<String, String>,
@@ -589,32 +561,6 @@ fn generate_uploaded_ca_pair() -> (String, String) {
         cert.serialize_pem().unwrap(),
         cert.serialize_private_key_pem(),
     )
-}
-
-async fn verify_policy_exact(
-    harness: &NeuwerkHarness,
-    name: &str,
-    expected_policy: Value,
-) -> Result<(), String> {
-    let policy = harness
-        .get_json(&format!("/api/v1/policies/by-name/{name}"))
-        .await?;
-    let actual = policy
-        .get("policy")
-        .cloned()
-        .ok_or_else(|| "policy response missing policy".to_string())?;
-    let mut expected_canonical = expected_policy.clone();
-    let mut actual_canonical = actual.clone();
-    let _ = prune_policy_value(&mut expected_canonical);
-    let _ = prune_policy_value(&mut actual_canonical);
-    if actual_canonical != expected_canonical {
-        return Err(format!(
-            "policy mismatch for {name}\nexpected:\n{}\nactual:\n{}",
-            serde_json::to_string_pretty(&expected_canonical).unwrap(),
-            serde_json::to_string_pretty(&actual_canonical).unwrap()
-        ));
-    }
-    Ok(())
 }
 
 async fn verify_integration_exists(harness: &NeuwerkHarness, name: &str) -> Result<(), String> {
@@ -799,18 +745,6 @@ async fn verify_sso_provider_missing(harness: &NeuwerkHarness, name: &str) -> Re
     Ok(())
 }
 
-async fn verify_policy_missing(harness: &NeuwerkHarness, name: &str) -> Result<(), String> {
-    let status = harness
-        .get_status(&format!("/api/v1/policies/by-name/{name}"))
-        .await?;
-    if status != reqwest::StatusCode::NOT_FOUND {
-        return Err(format!(
-            "expected policy {name} to be missing, got {status}"
-        ));
-    }
-    Ok(())
-}
-
 async fn verify_integration_missing(harness: &NeuwerkHarness, name: &str) -> Result<(), String> {
     let status = harness
         .get_status(&format!("/api/v1/integrations/{name}"))
@@ -858,12 +792,6 @@ async fn run_foundation_import_case(
     workspace.apply()?;
     workspace.expect_plan_clean()?;
     verify_integration_exists(harness, "prod-k8s").await?;
-    verify_policy_exact(
-        harness,
-        "terraform-contract-raw",
-        read_expected_json("foundation_importable", "expected_policy.json"),
-    )
-    .await?;
 
     let import_workspace = TerraformWorkspace::new(
         provider,
@@ -872,13 +800,11 @@ async fn run_foundation_import_case(
     )?;
     import_workspace.init()?;
     import_workspace.import("neuwerk_kubernetes_integration.prod", "prod-k8s")?;
-    import_workspace.import("neuwerk_policy.main", "terraform-contract-raw")?;
     import_workspace.apply()?;
     import_workspace.expect_plan_clean()?;
     import_workspace.destroy()?;
 
     verify_integration_missing(harness, "prod-k8s").await?;
-    verify_policy_missing(harness, "terraform-contract-raw").await?;
     Ok(())
 }
 
@@ -1015,95 +941,6 @@ async fn run_generated_ca_case(
     Ok(())
 }
 
-async fn run_policy_dns_sugar_case(
-    harness: &NeuwerkHarness,
-    provider: &ProviderInstall,
-) -> Result<(), String> {
-    let workspace = TerraformWorkspace::new(
-        provider,
-        "policy_dns_sugar",
-        &fixture_replacements(harness, BTreeMap::new()),
-    )?;
-    workspace.init()?;
-    workspace.apply()?;
-    workspace.expect_plan_clean()?;
-    verify_policy_exact(
-        harness,
-        "terraform-dns-sugar",
-        read_expected_json("policy_dns_sugar", "expected_policy.json"),
-    )
-    .await?;
-    workspace.destroy()?;
-    verify_policy_missing(harness, "terraform-dns-sugar").await?;
-    Ok(())
-}
-
-async fn run_policy_kubernetes_sugar_import_case(
-    harness: &NeuwerkHarness,
-    provider: &ProviderInstall,
-) -> Result<(), String> {
-    let workspace = TerraformWorkspace::new(
-        provider,
-        "policy_kubernetes_sugar_importable",
-        &fixture_replacements(harness, BTreeMap::new()),
-    )?;
-    workspace.init()?;
-    workspace.apply()?;
-    workspace.expect_plan_clean()?;
-    verify_integration_exists(harness, "prod-k8s").await?;
-    verify_policy_exact(
-        harness,
-        "terraform-k8s-sugar",
-        read_expected_json("policy_kubernetes_sugar_importable", "expected_policy.json"),
-    )
-    .await?;
-
-    let import_workspace = TerraformWorkspace::new(
-        provider,
-        "policy_kubernetes_sugar_importable",
-        &fixture_replacements(harness, BTreeMap::new()),
-    )?;
-    import_workspace.init()?;
-    import_workspace.import("neuwerk_kubernetes_integration.prod", "prod-k8s")?;
-    import_workspace.import("neuwerk_policy.main", "terraform-k8s-sugar")?;
-    import_workspace.apply()?;
-    import_workspace.expect_plan_clean()?;
-    verify_policy_exact(
-        harness,
-        "terraform-k8s-sugar",
-        read_expected_json("policy_kubernetes_sugar_importable", "expected_policy.json"),
-    )
-    .await?;
-    import_workspace.destroy()?;
-
-    verify_integration_missing(harness, "prod-k8s").await?;
-    verify_policy_missing(harness, "terraform-k8s-sugar").await?;
-    Ok(())
-}
-
-async fn run_policy_tls_targets_case(
-    harness: &NeuwerkHarness,
-    provider: &ProviderInstall,
-) -> Result<(), String> {
-    let workspace = TerraformWorkspace::new(
-        provider,
-        "policy_tls_targets_sugar",
-        &fixture_replacements(harness, BTreeMap::new()),
-    )?;
-    workspace.init()?;
-    workspace.apply()?;
-    workspace.expect_plan_clean()?;
-    verify_policy_exact(
-        harness,
-        "terraform-tls-targets",
-        read_expected_json("policy_tls_targets_sugar", "expected_policy.json"),
-    )
-    .await?;
-    workspace.destroy()?;
-    verify_policy_missing(harness, "terraform-tls-targets").await?;
-    Ok(())
-}
-
 #[tokio::test]
 async fn terraform_provider_golden_contract_suite() {
     if unsafe { libc::geteuid() } != 0 {
@@ -1145,15 +982,6 @@ async fn terraform_provider_golden_contract_suite() {
     run_generated_ca_case(&harness, &provider)
         .await
         .expect("generated ca case");
-    run_policy_dns_sugar_case(&harness, &provider)
-        .await
-        .expect("policy dns sugar case");
-    run_policy_kubernetes_sugar_import_case(&harness, &provider)
-        .await
-        .expect("policy kubernetes sugar import case");
-    run_policy_tls_targets_case(&harness, &provider)
-        .await
-        .expect("policy tls targets case");
 
     harness.shutdown().await.expect("shutdown neuwerk");
 }

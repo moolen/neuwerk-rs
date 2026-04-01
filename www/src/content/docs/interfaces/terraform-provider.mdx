@@ -32,12 +32,11 @@ configuration does not need to change when public Terraform Registry publication
 The provider is intentionally small and currently exposes:
 
 - provider configuration for HTTPS API access
-- eight managed resources
+- seven managed resources
 - no data sources
 
 Implemented resources today are:
 
-- `neuwerk_policy`
 - `neuwerk_kubernetes_integration`
 - `neuwerk_tls_intercept_ca`
 - `neuwerk_service_account`
@@ -84,34 +83,6 @@ This makes the provider suitable for talking to a cluster where any one endpoint
 or may proxy to the current leader.
 
 ## Resource Coverage
-
-### `neuwerk_policy`
-
-This resource manages an aggregate policy document through the by-name policy API.
-
-Current API mapping:
-
-- `GET /api/v1/policies/by-name/{name}`
-- `PUT /api/v1/policies/by-name/{name}`
-- `DELETE /api/v1/policies/{id}`
-
-The resource supports two authoring styles:
-
-- `document_json`
-  A low-level JSON escape hatch
-- nested HCL fields under `source_group`
-  A higher-level authoring surface that the provider compiles into the canonical policy JSON
-
-Important current attributes include:
-
-- `name`
-- `mode`
-- `default_action`
-- `document_json`
-- `source_group`
-- computed `compiled_json`
-
-The provider imports this resource by policy name.
 
 ### `neuwerk_kubernetes_integration`
 
@@ -217,7 +188,7 @@ A few limitations are explicit in the current provider code:
 - no resources for performance mode, audit, or DNS cache
 - no provider code generation from OpenAPI
 - no generic “all settings” resource
-- no partial policy-subobject resources; policy is managed as one aggregate document
+- no policy resource and no partial policy-subobject resources
 
 The provider therefore covers a useful automation subset, not the full HTTP API.
 
@@ -225,12 +196,11 @@ The provider therefore covers a useful automation subset, not the full HTTP API.
 
 Two state-model details are important when using the provider.
 
-### Policy Is Aggregate State
+### Policy Is Not Terraform-Managed
 
-`neuwerk_policy` manages one named aggregate policy document. Terraform is not updating one rule at
-a time on the server. Every apply sends the compiled full document for that named policy.
-
-That is the correct mental model for drift and change review.
+The control plane still stores policy as one aggregate document, but the provider does not expose a
+policy resource. Source groups and rules are not independent backend resources, so the provider
+does not try to model them as standalone Terraform resources either.
 
 ### Integration Tokens Are Effectively Write-Only
 
@@ -255,8 +225,6 @@ Two other resources follow the same broad pattern:
 
 Current import identifiers are:
 
-- `neuwerk_policy`
-  import by policy name
 - `neuwerk_kubernetes_integration`
   import by integration name
 - `neuwerk_tls_intercept_ca`
@@ -289,7 +257,6 @@ These examples show the provider wired to:
 - one service-account token
 - one Kubernetes integration
 - one generated TLS intercept CA resource
-- one named policy resource
 
 ## Relationship To The HTTP API Docs
 

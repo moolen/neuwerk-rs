@@ -25,11 +25,8 @@ export interface UsePolicyBuilderState {
 export interface UsePolicyBuilderActions {
   loadAll: () => Promise<void>;
   loadEditorForPolicy: (policyId: string) => Promise<void>;
-  selectPolicy: (policyId: string) => void;
   openSourceGroupEditor: (sourceGroupId: string | null) => void;
   closeSourceGroupEditor: () => void;
-  handleCreate: () => void;
-  handleDelete: (policyId: string) => Promise<void>;
   handleSave: () => Promise<void>;
 
   updateDraft: (mutator: (next: PolicyCreateRequest) => void) => void;
