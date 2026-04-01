@@ -59,8 +59,7 @@ fn with_intercept_env<R>(ip: Option<&str>, port: Option<&str>, f: impl FnOnce() 
     with_test_runtime_knobs(
         |knobs| {
             if let Some(value) = ip {
-                knobs.dpdk.service_lane_intercept_service_ip =
-                    value.parse().expect("intercept ip");
+                knobs.dpdk.service_lane_intercept_service_ip = value.parse().expect("intercept ip");
             }
             if let Some(value) = port {
                 knobs.dpdk.service_lane_intercept_service_port =
@@ -244,6 +243,7 @@ fn intercept_policy_snapshot() -> PolicySnapshot {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: crate::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,

@@ -61,6 +61,7 @@ fn policy_snapshot_is_internal_checks_all_groups() {
     let mut group_a = SourceGroup {
         id: "a".to_string(),
         priority: 0,
+        mode: RuleMode::Enforce,
         sources: IpSetV4::new(),
         rules: Vec::new(),
         default_action: None,
@@ -72,6 +73,7 @@ fn policy_snapshot_is_internal_checks_all_groups() {
     let mut group_b = SourceGroup {
         id: "b".to_string(),
         priority: 1,
+        mode: RuleMode::Enforce,
         sources: IpSetV4::new(),
         rules: Vec::new(),
         default_action: None,
@@ -93,6 +95,7 @@ fn evaluate_audit_rules_reports_matched_rule() {
     let group = SourceGroup {
         id: "audit".to_string(),
         priority: 0,
+        mode: RuleMode::Audit,
         sources,
         rules: vec![Rule {
             id: "audit-allow".to_string(),
@@ -191,6 +194,7 @@ fn evaluate_prefers_earlier_wildcard_rule_over_later_exact_rule() {
         vec![SourceGroup {
             id: "group".to_string(),
             priority: 0,
+            mode: RuleMode::Enforce,
             sources,
             rules,
             default_action: None,
@@ -229,6 +233,7 @@ fn evaluate_exact_source_group_dispatch_matches_expected_group() {
             SourceGroup {
                 id: "a".to_string(),
                 priority: 0,
+                mode: RuleMode::Enforce,
                 sources: sources_a,
                 rules: vec![Rule {
                     id: "allow-a".to_string(),
@@ -254,6 +259,7 @@ fn evaluate_exact_source_group_dispatch_matches_expected_group() {
             SourceGroup {
                 id: "b".to_string(),
                 priority: 1,
+                mode: RuleMode::Enforce,
                 sources: sources_b,
                 rules: vec![Rule {
                     id: "allow-b".to_string(),
@@ -381,6 +387,42 @@ source_groups:
     assert_eq!(admin_effective, PolicyDecision::Deny);
 }
 
+#[test]
+fn audit_group_default_action_deny_is_not_enforced() {
+    let yaml = r#"
+default_policy: deny
+source_groups:
+  - id: apps
+    mode: audit
+    sources:
+      cidrs: ["10.0.0.0/24"]
+    default_action: deny
+    rules:
+      - id: only-allow-admin
+        action: allow
+        match:
+          proto: tcp
+          dst_ports: [22]
+"#;
+    let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+    let compiled = cfg.compile().unwrap();
+    let policy = PolicySnapshot::new(DefaultPolicy::Deny, compiled.groups);
+    let meta = PacketMeta {
+        src_ip: Ipv4Addr::new(10, 0, 0, 9),
+        dst_ip: Ipv4Addr::new(203, 0, 113, 20),
+        proto: 6,
+        src_port: 50000,
+        dst_port: 5432,
+        icmp_type: None,
+        icmp_code: None,
+    };
+
+    let (effective, raw, _, _) =
+        policy.evaluate_with_source_group_effective_and_raw(&meta, None, None);
+    assert_eq!(raw, PolicyDecision::Deny);
+    assert_eq!(effective, PolicyDecision::Allow);
+}
+
 fn ca_cert(name: &str) -> Certificate {
     let mut params = CertificateParams::default();
     params.distinguished_name.push(DnType::CommonName, name);
@@ -496,6 +538,7 @@ fn exact_source_group_index_keeps_fallback_groups_and_preserves_priority_order()
             SourceGroup {
                 id: "fallback".to_string(),
                 priority: 0,
+                mode: RuleMode::Enforce,
                 sources: fallback_sources,
                 rules: vec![Rule {
                     id: "deny-target".to_string(),
@@ -521,6 +564,7 @@ fn exact_source_group_index_keeps_fallback_groups_and_preserves_priority_order()
             SourceGroup {
                 id: "exact".to_string(),
                 priority: 1,
+                mode: RuleMode::Enforce,
                 sources: exact_sources,
                 rules: vec![Rule {
                     id: "allow-target".to_string(),

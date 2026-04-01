@@ -40,6 +40,7 @@ pub(super) fn dpdk_dhcp_l2_hairpin(_cfg: &TopologyConfig) -> Result<(), String> 
         let group = SourceGroup {
             id: "internal".to_string(),
             priority: 0,
+            mode: crate::dataplane::policy::RuleMode::Enforce,
             sources,
             rules: vec![rule],
             default_action: None,
@@ -353,6 +354,7 @@ pub(super) fn dpdk_tls_intercept_service_lane_round_trip(
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,

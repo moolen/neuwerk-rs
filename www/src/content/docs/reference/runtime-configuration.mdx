@@ -308,6 +308,16 @@ dpdk:
 | `metrics.bind` | derived: `<management-ip>:8080` | Metrics bind must move or narrow |
 | `metrics.allow_public_bind` | `false` | You intentionally expose metrics on a public address |
 
+#### Policy Document Match-Mode Semantics
+
+Neuwerk stores one always-active policy document under `policy.policy` via the HTTP API and replication state.
+For that document model:
+
+- top-level policy `mode` is not supported
+- each `source_groups[]` entry must set `mode: audit | enforce`
+- each rule `mode` is optional and acts only as an override of its source-group mode
+- when rule `mode` is omitted, rule evaluation inherits the containing `source_group.mode`
+
 ### Cluster And Cloud Integration
 
 | Path | Default | When To Touch |

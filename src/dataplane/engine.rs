@@ -1302,6 +1302,7 @@ mod tests {
         SourceGroup {
             id: id.to_string(),
             priority,
+            mode: RuleMode::Enforce,
             sources,
             rules,
             default_action: None,

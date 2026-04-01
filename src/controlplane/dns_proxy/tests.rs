@@ -92,6 +92,7 @@ fn single_group_policy(rules: Vec<DnsRule>) -> DnsPolicy {
     DnsPolicy::new(vec![DnsSourceGroup {
         id: "client-primary".to_string(),
         priority: 0,
+        mode: DataplaneRuleMode::Enforce,
         sources,
         rules,
     }])

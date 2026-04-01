@@ -188,6 +188,7 @@ pub struct Rule {
 pub struct SourceGroup {
     pub id: String,
     pub priority: u32,
+    pub mode: RuleMode,
     pub sources: IpSetV4,
     pub rules: Vec<Rule>,
     pub default_action: Option<RuleAction>,

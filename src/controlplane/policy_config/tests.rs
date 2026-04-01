@@ -171,6 +171,27 @@ source_groups:
     }
 
     #[test]
+    fn dns_audit_group_implicit_default_deny_not_enforced() {
+        let yaml = r#"
+source_groups:
+  - id: "dns"
+    mode: audit
+    sources:
+      ips: ["192.0.2.2"]
+    rules:
+      - id: "allow-foo"
+        action: allow
+        match:
+          dns_hostname: '^foo\.allowed$'
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let compiled = cfg.compile().unwrap();
+        let policy = compiled.dns_policy;
+        assert!(policy.allows("192.0.2.2".parse().unwrap(), "foo.allowed"));
+        assert!(policy.allows("192.0.2.2".parse().unwrap(), "bar.allowed"));
+    }
+
+    #[test]
     fn dns_hostname_only_rule_does_not_allow_packet_traffic() {
         let yaml = r#"
 default_policy: deny

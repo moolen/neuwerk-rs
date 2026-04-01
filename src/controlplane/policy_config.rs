@@ -148,7 +148,7 @@ impl DnsPolicy {
                 }
             }
             if include_group_default_deny {
-                return (false, None, Some(group.id.clone()));
+                return (false, Some(group.mode), Some(group.id.clone()));
             }
         }
         if include_group_default_deny {
@@ -169,6 +169,7 @@ impl DnsPolicy {
 pub struct DnsSourceGroup {
     pub id: String,
     pub priority: u32,
+    pub mode: DataplaneRuleMode,
     pub sources: IpSetV4,
     pub rules: Vec<DnsRule>,
 }
@@ -302,6 +303,7 @@ impl SourceGroupConfig {
         let group = SourceGroup {
             id: self.id.clone(),
             priority,
+            mode: group_mode,
             sources: sources.clone(),
             rules,
             default_action,
@@ -310,6 +312,7 @@ impl SourceGroupConfig {
         let dns_group = DnsSourceGroup {
             id: self.id,
             priority,
+            mode: group_mode,
             sources,
             rules: dns_rules,
         };

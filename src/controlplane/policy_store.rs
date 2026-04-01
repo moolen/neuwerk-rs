@@ -430,6 +430,7 @@ impl PolicyStore {
         SourceGroup {
             id: "internal".to_string(),
             priority: BASE_GROUP_PRIORITY,
+            mode: RuleMode::Enforce,
             sources,
             rules: Vec::new(),
             default_action: None,
@@ -496,6 +497,7 @@ mod tests {
         let group = SourceGroup {
             id: "apps".to_string(),
             priority: 1,
+            mode: RuleMode::Enforce,
             sources: group_sources,
             rules: Vec::new(),
             default_action: None,
@@ -540,6 +542,7 @@ mod tests {
         let group = SourceGroup {
             id: "apps".to_string(),
             priority: 0,
+            mode: RuleMode::Enforce,
             sources: group_sources,
             rules: Vec::new(),
             default_action: None,

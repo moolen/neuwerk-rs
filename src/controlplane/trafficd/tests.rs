@@ -83,6 +83,7 @@ fn non_intercept_snapshot(generation: u64) -> PolicySnapshot {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: crate::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,
@@ -121,6 +122,7 @@ fn intercept_snapshot(generation: u64) -> PolicySnapshot {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: crate::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,
@@ -159,6 +161,7 @@ fn intercept_http_snapshot(generation: u64) -> PolicySnapshot {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: crate::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,
@@ -197,6 +200,7 @@ fn intercept_h2_passthrough_snapshot(generation: u64) -> PolicySnapshot {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: crate::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,
@@ -3319,6 +3323,7 @@ fn infer_intercept_original_dst_uses_unique_rule_target() {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: crate::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,
@@ -3372,6 +3377,7 @@ fn infer_intercept_original_dst_rejects_ambiguous_targets() {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: crate::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule_a, rule_b],
         default_action: None,

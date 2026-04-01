@@ -348,7 +348,7 @@ pub(crate) fn evaluate_with_source_group_detailed_for_mode_full_scan_index(
                     },
                     Some(group_idx),
                     false,
-                    None,
+                    Some(group.mode),
                 );
             }
         }
@@ -414,7 +414,7 @@ pub(crate) fn evaluate_with_source_group_detailed_for_mode_exact_group_indices_i
                     },
                     Some(group_idx),
                     false,
-                    None,
+                    Some(group.mode),
                 );
             }
         }
