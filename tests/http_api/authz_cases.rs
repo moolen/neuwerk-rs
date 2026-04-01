@@ -88,28 +88,25 @@ async fn http_api_authz_enforces_admin_for_mutations() {
         api_auth::mint_token_with_roles(&keyset, "missing-roles-user", None, None, None).unwrap();
 
     let payload = serde_json::json!({
-        "mode": "enforce",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "authz",
-                    "sources": { "ips": ["10.0.0.5"] },
-                    "rules": [
-                        {
-                            "id": "allow-dns",
-                            "mode": "enforce",
-                            "action": "allow",
-                            "match": { "dns_hostname": "example.com" }
-                        }
-                    ]
-                }
-            ]
-        }
+        "default_policy": "deny",
+        "source_groups": [
+            {
+                "id": "authz",
+                "mode": "enforce",
+                "sources": { "ips": ["10.0.0.5"] },
+                "rules": [
+                    {
+                        "id": "allow-dns",
+                        "action": "allow",
+                        "match": { "dns_hostname": "example.com" }
+                    }
+                ]
+            }
+        ]
     });
 
     let readonly_post = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&readonly_token.token)
         .json(&payload)
         .send()
@@ -118,7 +115,7 @@ async fn http_api_authz_enforces_admin_for_mutations() {
     assert_eq!(readonly_post.status(), reqwest::StatusCode::FORBIDDEN);
 
     let missing_roles_post = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&missing_roles_token.token)
         .json(&payload)
         .send()
@@ -127,7 +124,7 @@ async fn http_api_authz_enforces_admin_for_mutations() {
     assert_eq!(missing_roles_post.status(), reqwest::StatusCode::FORBIDDEN);
 
     let admin_post = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&admin_token.token)
         .json(&payload)
         .send()
@@ -136,7 +133,7 @@ async fn http_api_authz_enforces_admin_for_mutations() {
     assert!(admin_post.status().is_success());
 
     let readonly_list = client
-        .get(format!("https://{bind_addr}/api/v1/policies"))
+        .get(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&readonly_token.token)
         .send()
         .await
@@ -309,14 +306,11 @@ async fn http_api_service_account_roles_authorize_mutations_and_fail_closed_on_d
     );
 
     let create_payload = serde_json::json!({
-        "mode": "audit",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": []
-        }
+        "default_policy": "deny",
+        "source_groups": []
     });
     let readonly_mutation = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(readonly_sa_jwt)
         .json(&create_payload)
         .send()
@@ -325,7 +319,7 @@ async fn http_api_service_account_roles_authorize_mutations_and_fail_closed_on_d
     assert_eq!(readonly_mutation.status(), reqwest::StatusCode::FORBIDDEN);
 
     let admin_mutation = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(admin_sa_jwt)
         .json(&create_payload)
         .send()
@@ -387,7 +381,7 @@ async fn http_api_service_account_roles_authorize_mutations_and_fail_closed_on_d
     );
 
     let admin_after_downgrade = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(admin_sa_jwt)
         .json(&create_payload)
         .send()
@@ -512,7 +506,7 @@ async fn http_api_auth_rejects_tokens_outside_clock_skew_window() {
     .unwrap();
 
     let within_future_resp = client
-        .get(format!("https://{bind_addr}/api/v1/policies"))
+        .get(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&within_future_skew.token)
         .send()
         .await
@@ -520,7 +514,7 @@ async fn http_api_auth_rejects_tokens_outside_clock_skew_window() {
     assert!(within_future_resp.status().is_success());
 
     let within_expiry_resp = client
-        .get(format!("https://{bind_addr}/api/v1/policies"))
+        .get(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&within_expiry_skew.token)
         .send()
         .await
@@ -528,7 +522,7 @@ async fn http_api_auth_rejects_tokens_outside_clock_skew_window() {
     assert!(within_expiry_resp.status().is_success());
 
     let future_reject = client
-        .get(format!("https://{bind_addr}/api/v1/policies"))
+        .get(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&beyond_future_skew.token)
         .send()
         .await
@@ -541,7 +535,7 @@ async fn http_api_auth_rejects_tokens_outside_clock_skew_window() {
         .contains("jwt issued in the future"));
 
     let expired_reject = client
-        .get(format!("https://{bind_addr}/api/v1/policies"))
+        .get(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&beyond_expiry_skew.token)
         .send()
         .await

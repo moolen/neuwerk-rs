@@ -10,15 +10,11 @@ pub(super) fn api_audit_policy_listed(cfg: &TopologyConfig) -> Result<(), String
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let before = http_list_policies(api_addr, &tls_dir, Some(&token)).await?;
-        let created =
+        let expected =
             http_set_policy(api_addr, &tls_dir, policy, PolicyMode::Audit, Some(&token)).await?;
-        let after = http_list_policies(api_addr, &tls_dir, Some(&token)).await?;
-        if after.len() != before.len() + 1 {
-            return Err("policy list size did not increase".to_string());
-        }
-        if !after.iter().any(|record| record.id == created.id) {
-            return Err("created policy not found in list".to_string());
+        let fetched = http_get_policy(api_addr, &tls_dir, Some(&token)).await?;
+        if !policies_equal(&fetched, &expected)? {
+            return Err("singleton policy fetch did not return the saved audit policy".to_string());
         }
         Ok(())
     })
@@ -35,6 +31,7 @@ pub(super) fn api_audit_passthrough_overrides_deny(cfg: &TopologyConfig) -> Resu
         r#"default_policy: allow
 source_groups:
   - id: "client-primary"
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
     rules:
@@ -78,6 +75,7 @@ pub(super) fn api_audit_findings_dns_passthrough_records_event(
         r#"default_policy: allow
 source_groups:
   - id: "client-primary"
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
     rules:
@@ -94,7 +92,7 @@ source_groups:
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let record = http_set_policy(
+        http_set_policy(
             api_addr,
             &tls_dir,
             audit_policy,
@@ -104,18 +102,12 @@ source_groups:
         .await?;
         let resp = dns_query_response(client_bind, dns_server, "foo.allowed").await?;
         assert_dns_allowed(&resp, cfg.up_dp_ip)?;
-        let query = build_audit_query(
-            Some(record.id),
-            Some("dns_deny"),
-            Some("client-primary"),
-            Some(50),
-        )?;
+        let query = build_audit_query(None, Some("dns_deny"), Some("client-primary"), Some(50))?;
         let findings =
             wait_for_audit_findings(api_addr, &tls_dir, &token, &query, Duration::from_secs(3))
                 .await?;
         if !findings.items.iter().any(|item| {
             item.finding_type == AuditFindingType::DnsDeny
-                && item.policy_id == Some(record.id)
                 && item.source_group == "client-primary"
                 && item.fqdn.as_deref() == Some("foo.allowed")
                 && item.hostname.as_deref() == Some("foo.allowed")
@@ -148,6 +140,7 @@ default_policy: allow
 source_groups:
   - id: "apps"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -172,7 +165,7 @@ source_groups:
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let record = http_set_policy(
+        http_set_policy(
             api_addr,
             &tls_dir,
             audit_policy,
@@ -191,13 +184,12 @@ source_groups:
         if resp != payload {
             return Err("udp echo payload mismatch".to_string());
         }
-        let query = build_audit_query(Some(record.id), Some("l4_deny"), Some("apps"), Some(50))?;
+        let query = build_audit_query(None, Some("l4_deny"), Some("apps"), Some(50))?;
         let findings =
             wait_for_audit_findings(api_addr, &tls_dir, &token, &query, Duration::from_secs(3))
                 .await?;
         if !findings.items.iter().any(|item| {
             item.finding_type == AuditFindingType::L4Deny
-                && item.policy_id == Some(record.id)
                 && item.source_group == "apps"
                 && item.dst_ip == Some(cfg.up_dp_ip)
                 && item.dst_port == Some(cfg.up_udp_port)
@@ -230,6 +222,7 @@ default_policy: allow
 source_groups:
   - id: "tls-audit"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -313,6 +306,7 @@ default_policy: allow
 source_groups:
   - id: "icmp-audit"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -335,7 +329,7 @@ source_groups:
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime error: {e}"))?;
-    let record = rt.block_on(async {
+    rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
         http_set_policy(
             api_addr,
@@ -354,18 +348,12 @@ source_groups:
         }
     }
     rt.block_on(async {
-        let query = build_audit_query(
-            Some(record.id),
-            Some("icmp_deny"),
-            Some("icmp-audit"),
-            Some(50),
-        )?;
+        let query = build_audit_query(None, Some("icmp_deny"), Some("icmp-audit"), Some(50))?;
         let findings =
             wait_for_audit_findings(api_addr, &tls_dir, &token, &query, Duration::from_secs(3))
                 .await?;
         if !findings.items.iter().any(|item| {
             item.finding_type == AuditFindingType::IcmpDeny
-                && item.policy_id == Some(record.id)
                 && item.source_group == "icmp-audit"
                 && item.dst_ip == Some(cfg.up_dp_ip)
                 && item.proto == Some(1)
@@ -400,6 +388,7 @@ default_policy: allow
 source_groups:
   - id: "rotate-a"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -422,6 +411,7 @@ default_policy: allow
 source_groups:
   - id: "rotate-b"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -448,7 +438,7 @@ source_groups:
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let record_a = http_set_policy(
+        http_set_policy(
             api_addr,
             &tls_dir,
             policy_a,
@@ -467,23 +457,18 @@ source_groups:
         if resp_a != payload_a {
             return Err("udp echo payload mismatch for policy A".to_string());
         }
-        let query_a = build_audit_query(Some(record_a.id), Some("l4_deny"), None, Some(100))?;
+        let query_a = build_audit_query(None, Some("l4_deny"), Some("rotate-a"), Some(100))?;
         let findings_a =
             wait_for_audit_findings(api_addr, &tls_dir, &token, &query_a, Duration::from_secs(3))
                 .await?;
-        if !has_audit_finding(&findings_a.items, AuditFindingType::L4Deny, "rotate-a")
-            || findings_a
-                .items
-                .iter()
-                .all(|item| item.policy_id != Some(record_a.id))
-        {
+        if !has_audit_finding(&findings_a.items, AuditFindingType::L4Deny, "rotate-a") {
             return Err(format!(
                 "policy A findings missing expected item: {:?}",
                 findings_a.items
             ));
         }
 
-        let record_b = http_set_policy(
+        http_set_policy(
             api_addr,
             &tls_dir,
             policy_b,
@@ -502,16 +487,11 @@ source_groups:
         if resp_b != payload_b {
             return Err("udp echo payload mismatch for policy B".to_string());
         }
-        let query_b = build_audit_query(Some(record_b.id), Some("l4_deny"), None, Some(100))?;
+        let query_b = build_audit_query(None, Some("l4_deny"), Some("rotate-b"), Some(100))?;
         let findings_b =
             wait_for_audit_findings(api_addr, &tls_dir, &token, &query_b, Duration::from_secs(3))
                 .await?;
-        if !has_audit_finding(&findings_b.items, AuditFindingType::L4Deny, "rotate-b")
-            || findings_b
-                .items
-                .iter()
-                .all(|item| item.policy_id != Some(record_b.id))
-        {
+        if !has_audit_finding(&findings_b.items, AuditFindingType::L4Deny, "rotate-b") {
             return Err(format!(
                 "policy B findings missing expected item: {:?}",
                 findings_b.items
@@ -520,16 +500,6 @@ source_groups:
 
         let recheck_a =
             http_get_audit_findings(api_addr, &tls_dir, Some(&query_a), Some(&token)).await?;
-        if recheck_a
-            .items
-            .iter()
-            .any(|item| item.policy_id != Some(record_a.id))
-        {
-            return Err(format!(
-                "policy A query leaked other policy ids: {:?}",
-                recheck_a.items
-            ));
-        }
         if recheck_a
             .items
             .iter()
@@ -543,16 +513,6 @@ source_groups:
 
         let recheck_b =
             http_get_audit_findings(api_addr, &tls_dir, Some(&query_b), Some(&token)).await?;
-        if recheck_b
-            .items
-            .iter()
-            .any(|item| item.policy_id != Some(record_b.id))
-        {
-            return Err(format!(
-                "policy B query leaked other policy ids: {:?}",
-                recheck_b.items
-            ));
-        }
         if recheck_b
             .items
             .iter()

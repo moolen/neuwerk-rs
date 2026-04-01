@@ -1,5 +1,3 @@
-use crate::e2e::services::{http_get_policy_by_name, http_upsert_policy_by_name};
-
 pub(super) fn api_policy_persisted_local(cfg: &TopologyConfig) -> Result<(), String> {
     let tls_dir = cfg.http_tls_dir.clone();
     wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
@@ -16,7 +14,7 @@ pub(super) fn api_policy_persisted_local(cfg: &TopologyConfig) -> Result<(), Str
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let record = http_set_policy(
+        let expected = http_set_policy(
             api_addr,
             &tls_dir,
             policy,
@@ -25,19 +23,14 @@ pub(super) fn api_policy_persisted_local(cfg: &TopologyConfig) -> Result<(), Str
         )
         .await?;
         let store_dir = std::path::PathBuf::from("/var/lib/neuwerk/local-policy-store");
-        let active_path = store_dir.join("active.json");
-        wait_for_path(&active_path, Duration::from_secs(5))?;
-        wait_for_active_id(&active_path, record.id, Duration::from_secs(5))
-            .map_err(|_| "local active policy id mismatch".to_string())?;
-        let record_path = store_dir
-            .join("policies")
-            .join(format!("{}.json", record.id));
-        wait_for_path(&record_path, Duration::from_secs(5))?;
-        let stored: PolicyRecord =
-            serde_json::from_slice(&std::fs::read(&record_path).map_err(|e| e.to_string())?)
-                .map_err(|e| format!("stored policy json error: {e}"))?;
-        if stored.id != record.id {
-            return Err("stored policy id mismatch".to_string());
+        let state_path = store_dir.join("policy.json");
+        wait_for_path(&state_path, Duration::from_secs(5))?;
+        let stored = read_stored_policy(&state_path)?;
+        if !policies_equal(&stored.policy, &expected)? {
+            return Err(format!(
+                "stored singleton policy mismatch: expected {:?}, got {:?}",
+                expected, stored.policy
+            ));
         }
         http_set_policy(
             api_addr,
@@ -58,16 +51,12 @@ pub(super) fn api_policy_active_semantics(cfg: &TopologyConfig) -> Result<(), St
     let token = api_auth_token(cfg)?;
     let audit_policy = parse_policy(policy_allow_cluster_deny_foo())?;
     let enforce_policy = parse_policy(policy_allow_foo_deny_cluster())?;
-    let store_dir = std::path::PathBuf::from("/var/lib/neuwerk/local-policy-store");
-    let active_path = store_dir.join("active.json");
-    wait_for_path(&active_path, Duration::from_secs(5))?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let baseline = read_active_id(&active_path)?;
         let audited = http_set_policy(
             api_addr,
             &tls_dir,
@@ -76,8 +65,18 @@ pub(super) fn api_policy_active_semantics(cfg: &TopologyConfig) -> Result<(), St
             Some(&token),
         )
         .await?;
-        wait_for_active_id(&active_path, audited.id, Duration::from_secs(5))
-            .map_err(|_| "audit policy did not become active".to_string())?;
+        let fetched_audit = http_get_policy(api_addr, &tls_dir, Some(&token)).await?;
+        if !policies_equal(&fetched_audit, &audited)? {
+            return Err("singleton get did not return the audited policy".to_string());
+        }
+        if fetched_audit
+            .source_groups
+            .iter()
+            .any(|group| group.mode != crate::controlplane::policy_config::MatchModeValue::Audit)
+        {
+            return Err("audited singleton policy did not persist audit mode".to_string());
+        }
+
         let enforced = http_set_policy(
             api_addr,
             &tls_dir,
@@ -86,10 +85,9 @@ pub(super) fn api_policy_active_semantics(cfg: &TopologyConfig) -> Result<(), St
             Some(&token),
         )
         .await?;
-        let after_enforce = wait_for_active_id(&active_path, enforced.id, Duration::from_secs(5))
-            .map_err(|_| "enforce policy did not update active id".to_string())?;
-        if after_enforce == baseline {
-            return Err("enforce policy did not replace baseline active id".to_string());
+        let fetched_enforce = http_get_policy(api_addr, &tls_dir, Some(&token)).await?;
+        if !policies_equal(&fetched_enforce, &enforced)? {
+            return Err("singleton get did not return the enforced policy".to_string());
         }
         Ok(())
     })
@@ -112,7 +110,7 @@ pub(super) fn api_policy_get_update_delete(cfg: &TopologyConfig) -> Result<(), S
 
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let record = http_set_policy(
+        let created = http_set_policy(
             api_addr,
             &tls_dir,
             baseline_policy.clone(),
@@ -121,25 +119,23 @@ pub(super) fn api_policy_get_update_delete(cfg: &TopologyConfig) -> Result<(), S
         )
         .await?;
 
-        let fetched =
-            http_get_policy(api_addr, &tls_dir, &record.id.to_string(), Some(&token)).await?;
-        if fetched.id != record.id {
-            return Err("policy get returned wrong record".to_string());
+        let fetched = http_get_policy(api_addr, &tls_dir, Some(&token)).await?;
+        if !policies_equal(&fetched, &created)? {
+            return Err("singleton get returned the wrong policy".to_string());
         }
 
         let mut updated_policy = baseline_policy.clone();
         updated_policy.default_policy = Some(PolicyValue::String("allow".to_string()));
-        let updated = http_update_policy(
+        let updated = http_set_policy(
             api_addr,
             &tls_dir,
-            &record.id.to_string(),
             updated_policy,
-            PolicyMode::Audit,
+            PolicyMode::Enforce,
             Some(&token),
         )
         .await?;
-        let updated_default = match updated.policy.default_policy {
-            Some(PolicyValue::String(value)) => value,
+        let updated_default = match &updated.default_policy {
+            Some(PolicyValue::String(value)) => value.clone(),
             _ => "missing".to_string(),
         };
         if updated_default != "allow" {
@@ -149,21 +145,14 @@ pub(super) fn api_policy_get_update_delete(cfg: &TopologyConfig) -> Result<(), S
             ));
         }
 
-        let status =
-            http_delete_policy(api_addr, &tls_dir, &record.id.to_string(), Some(&token)).await?;
-        if status != reqwest::StatusCode::NO_CONTENT {
-            return Err(format!("unexpected delete status {status}"));
+        let fetched_updated = http_get_policy(api_addr, &tls_dir, Some(&token)).await?;
+        if !policies_equal(&fetched_updated, &updated)? {
+            return Err("singleton overwrite did not persist".to_string());
         }
 
-        let status = http_api_status(
-            api_addr,
-            &tls_dir,
-            &format!("/api/v1/policies/{}", record.id),
-            Some(&token),
-        )
-        .await?;
+        let status = http_api_status(api_addr, &tls_dir, "/api/v1/policies", Some(&token)).await?;
         if status != reqwest::StatusCode::NOT_FOUND {
-            return Err(format!("expected 404 after delete, got {status}"));
+            return Err(format!("expected removed legacy list route to return 404, got {status}"));
         }
         Ok(())
     })
@@ -174,7 +163,6 @@ pub(super) fn api_policy_upsert_by_name(cfg: &TopologyConfig) -> Result<(), Stri
     wait_for_path(&tls_dir.join("ca.crt"), Duration::from_secs(5))?;
     let api_addr = SocketAddr::new(IpAddr::V4(cfg.fw_mgmt_ip), cfg.http_bind_port);
     let token = api_auth_token(cfg)?;
-    let policy_name = "terraform-prod";
     let baseline_policy = parse_policy(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/e2e_policy.yaml"
@@ -187,44 +175,27 @@ pub(super) fn api_policy_upsert_by_name(cfg: &TopologyConfig) -> Result<(), Stri
 
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let created = http_upsert_policy_by_name(
+        let _ = http_set_policy(
             api_addr,
             &tls_dir,
-            policy_name,
             baseline_policy.clone(),
             PolicyMode::Audit,
             Some(&token),
         )
         .await?;
-        if created.name.as_deref() != Some(policy_name) {
-            return Err("policy upsert by-name returned wrong name".to_string());
-        }
-
-        let fetched =
-            http_get_policy_by_name(api_addr, &tls_dir, policy_name, Some(&token)).await?;
-        if fetched.id != created.id {
-            return Err("policy get by-name returned wrong record".to_string());
-        }
 
         let mut updated_policy = baseline_policy.clone();
         updated_policy.default_policy = Some(PolicyValue::String("allow".to_string()));
-        let updated = http_upsert_policy_by_name(
+        let updated = http_set_policy(
             api_addr,
             &tls_dir,
-            policy_name,
             updated_policy,
             PolicyMode::Enforce,
             Some(&token),
         )
         .await?;
-        if updated.id != created.id {
-            return Err("policy upsert by-name did not preserve stable id".to_string());
-        }
-        if updated.name.as_deref() != Some(policy_name) {
-            return Err("policy upsert by-name changed stable name".to_string());
-        }
-        let updated_default = match updated.policy.default_policy {
-            Some(PolicyValue::String(value)) => value,
+        let updated_default = match &updated.default_policy {
+            Some(PolicyValue::String(value)) => value.clone(),
             _ => "missing".to_string(),
         };
         if updated_default != "allow" {
@@ -234,19 +205,22 @@ pub(super) fn api_policy_upsert_by_name(cfg: &TopologyConfig) -> Result<(), Stri
             ));
         }
 
-        let list = http_list_policies(api_addr, &tls_dir, Some(&token)).await?;
-        let matching: Vec<&PolicyRecord> = list
-            .iter()
-            .filter(|record| record.name.as_deref() == Some(policy_name))
-            .collect();
-        if matching.len() != 1 {
-            return Err(format!(
-                "expected exactly one policy named {policy_name}, found {}",
-                matching.len()
-            ));
+        let fetched = http_get_policy(api_addr, &tls_dir, Some(&token)).await?;
+        if !policies_equal(&fetched, &updated)? {
+            return Err("singleton get did not return the overwritten policy".to_string());
         }
-        if matching[0].id != created.id {
-            return Err("policy list returned wrong record for stable name".to_string());
+
+        let status = http_api_status(
+            api_addr,
+            &tls_dir,
+            "/api/v1/policies/by-name/terraform-prod",
+            Some(&token),
+        )
+        .await?;
+        if status != reqwest::StatusCode::NOT_FOUND {
+            return Err(format!(
+                "expected removed legacy by-name route to return 404, got {status}"
+            ));
         }
         Ok(())
     })
@@ -282,19 +256,14 @@ pub(super) fn api_policy_list_ordering(cfg: &TopologyConfig) -> Result<(), Strin
             Some(&token),
         )
         .await?;
-        let list = http_list_policies(api_addr, &tls_dir, Some(&token)).await?;
-        if list.len() < 2 {
-            return Err("policy list missing entries".to_string());
-        }
-        for window in list.windows(2) {
-            let left = parse_created_at(&window[0])?;
-            let right = parse_created_at(&window[1])?;
-            if left > right {
-                return Err("policy list not sorted by created_at".to_string());
-            }
-            if left == right && window[0].id.as_bytes() > window[1].id.as_bytes() {
-                return Err("policy list not stable by id".to_string());
-            }
+        let fetched = http_get_policy(api_addr, &tls_dir, Some(&token)).await?;
+        let deny_cluster = fetched
+            .source_groups
+            .iter()
+            .flat_map(|group| group.rules.iter())
+            .any(|rule| rule.id == "deny-cluster");
+        if !deny_cluster {
+            return Err("singleton overwrite did not keep the latest policy".to_string());
         }
         Ok(())
     })
@@ -409,6 +378,7 @@ fn build_policy_scale_yaml(cfg: &TopologyConfig, rule_count: usize) -> String {
 source_groups:
   - id: "policy-scale"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -529,7 +499,7 @@ pub(super) fn api_body_limit_rejects_large(cfg: &TopologyConfig) -> Result<(), S
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
         let body = vec![b'a'; 3 * 1024 * 1024];
         let status =
-            http_api_post_raw(api_addr, &tls_dir, "/api/v1/policies", body, Some(&token)).await?;
+            http_api_put_raw(api_addr, &tls_dir, "/api/v1/policy", body, Some(&token)).await?;
         if status != reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             return Err(format!("expected 413, got {}", status));
         }
@@ -548,7 +518,7 @@ pub(super) fn api_metrics_unauthenticated(cfg: &TopologyConfig) -> Result<(), St
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let status = http_api_status(api_addr, &tls_dir, "/api/v1/policies", None).await?;
+        let status = http_api_status(api_addr, &tls_dir, "/api/v1/policy", None).await?;
         if status != reqwest::StatusCode::UNAUTHORIZED {
             return Err(format!("expected unauthorized status, got {status}"));
         }
@@ -594,10 +564,10 @@ pub(super) fn api_metrics_integrity(cfg: &TopologyConfig) -> Result<(), String> 
         if health < 1.0 {
             return Err("health metrics did not increment".to_string());
         }
-        let policy_post = metric_value(&body, "/api/v1/policies", "POST", "200")
-            .ok_or_else(|| "missing policy post metrics".to_string())?;
-        if policy_post < 1.0 {
-            return Err("policy post metrics did not increment".to_string());
+        let policy_put = metric_value(&body, "/api/v1/policy", "PUT", "200")
+            .ok_or_else(|| "missing policy put metrics".to_string())?;
+        if policy_put < 1.0 {
+            return Err("policy put metrics did not increment".to_string());
         }
         let auth_allow = metric_value_with_labels(
             &body,

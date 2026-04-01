@@ -395,6 +395,7 @@ pub(super) fn sample_policy(rule_id: &str) -> Result<PolicyConfig, String> {
         r#"default_policy: deny
 source_groups:
   - id: "client-primary"
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
     rules:
@@ -635,36 +636,33 @@ pub(super) async fn http_set_policy(
     addr: SocketAddr,
     tls_dir: &Path,
     policy: PolicyConfig,
-    mode: PolicyMode,
+    _mode: PolicyMode,
     auth_token: Option<&str>,
-) -> Result<crate::controlplane::policy_repository::PolicyRecord, String> {
+) -> Result<PolicyConfig, String> {
     let client = http_api_client(tls_dir)?;
-    let req = PolicyCreateRequest { mode, policy };
-    let mut builder = client
-        .post(format!("https://{addr}/api/v1/policies"))
-        .json(&req);
+    let mut builder = client.put(format!("https://{addr}/api/v1/policy")).json(&policy);
     if let Some(token) = auth_token {
         builder = builder.bearer_auth(token);
     }
     let resp = builder
         .send()
         .await
-        .map_err(|e| format!("policy post failed: {e}"))?;
+        .map_err(|e| format!("policy put failed: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("policy post status {}", resp.status()));
+        return Err(format!("policy put status {}", resp.status()));
     }
-    resp.json::<crate::controlplane::policy_repository::PolicyRecord>()
+    resp.json::<PolicyConfig>()
         .await
         .map_err(|e| format!("policy decode failed: {e}"))
 }
 
-pub(super) async fn http_list_policies(
+pub(super) async fn http_get_policy(
     addr: SocketAddr,
     tls_dir: &Path,
     auth_token: Option<&str>,
-) -> Result<Vec<crate::controlplane::policy_repository::PolicyRecord>, String> {
+) -> Result<PolicyConfig, String> {
     let client = http_api_client(tls_dir)?;
-    let mut builder = client.get(format!("https://{addr}/api/v1/policies"));
+    let mut builder = client.get(format!("https://{addr}/api/v1/policy"));
     if let Some(token) = auth_token {
         builder = builder.bearer_auth(token);
     }
@@ -673,11 +671,11 @@ pub(super) async fn http_list_policies(
         .await
         .map_err(|e| format!("policy list failed: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("policy list status {}", resp.status()));
+        return Err(format!("policy get status {}", resp.status()));
     }
-    resp.json::<Vec<crate::controlplane::policy_repository::PolicyRecord>>()
+    resp.json::<PolicyConfig>()
         .await
-        .map_err(|e| format!("policy list decode failed: {e}"))
+        .map_err(|e| format!("policy get decode failed: {e}"))
 }
 
 pub(super) async fn http_get_audit_findings(

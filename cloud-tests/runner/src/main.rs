@@ -38,20 +38,6 @@ struct TlsInterceptCaStatus {
     configured: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct PolicyRecord {
-    id: String,
-    created_at: String,
-    mode: String,
-    policy: Value,
-}
-
-#[derive(Debug, Serialize)]
-struct PolicyCreateRequest {
-    mode: String,
-    policy: Value,
-}
-
 #[derive(Debug, Serialize)]
 struct TestResult {
     name: String,
@@ -71,8 +57,7 @@ struct Summary {
 struct Context {
     cfg: Config,
     apis: Vec<ApiClient>,
-    originals: Vec<Option<PolicyRecord>>,
-    created_ids: Vec<Vec<String>>,
+    originals: Vec<Value>,
     seeded_intercept_ca: Vec<bool>,
     consumer_ip: Ipv4Addr,
     deadline: Instant,
@@ -167,29 +152,20 @@ fn main() {
         }
     };
 
-    let originals = match apis
-        .iter()
-        .map(|api| {
-            let mut policies = api.list_policies()?;
-            policies.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-            Ok::<Option<PolicyRecord>, String>(policies.pop())
-        })
-        .collect::<Result<Vec<_>, _>>()
-    {
+    let originals = match apis.iter().map(|api| api.get_policy()).collect::<Result<Vec<_>, _>>() {
         Ok(originals) => originals,
         Err(err) => {
-            eprintln!("failed to list policies: {err}");
+            eprintln!("failed to fetch singleton policy: {err}");
             std::process::exit(2);
         }
     };
 
-    let deadline = Instant::now() + cfg.timeout;
     let api_count = originals.len();
+    let deadline = Instant::now() + cfg.timeout;
     let mut ctx = Context {
         cfg,
         apis,
         originals,
-        created_ids: vec![Vec::new(); api_count],
         seeded_intercept_ca: vec![false; api_count],
         consumer_ip,
         deadline,
@@ -393,73 +369,35 @@ impl ApiClient {
         })
     }
 
-    fn list_policies(&self) -> Result<Vec<PolicyRecord>, String> {
-        let url = format!("{}/api/v1/policies", self.base);
+    fn get_policy(&self) -> Result<Value, String> {
+        let url = format!("{}/api/v1/policy", self.base);
         let resp = self
             .client
             .get(url)
             .bearer_auth(&self.token)
             .send()
-            .map_err(|err| format!("list policies request failed: {err}"))?;
+            .map_err(|err| format!("get policy request failed: {err}"))?;
         if !resp.status().is_success() {
-            return Err(format!("list policies status {}", resp.status()));
+            return Err(format!("get policy status {}", resp.status()));
         }
-        resp.json::<Vec<PolicyRecord>>()
-            .map_err(|err| format!("list policies decode failed: {err}"))
+        resp.json::<Value>()
+            .map_err(|err| format!("get policy decode failed: {err}"))
     }
 
-    fn create_policy(&self, policy: Value) -> Result<PolicyRecord, String> {
-        let url = format!("{}/api/v1/policies", self.base);
-        let req = PolicyCreateRequest {
-            mode: "enforce".to_string(),
-            policy,
-        };
-        let resp = self
-            .client
-            .post(url)
-            .bearer_auth(&self.token)
-            .json(&req)
-            .send()
-            .map_err(|err| format!("create policy request failed: {err}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("create policy status {}", resp.status()));
-        }
-        resp.json::<PolicyRecord>()
-            .map_err(|err| format!("create policy decode failed: {err}"))
-    }
-
-    fn update_policy(&self, id: &str, mode: &str, policy: Value) -> Result<PolicyRecord, String> {
-        let url = format!("{}/api/v1/policies/{id}", self.base);
-        let req = PolicyCreateRequest {
-            mode: mode.to_string(),
-            policy,
-        };
+    fn put_policy(&self, policy: Value) -> Result<Value, String> {
+        let url = format!("{}/api/v1/policy", self.base);
         let resp = self
             .client
             .put(url)
             .bearer_auth(&self.token)
-            .json(&req)
+            .json(&policy)
             .send()
-            .map_err(|err| format!("update policy request failed: {err}"))?;
+            .map_err(|err| format!("put policy request failed: {err}"))?;
         if !resp.status().is_success() {
-            return Err(format!("update policy status {}", resp.status()));
+            return Err(format!("put policy status {}", resp.status()));
         }
-        resp.json::<PolicyRecord>()
-            .map_err(|err| format!("update policy decode failed: {err}"))
-    }
-
-    fn delete_policy(&self, id: &str) -> Result<(), String> {
-        let url = format!("{}/api/v1/policies/{id}", self.base);
-        let resp = self
-            .client
-            .delete(url)
-            .bearer_auth(&self.token)
-            .send()
-            .map_err(|err| format!("delete policy request failed: {err}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("delete policy status {}", resp.status()));
-        }
-        Ok(())
+        resp.json::<Value>()
+            .map_err(|err| format!("put policy decode failed: {err}"))
     }
 
     fn get_metrics(&self) -> Result<String, String> {
@@ -487,30 +425,16 @@ impl ApiClient {
 }
 
 impl Context {
-    fn apply_policy(&mut self, policy: Value) -> Result<PolicyRecord, String> {
-        let mut first_record: Option<PolicyRecord> = None;
-        for (idx, api) in self.apis.iter().enumerate() {
-            let record = api.create_policy(policy.clone())?;
-            self.created_ids[idx].push(record.id.clone());
-            if first_record.is_none() {
-                first_record = Some(record);
-            }
+    fn apply_policy(&mut self, policy: Value) -> Result<(), String> {
+        for api in &self.apis {
+            let _ = api.put_policy(policy.clone())?;
         }
-        first_record.ok_or_else(|| "no api clients available".to_string())
+        Ok(())
     }
 
     fn restore(&mut self) -> Result<(), String> {
         for (idx, api) in self.apis.iter().enumerate() {
-            if let Some(original) = &self.originals[idx] {
-                let _ = api.update_policy(&original.id, &original.mode, original.policy.clone())?;
-            }
-        }
-        for (idx, api) in self.apis.iter().enumerate() {
-            for id in &self.created_ids[idx] {
-                if let Err(err) = api.delete_policy(id) {
-                    eprintln!("warning: failed to delete policy {id}: {err}");
-                }
-            }
+            let _ = api.put_policy(self.originals[idx].clone())?;
             if self.seeded_intercept_ca[idx] {
                 if let Err(err) = api.delete_tls_intercept_ca() {
                     eprintln!(
@@ -1021,18 +945,20 @@ fn test_policy_consistency_all_neuwerk_nodes(ctx: &mut Context) -> Result<(), St
     ctx.apply_policy(policy)?;
 
     for api in &ctx.apis {
-        let mut records = api.list_policies()?;
-        records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        let latest = records
-            .last()
-            .ok_or_else(|| "policy list empty while checking consistency".to_string())?;
-        if latest.mode != "enforce" {
+        let latest = api.get_policy()?;
+        let mode = latest
+            .get("source_groups")
+            .and_then(|value| value.as_array())
+            .and_then(|groups| groups.first())
+            .and_then(|group| group.get("mode"))
+            .and_then(|value| value.as_str());
+        if mode != Some("enforce") {
             return Err(format!(
-                "latest policy on {} is mode {}, expected enforce",
-                api.base, latest.mode
+                "latest policy on {} is mode {:?}, expected enforce",
+                api.base, mode
             ));
         }
-        if !policy_contains_rule_id(&latest.policy, marker) {
+        if !policy_contains_rule_id(&latest, marker) {
             return Err(format!(
                 "latest policy on {} missing marker rule {}",
                 api.base, marker

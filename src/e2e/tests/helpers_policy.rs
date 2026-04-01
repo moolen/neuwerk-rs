@@ -7,6 +7,7 @@ pub(in crate::e2e::tests) fn policy_allow_cluster_deny_foo() -> &'static str {
 source_groups:
   - id: "client-primary"
     priority: 0
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
       cidrs: ["10.0.0.0/24"]
@@ -23,6 +24,7 @@ source_groups:
           dns_hostname: '^foo\.allowed$'
   - id: "client-secondary"
     priority: 1
+    mode: enforce
     sources:
       ips: ["192.0.2.3"]
     rules:
@@ -38,6 +40,7 @@ pub(in crate::e2e::tests) fn policy_allow_spoof() -> &'static str {
 source_groups:
   - id: "client-primary"
     priority: 0
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
       cidrs: ["10.0.0.0/24"]
@@ -55,6 +58,7 @@ pub(in crate::e2e::tests) fn policy_allow_foo_deny_cluster() -> &'static str {
 source_groups:
   - id: "client-primary"
     priority: 0
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
       cidrs: ["10.0.0.0/24"]
@@ -71,6 +75,7 @@ source_groups:
           dns_hostname: '^cluster\.allowed$'
   - id: "client-secondary"
     priority: 1
+    mode: enforce
     sources:
       ips: ["192.0.2.3"]
     rules:
@@ -99,6 +104,7 @@ pub(in crate::e2e::tests) fn wait_for_path(
     Err(format!("timed out waiting for {}", path.display()))
 }
 
+#[allow(dead_code)]
 pub(in crate::e2e::tests) fn read_active_id(path: &std::path::Path) -> Result<uuid::Uuid, String> {
     let payload = std::fs::read(path).map_err(|e| format!("read active policy failed: {e}"))?;
     let active: PolicyActive =
@@ -106,6 +112,7 @@ pub(in crate::e2e::tests) fn read_active_id(path: &std::path::Path) -> Result<uu
     Ok(active.id)
 }
 
+#[allow(dead_code)]
 pub(in crate::e2e::tests) fn wait_for_active_id(
     path: &std::path::Path,
     expected: uuid::Uuid,
@@ -127,6 +134,23 @@ pub(in crate::e2e::tests) fn wait_for_active_id(
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+}
+
+pub(in crate::e2e::tests) fn read_stored_policy(
+    path: &std::path::Path,
+) -> Result<crate::controlplane::policy_repository::StoredPolicy, String> {
+    let payload = std::fs::read(path).map_err(|e| format!("read stored policy failed: {e}"))?;
+    serde_json::from_slice(&payload).map_err(|e| format!("stored policy json error: {e}"))
+}
+
+pub(in crate::e2e::tests) fn policies_equal(
+    left: &PolicyConfig,
+    right: &PolicyConfig,
+) -> Result<bool, String> {
+    let left = serde_json::to_value(left).map_err(|e| format!("policy json encode failed: {e}"))?;
+    let right =
+        serde_json::to_value(right).map_err(|e| format!("policy json encode failed: {e}"))?;
+    Ok(left == right)
 }
 
 #[cfg(test)]
@@ -185,6 +209,7 @@ mod tests {
     }
 }
 
+#[allow(dead_code)]
 pub(in crate::e2e::tests) fn parse_created_at(
     record: &PolicyRecord,
 ) -> Result<OffsetDateTime, String> {

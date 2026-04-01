@@ -111,7 +111,7 @@ PY
   ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY_PATH" \
     "${SSH_USER:-ubuntu}@${JUMPBOX_IP}" \
     "curl -skf --connect-timeout 5 --max-time 15 --retry 5 --retry-delay 2 \
-      -X POST https://${ip}:8443/api/v1/policies \
+      -X PUT https://${ip}:8443/api/v1/policy \
       -H 'Content-Type: application/json' \
       -H 'Authorization: Bearer ${TOKEN}' \
       --data-binary @-" < "$POLICY_FILE" >/dev/null

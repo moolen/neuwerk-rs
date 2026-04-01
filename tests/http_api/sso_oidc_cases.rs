@@ -168,7 +168,7 @@ async fn http_api_sso_oidc_dex_full_flow() {
     assert!(roles.iter().any(|value| value.as_str() == Some("readonly")));
 
     let denied_mutation = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .json(&serde_json::json!({}))
         .send()
         .await

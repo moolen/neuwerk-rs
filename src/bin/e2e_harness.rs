@@ -76,12 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tls_material,
     )?;
 
-    let mut neuwerk = spawn_neuwerk(
-        &topology,
-        &cfg,
-        &OverlayConfigOverrides::default(),
-        &[],
-    )?;
+    let mut neuwerk = spawn_neuwerk(&topology, &cfg, &OverlayConfigOverrides::default(), &[])?;
     topology.configure_fw_dataplane(&cfg)?;
 
     let mut result = run_cases(&cfg, &topology, &upstream_services, case_filter.as_ref());
@@ -261,7 +256,7 @@ fn provision_baseline_policy(cfg: &TopologyConfig, topology: &Topology) -> Resul
             rt.block_on(async {
                 http_wait_for_health(api_addr, &tls_dir, std::time::Duration::from_secs(10))
                     .await?;
-                let record = http_set_policy(
+                http_set_policy(
                     api_addr,
                     &tls_dir,
                     policy.clone(),
@@ -277,13 +272,12 @@ fn provision_baseline_policy(cfg: &TopologyConfig, topology: &Topology) -> Resul
                         .ok()
                         .and_then(|payload| serde_json::from_slice::<PolicyActive>(&payload).ok())
                     {
-                        Some(active) if active.id == record.id => break,
+                        Some(_) => break,
                         _ => {
                             if std::time::Instant::now() >= deadline {
                                 return Err(format!(
-                                    "timed out waiting for baseline active id {}; last active path={}",
-                                    record.id,
-                                    active_path.display()
+                                    "timed out waiting for baseline active marker at {}",
+                                    active_path.display(),
                                 ));
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -339,8 +333,7 @@ fn spawn_neuwerk(
     let runtime_config = install_runtime_config(&build_runtime_config_yaml(cfg, overlay))?;
 
     let mut cmd = Command::new(bin);
-    cmd.stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+    cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
 
     for (key, value) in extra_env {
         cmd.env(key, value);
@@ -422,12 +415,7 @@ fn build_runtime_config_yaml(cfg: &TopologyConfig, overlay: &OverlayConfigOverri
     }
 
     writeln!(&mut yaml, "metrics:").unwrap();
-    writeln!(
-        &mut yaml,
-        "  bind: {}:{}",
-        cfg.fw_mgmt_ip, cfg.metrics_port
-    )
-    .unwrap();
+    writeln!(&mut yaml, "  bind: {}:{}", cfg.fw_mgmt_ip, cfg.metrics_port).unwrap();
     writeln!(&mut yaml, "  allow_public_bind: true").unwrap();
 
     writeln!(&mut yaml, "cluster:").unwrap();
@@ -467,12 +455,7 @@ fn build_runtime_config_yaml(cfg: &TopologyConfig, overlay: &OverlayConfigOverri
     writeln!(&mut yaml, "  upstream_verify: insecure").unwrap();
 
     writeln!(&mut yaml, "dataplane:").unwrap();
-    writeln!(
-        &mut yaml,
-        "  idle_timeout_secs: {}",
-        cfg.idle_timeout_secs
-    )
-    .unwrap();
+    writeln!(&mut yaml, "  idle_timeout_secs: {}", cfg.idle_timeout_secs).unwrap();
     writeln!(
         &mut yaml,
         "  dns_allowlist_idle_secs: {}",
@@ -563,8 +546,12 @@ fn install_runtime_config_with_paths(
         Err(err) => return Err(format!("read existing runtime config failed: {err}")),
     };
 
-    fs::write(&paths.config, yaml)
-        .map_err(|err| format!("write runtime config {} failed: {err}", paths.config.display()))?;
+    fs::write(&paths.config, yaml).map_err(|err| {
+        format!(
+            "write runtime config {} failed: {err}",
+            paths.config.display()
+        )
+    })?;
 
     Ok(InstalledRuntimeConfig {
         paths: paths.clone(),
@@ -707,7 +694,10 @@ mod tests {
 
         let yaml = build_runtime_config_yaml(&cfg, &OverlayConfigOverrides::default());
 
-        assert!(yaml.contains("management_interface: veth-fw-mgmt"), "{yaml}");
+        assert!(
+            yaml.contains("management_interface: veth-fw-mgmt"),
+            "{yaml}"
+        );
         assert!(yaml.contains("data_interface: dp0"), "{yaml}");
         assert!(yaml.contains("data_plane_mode: tun"), "{yaml}");
         assert!(yaml.contains("target_ips:\n    - 192.0.2.1"), "{yaml}");
@@ -717,7 +707,10 @@ mod tests {
         );
         assert!(yaml.contains("bind: 192.0.2.1:8443"), "{yaml}");
         assert!(yaml.contains("join_bind: 192.0.2.1:9601"), "{yaml}");
-        assert!(yaml.contains("data_dir: /tmp/neuwerk-e2e-cluster"), "{yaml}");
+        assert!(
+            yaml.contains("data_dir: /tmp/neuwerk-e2e-cluster"),
+            "{yaml}"
+        );
         assert!(yaml.contains("idle_timeout_secs: 1"), "{yaml}");
         assert!(yaml.contains("dns_allowlist_idle_secs: 2"), "{yaml}");
         assert!(yaml.contains("dns_allowlist_gc_interval_secs: 1"), "{yaml}");

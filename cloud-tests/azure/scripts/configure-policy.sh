@@ -153,7 +153,7 @@ PY
         "${SSH_USER:-ubuntu}@${JUMPBOX_IP}" \
         "curl -sk -o /tmp/neuwerk-policy.response -w '%{http_code}' \
           --connect-timeout 5 --max-time 15 --retry 2 --retry-delay 1 \
-          -X POST https://${ip}:8443/api/v1/policies \
+          -X PUT https://${ip}:8443/api/v1/policy \
           -H 'Content-Type: application/json' \
           ${AUTH_HEADER} \
           --data-binary @-" < "$POLICY_PAYLOAD" || true

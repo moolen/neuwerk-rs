@@ -210,25 +210,21 @@ async fn http_api_cluster_proxy_lifecycle() {
         .unwrap();
 
     let payload = serde_json::json!({
-        "mode": "enforce",
-        "name": "cluster-default",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "cluster",
-                    "sources": { "ips": ["10.0.0.7"] },
-                    "rules": [
-                        {
-                            "id": "allow-dns",
-                            "mode": "enforce",
-                            "action": "allow",
-                            "match": { "dns_hostname": "example.com" }
-                        }
-                    ]
-                }
-            ]
-        }
+        "default_policy": "deny",
+        "source_groups": [
+            {
+                "id": "cluster",
+                "mode": "enforce",
+                "sources": { "ips": ["10.0.0.7"] },
+                "rules": [
+                    {
+                        "id": "allow-dns",
+                        "action": "allow",
+                        "match": { "dns_hostname": "example.com" }
+                    }
+                ]
+            }
+        ]
     });
 
     let follower_addr = if leader_id == seed_id {
@@ -237,7 +233,7 @@ async fn http_api_cluster_proxy_lifecycle() {
         seed_http_addr
     };
     let resp = client
-        .post(format!("https://{follower_addr}/api/v1/policies"))
+        .put(format!("https://{follower_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
         .json(&payload)
         .send()
@@ -251,77 +247,66 @@ async fn http_api_cluster_proxy_lifecycle() {
         status,
         String::from_utf8_lossy(&body)
     );
-    let record: PolicyRecord = serde_json::from_slice(&body).unwrap();
-    assert_eq!(record.mode, PolicyMode::Enforce);
-    assert_eq!(record.name.as_deref(), Some("cluster-default"));
+    let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        created
+            .get("source_groups")
+            .and_then(|value| value.as_array())
+            .and_then(|groups| groups.first())
+            .and_then(|group| group.get("id"))
+            .and_then(|value| value.as_str()),
+        Some("cluster")
+    );
 
     let fetched = client
-        .get(format!(
-            "https://{follower_addr}/api/v1/policies/by-name/CLUSTER-default"
-        ))
+        .get(format!("https://{follower_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
         .send()
         .await
         .unwrap();
     assert!(fetched.status().is_success());
-    let fetched: PolicyRecord = fetched.json().await.unwrap();
-    assert_eq!(fetched.id, record.id);
+    let fetched: serde_json::Value = fetched.json().await.unwrap();
+    assert_eq!(
+        fetched
+            .get("source_groups")
+            .and_then(|value| value.as_array())
+            .and_then(|groups| groups.first())
+            .and_then(|group| group.get("id"))
+            .and_then(|value| value.as_str()),
+        Some("cluster")
+    );
 
-    let active = seed_runtime
+    assert!(seed_runtime
         .store
-        .get_state_value(POLICY_ACTIVE_KEY)
+        .get_state_value(POLICY_STATE_KEY)
         .unwrap()
-        .unwrap();
-    let active: PolicyActive = serde_json::from_slice(&active).unwrap();
-    assert_eq!(active.id, record.id);
+        .is_some());
     tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!(join_local_store_check.active_id().unwrap(), Some(record.id));
+    assert!(join_local_store_check.active_id().unwrap().is_some());
 
-    let disabled_payload = serde_json::json!({
-        "mode": "disabled",
-        "name": "ignored-body-name",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "cluster",
-                    "sources": { "ips": ["10.0.0.7"] },
-                    "rules": [
-                        {
-                            "id": "allow-dns",
-                            "mode": "enforce",
-                            "action": "allow",
-                            "match": { "dns_hostname": "example.com" }
-                        }
-                    ]
-                }
-            ]
-        }
+    let updated_payload = serde_json::json!({
+        "default_policy": "deny",
+        "source_groups": []
     });
     let resp = client
-        .put(format!(
-            "https://{follower_addr}/api/v1/policies/by-name/cluster-default"
-        ))
+        .put(format!("https://{follower_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
-        .json(&disabled_payload)
+        .json(&updated_payload)
         .send()
         .await
         .unwrap();
     assert!(resp.status().is_success());
-    let updated: PolicyRecord = resp.json().await.unwrap();
-    assert_eq!(updated.id, record.id);
-    assert_eq!(updated.name.as_deref(), Some("cluster-default"));
-    assert_eq!(updated.mode, PolicyMode::Disabled);
-    wait_for_state_absent(
-        &seed_runtime.store,
-        POLICY_ACTIVE_KEY,
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
+    let updated: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        updated
+            .get("source_groups")
+            .and_then(|value| value.as_array())
+            .map(|groups| groups.len()),
+        Some(0)
+    );
     tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!(join_local_store_check.active_id().unwrap(), None);
-    assert_eq!(join_policy.active_policy_id(), None);
+    assert!(join_local_store_check.active_id().unwrap().is_some());
+    assert!(join_policy.active_policy_id().is_some());
 
     seed_http_task.abort();
     join_http_task.abort();

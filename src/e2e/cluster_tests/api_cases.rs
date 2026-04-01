@@ -124,14 +124,12 @@ pub(super) fn http_api_proxy_to_leader() -> Result<(), String> {
         let token = mint_auth_token(&seed.store)?;
 
         let seed_id = load_node_id(&seed_dir)?;
-        let (leader_addr, leader_tls, follower_addr, follower_tls, follower_policy_dir) =
-            if leader_id == seed_id {
+        let (leader_addr, leader_tls, follower_addr, follower_tls) = if leader_id == seed_id {
                 (
                     seed_api_addr,
                     seed_tls_dir.clone(),
                     joiner_api_addr,
                     joiner_tls_dir.clone(),
-                    joiner_policy_dir.clone(),
                 )
             } else {
                 (
@@ -139,12 +137,11 @@ pub(super) fn http_api_proxy_to_leader() -> Result<(), String> {
                     joiner_tls_dir.clone(),
                     seed_api_addr,
                     seed_tls_dir.clone(),
-                    seed_policy_dir.clone(),
                 )
             };
 
         let policy = sample_policy("proxy-policy")?;
-        let record = http_set_policy(
+        let expected = http_set_policy(
             follower_addr,
             &follower_tls,
             policy,
@@ -153,22 +150,21 @@ pub(super) fn http_api_proxy_to_leader() -> Result<(), String> {
         )
         .await?;
 
-        let leader_list = http_list_policies(leader_addr, &leader_tls, Some(&token)).await?;
-        if !leader_list.iter().any(|item| item.id == record.id) {
-            return Err("leader list missing proxied policy".to_string());
+        let leader_policy = http_get_policy(leader_addr, &leader_tls, Some(&token)).await?;
+        if serde_json::to_value(&leader_policy).map_err(|e| e.to_string())?
+            != serde_json::to_value(&expected).map_err(|e| e.to_string())?
+        {
+            return Err("leader singleton policy did not match proxied write".to_string());
         }
-        let follower_list = http_list_policies(follower_addr, &follower_tls, Some(&token)).await?;
-        if !follower_list.iter().any(|item| item.id == record.id) {
-            return Err("follower list missing proxied policy".to_string());
+        let follower_policy = http_get_policy(follower_addr, &follower_tls, Some(&token)).await?;
+        if serde_json::to_value(&follower_policy).map_err(|e| e.to_string())?
+            != serde_json::to_value(&expected).map_err(|e| e.to_string())?
+        {
+            return Err("follower singleton policy did not match proxied write".to_string());
         }
 
-        if follower_policy_dir.join("policies").exists() {
-            return Err("follower local policy store was mutated".to_string());
-        }
-
-        let key = policy_item_key(record.id);
-        wait_for_state_present(&seed.store, &key, Duration::from_secs(5)).await?;
-        wait_for_state_present(&joiner.store, &key, Duration::from_secs(5)).await?;
+        wait_for_state_present(&seed.store, POLICY_STATE_KEY, Duration::from_secs(5)).await?;
+        wait_for_state_present(&joiner.store, POLICY_STATE_KEY, Duration::from_secs(5)).await?;
 
         seed_http.abort();
         joiner_http.abort();
@@ -359,7 +355,7 @@ pub(super) fn http_api_leader_loss() -> Result<(), String> {
         let policies = http_api_status(
             follower_addr,
             &follower_tls,
-            "/api/v1/policies",
+            "/api/v1/policy",
             Some(&token),
         )
         .await?;

@@ -117,99 +117,42 @@ pub async fn http_wait_for_health(
 pub async fn http_set_policy(
     addr: SocketAddr,
     tls_dir: &Path,
-    policy: PolicyConfig,
+    mut policy: PolicyConfig,
     mode: PolicyMode,
     auth_token: Option<&str>,
-) -> Result<PolicyRecord, String> {
+) -> Result<PolicyConfig, String> {
+    if mode == PolicyMode::Audit {
+        for group in &mut policy.source_groups {
+            group.mode = crate::controlplane::policy_config::MatchModeValue::Audit;
+            for rule in &mut group.rules {
+                rule.mode = None;
+            }
+        }
+    }
     let client = http_api_client(tls_dir)?;
-    let req = PolicyCreateRequest { mode, policy };
-    let mut builder = client
-        .post(format!("https://{addr}/api/v1/policies"))
-        .json(&req);
+    let mut builder = client.put(format!("https://{addr}/api/v1/policy")).json(&policy);
     if let Some(token) = auth_token {
         builder = builder.bearer_auth(token);
     }
     let resp = builder
         .send()
         .await
-        .map_err(|e| format!("policy post failed: {e}"))?;
+        .map_err(|e| format!("policy put failed: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("policy post status {}", resp.status()));
+        return Err(format!("policy put status {}", resp.status()));
     }
-    resp.json::<PolicyRecord>()
+    resp.json::<PolicyConfig>()
         .await
         .map_err(|e| format!("policy decode failed: {e}"))
-}
-
-#[derive(Serialize)]
-struct NamedPolicyUpsertRequest<'a> {
-    mode: PolicyMode,
-    policy: &'a PolicyConfig,
-    name: &'a str,
-}
-
-pub async fn http_upsert_policy_by_name(
-    addr: SocketAddr,
-    tls_dir: &Path,
-    name: &str,
-    policy: PolicyConfig,
-    mode: PolicyMode,
-    auth_token: Option<&str>,
-) -> Result<PolicyRecord, String> {
-    let client = http_api_client(tls_dir)?;
-    let req = NamedPolicyUpsertRequest {
-        mode,
-        policy: &policy,
-        name,
-    };
-    let mut builder = client
-        .put(format!("https://{addr}/api/v1/policies/by-name/{name}"))
-        .json(&req);
-    if let Some(token) = auth_token {
-        builder = builder.bearer_auth(token);
-    }
-    let resp = builder
-        .send()
-        .await
-        .map_err(|e| format!("policy upsert by-name failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("policy upsert by-name status {}", resp.status()));
-    }
-    resp.json::<PolicyRecord>()
-        .await
-        .map_err(|e| format!("policy upsert by-name decode failed: {e}"))
-}
-
-pub async fn http_list_policies(
-    addr: SocketAddr,
-    tls_dir: &Path,
-    auth_token: Option<&str>,
-) -> Result<Vec<PolicyRecord>, String> {
-    let client = http_api_client(tls_dir)?;
-    let mut builder = client.get(format!("https://{addr}/api/v1/policies"));
-    if let Some(token) = auth_token {
-        builder = builder.bearer_auth(token);
-    }
-    let resp = builder
-        .send()
-        .await
-        .map_err(|e| format!("policy list failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("policy list status {}", resp.status()));
-    }
-    resp.json::<Vec<PolicyRecord>>()
-        .await
-        .map_err(|e| format!("policy list decode failed: {e}"))
 }
 
 pub async fn http_get_policy(
     addr: SocketAddr,
     tls_dir: &Path,
-    policy_id: &str,
     auth_token: Option<&str>,
-) -> Result<PolicyRecord, String> {
+) -> Result<PolicyConfig, String> {
     let client = http_api_client(tls_dir)?;
-    let mut builder = client.get(format!("https://{addr}/api/v1/policies/{policy_id}"));
+    let mut builder = client.get(format!("https://{addr}/api/v1/policy"));
     if let Some(token) = auth_token {
         builder = builder.bearer_auth(token);
     }
@@ -220,78 +163,9 @@ pub async fn http_get_policy(
     if !resp.status().is_success() {
         return Err(format!("policy get status {}", resp.status()));
     }
-    resp.json::<PolicyRecord>()
+    resp.json::<PolicyConfig>()
         .await
         .map_err(|e| format!("policy get decode failed: {e}"))
-}
-
-pub async fn http_get_policy_by_name(
-    addr: SocketAddr,
-    tls_dir: &Path,
-    name: &str,
-    auth_token: Option<&str>,
-) -> Result<PolicyRecord, String> {
-    let client = http_api_client(tls_dir)?;
-    let mut builder = client.get(format!("https://{addr}/api/v1/policies/by-name/{name}"));
-    if let Some(token) = auth_token {
-        builder = builder.bearer_auth(token);
-    }
-    let resp = builder
-        .send()
-        .await
-        .map_err(|e| format!("policy get by-name failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("policy get by-name status {}", resp.status()));
-    }
-    resp.json::<PolicyRecord>()
-        .await
-        .map_err(|e| format!("policy get by-name decode failed: {e}"))
-}
-
-pub async fn http_update_policy(
-    addr: SocketAddr,
-    tls_dir: &Path,
-    policy_id: &str,
-    policy: PolicyConfig,
-    mode: PolicyMode,
-    auth_token: Option<&str>,
-) -> Result<PolicyRecord, String> {
-    let client = http_api_client(tls_dir)?;
-    let req = PolicyCreateRequest { mode, policy };
-    let mut builder = client
-        .put(format!("https://{addr}/api/v1/policies/{policy_id}"))
-        .json(&req);
-    if let Some(token) = auth_token {
-        builder = builder.bearer_auth(token);
-    }
-    let resp = builder
-        .send()
-        .await
-        .map_err(|e| format!("policy update failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("policy update status {}", resp.status()));
-    }
-    resp.json::<PolicyRecord>()
-        .await
-        .map_err(|e| format!("policy update decode failed: {e}"))
-}
-
-pub async fn http_delete_policy(
-    addr: SocketAddr,
-    tls_dir: &Path,
-    policy_id: &str,
-    auth_token: Option<&str>,
-) -> Result<reqwest::StatusCode, String> {
-    let client = http_api_client(tls_dir)?;
-    let mut builder = client.delete(format!("https://{addr}/api/v1/policies/{policy_id}"));
-    if let Some(token) = auth_token {
-        builder = builder.bearer_auth(token);
-    }
-    let resp = builder
-        .send()
-        .await
-        .map_err(|e| format!("policy delete failed: {e}"))?;
-    Ok(resp.status())
 }
 
 #[derive(Debug, Deserialize)]

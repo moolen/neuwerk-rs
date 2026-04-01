@@ -289,7 +289,7 @@ async fn http_api_query_token_auth_is_wiretap_only() {
     let client = http_api_client(&tls_dir).unwrap();
     let resp = client
         .get(format!(
-            "https://{bind_addr}/api/v1/policies?access_token={}",
+            "https://{bind_addr}/api/v1/policy?access_token={}",
             token.token
         ))
         .send()

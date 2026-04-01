@@ -616,29 +616,26 @@ async fn http_api_policy_write_times_out_when_dataplane_ack_missing() {
     let client = http_api_client(&tls_dir).unwrap();
 
     let payload = serde_json::json!({
-        "mode": "enforce",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "local",
-                    "sources": { "ips": ["10.0.0.5"] },
-                    "rules": [
-                        {
-                            "id": "allow-dns",
-                            "mode": "enforce",
-                            "action": "allow",
-                            "match": { "dns_hostname": "example.com" }
-                        }
-                    ]
-                }
-            ]
-        }
+        "default_policy": "deny",
+        "source_groups": [
+            {
+                "id": "local",
+                "mode": "enforce",
+                "sources": { "ips": ["10.0.0.5"] },
+                "rules": [
+                    {
+                        "id": "allow-dns",
+                        "action": "allow",
+                        "match": { "dns_hostname": "example.com" }
+                    }
+                ]
+            }
+        ]
     });
 
     let start = Instant::now();
     let resp = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
         .json(&payload)
         .send()
@@ -751,29 +748,26 @@ async fn http_api_policy_write_waits_for_dataplane_ack() {
     });
 
     let payload = serde_json::json!({
-        "mode": "enforce",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "local",
-                    "sources": { "ips": ["10.0.0.5"] },
-                    "rules": [
-                        {
-                            "id": "allow-dns",
-                            "mode": "enforce",
-                            "action": "allow",
-                            "match": { "dns_hostname": "example.com" }
-                        }
-                    ]
-                }
-            ]
-        }
+        "default_policy": "deny",
+        "source_groups": [
+            {
+                "id": "local",
+                "mode": "enforce",
+                "sources": { "ips": ["10.0.0.5"] },
+                "rules": [
+                    {
+                        "id": "allow-dns",
+                        "action": "allow",
+                        "match": { "dns_hostname": "example.com" }
+                    }
+                ]
+            }
+        ]
     });
 
     let start = Instant::now();
     let resp = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
         .json(&payload)
         .send()
@@ -892,29 +886,26 @@ async fn http_api_policy_write_times_out_when_service_plane_ack_missing() {
     });
 
     let payload = serde_json::json!({
-        "mode": "enforce",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "local",
-                    "sources": { "ips": ["10.0.0.5"] },
-                    "rules": [
-                        {
-                            "id": "allow-dns",
-                            "mode": "enforce",
-                            "action": "allow",
-                            "match": { "dns_hostname": "example.com" }
-                        }
-                    ]
-                }
-            ]
-        }
+        "default_policy": "deny",
+        "source_groups": [
+            {
+                "id": "local",
+                "mode": "enforce",
+                "sources": { "ips": ["10.0.0.5"] },
+                "rules": [
+                    {
+                        "id": "allow-dns",
+                        "action": "allow",
+                        "match": { "dns_hostname": "example.com" }
+                    }
+                ]
+            }
+        ]
     });
 
     let start = Instant::now();
     let resp = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
         .json(&payload)
         .send()

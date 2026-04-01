@@ -200,9 +200,7 @@ impl Drop for NetworkCleanup {
     }
 }
 
-fn spawn_neuwerk(
-    local_root: &Path,
-) -> Result<Child, String> {
+fn spawn_neuwerk(local_root: &Path) -> Result<Child, String> {
     Command::new(env!("CARGO_BIN_EXE_neuwerk"))
         .env("NEUWERK_LOCAL_DATA_DIR", local_root)
         .stdin(Stdio::null())
@@ -210,6 +208,51 @@ fn spawn_neuwerk(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|err| format!("spawn neuwerk failed: {err}"))
+}
+
+fn singleton_policy_payload(default_policy: &str, mode: &str) -> serde_json::Value {
+    serde_json::json!({
+        "default_policy": default_policy,
+        "source_groups": [
+            {
+                "id": "sigterm",
+                "mode": mode,
+                "sources": { "ips": ["10.0.0.5"] },
+                "rules": [
+                    {
+                        "id": "allow-dns",
+                        "action": "allow",
+                        "match": { "dns_hostname": "example.com" }
+                    }
+                ]
+            }
+        ]
+    })
+}
+
+fn assert_singleton_policy(
+    policy: &serde_json::Value,
+    expected_default: &str,
+    expected_group_mode: Option<&str>,
+    expected_group_count: usize,
+) {
+    assert_eq!(
+        policy.get("default_policy").and_then(|value| value.as_str()),
+        Some(expected_default)
+    );
+    let groups = policy
+        .get("source_groups")
+        .and_then(|value| value.as_array())
+        .expect("missing source_groups");
+    assert_eq!(groups.len(), expected_group_count);
+    if let Some(expected_mode) = expected_group_mode {
+        let group = groups.first().expect("missing source group");
+        assert_eq!(group.get("id").and_then(|value| value.as_str()), Some("sigterm"));
+        assert_eq!(
+            group.get("mode").and_then(|value| value.as_str()),
+            Some(expected_mode)
+        );
+    }
 }
 
 #[tokio::test]
@@ -258,29 +301,10 @@ async fn neuwerk_binary_sigterm_flips_readiness_false_before_exit_and_restarts()
         .expect("missing api keyset");
     let token = api_auth::mint_token(&keyset, "sigterm-test", None, None).unwrap();
 
-    let payload = serde_json::json!({
-        "mode": "enforce",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "sigterm",
-                    "sources": { "ips": ["10.0.0.5"] },
-                    "rules": [
-                        {
-                            "id": "allow-dns",
-                            "mode": "enforce",
-                            "action": "allow",
-                            "match": { "dns_hostname": "example.com" }
-                        }
-                    ]
-                }
-            ]
-        }
-    });
+    let payload = singleton_policy_payload("deny", "enforce");
 
     let create = client
-        .post(format!("https://{http_bind}/api/v1/policies"))
+        .put(format!("https://{http_bind}/api/v1/policy"))
         .bearer_auth(&token.token)
         .json(&payload)
         .send()
@@ -309,15 +333,15 @@ async fn neuwerk_binary_sigterm_flips_readiness_false_before_exit_and_restarts()
         .await
         .unwrap();
 
-    let listed = client
-        .get(format!("https://{http_bind}/api/v1/policies"))
+    let fetched = client
+        .get(format!("https://{http_bind}/api/v1/policy"))
         .bearer_auth(&token.token)
         .send()
         .await
         .unwrap();
-    assert!(listed.status().is_success());
-    let records: Vec<serde_json::Value> = listed.json().await.unwrap();
-    assert_eq!(records.len(), 1);
+    assert!(fetched.status().is_success());
+    let stored: serde_json::Value = fetched.json().await.unwrap();
+    assert_singleton_policy(&stored, "deny", Some("enforce"), 1);
 
     kill(Pid::from_raw(restarted.id() as i32), Signal::SIGTERM).unwrap();
     wait_for_child_exit(&mut restarted, Duration::from_secs(10))
@@ -326,7 +350,7 @@ async fn neuwerk_binary_sigterm_flips_readiness_false_before_exit_and_restarts()
 }
 
 #[tokio::test]
-async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart() {
+async fn neuwerk_binary_singleton_policy_overwrite_persists_across_restart() {
     let _guard = RUNTIME_SIGNAL_TEST_LOCK.lock().await;
     let dir = TempDir::new().unwrap();
     let tls_dir = dir.path().join("http-tls");
@@ -340,7 +364,7 @@ async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart
 
     cleanup_service_lane_state();
     if let Err(err) = create_tun_interface(&dataplane_iface, "10.9.1.2/24") {
-        eprintln!("skipping runtime by-name case: tun interface setup unavailable: {err}");
+        eprintln!("skipping runtime singleton policy case: tun interface setup unavailable: {err}");
         return;
     }
 
@@ -369,33 +393,11 @@ async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart
     let keyset = api_auth::load_keyset_from_file(&auth_path)
         .unwrap()
         .expect("missing api keyset");
-    let token = api_auth::mint_token(&keyset, "by-name-test", None, None).unwrap();
+    let token = api_auth::mint_token(&keyset, "singleton-policy-test", None, None).unwrap();
 
-    let first_payload = serde_json::json!({
-        "mode": "audit",
-        "name": "ignored-body-name",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "sigterm",
-                    "sources": { "ips": ["10.0.0.5"] },
-                    "rules": [
-                        {
-                            "id": "allow-dns",
-                            "mode": "enforce",
-                            "action": "allow",
-                            "match": { "dns_hostname": "example.com" }
-                        }
-                    ]
-                }
-            ]
-        }
-    });
+    let first_payload = singleton_policy_payload("deny", "audit");
     let create = client
-        .put(format!(
-            "https://{http_bind}/api/v1/policies/by-name/terraform-prod"
-        ))
+        .put(format!("https://{http_bind}/api/v1/policy"))
         .bearer_auth(&token.token)
         .json(&first_payload)
         .send()
@@ -403,30 +405,17 @@ async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart
         .unwrap();
     assert!(create.status().is_success());
     let created: serde_json::Value = create.json().await.unwrap();
-    let created_id = created
-        .get("id")
-        .and_then(|value| value.as_str())
-        .expect("missing created id")
-        .to_string();
-    assert_eq!(
-        created.get("name").and_then(|value| value.as_str()),
-        Some("terraform-prod")
-    );
+    assert_singleton_policy(&created, "deny", Some("audit"), 1);
 
     let fetched = client
-        .get(format!(
-            "https://{http_bind}/api/v1/policies/by-name/TERRAFORM-prod"
-        ))
+        .get(format!("https://{http_bind}/api/v1/policy"))
         .bearer_auth(&token.token)
         .send()
         .await
         .unwrap();
     assert!(fetched.status().is_success());
     let fetched: serde_json::Value = fetched.json().await.unwrap();
-    assert_eq!(
-        fetched.get("id").and_then(|value| value.as_str()),
-        Some(created_id.as_str())
-    );
+    assert_singleton_policy(&fetched, "deny", Some("audit"), 1);
 
     kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).unwrap();
     wait_for_ready_false_before_exit(&mut child, &client, http_bind, Duration::from_secs(3))
@@ -448,16 +437,11 @@ async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart
         .unwrap();
 
     let second_payload = serde_json::json!({
-        "mode": "enforce",
-        "policy": {
-            "default_policy": "allow",
-            "source_groups": []
-        }
+        "default_policy": "allow",
+        "source_groups": []
     });
     let update = client
-        .put(format!(
-            "https://{http_bind}/api/v1/policies/by-name/terraform-prod"
-        ))
+        .put(format!("https://{http_bind}/api/v1/policy"))
         .bearer_auth(&token.token)
         .json(&second_payload)
         .send()
@@ -465,28 +449,17 @@ async fn neuwerk_binary_policy_upsert_by_name_preserves_stable_id_across_restart
         .unwrap();
     assert!(update.status().is_success());
     let updated: serde_json::Value = update.json().await.unwrap();
-    assert_eq!(
-        updated.get("id").and_then(|value| value.as_str()),
-        Some(created_id.as_str())
-    );
-    assert_eq!(
-        updated.get("name").and_then(|value| value.as_str()),
-        Some("terraform-prod")
-    );
+    assert_singleton_policy(&updated, "allow", None, 0);
 
-    let listed = client
-        .get(format!("https://{http_bind}/api/v1/policies"))
+    let fetched = client
+        .get(format!("https://{http_bind}/api/v1/policy"))
         .bearer_auth(&token.token)
         .send()
         .await
         .unwrap();
-    assert!(listed.status().is_success());
-    let records: Vec<serde_json::Value> = listed.json().await.unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(
-        records[0].get("id").and_then(|value| value.as_str()),
-        Some(created_id.as_str())
-    );
+    assert!(fetched.status().is_success());
+    let persisted: serde_json::Value = fetched.json().await.unwrap();
+    assert_singleton_policy(&persisted, "allow", None, 0);
 
     kill(Pid::from_raw(restarted.id() as i32), Signal::SIGTERM).unwrap();
     wait_for_child_exit(&mut restarted, Duration::from_secs(10))
