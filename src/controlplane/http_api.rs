@@ -39,11 +39,10 @@ use crate::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
 use crate::controlplane::http_tls::{ensure_http_tls, HttpTlsConfig};
 use crate::controlplane::integrations::{IntegrationKind, IntegrationStore, IntegrationView};
 use crate::controlplane::metrics::Metrics;
-use crate::controlplane::policy_telemetry::PolicyTelemetryStore;
 use crate::controlplane::policy_repository::{
-    policy_item_key, PolicyActive, PolicyDiskStore, PolicyIndex, PolicyMeta, PolicyRecord,
-    POLICY_ACTIVE_KEY, POLICY_INDEX_KEY,
+    PolicyActive, PolicyDiskStore, PolicyIndex, PolicyMeta, PolicyRecord,
 };
+use crate::controlplane::policy_telemetry::PolicyTelemetryStore;
 use crate::controlplane::ready::ReadinessState;
 use crate::controlplane::service_accounts::{
     parse_ttl_secs, ServiceAccountRole, ServiceAccountStatus, ServiceAccountStore, TokenMeta,
@@ -89,16 +88,13 @@ mod wiretap;
 use app_routes::{health_handler, list_dns_cache, ready_handler, stats_handler, ui_handler};
 use audit::{audit_findings, audit_findings_local};
 use auth_routes::{auth_logout, auth_token_login, auth_whoami};
-use cluster_persistence::{delete_cluster_policy, persist_cluster_policy};
+use cluster_persistence::persist_cluster_policy;
 use extractors::{error_response, parse_uuid, read_body_limited};
 use integrations::{
     create_integration, delete_integration, get_integration, list_integrations, update_integration,
 };
 use performance_mode::{get_performance_mode, put_performance_mode};
-use policy::{
-    create_policy, delete_policy, get_policy, get_policy_by_name, list_policies, update_policy,
-    upsert_policy_by_name,
-};
+use policy::{get_policy_singleton, legacy_policy_route_gone, put_policy_singleton};
 use policy_activation::{enforcement_mode_for_policy_mode, wait_for_policy_activation};
 use policy_telemetry::{policy_telemetry, policy_telemetry_local};
 use service_accounts_api::{
@@ -557,14 +553,27 @@ async fn run_http_api_with_shutdown_impl(
 
     let api_protected = Router::new()
         .route("/auth/whoami", get(auth_whoami))
-        .route("/policies", get(list_policies).post(create_policy))
+        .route("/policy", get(get_policy_singleton).put(put_policy_singleton))
+        .route(
+            "/policies",
+            get(legacy_policy_route_gone)
+                .post(legacy_policy_route_gone)
+                .put(legacy_policy_route_gone)
+                .delete(legacy_policy_route_gone),
+        )
         .route(
             "/policies/by-name/:name",
-            get(get_policy_by_name).put(upsert_policy_by_name),
+            get(legacy_policy_route_gone)
+                .post(legacy_policy_route_gone)
+                .put(legacy_policy_route_gone)
+                .delete(legacy_policy_route_gone),
         )
         .route(
             "/policies/:id",
-            get(get_policy).put(update_policy).delete(delete_policy),
+            get(legacy_policy_route_gone)
+                .post(legacy_policy_route_gone)
+                .put(legacy_policy_route_gone)
+                .delete(legacy_policy_route_gone),
         )
         .route(
             "/integrations",

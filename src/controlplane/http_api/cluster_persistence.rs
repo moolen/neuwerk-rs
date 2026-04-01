@@ -39,22 +39,6 @@ async fn persist_cluster_policy_with_step_delay(
     Ok(())
 }
 
-pub(super) async fn delete_cluster_policy(
-    cluster: &HttpApiCluster,
-    _id: Uuid,
-) -> Result<(), String> {
-    let cmd = ClusterCommand::Put {
-        key: POLICY_STATE_KEY.to_vec(),
-        value: serde_json::to_vec(&StoredPolicy::default()).map_err(|err| err.to_string())?,
-    };
-    cluster
-        .raft
-        .client_write(cmd)
-        .await
-        .map_err(|err| err.to_string())?;
-    Ok(())
-}
-
 #[allow(dead_code)]
 pub(super) fn read_cluster_index(store: &ClusterStore) -> Result<PolicyIndex, String> {
     let raw = store.get_state_value(POLICY_STATE_KEY)?;

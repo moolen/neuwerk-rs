@@ -7,29 +7,10 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi, ToSchema};
-use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {
     pub error: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct OpenApiPolicyUpsertRequest {
-    pub mode: crate::controlplane::policy_config::PolicyMode,
-    pub policy: crate::controlplane::policy_config::PolicyConfig,
-    #[serde(default)]
-    pub name: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct OpenApiPolicyRecord {
-    pub id: Uuid,
-    pub created_at: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    pub mode: crate::controlplane::policy_config::PolicyMode,
-    pub policy: crate::controlplane::policy_config::PolicyConfig,
 }
 
 struct SecurityAddon;
@@ -67,13 +48,8 @@ impl Modify for SecurityAddon {
         super::auth_routes::auth_logout,
         super::auth_routes::auth_whoami,
         super::sso_auth_routes::auth_sso_supported_providers,
-        super::policy::list_policies,
-        super::policy::get_policy,
-        super::policy::get_policy_by_name,
-        super::policy::create_policy,
-        super::policy::update_policy,
-        super::policy::upsert_policy_by_name,
-        super::policy::delete_policy,
+        super::policy::get_policy_singleton,
+        super::policy::put_policy_singleton,
         super::integrations::list_integrations,
         super::integrations::get_integration,
         super::integrations::create_integration,
@@ -106,11 +82,9 @@ impl Modify for SecurityAddon {
     components(
         schemas(
             ErrorBody,
-            OpenApiPolicyRecord,
-            OpenApiPolicyUpsertRequest,
-            crate::controlplane::policy_config::PolicyMode,
             crate::controlplane::policy_config::RuleMode,
             crate::controlplane::policy_config::PolicyConfig,
+            crate::controlplane::policy_config::MatchModeValue,
             crate::controlplane::policy_config::SourceGroupConfig,
             crate::controlplane::policy_config::SourcesConfig,
             crate::controlplane::policy_config::KubernetesSourceConfig,
@@ -231,7 +205,7 @@ mod tests {
             .get("paths")
             .and_then(|value| value.as_object())
             .expect("paths object");
-        assert!(paths.contains_key("/api/v1/policies"));
+        assert!(paths.contains_key("/api/v1/policy"));
         assert!(paths.contains_key("/api/v1/service-accounts"));
         assert!(paths.contains_key("/api/v1/settings/performance-mode"));
         assert!(paths.contains_key("/api/v1/settings/threat-intel"));

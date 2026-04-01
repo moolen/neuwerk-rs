@@ -1,7 +1,8 @@
 use super::*;
+use uuid::Uuid;
 
 #[tokio::test]
-async fn http_api_local_lifecycle() {
+async fn http_api_get_singleton_policy() {
     ensure_rustls_provider();
     let dir = TempDir::new().unwrap();
     let tls_dir = dir.path().join("http-tls");
@@ -10,7 +11,7 @@ async fn http_api_local_lifecycle() {
     let metrics_addr = next_addr(Ipv4Addr::LOCALHOST);
 
     let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
-    let policy_store_check = policy_store.clone();
+    let _policy_store_check = policy_store.clone();
     let local_store = PolicyDiskStore::new(local_store_dir);
     let local_store_check = local_store.clone();
     let cfg = HttpApiConfig {
@@ -77,106 +78,54 @@ async fn http_api_local_lifecycle() {
         .build()
         .unwrap();
 
-    let payload = serde_json::json!({
-        "mode": "enforce",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "local",
-                    "mode": "enforce",
-                    "sources": { "ips": ["10.0.0.5"] },
-                    "rules": [
-                        {
-                            "id": "allow-dns",
-                            "mode": "enforce",
-                            "action": "allow",
-                            "match": { "dns_hostname": "example.com" }
-                        }
-                    ]
-                }
-            ]
-        }
-    });
-
     let resp = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .get(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
-        .json(&payload)
         .send()
         .await
         .unwrap();
     assert!(resp.status().is_success());
-    let record: PolicyRecord = resp.json().await.unwrap();
-    assert_eq!(record.mode, PolicyMode::Enforce);
+    let policy: neuwerk::controlplane::policy_config::PolicyConfig = resp.json().await.unwrap();
+    assert!(matches!(
+        policy.default_policy,
+        Some(neuwerk::controlplane::policy_config::PolicyValue::String(ref value))
+            if value == "deny"
+    ));
+    assert!(policy.source_groups.is_empty());
+
     let stored = local_store_check
         .read_state()
         .unwrap()
-        .expect("stored singleton after create");
-    assert_eq!(stored.record().id, record.id);
-    assert_eq!(stored.record().mode, PolicyMode::Enforce);
+        .expect("stored singleton after bootstrap");
+    assert_eq!(stored.policy.source_groups.len(), 0);
 
-    let resp = client
-        .get(format!("https://{bind_addr}/api/v1/policies"))
-        .bearer_auth(&token.token)
-        .send()
-        .await
-        .unwrap();
-    assert!(resp.status().is_success());
-    let records: Vec<PolicyRecord> = resp.json().await.unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].id, record.id);
-    assert_eq!(local_store_check.active_id().unwrap(), Some(record.id));
-
-    let disabled_payload = serde_json::json!({
-        "mode": "disabled",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "local",
-                    "mode": "enforce",
-                    "sources": { "ips": ["10.0.0.5"] },
-                    "rules": [
-                        {
-                            "id": "allow-dns",
-                            "mode": "enforce",
-                            "action": "allow",
-                            "match": { "dns_hostname": "example.com" }
-                        }
-                    ]
-                }
-            ]
-        }
-    });
-    let resp = client
-        .put(format!("https://{bind_addr}/api/v1/policies/{}", record.id))
-        .bearer_auth(&token.token)
-        .json(&disabled_payload)
-        .send()
-        .await
-        .unwrap();
-    assert!(resp.status().is_success());
-    let updated: PolicyRecord = resp.json().await.unwrap();
-    assert_eq!(updated.mode, PolicyMode::Disabled);
-    assert_eq!(local_store_check.active_id().unwrap(), None);
-    assert_eq!(policy_store_check.active_policy_id(), None);
-    let stored = local_store_check
-        .read_state()
-        .unwrap()
-        .expect("stored singleton after disable");
-    assert_eq!(stored.record().id, updated.id);
-    assert_eq!(stored.record().mode, PolicyMode::Disabled);
+    let old_routes = [
+        format!("https://{bind_addr}/api/v1/policies"),
+        format!(
+            "https://{bind_addr}/api/v1/policies/{}",
+            Uuid::new_v4()
+        ),
+        format!("https://{bind_addr}/api/v1/policies/by-name/prod-default"),
+    ];
+    for path in old_routes {
+        let resp = client
+            .get(path)
+            .bearer_auth(&token.token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+    }
 
     let missing = client
-        .get(format!("https://{bind_addr}/api/v1/policies"))
+        .get(format!("https://{bind_addr}/api/v1/policy"))
         .send()
         .await
         .unwrap();
     assert_eq!(missing.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     let expired_resp = client
-        .get(format!("https://{bind_addr}/api/v1/policies"))
+        .get(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&expired.token)
         .send()
         .await
@@ -194,7 +143,7 @@ async fn http_api_local_lifecycle() {
 }
 
 #[tokio::test]
-async fn http_api_policy_by_name_upsert_reuses_record_id_and_rejects_duplicates() {
+async fn http_api_put_singleton_policy() {
     ensure_rustls_provider();
     let dir = TempDir::new().unwrap();
     let tls_dir = dir.path().join("http-tls");
@@ -257,112 +206,68 @@ async fn http_api_policy_by_name_upsert_reuses_record_id_and_rejects_duplicates(
     let token = api_auth::mint_token(&keyset, "local-test", None, None).unwrap();
     let client = http_api_client(&tls_dir).unwrap();
 
-    let first_payload = serde_json::json!({
-        "mode": "enforce",
-        "name": "ignored-body-name",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "local",
-                    "mode": "enforce",
-                    "sources": { "ips": ["10.0.0.5"] },
-                    "rules": [
-                        {
-                            "id": "allow-dns",
-                            "mode": "enforce",
-                            "action": "allow",
-                            "match": { "dns_hostname": "example.com" }
-                        }
-                    ]
-                }
-            ]
-        }
+    let payload = serde_json::json!({
+        "default_policy": "deny",
+        "source_groups": [
+            {
+                "id": "local",
+                "mode": "enforce",
+                "sources": { "ips": ["10.0.0.5"] },
+                "rules": [
+                    {
+                        "id": "allow-dns",
+                        "mode": "enforce",
+                        "action": "allow",
+                        "match": { "dns_hostname": "example.com" }
+                    }
+                ]
+            }
+        ]
     });
-    let create = client
-        .put(format!(
-            "https://{bind_addr}/api/v1/policies/by-name/prod-default"
-        ))
+    let update = client
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
-        .json(&first_payload)
+        .json(&payload)
         .send()
         .await
         .unwrap();
-    assert!(create.status().is_success());
-    let created: PolicyRecord = create.json().await.unwrap();
-    assert_eq!(created.name.as_deref(), Some("prod-default"));
-    assert_eq!(created.mode, PolicyMode::Enforce);
-    assert_eq!(local_store_check.active_id().unwrap(), Some(created.id));
+    assert!(update.status().is_success());
+    let updated: neuwerk::controlplane::policy_config::PolicyConfig = update.json().await.unwrap();
+    assert_eq!(updated.source_groups.len(), 1);
+    assert_eq!(updated.source_groups[0].id, "local");
+    assert_eq!(
+        updated.source_groups[0].mode,
+        neuwerk::controlplane::policy_config::MatchModeValue::Enforce
+    );
+
     let stored = local_store_check
         .read_state()
         .unwrap()
-        .expect("stored singleton after create");
-    assert_eq!(stored.record().id, created.id);
-    assert_eq!(stored.record().name.as_deref(), Some("prod-default"));
+        .expect("stored singleton after update");
+    assert_eq!(stored.policy.source_groups.len(), 1);
+    assert_eq!(stored.policy.source_groups[0].id, "local");
+    assert!(local_store_check.active_id().unwrap().is_some());
+    assert!(policy_store_check.active_policy_id().is_some());
 
     let fetch = client
-        .get(format!(
-            "https://{bind_addr}/api/v1/policies/by-name/PROD-default"
-        ))
+        .get(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
         .send()
         .await
         .unwrap();
     assert!(fetch.status().is_success());
-    let fetched: PolicyRecord = fetch.json().await.unwrap();
-    assert_eq!(fetched.id, created.id);
+    let fetched: neuwerk::controlplane::policy_config::PolicyConfig = fetch.json().await.unwrap();
+    assert_eq!(fetched.source_groups.len(), 1);
+    assert_eq!(fetched.source_groups[0].id, "local");
 
-    let second_payload = serde_json::json!({
-        "mode": "disabled",
-        "name": "still-ignored",
-        "policy": {
-            "default_policy": "allow",
-            "source_groups": []
-        }
-    });
-    let update = client
-        .put(format!(
-            "https://{bind_addr}/api/v1/policies/by-name/prod-default"
-        ))
+    let old_route = client
+        .put(format!("https://{bind_addr}/api/v1/policies"))
         .bearer_auth(&token.token)
-        .json(&second_payload)
+        .json(&payload)
         .send()
         .await
         .unwrap();
-    assert!(update.status().is_success());
-    let updated: PolicyRecord = update.json().await.unwrap();
-    assert_eq!(updated.id, created.id);
-    assert_eq!(updated.name.as_deref(), Some("prod-default"));
-    assert_eq!(updated.mode, PolicyMode::Disabled);
-    assert_eq!(local_store_check.active_id().unwrap(), None);
-    assert_eq!(policy_store_check.active_policy_id(), None);
-
-    let listed = client
-        .get(format!("https://{bind_addr}/api/v1/policies"))
-        .bearer_auth(&token.token)
-        .send()
-        .await
-        .unwrap();
-    assert!(listed.status().is_success());
-    let records: Vec<PolicyRecord> = listed.json().await.unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].id, created.id);
-
-    let duplicate = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
-        .bearer_auth(&token.token)
-        .json(&serde_json::json!({
-            "mode": "audit",
-            "name": "PROD-DEFAULT",
-            "policy": {
-                "default_policy": "deny",
-                "source_groups": []
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(duplicate.status(), reqwest::StatusCode::CONFLICT);
+    assert_eq!(old_route.status(), reqwest::StatusCode::NOT_FOUND);
 
     server.abort();
 }

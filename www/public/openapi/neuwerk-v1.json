@@ -534,159 +534,13 @@
         ]
       }
     },
-    "/api/v1/policies": {
+    "/api/v1/policy": {
       "get": {
         "tags": [
           "Policies"
         ],
-        "operationId": "list_policies",
-        "responses": {
-          "200": {
-            "description": "Policy records",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/OpenApiPolicyRecord"
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Leader unknown or activation wait failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "Policies"
-        ],
-        "operationId": "create_policy",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OpenApiPolicyUpsertRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Created policy record",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OpenApiPolicyRecord"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request or policy compile failure",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Admin role required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Policy name already exists",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Activation wait failed or leader unknown",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ]
-      }
-    },
-    "/api/v1/policies/by-name/{name}": {
-      "get": {
-        "tags": [
-          "Policies"
-        ],
-        "operationId": "get_policy_by_name",
+        "operationId": "get_policy_singleton",
         "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "description": "Stable policy name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
           {
             "name": "format",
             "in": "query",
@@ -699,47 +553,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Policy record",
+            "description": "Policy document",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OpenApiPolicyRecord"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid policy name",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
+                  "$ref": "#/components/schemas/PolicyConfig"
                 }
               }
             }
           },
           "401": {
             "description": "Missing or invalid token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Policy not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Duplicate policy name conflict",
             "content": {
               "application/json": {
                 "schema": {
@@ -762,23 +586,12 @@
         "tags": [
           "Policies"
         ],
-        "operationId": "upsert_policy_by_name",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "description": "Stable policy name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+        "operationId": "put_policy_singleton",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/OpenApiPolicyUpsertRequest"
+                "$ref": "#/components/schemas/PolicyConfig"
               }
             }
           },
@@ -786,11 +599,11 @@
         },
         "responses": {
           "200": {
-            "description": "Created or updated policy record",
+            "description": "Updated policy document",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OpenApiPolicyRecord"
+                  "$ref": "#/components/schemas/PolicyConfig"
                 }
               }
             }
@@ -817,281 +630,6 @@
           },
           "403": {
             "description": "Admin role required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Duplicate policy name conflict",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Activation wait failed or leader unknown",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ]
-      }
-    },
-    "/api/v1/policies/{id}": {
-      "get": {
-        "tags": [
-          "Policies"
-        ],
-        "operationId": "get_policy",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Policy UUID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "format",
-            "in": "query",
-            "description": "Use `yaml` to return application/yaml",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Policy record",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OpenApiPolicyRecord"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid policy id",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Policy not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ]
-      },
-      "put": {
-        "tags": [
-          "Policies"
-        ],
-        "operationId": "update_policy",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Policy UUID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OpenApiPolicyUpsertRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Updated policy record",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OpenApiPolicyRecord"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request or policy compile failure",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Admin role required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Policy not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Policy name already exists",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Activation wait failed or leader unknown",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ]
-      },
-      "delete": {
-        "tags": [
-          "Policies"
-        ],
-        "operationId": "delete_policy",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Policy UUID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Deleted policy record"
-          },
-          "400": {
-            "description": "Invalid policy id",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Admin role required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Policy not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3119,56 +2657,12 @@
           }
         }
       },
-      "OpenApiPolicyRecord": {
-        "type": "object",
-        "required": [
-          "id",
-          "created_at",
-          "mode",
-          "policy"
-        ],
-        "properties": {
-          "created_at": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "mode": {
-            "$ref": "#/components/schemas/PolicyMode"
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "policy": {
-            "$ref": "#/components/schemas/PolicyConfig"
-          }
-        }
-      },
-      "OpenApiPolicyUpsertRequest": {
-        "type": "object",
-        "required": [
-          "mode",
-          "policy"
-        ],
-        "properties": {
-          "mode": {
-            "$ref": "#/components/schemas/PolicyMode"
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "policy": {
-            "$ref": "#/components/schemas/PolicyConfig"
-          }
-        }
+      "MatchModeValue": {
+        "type": "string",
+        "enum": [
+          "audit",
+          "enforce"
+        ]
       },
       "PerformanceModeStatus": {
         "type": "object",
@@ -3219,14 +2713,6 @@
           }
         }
       },
-      "PolicyMode": {
-        "type": "string",
-        "enum": [
-          "disabled",
-          "audit",
-          "enforce"
-        ]
-      },
       "PolicyValue": {
         "oneOf": [
           {
@@ -3276,7 +2762,14 @@
             "$ref": "#/components/schemas/RuleMatchConfig"
           },
           "mode": {
-            "$ref": "#/components/schemas/RuleMode"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MatchModeValue"
+              }
+            ]
           },
           "priority": {
             "type": [
@@ -3511,6 +3004,7 @@
         "type": "object",
         "required": [
           "id",
+          "mode",
           "sources"
         ],
         "properties": {
@@ -3526,6 +3020,9 @@
           },
           "id": {
             "type": "string"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/MatchModeValue"
           },
           "priority": {
             "type": [
