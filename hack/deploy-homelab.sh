@@ -305,6 +305,27 @@ local_wrapper_sha() {
   sha256sum "${WRAPPER_STAGING_PATH}" | awk '{print $1}'
 }
 
+wait_for_https_health() {
+  local host="$1"
+  local h=""
+  local r=""
+  local ok=0
+  local i=""
+
+  for i in $(seq 1 60); do
+    h="$(curl -sk -o /dev/null -w '%{http_code}' "https://${host}:8443/health" || true)"
+    r="$(curl -sk -o /dev/null -w '%{http_code}' "https://${host}:8443/ready" || true)"
+    if [[ "${h}" == '200' && "${r}" == '200' ]]; then
+      log "Health checks passed on ${host} (health=${h} ready=${r} iter=${i})"
+      ok=1
+      break
+    fi
+    sleep 2
+  done
+
+  [[ "${ok}" == '1' ]] || die "timed out waiting for health and ready on ${host} (last health=${h:-000} ready=${r:-000})"
+}
+
 deploy_host() {
   local host="$1"
   local binary_sha=""
@@ -318,49 +339,44 @@ deploy_host() {
   scp -o StrictHostKeyChecking=accept-new "${WRAPPER_STAGING_PATH}" "${USER_NAME}@${host}:${REMOTE_TMP_WRAPPER}"
 
   log "Installing artifacts and restarting ${SYSTEMD_UNIT} on ${host}"
-  ssh -o StrictHostKeyChecking=accept-new "${USER_NAME}@${host}" \
-    "set -euo pipefail
+  ssh -o StrictHostKeyChecking=accept-new "${USER_NAME}@${host}" bash <<EOF
+set -euo pipefail
 ts=\$(date +%Y%m%dT%H%M%SZ)
-sudo cp -a '${REMOTE_BINARY_FIREWALL}' '${REMOTE_BINARY_FIREWALL}.bak.'\"\${ts}\"
-sudo cp -a '${REMOTE_BINARY_NEUWERK}' '${REMOTE_BINARY_NEUWERK}.bak.'\"\${ts}\"
-sudo cp -a '${REMOTE_WRAPPER}' '${REMOTE_WRAPPER}.bak.'\"\${ts}\"
+sudo cp -a '${REMOTE_BINARY_FIREWALL}' '${REMOTE_BINARY_FIREWALL}.bak.'"\${ts}"
+sudo cp -a '${REMOTE_BINARY_NEUWERK}' '${REMOTE_BINARY_NEUWERK}.bak.'"\${ts}"
+sudo cp -a '${REMOTE_WRAPPER}' '${REMOTE_WRAPPER}.bak.'"\${ts}"
 sudo install -m 0755 '${REMOTE_TMP_BINARY}' '${REMOTE_BINARY_FIREWALL}'
 sudo install -m 0755 '${REMOTE_TMP_BINARY}' '${REMOTE_BINARY_NEUWERK}'
 sudo install -m 0755 '${REMOTE_TMP_WRAPPER}' '${REMOTE_WRAPPER}'
 sudo systemctl restart '${SYSTEMD_UNIT}'
-ok=0
-for i in \$(seq 1 60); do
-  h=\$(curl -sk -o /dev/null -w '%{http_code}' 'https://${host}:8443/health' || true)
-  r=\$(curl -sk -o /dev/null -w '%{http_code}' 'https://${host}:8443/ready' || true)
-  if [[ \"\${h}\" == '200' && \"\${r}\" == '200' ]]; then
-    ok=1
-    echo \"HEALTH=\${h} READY=\${r} ITER=\${i}\"
-    break
-  fi
-  sleep 2
-done
 actual_bin_sha=\$(sha256sum '${REMOTE_BINARY_FIREWALL}' | awk '{print \$1}')
 actual_wrapper_sha=\$(sha256sum '${REMOTE_WRAPPER}' | awk '{print \$1}')
-[[ \"\${actual_bin_sha}\" == '${binary_sha}' ]]
-[[ \"\${actual_wrapper_sha}\" == '${wrapper_sha}' ]]
+[[ "\${actual_bin_sha}" == '${binary_sha}' ]]
+[[ "\${actual_wrapper_sha}" == '${wrapper_sha}' ]]
 sudo systemctl is-active '${SYSTEMD_UNIT}' >/dev/null
-[[ \"\${ok}\" == '1' ]]
-curl -skf 'https://${host}:8443/health' >/dev/null
-curl -skf 'https://${host}:8443/ready' >/dev/null
-printf 'BIN_SHA=%s\nWRAP_SHA=%s\n' \"\${actual_bin_sha}\" \"\${actual_wrapper_sha}\"
-"
+printf 'BIN_SHA=%s\nWRAP_SHA=%s\n' "\${actual_bin_sha}" "\${actual_wrapper_sha}"
+EOF
+
+  wait_for_https_health "${host}"
 }
 
 postcheck_host() {
   local host="$1"
-  ssh -o StrictHostKeyChecking=accept-new "${USER_NAME}@${host}" \
-    "set -euo pipefail
-printf '%s ' '${host}'
-printf 'sha=%s ' \"\$(sha256sum '${REMOTE_BINARY_FIREWALL}' | awk '{print \$1}')\"
-printf 'wrap=%s ' \"\$(sha256sum '${REMOTE_WRAPPER}' | awk '{print \$1}')\"
-printf 'health=%s ' \"\$(curl -sk -o /dev/null -w '%{http_code}' 'https://${host}:8443/health')\"
-printf 'ready=%s\n' \"\$(curl -sk -o /dev/null -w '%{http_code}' 'https://${host}:8443/ready')\"
-"
+  local remote_meta=""
+  local health_code=""
+  local ready_code=""
+
+  remote_meta="$(
+    ssh -o StrictHostKeyChecking=accept-new "${USER_NAME}@${host}" bash <<EOF
+set -euo pipefail
+printf 'sha=%s ' "\$(sha256sum '${REMOTE_BINARY_FIREWALL}' | awk '{print \$1}')"
+printf 'wrap=%s' "\$(sha256sum '${REMOTE_WRAPPER}' | awk '{print \$1}')"
+EOF
+  )"
+
+  health_code="$(curl -sk -o /dev/null -w '%{http_code}' "https://${host}:8443/health" || true)"
+  ready_code="$(curl -sk -o /dev/null -w '%{http_code}' "https://${host}:8443/ready" || true)"
+  printf '%s %s health=%s ready=%s\n' "${host}" "${remote_meta}" "${health_code}" "${ready_code}"
 }
 
 main() {

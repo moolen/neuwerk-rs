@@ -54,4 +54,20 @@ fn homelab_deploy_script_exists_and_documents_usage() {
         script_body.contains("neuwerk-firewall-start.sh"),
         "expected deploy script to manage the homelab wrapper"
     );
+    assert!(
+        script_body.contains("\"${USER_NAME}@${host}\" bash <<EOF"),
+        "expected deploy script to force bash for remote ssh commands so pipefail and [[ ]] work on homelab guests"
+    );
+    assert!(
+        script_body.contains("wait_for_https_health \"${host}\""),
+        "expected deploy script to poll health from the rollout controller instead of relying on guest self-connectivity during restart"
+    );
+    assert!(
+        !script_body.contains("\\\"\\${actual_bin_sha}\\\""),
+        "expected deploy script ssh heredocs to avoid leftover escaped quotes from the old string-based remote command"
+    );
+    assert!(
+        script_body.contains("\\${actual_bin_sha}"),
+        "expected deploy script ssh heredocs to preserve remote variable expansion instead of letting the local shell expand it first"
+    );
 }
