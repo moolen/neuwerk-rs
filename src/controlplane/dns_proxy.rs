@@ -585,14 +585,15 @@ fn evaluate_dns_policy_decision(
         Ok(lock) => lock,
         Err(_) => return (false, false, "default".to_string()),
     };
-    let (raw_allowed, enforce_group) = lock.evaluate_with_source_group(src_ip, hostname);
+    let (effective_allowed, raw_allowed, enforce_group) =
+        lock.evaluate_with_source_group_effective_and_raw(src_ip, hostname);
     let (audit_rule_denied, audit_group) =
         lock.evaluate_audit_denied_with_source_group(src_ip, hostname);
     let source_group = enforce_group
         .or(audit_group)
         .unwrap_or_else(|| "default".to_string());
     let would_deny = !raw_allowed || audit_rule_denied;
-    let allowed = raw_allowed || audit_passthrough;
+    let allowed = effective_allowed || audit_passthrough;
     (allowed, would_deny, source_group)
 }
 

@@ -87,12 +87,16 @@ fn build_dns_response(name: &str, ip: Ipv4Addr) -> Vec<u8> {
 }
 
 fn single_group_policy(rules: Vec<DnsRule>) -> DnsPolicy {
+    single_group_policy_with_mode(DataplaneRuleMode::Enforce, rules)
+}
+
+fn single_group_policy_with_mode(mode: DataplaneRuleMode, rules: Vec<DnsRule>) -> DnsPolicy {
     let mut sources = IpSetV4::new();
     sources.add_ip(Ipv4Addr::new(192, 0, 2, 2));
     DnsPolicy::new(vec![DnsSourceGroup {
         id: "client-primary".to_string(),
         priority: 0,
-        mode: DataplaneRuleMode::Enforce,
+        mode,
         sources,
         rules,
     }])
@@ -236,6 +240,30 @@ fn evaluate_dns_policy_decision_marks_audit_rule_deny_without_blocking() {
         Some(&store),
         Ipv4Addr::new(192, 0, 2, 2),
         "foo.allowed",
+    );
+    assert!(allowed);
+    assert!(would_deny);
+    assert_eq!(source_group, "client-primary");
+}
+
+#[test]
+fn evaluate_dns_policy_decision_marks_audit_group_implicit_deny_as_would_deny() {
+    let policy = std::sync::Arc::new(std::sync::RwLock::new(single_group_policy_with_mode(
+        DataplaneRuleMode::Audit,
+        vec![dns_rule(
+            "allow-enforce",
+            0,
+            RuleAction::Allow,
+            DataplaneRuleMode::Enforce,
+            r"^foo\.allowed$",
+        )],
+    )));
+    let store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+    let (allowed, would_deny, source_group) = evaluate_dns_policy_decision(
+        &policy,
+        Some(&store),
+        Ipv4Addr::new(192, 0, 2, 2),
+        "bar.allowed",
     );
     assert!(allowed);
     assert!(would_deny);

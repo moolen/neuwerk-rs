@@ -99,6 +99,16 @@ impl DnsPolicy {
         src_ip: Ipv4Addr,
         hostname: &str,
     ) -> (bool, Option<String>) {
+        let (effective_allowed, _, group) =
+            self.evaluate_with_source_group_effective_and_raw(src_ip, hostname);
+        (effective_allowed, group)
+    }
+
+    pub fn evaluate_with_source_group_effective_and_raw(
+        &self,
+        src_ip: Ipv4Addr,
+        hostname: &str,
+    ) -> (bool, bool, Option<String>) {
         let (allowed, mode, group) =
             self.evaluate_with_source_group_raw(src_ip, hostname, None, true);
         let effective_allowed = if !allowed && mode == Some(DataplaneRuleMode::Audit) {
@@ -106,7 +116,7 @@ impl DnsPolicy {
         } else {
             allowed
         };
-        (effective_allowed, group)
+        (effective_allowed, allowed, group)
     }
 
     pub fn evaluate_audit_denied_with_source_group(
