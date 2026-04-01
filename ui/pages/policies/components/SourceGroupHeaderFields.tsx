@@ -4,6 +4,7 @@ import type { PolicySourceGroup } from '../../../types';
 import {
   setSourceGroupDefaultAction,
   setSourceGroupId,
+  setSourceGroupMode,
 } from './sourceGroupHeaderDraft';
 import type { UpdateDraft } from './formTypes';
 
@@ -30,6 +31,7 @@ export const SourceGroupHeaderFields: React.FC<SourceGroupHeaderFieldsProps> = (
   groupIndex,
   updateDraft,
 }) => {
+  const sourceGroupMode = group.mode ?? 'enforce';
   const fallbackAction = group.default_action ?? 'deny';
 
   return (
@@ -53,6 +55,58 @@ export const SourceGroupHeaderFields: React.FC<SourceGroupHeaderFieldsProps> = (
         />
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
           Unique identifier — also used as the display name.
+        </p>
+      </div>
+
+      {/* Mode chips */}
+      <div className="space-y-1">
+        <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+          Mode
+        </label>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              updateDraft((next) => {
+                setSourceGroupMode(next, groupIndex, 'enforce');
+              })
+            }
+            className="px-3 py-1.5 rounded text-xs font-medium"
+            style={
+              sourceGroupMode === 'enforce'
+                ? {
+                    background: 'var(--accent-light)',
+                    color: 'var(--accent)',
+                    border: '1px solid rgba(79,110,247,0.3)',
+                  }
+                : chipBase
+            }
+          >
+            Enforce
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              updateDraft((next) => {
+                setSourceGroupMode(next, groupIndex, 'audit');
+              })
+            }
+            className="px-3 py-1.5 rounded text-xs font-medium"
+            style={
+              sourceGroupMode === 'audit'
+                ? {
+                    background: 'var(--amber-bg)',
+                    color: 'var(--amber)',
+                    border: '1px solid var(--amber-border)',
+                  }
+                : chipBase
+            }
+          >
+            Audit
+          </button>
+        </div>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Default enforcement posture for this source group; rules can override it.
         </p>
       </div>
 

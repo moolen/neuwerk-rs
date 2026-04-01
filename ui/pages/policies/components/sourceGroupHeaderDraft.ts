@@ -30,3 +30,13 @@ export function setSourceGroupDefaultAction(
   if (!group) return;
   group.default_action = value;
 }
+
+export function setSourceGroupMode(
+  draft: PolicyCreateRequest,
+  groupIndex: number,
+  value: 'audit' | 'enforce',
+): void {
+  const group = draft.policy.source_groups[groupIndex];
+  if (!group) return;
+  group.mode = value;
+}

@@ -4,6 +4,7 @@ import { createEmptyPolicyRequest, createEmptySourceGroup } from '../../../utils
 import {
   setSourceGroupDefaultAction,
   setSourceGroupId,
+  setSourceGroupMode,
   setSourceGroupPriority,
 } from './sourceGroupHeaderDraft';
 
@@ -34,13 +35,21 @@ describe('sourceGroupHeaderDraft', () => {
     expect(draft.policy.source_groups[0].default_action).toBe('allow');
   });
 
+  it('updates source-group mode', () => {
+    const draft = buildDraft();
+    setSourceGroupMode(draft, 0, 'audit');
+    expect(draft.policy.source_groups[0].mode).toBe('audit');
+  });
+
   it('no-ops when group index is out-of-range', () => {
     const draft = buildDraft();
     setSourceGroupId(draft, 3, 'x');
     setSourceGroupPriority(draft, 3, '9');
     setSourceGroupDefaultAction(draft, 3, 'allow');
+    setSourceGroupMode(draft, 3, 'audit');
     expect(draft.policy.source_groups[0].id).toBe('group-1');
     expect(draft.policy.source_groups[0].priority).toBe(0);
     expect(draft.policy.source_groups[0].default_action).toBe('deny');
+    expect(draft.policy.source_groups[0].mode).toBe('enforce');
   });
 });
