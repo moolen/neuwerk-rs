@@ -18,7 +18,6 @@ export function createEmptyRule(id = 'rule-1'): PolicyRule {
   return {
     id,
     action: 'allow',
-    mode: 'enforce',
     match: {
       dst_cidrs: [],
       dst_ips: [],

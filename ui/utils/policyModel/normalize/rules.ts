@@ -6,6 +6,7 @@ import type {
 import { createSourceGroupClientKey } from '../factories';
 import {
   asNumberList,
+  asOptionalRuleMode,
   asPolicyAction,
   asRuleMode,
   asString,
@@ -50,16 +51,16 @@ function normalizeRule(value: unknown, index: number): PolicyRule {
     return {
       id: `rule-${index + 1}`,
       action: 'deny',
-      mode: 'enforce',
       match: normalizeRuleMatch(undefined),
     };
   }
   const priority = sanitizeOptionalNumber(value.priority);
+  const mode = asOptionalRuleMode(value.mode);
   return {
     id: asString(value.id) ?? `rule-${index + 1}`,
     ...(typeof priority === 'number' ? { priority } : {}),
     action: asPolicyAction(value.action, 'deny'),
-    mode: asRuleMode(value.mode),
+    ...(mode ? { mode } : {}),
     match: normalizeRuleMatch(value.match),
   };
 }

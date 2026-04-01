@@ -88,6 +88,13 @@ export function asRuleMode(value: unknown): 'audit' | 'enforce' {
     : 'enforce';
 }
 
+export function asOptionalRuleMode(value: unknown): 'audit' | 'enforce' | undefined {
+  const parsed = asString(value)?.toLowerCase();
+  return RULE_MODES.includes(parsed as (typeof RULE_MODES)[number])
+    ? (parsed as 'audit' | 'enforce')
+    : undefined;
+}
+
 export function asTlsMode(value: unknown): PolicyTlsMode {
   const parsed = asString(value)?.toLowerCase();
   return TLS_MODES.includes(parsed as PolicyTlsMode) ? (parsed as PolicyTlsMode) : 'metadata';

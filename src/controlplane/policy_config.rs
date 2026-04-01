@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 
 use regex::{Regex, RegexBuilder};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 
 use crate::dataplane::policy::{
@@ -182,12 +182,39 @@ pub struct DnsRule {
     pub hostname: Regex,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct PolicyConfig {
     pub default_policy: Option<PolicyValue>,
     #[serde(default)]
     pub source_groups: Vec<SourceGroupConfig>,
+}
+
+impl<'de> Deserialize<'de> for PolicyConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawPolicyConfig {
+            default_policy: Option<PolicyValue>,
+            #[serde(default)]
+            source_groups: Vec<SourceGroupConfig>,
+            #[serde(default)]
+            mode: Option<serde::de::IgnoredAny>,
+        }
+
+        let raw = RawPolicyConfig::deserialize(deserializer)?;
+        if raw.mode.is_some() {
+            return Err(serde::de::Error::custom(
+                "top-level policy mode is no longer supported",
+            ));
+        }
+
+        Ok(Self {
+            default_policy: raw.default_policy,
+            source_groups: raw.source_groups,
+        })
+    }
 }
 
 impl PolicyConfig {

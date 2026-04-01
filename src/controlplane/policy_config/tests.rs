@@ -10,6 +10,7 @@ mod tests {
 default_policy: deny
 source_groups:
   - id: "k8s"
+    mode: enforce
     sources:
       cidrs: ["10.0.0.0/24"]
       ips: ["10.0.1.5"]
@@ -51,6 +52,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "empty"
+    mode: enforce
     sources: {}
     rules: []
 "#;
@@ -64,6 +66,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "dns"
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
     rules:
@@ -84,6 +87,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "dns"
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
     rules:
@@ -102,6 +106,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "dns"
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
     rules:
@@ -120,6 +125,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "dns"
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
     rules:
@@ -142,6 +148,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "dns"
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
     rules:
@@ -169,6 +176,7 @@ source_groups:
 default_policy: deny
 source_groups:
   - id: "dns"
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
     default_action: deny
@@ -209,6 +217,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "mixed"
+    mode: enforce
     sources:
       ips: ["192.0.2.9"]
     rules:
@@ -252,7 +261,7 @@ source_groups:
             policy
                 .evaluate_with_source_group_detailed_raw(&audit_meta, None, None)
                 .0,
-            crate::dataplane::policy::PolicyDecision::Deny
+            crate::dataplane::policy::PolicyDecision::Allow
         );
         let (audit_decision, _, audit_matched) =
             policy.evaluate_audit_rules_with_source_group(&audit_meta, None, None);
@@ -357,7 +366,10 @@ source_groups:
       cidrs: ["10.0.0.0/24"]
     rules: []
 "#;
-        assert!(serde_yaml::from_str::<PolicyConfig>(yaml).is_err());
+        let err = serde_yaml::from_str::<PolicyConfig>(yaml)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("top-level policy mode is no longer supported"));
     }
 
     #[test]
@@ -365,6 +377,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "icmp"
+    mode: enforce
     sources:
       ips: ["192.0.2.9"]
     rules:
@@ -384,6 +397,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "icmp"
+    mode: enforce
     sources:
       ips: ["192.0.2.9"]
     rules:
@@ -403,6 +417,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "icmp"
+    mode: enforce
     sources:
       ips: ["192.0.2.9"]
     rules:
@@ -423,6 +438,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "tls"
+    mode: enforce
     sources:
       ips: ["10.0.0.2"]
     rules:
@@ -458,6 +474,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "tls"
+    mode: enforce
     sources:
       ips: ["10.0.0.2"]
     rules:
@@ -481,6 +498,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "tls"
+    mode: enforce
     sources:
       ips: ["10.0.0.2"]
     rules:
@@ -501,6 +519,7 @@ source_groups:
         let yaml = r#"
 source_groups:
   - id: "tls"
+    mode: enforce
     sources:
       ips: ["10.0.0.2"]
     rules:
