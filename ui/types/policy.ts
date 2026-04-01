@@ -3,7 +3,7 @@ import type { AuditNodeError } from './audit';
 export type PolicyMode = 'disabled' | 'audit' | 'enforce';
 
 export type PolicyAction = 'allow' | 'deny';
-export type PolicyRuleMode = 'audit' | 'enforce';
+export type PolicyMatchMode = 'audit' | 'enforce';
 export type PolicyTlsMode = 'metadata' | 'intercept';
 export type PolicyTls13Uninspectable = 'allow' | 'deny';
 
@@ -16,6 +16,7 @@ export interface PolicySourceGroup {
   client_key?: string;
   id: string;
   priority?: number;
+  mode: PolicyMatchMode;
   sources: PolicySources;
   rules: PolicyRule[];
   default_action?: PolicyAction;
@@ -46,7 +47,7 @@ export interface PolicyRule {
   id: string;
   priority?: number;
   action: PolicyAction;
-  mode?: PolicyRuleMode;
+  mode?: PolicyMatchMode;
   match: PolicyRuleMatch;
 }
 

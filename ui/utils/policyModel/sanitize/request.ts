@@ -18,6 +18,7 @@ export function sanitizePolicyRequestForApi(value: PolicyCreateRequest): PolicyC
   for (const group of value.policy.source_groups ?? []) {
     const normalizedGroup: PolicySourceGroup = {
       id: group.id.trim(),
+      mode: group.mode,
       sources: sanitizeSources(group.sources),
       rules: (group.rules ?? []).map((rule) => sanitizeRule(rule)),
     };

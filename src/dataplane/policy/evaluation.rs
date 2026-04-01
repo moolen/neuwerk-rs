@@ -47,10 +47,11 @@ impl PolicySnapshot {
         tls: Option<&TlsObservation>,
         verifier: Option<&TlsVerifier>,
     ) -> (PolicyDecision, Option<&str>, bool) {
-        let (decision, group_idx, intercept_requires_service) =
+        let (decision, group_idx, intercept_requires_service, matched_mode) =
             self.evaluate_with_source_group_detailed_raw_index_borrowed(meta, tls, verifier);
+        let decision = self.apply_enforcement_mode(self.apply_match_mode(decision, matched_mode));
         (
-            self.apply_enforcement_mode(decision),
+            decision,
             group_idx.and_then(|idx| self.groups.get(idx).map(|group| group.id.as_str())),
             intercept_requires_service,
         )
@@ -78,10 +79,11 @@ impl PolicySnapshot {
         tls: Option<&TlsObservation>,
         verifier: Option<&TlsVerifier>,
     ) -> (PolicyDecision, PolicyDecision, Option<&str>, bool) {
-        let (raw, group_idx, intercept_requires_service) =
+        let (raw, group_idx, intercept_requires_service, matched_mode) =
             self.evaluate_with_source_group_detailed_raw_index_borrowed(meta, tls, verifier);
+        let effective = self.apply_enforcement_mode(self.apply_match_mode(raw, matched_mode));
         (
-            self.apply_enforcement_mode(raw),
+            effective,
             raw,
             group_idx.and_then(|idx| self.groups.get(idx).map(|group| group.id.as_str())),
             intercept_requires_service,
@@ -138,7 +140,7 @@ impl PolicySnapshot {
         tls: Option<&TlsObservation>,
         verifier: Option<&TlsVerifier>,
     ) -> (PolicyDecision, Option<&str>, bool) {
-        let (decision, group_idx, intercept_requires_service) =
+        let (decision, group_idx, intercept_requires_service, _) =
             self.evaluate_with_source_group_detailed_raw_index_borrowed(meta, tls, verifier);
         (
             decision,
@@ -153,14 +155,10 @@ impl PolicySnapshot {
         tls: Option<&TlsObservation>,
         verifier: Option<&TlsVerifier>,
     ) -> (PolicyDecision, PolicyDecision, Option<usize>, bool) {
-        let (raw, group_idx, intercept_requires_service) =
+        let (raw, group_idx, intercept_requires_service, matched_mode) =
             self.evaluate_with_source_group_detailed_raw_index_borrowed(meta, tls, verifier);
-        (
-            self.apply_enforcement_mode(raw),
-            raw,
-            group_idx,
-            intercept_requires_service,
-        )
+        let effective = self.apply_enforcement_mode(self.apply_match_mode(raw, matched_mode));
+        (effective, raw, group_idx, intercept_requires_service)
     }
 
     pub(crate) fn evaluate_with_source_group_detailed_raw_index_borrowed(
@@ -168,13 +166,9 @@ impl PolicySnapshot {
         meta: &PacketMeta,
         tls: Option<&TlsObservation>,
         verifier: Option<&TlsVerifier>,
-    ) -> (PolicyDecision, Option<usize>, bool) {
+    ) -> (PolicyDecision, Option<usize>, bool, Option<RuleMode>) {
         self.evaluate_with_source_group_detailed_for_mode_index_borrowed(
-            meta,
-            tls,
-            verifier,
-            RuleMode::Enforce,
-            true,
+            meta, tls, verifier, None, true,
         )
     }
 
@@ -195,12 +189,12 @@ impl PolicySnapshot {
         tls: Option<&TlsObservation>,
         verifier: Option<&TlsVerifier>,
     ) -> (PolicyDecision, Option<&str>, bool) {
-        let (decision, group_idx, _) = self
+        let (decision, group_idx, _, _) = self
             .evaluate_with_source_group_detailed_for_mode_index_borrowed(
                 meta,
                 tls,
                 verifier,
-                RuleMode::Audit,
+                Some(RuleMode::Audit),
                 false,
             );
         let group = group_idx.and_then(|idx| self.groups.get(idx).map(|group| group.id.as_str()));
@@ -214,12 +208,12 @@ impl PolicySnapshot {
         tls: Option<&TlsObservation>,
         verifier: Option<&TlsVerifier>,
     ) -> (PolicyDecision, Option<usize>, bool) {
-        let (decision, group_idx, _) = self
+        let (decision, group_idx, _, _) = self
             .evaluate_with_source_group_detailed_for_mode_index_borrowed(
                 meta,
                 tls,
                 verifier,
-                RuleMode::Audit,
+                Some(RuleMode::Audit),
                 false,
             );
         let matched = group_idx.is_some();
@@ -231,17 +225,29 @@ impl PolicySnapshot {
         meta: &PacketMeta,
         tls: Option<&TlsObservation>,
         verifier: Option<&TlsVerifier>,
-        selected_mode: RuleMode,
+        mode_filter: Option<RuleMode>,
         include_defaults: bool,
-    ) -> (PolicyDecision, Option<usize>, bool) {
+    ) -> (PolicyDecision, Option<usize>, bool, Option<RuleMode>) {
         evaluate_with_source_group_detailed_for_mode_full_scan_index(
             self,
             meta,
             tls,
             verifier,
-            selected_mode,
+            mode_filter,
             include_defaults,
         )
+    }
+
+    #[inline(always)]
+    fn apply_match_mode(
+        &self,
+        decision: PolicyDecision,
+        matched_mode: Option<RuleMode>,
+    ) -> PolicyDecision {
+        if matched_mode == Some(RuleMode::Audit) && decision == PolicyDecision::Deny {
+            return PolicyDecision::Allow;
+        }
+        decision
     }
 
     fn apply_enforcement_mode(&self, decision: PolicyDecision) -> PolicyDecision {
@@ -275,7 +281,7 @@ impl PolicySnapshot {
         tls: Option<&TlsObservation>,
         verifier: Option<&TlsVerifier>,
     ) -> (PolicyDecision, PolicyDecision, Option<usize>, bool) {
-        let (raw, group_idx, intercept_requires_service) =
+        let (raw, group_idx, intercept_requires_service, matched_mode) =
             evaluate_with_source_group_detailed_for_mode_exact_group_indices_index(
                 self,
                 group_indices,
@@ -283,15 +289,11 @@ impl PolicySnapshot {
                 meta,
                 tls,
                 verifier,
-                RuleMode::Enforce,
+                None,
                 true,
             );
-        (
-            self.apply_enforcement_mode(raw),
-            raw,
-            group_idx,
-            intercept_requires_service,
-        )
+        let effective = self.apply_enforcement_mode(self.apply_match_mode(raw, matched_mode));
+        (effective, raw, group_idx, intercept_requires_service)
     }
 
     pub(crate) fn evaluate_audit_rules_with_source_group_index_for_group_indices_borrowed(
@@ -302,7 +304,7 @@ impl PolicySnapshot {
         tls: Option<&TlsObservation>,
         verifier: Option<&TlsVerifier>,
     ) -> (PolicyDecision, Option<usize>, bool) {
-        let (decision, group_idx, _) =
+        let (decision, group_idx, _, _) =
             evaluate_with_source_group_detailed_for_mode_exact_group_indices_index(
                 self,
                 group_indices,
@@ -310,7 +312,7 @@ impl PolicySnapshot {
                 meta,
                 tls,
                 verifier,
-                RuleMode::Audit,
+                Some(RuleMode::Audit),
                 false,
             );
         let matched = group_idx.is_some();
@@ -324,62 +326,35 @@ pub(crate) fn evaluate_with_source_group_detailed_for_mode_full_scan_index(
     meta: &PacketMeta,
     tls: Option<&TlsObservation>,
     verifier: Option<&TlsVerifier>,
-    selected_mode: RuleMode,
+    mode_filter: Option<RuleMode>,
     include_defaults: bool,
-) -> (PolicyDecision, Option<usize>, bool) {
-    if selected_mode == RuleMode::Audit {
-        for &group_idx in snapshot.audit_group_indices() {
-            let Some(group) = snapshot.groups.get(group_idx) else {
-                continue;
-            };
-            if !group.sources.contains(meta.src_ip) {
-                continue;
-            }
-            if let Some(result) = evaluate_group_for_mode(
-                snapshot,
-                group_idx,
-                group,
-                meta,
-                tls,
-                verifier,
-                selected_mode,
-            ) {
-                return result;
-            }
+) -> (PolicyDecision, Option<usize>, bool, Option<RuleMode>) {
+    for (group_idx, group) in snapshot.groups.iter().enumerate() {
+        if !group.sources.contains(meta.src_ip) {
+            continue;
         }
-    } else {
-        for (group_idx, group) in snapshot.groups.iter().enumerate() {
-            if !group.sources.contains(meta.src_ip) {
-                continue;
-            }
-            if let Some(result) = evaluate_group_for_mode(
-                snapshot,
-                group_idx,
-                group,
-                meta,
-                tls,
-                verifier,
-                selected_mode,
-            ) {
-                return result;
-            }
+        if let Some(result) =
+            evaluate_group_for_mode(snapshot, group_idx, group, meta, tls, verifier, mode_filter)
+        {
+            return result;
+        }
 
-            if include_defaults && selected_mode == RuleMode::Enforce {
-                if let Some(action) = group.default_action {
-                    return (
-                        match action {
-                            RuleAction::Allow => PolicyDecision::Allow,
-                            RuleAction::Deny => PolicyDecision::Deny,
-                        },
-                        Some(group_idx),
-                        false,
-                    );
-                }
+        if include_defaults {
+            if let Some(action) = group.default_action {
+                return (
+                    match action {
+                        RuleAction::Allow => PolicyDecision::Allow,
+                        RuleAction::Deny => PolicyDecision::Deny,
+                    },
+                    Some(group_idx),
+                    false,
+                    None,
+                );
             }
         }
     }
 
-    default_policy_decision(snapshot, selected_mode, include_defaults)
+    default_policy_decision(snapshot, include_defaults)
 }
 
 #[inline(always)]
@@ -391,9 +366,9 @@ pub(crate) fn evaluate_with_source_group_detailed_for_mode_exact_group_indices_i
     meta: &PacketMeta,
     tls: Option<&TlsObservation>,
     verifier: Option<&TlsVerifier>,
-    selected_mode: RuleMode,
+    mode_filter: Option<RuleMode>,
     include_defaults: bool,
-) -> (PolicyDecision, Option<usize>, bool) {
+) -> (PolicyDecision, Option<usize>, bool, Option<RuleMode>) {
     let exact_groups = group_indices.unwrap_or(&[]);
     let fallback_groups = fallback_group_indices.unwrap_or(&[]);
     let mut exact_pos = 0usize;
@@ -421,25 +396,16 @@ pub(crate) fn evaluate_with_source_group_detailed_for_mode_exact_group_indices_i
         let Some(group) = snapshot.groups.get(group_idx) else {
             continue;
         };
-        if selected_mode == RuleMode::Audit && !snapshot.group_has_audit_rules(group_idx) {
-            continue;
-        }
         if !choose_exact && !group.sources.contains(meta.src_ip) {
             continue;
         }
-        if let Some(result) = evaluate_group_for_mode(
-            snapshot,
-            group_idx,
-            group,
-            meta,
-            tls,
-            verifier,
-            selected_mode,
-        ) {
+        if let Some(result) =
+            evaluate_group_for_mode(snapshot, group_idx, group, meta, tls, verifier, mode_filter)
+        {
             return result;
         }
 
-        if include_defaults && selected_mode == RuleMode::Enforce {
+        if include_defaults {
             if let Some(action) = group.default_action {
                 return (
                     match action {
@@ -448,12 +414,13 @@ pub(crate) fn evaluate_with_source_group_detailed_for_mode_exact_group_indices_i
                     },
                     Some(group_idx),
                     false,
+                    None,
                 );
             }
         }
     }
 
-    default_policy_decision(snapshot, selected_mode, include_defaults)
+    default_policy_decision(snapshot, include_defaults)
 }
 
 #[inline(always)]
@@ -464,29 +431,37 @@ fn evaluate_group_for_mode(
     meta: &PacketMeta,
     tls: Option<&TlsObservation>,
     verifier: Option<&TlsVerifier>,
-    selected_mode: RuleMode,
-) -> Option<(PolicyDecision, Option<usize>, bool)> {
+    mode_filter: Option<RuleMode>,
+) -> Option<(PolicyDecision, Option<usize>, bool, Option<RuleMode>)> {
     if let Some(indices) =
-        snapshot.candidate_rule_indices_for_group(group_idx, selected_mode, meta.proto, meta.dst_ip)
+        snapshot.candidate_rule_indices_for_group(group_idx, meta.proto, meta.dst_ip)
     {
         for &rule_idx in indices {
             let Some(rule) = group.rules.get(rule_idx) else {
                 continue;
             };
+            if mode_filter.is_some() && mode_filter != Some(rule.mode) {
+                continue;
+            }
             if !rule_matches_prefiltered(&rule.matcher, meta) {
                 continue;
             }
             if let Some((decision, _, intercept_requires_service)) =
                 evaluate_matched_rule(group, rule, meta, tls, verifier)
             {
-                return Some((decision, Some(group_idx), intercept_requires_service));
+                return Some((
+                    decision,
+                    Some(group_idx),
+                    intercept_requires_service,
+                    Some(rule.mode),
+                ));
             }
         }
         return None;
     }
 
     for rule in &group.rules {
-        if rule.mode != selected_mode {
+        if mode_filter.is_some() && mode_filter != Some(rule.mode) {
             continue;
         }
         if !rule_matches_basic(&rule.matcher, meta) {
@@ -495,7 +470,12 @@ fn evaluate_group_for_mode(
         if let Some((decision, _, intercept_requires_service)) =
             evaluate_matched_rule(group, rule, meta, tls, verifier)
         {
-            return Some((decision, Some(group_idx), intercept_requires_service));
+            return Some((
+                decision,
+                Some(group_idx),
+                intercept_requires_service,
+                Some(rule.mode),
+            ));
         }
     }
 
@@ -505,10 +485,9 @@ fn evaluate_group_for_mode(
 #[inline(always)]
 fn default_policy_decision(
     snapshot: &PolicySnapshot,
-    selected_mode: RuleMode,
     include_defaults: bool,
-) -> (PolicyDecision, Option<usize>, bool) {
-    if include_defaults && selected_mode == RuleMode::Enforce {
+) -> (PolicyDecision, Option<usize>, bool, Option<RuleMode>) {
+    if include_defaults {
         return (
             match snapshot.default_policy {
                 DefaultPolicy::Allow => PolicyDecision::Allow,
@@ -516,10 +495,11 @@ fn default_policy_decision(
             },
             None,
             false,
+            None,
         );
     }
 
-    (PolicyDecision::Allow, None, false)
+    (PolicyDecision::Allow, None, false, None)
 }
 
 fn rule_matches_basic(matcher: &RuleMatch, meta: &PacketMeta) -> bool {

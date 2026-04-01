@@ -42,6 +42,7 @@ export function createEmptySourceGroup(id = 'group-1'): PolicySourceGroup {
     client_key: createSourceGroupClientKey(id),
     id,
     priority: 0,
+    mode: 'enforce',
     sources: {
       cidrs: [],
       ips: [],

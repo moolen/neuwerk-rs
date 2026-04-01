@@ -2,8 +2,8 @@ use std::net::Ipv4Addr;
 
 use super::*;
 use crate::controlplane::policy_config::{
-    PolicyConfig, PolicyValue, PortSpec, ProtoValue, RuleConfig, RuleMatchConfig,
-    RuleMode as ConfigRuleMode, SourceGroupConfig, SourcesConfig, TlsMatchConfig,
+    MatchModeValue, PolicyConfig, PolicyValue, PortSpec, ProtoValue, RuleConfig, RuleMatchConfig,
+    SourceGroupConfig, SourcesConfig, TlsMatchConfig,
 };
 use crate::dataplane::tls::{TlsCertChain, TlsObservation, TlsVerifier};
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyUsagePurpose};
@@ -296,6 +296,91 @@ fn evaluate_exact_source_group_dispatch_matches_expected_group() {
     assert!(!policy.is_internal(Ipv4Addr::new(172, 16, 0, 99)));
 }
 
+#[test]
+fn audit_group_deny_is_not_enforced() {
+    let yaml = r#"
+default_policy: deny
+source_groups:
+  - id: apps
+    mode: audit
+    sources:
+      cidrs: ["10.0.0.0/24"]
+    rules:
+      - id: deny-db
+        action: deny
+        match:
+          proto: tcp
+          dst_ports: [5432]
+"#;
+    let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+    let compiled = cfg.compile().unwrap();
+    let policy = PolicySnapshot::new(DefaultPolicy::Deny, compiled.groups);
+    let meta = PacketMeta {
+        src_ip: Ipv4Addr::new(10, 0, 0, 9),
+        dst_ip: Ipv4Addr::new(203, 0, 113, 20),
+        proto: 6,
+        src_port: 50000,
+        dst_port: 5432,
+        icmp_type: None,
+        icmp_code: None,
+    };
+
+    let (effective, raw, _, _) =
+        policy.evaluate_with_source_group_effective_and_raw(&meta, None, None);
+    assert_eq!(raw, PolicyDecision::Deny);
+    assert_eq!(effective, PolicyDecision::Allow);
+}
+
+#[test]
+fn enforce_rule_override_denies_inside_audit_group() {
+    let yaml = r#"
+default_policy: deny
+source_groups:
+  - id: apps
+    mode: audit
+    sources:
+      cidrs: ["10.0.0.0/24"]
+    rules:
+      - id: deny-db
+        action: deny
+        match:
+          proto: tcp
+          dst_ports: [5432]
+      - id: enforce-admin
+        mode: enforce
+        action: deny
+        match:
+          proto: tcp
+          dst_ports: [22]
+"#;
+    let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+    let compiled = cfg.compile().unwrap();
+    let policy = PolicySnapshot::new(DefaultPolicy::Deny, compiled.groups);
+    let db_meta = PacketMeta {
+        src_ip: Ipv4Addr::new(10, 0, 0, 9),
+        dst_ip: Ipv4Addr::new(203, 0, 113, 20),
+        proto: 6,
+        src_port: 50000,
+        dst_port: 5432,
+        icmp_type: None,
+        icmp_code: None,
+    };
+    let admin_meta = PacketMeta {
+        dst_port: 22,
+        ..db_meta
+    };
+
+    let (db_effective, db_raw, _, _) =
+        policy.evaluate_with_source_group_effective_and_raw(&db_meta, None, None);
+    assert_eq!(db_raw, PolicyDecision::Deny);
+    assert_eq!(db_effective, PolicyDecision::Allow);
+
+    let (admin_effective, admin_raw, _, _) =
+        policy.evaluate_with_source_group_effective_and_raw(&admin_meta, None, None);
+    assert_eq!(admin_raw, PolicyDecision::Deny);
+    assert_eq!(admin_effective, PolicyDecision::Deny);
+}
+
 fn ca_cert(name: &str) -> Certificate {
     let mut params = CertificateParams::default();
     params.distinguished_name.push(DnType::CommonName, name);
@@ -335,6 +420,7 @@ fn server_dn_matches_full_subject_dn_not_just_common_name() {
         source_groups: vec![SourceGroupConfig {
             id: "tls-users".to_string(),
             priority: Some(0),
+            mode: MatchModeValue::Enforce,
             sources: SourcesConfig {
                 cidrs: vec!["10.40.0.0/24".to_string()],
                 ips: Vec::new(),
@@ -344,7 +430,7 @@ fn server_dn_matches_full_subject_dn_not_just_common_name() {
                 id: "allow-server-dn".to_string(),
                 priority: Some(0),
                 action: PolicyValue::String("allow".to_string()),
-                mode: ConfigRuleMode::Enforce,
+                mode: Some(MatchModeValue::Enforce),
                 matcher: RuleMatchConfig {
                     dst_cidrs: Vec::new(),
                     dst_ips: vec!["203.0.113.10".to_string()],

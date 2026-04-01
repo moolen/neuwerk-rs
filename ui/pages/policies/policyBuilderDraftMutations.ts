@@ -20,6 +20,7 @@ function cloneRule(rule: PolicyRule): PolicyRule {
 export function addGroupToDraft(draft: PolicyCreateRequest): void {
   const id = nextNamedId('group', draft.policy.source_groups.map((group) => group.id));
   const group = createEmptySourceGroup(id);
+  group.mode = 'enforce';
   group.priority = draft.policy.source_groups.length;
   draft.policy.source_groups.push(group);
 }
@@ -31,6 +32,7 @@ export function duplicateGroupInDraft(draft: PolicyCreateRequest, groupIndex: nu
   }
   const existingIds = draft.policy.source_groups.map((entry) => entry.id);
   const copy = cloneGroup(group);
+  copy.mode = copy.mode ?? 'enforce';
   copy.client_key = createSourceGroupClientKey(copy.id);
   copy.id = duplicateId(copy.id, existingIds);
   draft.policy.source_groups.splice(groupIndex + 1, 0, copy);

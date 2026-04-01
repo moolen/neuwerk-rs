@@ -264,6 +264,103 @@ source_groups:
     }
 
     #[test]
+    fn source_group_mode_required() {
+        let yaml = r#"
+default_policy: deny
+source_groups:
+  - id: apps
+    sources:
+      cidrs: ["10.0.0.0/24"]
+    rules:
+      - id: deny-db
+        action: deny
+        match:
+          proto: tcp
+          dst_ports: [5432]
+"#;
+        let err = serde_yaml::from_str::<PolicyConfig>(yaml)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mode"));
+    }
+
+    #[test]
+    fn rule_mode_overrides_group_mode() {
+        let yaml = r#"
+default_policy: deny
+source_groups:
+  - id: apps
+    mode: audit
+    sources:
+      cidrs: ["10.0.0.0/24"]
+    rules:
+      - id: deny-db
+        action: deny
+        match:
+          proto: tcp
+          dst_ports: [5432]
+      - id: enforce-admin
+        mode: enforce
+        action: deny
+        match:
+          proto: tcp
+          dst_ports: [22]
+"#;
+        let cfg: PolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        let compiled = cfg.compile().unwrap();
+        let policy = crate::dataplane::policy::PolicySnapshot::new(
+            crate::dataplane::policy::DefaultPolicy::Deny,
+            compiled.groups,
+        );
+
+        let app_src = "10.0.0.9".parse().unwrap();
+        let db_meta = crate::dataplane::policy::PacketMeta {
+            src_ip: app_src,
+            dst_ip: "203.0.113.20".parse().unwrap(),
+            proto: 6,
+            src_port: 40000,
+            dst_port: 5432,
+            icmp_type: None,
+            icmp_code: None,
+        };
+        let admin_meta = crate::dataplane::policy::PacketMeta {
+            dst_port: 22,
+            ..db_meta
+        };
+
+        let (db_effective, db_raw, _, _) =
+            policy.evaluate_with_source_group_effective_and_raw(&db_meta, None, None);
+        let (admin_effective, admin_raw, _, _) =
+            policy.evaluate_with_source_group_effective_and_raw(&admin_meta, None, None);
+
+        assert_eq!(db_raw, crate::dataplane::policy::PolicyDecision::Deny);
+        assert_eq!(
+            db_effective,
+            crate::dataplane::policy::PolicyDecision::Allow
+        );
+        assert_eq!(admin_raw, crate::dataplane::policy::PolicyDecision::Deny);
+        assert_eq!(
+            admin_effective,
+            crate::dataplane::policy::PolicyDecision::Deny
+        );
+    }
+
+    #[test]
+    fn top_level_policy_mode_rejected() {
+        let yaml = r#"
+mode: audit
+default_policy: deny
+source_groups:
+  - id: apps
+    mode: enforce
+    sources:
+      cidrs: ["10.0.0.0/24"]
+    rules: []
+"#;
+        assert!(serde_yaml::from_str::<PolicyConfig>(yaml).is_err());
+    }
+
+    #[test]
     fn icmp_match_requires_icmp_proto() {
         let yaml = r#"
 source_groups:

@@ -60,6 +60,22 @@ impl From<RuleMode> for DataplaneRuleMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchModeValue {
+    Audit,
+    Enforce,
+}
+
+impl From<MatchModeValue> for DataplaneRuleMode {
+    fn from(value: MatchModeValue) -> Self {
+        match value {
+            MatchModeValue::Audit => DataplaneRuleMode::Audit,
+            MatchModeValue::Enforce => DataplaneRuleMode::Enforce,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DnsPolicy {
     pub groups: Vec<DnsSourceGroup>,
@@ -83,7 +99,14 @@ impl DnsPolicy {
         src_ip: Ipv4Addr,
         hostname: &str,
     ) -> (bool, Option<String>) {
-        self.evaluate_with_source_group_for_mode(src_ip, hostname, DataplaneRuleMode::Enforce, true)
+        let (allowed, mode, group) =
+            self.evaluate_with_source_group_raw(src_ip, hostname, None, true);
+        let effective_allowed = if !allowed && mode == Some(DataplaneRuleMode::Audit) {
+            true
+        } else {
+            allowed
+        };
+        (effective_allowed, group)
     }
 
     pub fn evaluate_audit_denied_with_source_group(
@@ -91,43 +114,47 @@ impl DnsPolicy {
         src_ip: Ipv4Addr,
         hostname: &str,
     ) -> (bool, Option<String>) {
-        let (allowed, group) = self.evaluate_with_source_group_for_mode(
+        let (allowed, _, group) = self.evaluate_with_source_group_raw(
             src_ip,
             hostname,
-            DataplaneRuleMode::Audit,
+            Some(DataplaneRuleMode::Audit),
             false,
         );
         (!allowed, group)
     }
 
-    fn evaluate_with_source_group_for_mode(
+    fn evaluate_with_source_group_raw(
         &self,
         src_ip: Ipv4Addr,
         hostname: &str,
-        mode: DataplaneRuleMode,
+        mode_filter: Option<DataplaneRuleMode>,
         include_group_default_deny: bool,
-    ) -> (bool, Option<String>) {
+    ) -> (bool, Option<DataplaneRuleMode>, Option<String>) {
         let hostname = normalize_hostname(hostname);
         for group in &self.groups {
             if !group.sources.contains(src_ip) {
                 continue;
             }
             for rule in &group.rules {
-                if rule.mode != mode {
+                if mode_filter.is_some() && mode_filter != Some(rule.mode) {
                     continue;
                 }
                 if rule.hostname.is_match(&hostname) {
-                    return (rule.action == RuleAction::Allow, Some(group.id.clone()));
+                    return (
+                        rule.action == RuleAction::Allow,
+                        Some(rule.mode),
+                        Some(group.id.clone()),
+                    );
                 }
             }
-            if include_group_default_deny && mode == DataplaneRuleMode::Enforce {
-                return (false, Some(group.id.clone()));
+            if include_group_default_deny {
+                return (false, None, Some(group.id.clone()));
             }
         }
-        if include_group_default_deny && mode == DataplaneRuleMode::Enforce {
-            return (false, None);
+        if include_group_default_deny {
+            return (false, None, None);
         }
-        (true, None)
+        (true, None, None)
     }
 
     pub fn source_group_for_ip(&self, src_ip: Ipv4Addr) -> Option<String> {
@@ -156,6 +183,7 @@ pub struct DnsRule {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyConfig {
     pub default_policy: Option<PolicyValue>,
     #[serde(default)]
@@ -211,6 +239,7 @@ pub struct KubernetesSelectorBinding {
 pub struct SourceGroupConfig {
     pub id: String,
     pub priority: Option<u32>,
+    pub mode: MatchModeValue,
     pub sources: SourcesConfig,
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
@@ -223,6 +252,7 @@ impl SourceGroupConfig {
         fallback_priority: u32,
     ) -> Result<(SourceGroup, DnsSourceGroup, Vec<KubernetesSelectorBinding>), String> {
         let priority = self.priority.unwrap_or(fallback_priority);
+        let group_mode: DataplaneRuleMode = self.mode.into();
         let compiled_sources = self.sources.compile(&self.id)?;
         let sources = compiled_sources.sources;
         let default_action = match self.default_action {
@@ -233,7 +263,7 @@ impl SourceGroupConfig {
         let mut rules = Vec::with_capacity(self.rules.len());
         let mut dns_rules = Vec::with_capacity(self.rules.len());
         for (idx, rule) in self.rules.into_iter().enumerate() {
-            let (rule, dns_rule) = rule.compile(idx as u32)?;
+            let (rule, dns_rule) = rule.compile(idx as u32, group_mode)?;
             if let Some(rule) = rule {
                 rules.push(rule);
             }
@@ -420,16 +450,20 @@ pub struct RuleConfig {
     pub priority: Option<u32>,
     pub action: PolicyValue,
     #[serde(default)]
-    pub mode: RuleMode,
+    pub mode: Option<MatchModeValue>,
     #[serde(rename = "match")]
     pub matcher: RuleMatchConfig,
 }
 
 impl RuleConfig {
-    fn compile(self, fallback_priority: u32) -> Result<(Option<Rule>, Option<DnsRule>), String> {
+    fn compile(
+        self,
+        fallback_priority: u32,
+        group_mode: DataplaneRuleMode,
+    ) -> Result<(Option<Rule>, Option<DnsRule>), String> {
         let priority = self.priority.unwrap_or(fallback_priority);
         let action = parse_rule_action(self.action)?;
-        let mode: DataplaneRuleMode = self.mode.into();
+        let mode = self.mode.map(Into::into).unwrap_or(group_mode);
         let dns_rule = compile_dns_rule(
             &self.id,
             priority,

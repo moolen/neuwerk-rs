@@ -68,6 +68,7 @@ export function normalizeSourceGroup(value: unknown, index: number): PolicySourc
   if (!isObject(value)) {
     return {
       id: `group-${index + 1}`,
+      mode: 'enforce',
       sources: { cidrs: [], ips: [], kubernetes: [] },
       rules: [],
     };
@@ -82,6 +83,7 @@ export function normalizeSourceGroup(value: unknown, index: number): PolicySourc
     client_key: asString(value.client_key) ?? createSourceGroupClientKey(asString(value.id) ?? `group-${index + 1}`),
     id: asString(value.id) ?? `group-${index + 1}`,
     ...(typeof priority === 'number' ? { priority } : {}),
+    mode: asRuleMode(value.mode),
     sources: normalizeSources(value.sources),
     rules,
     ...(defaultAction ? { default_action: asPolicyAction(defaultAction) } : {}),
