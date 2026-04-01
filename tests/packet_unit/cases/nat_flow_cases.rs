@@ -225,6 +225,7 @@ fn established_udp_flow_is_dropped_after_policy_generation_denies_it() {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![Rule {
             id: "allowlist".to_string(),
@@ -270,7 +271,13 @@ fn established_udp_flow_is_dropped_after_policy_generation_denies_it() {
         proto: 17,
     };
 
-    let mut open = build_ipv4_udp(flow.src_ip, flow.dst_ip, flow.src_port, flow.dst_port, b"before");
+    let mut open = build_ipv4_udp(
+        flow.src_ip,
+        flow.dst_ip,
+        flow.src_port,
+        flow.dst_port,
+        b"before",
+    );
     assert_eq!(
         handle_packet(&mut open, &mut state),
         Action::Forward { out_port: 0 }
@@ -313,8 +320,13 @@ fn established_udp_flow_is_dropped_after_policy_generation_denies_it() {
         initial_snapshot.generation()
     );
 
-    let mut after =
-        build_ipv4_udp(flow.src_ip, flow.dst_ip, flow.src_port, flow.dst_port, b"after");
+    let mut after = build_ipv4_udp(
+        flow.src_ip,
+        flow.dst_ip,
+        flow.src_port,
+        flow.dst_port,
+        b"after",
+    );
     assert_eq!(handle_packet(&mut after, &mut state), Action::Drop);
     assert!(!state.flows.contains(&flow));
     assert!(state.nat.get_entry(&flow).is_none());

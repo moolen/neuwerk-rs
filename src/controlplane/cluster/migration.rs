@@ -15,8 +15,8 @@ use crate::controlplane::intercept_tls::{
     load_local_intercept_ca_pair, INTERCEPT_CA_CERT_KEY, INTERCEPT_CA_ENVELOPE_KEY,
 };
 use crate::controlplane::policy_repository::{
-    policy_item_key, PolicyDiskStore, PolicyIndex, StoredPolicy, POLICY_ACTIVE_KEY, POLICY_INDEX_KEY,
-    POLICY_STATE_KEY,
+    policy_item_key, PolicyDiskStore, PolicyIndex, StoredPolicy, POLICY_ACTIVE_KEY,
+    POLICY_INDEX_KEY, POLICY_STATE_KEY,
 };
 use crate::controlplane::service_accounts::{
     account_item_key, token_index_key, token_item_key, ServiceAccount, ServiceAccountClusterStore,
@@ -600,6 +600,7 @@ mod tests {
 default_policy: deny
 source_groups:
   - id: branch
+    mode: enforce
     sources:
       ips: ["10.0.0.5"]
     rules:

@@ -379,6 +379,7 @@ fn integration_dpdk_intercept_steers_to_service_lane_queue() {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,

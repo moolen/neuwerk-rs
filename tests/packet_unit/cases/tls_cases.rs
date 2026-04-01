@@ -41,6 +41,7 @@ fn test_tls_sni_allows_flow() {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,
@@ -114,6 +115,7 @@ fn test_tls_application_data_before_handshake_denies() {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,

@@ -237,7 +237,9 @@ fn assert_singleton_policy(
     expected_group_count: usize,
 ) {
     assert_eq!(
-        policy.get("default_policy").and_then(|value| value.as_str()),
+        policy
+            .get("default_policy")
+            .and_then(|value| value.as_str()),
         Some(expected_default)
     );
     let groups = policy
@@ -247,7 +249,10 @@ fn assert_singleton_policy(
     assert_eq!(groups.len(), expected_group_count);
     if let Some(expected_mode) = expected_group_mode {
         let group = groups.first().expect("missing source group");
-        assert_eq!(group.get("id").and_then(|value| value.as_str()), Some("sigterm"));
+        assert_eq!(
+            group.get("id").and_then(|value| value.as_str()),
+            Some("sigterm")
+        );
         assert_eq!(
             group.get("mode").and_then(|value| value.as_str()),
             Some(expected_mode)

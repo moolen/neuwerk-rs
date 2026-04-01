@@ -303,6 +303,7 @@ fn policy_with_allowlist(
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,
@@ -354,6 +355,7 @@ fn policy_with_tls_intercept(
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,
@@ -466,6 +468,7 @@ fn dataplane_metrics_track_allow_and_deny() {
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: Some(RuleAction::Deny),

@@ -65,7 +65,7 @@ mod tests {
     use neuwerk::controlplane::cloud::types::IntegrationMode;
     use neuwerk::controlplane::cluster::config::ClusterConfig;
     use neuwerk::controlplane::policy_config::PolicyConfig;
-    use neuwerk::controlplane::policy_repository::{PolicyRecord, StoredPolicy};
+    use neuwerk::controlplane::policy_repository::StoredPolicy;
     use neuwerk::controlplane::trafficd::TlsInterceptSettings;
     use neuwerk::dataplane::engine::EngineRuntimeConfig;
     use neuwerk::dataplane::policy::DefaultPolicy;
@@ -193,6 +193,7 @@ mod tests {
         let policy_store = policy_store();
         let dir = TempDir::new().unwrap();
         let local_store = PolicyDiskStore::new(dir.path().join("local-policy-store"));
+        std::fs::create_dir_all(local_store.base_dir()).expect("local store dir");
         std::fs::write(local_store.base_dir().join("policy.json"), b"{not-json")
             .expect("corrupt record");
 
@@ -216,6 +217,7 @@ mod tests {
                 r#"
 source_groups:
   - id: "broken"
+    mode: enforce
     sources: {}
     rules: []
 "#,
@@ -243,6 +245,7 @@ source_groups:
 default_policy: allow
 source_groups:
   - id: "apps"
+    mode: enforce
     sources:
       cidrs: ["10.0.0.0/24"]
     rules: []

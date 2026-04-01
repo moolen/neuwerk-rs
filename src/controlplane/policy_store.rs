@@ -578,6 +578,7 @@ default_policy: deny
 source_groups:
   - id: "client-primary"
     priority: 0
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
     rules:
@@ -588,6 +589,7 @@ source_groups:
     default_action: deny
   - id: "client-secondary"
     priority: 1
+    mode: enforce
     sources:
       ips: ["192.0.2.3"]
     rules: []

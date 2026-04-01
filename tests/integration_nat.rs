@@ -79,6 +79,7 @@ fn policy_with_allowlist(
     let group = SourceGroup {
         id: "internal".to_string(),
         priority: 0,
+        mode: neuwerk::dataplane::policy::RuleMode::Enforce,
         sources,
         rules: vec![rule],
         default_action: None,

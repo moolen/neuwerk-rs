@@ -441,7 +441,9 @@ default_policy: deny
         let store = PolicyDiskStore::new(dir.path().to_path_buf());
         fs::write(store.state_path(), b"{not-json").unwrap();
 
-        let err = store.read_state().expect_err("expected invalid singleton json");
+        let err = store
+            .read_state()
+            .expect_err("expected invalid singleton json");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
@@ -524,10 +526,7 @@ default_policy: deny
         store.write_record(&first).unwrap();
         store.write_record(&second).unwrap();
 
-        let fetched = store
-            .read_record_by_name("test-policy")
-            .unwrap()
-            .unwrap();
+        let fetched = store.read_record_by_name("test-policy").unwrap().unwrap();
         assert_eq!(fetched.id, second.id);
         assert_eq!(fetched.mode, PolicyMode::Audit);
     }
@@ -579,6 +578,7 @@ default_policy: deny
             .unwrap(),
         )
         .unwrap();
+        fs::create_dir_all(store.policy_path(id).parent().unwrap()).unwrap();
         fs::write(
             store.policy_path(id),
             serde_json::to_vec_pretty(&serde_json::json!({
@@ -629,7 +629,23 @@ default_policy: deny
     fn inactive_legacy_records_are_ignored_when_bootstrapping_singleton() {
         let dir = TempDir::new().unwrap();
         let store = PolicyDiskStore::new(dir.path().to_path_buf());
-        let record = PolicyRecord::new(PolicyMode::Disabled, sample_policy(), None).unwrap();
+        let record = PolicyRecord::new(
+            PolicyMode::Disabled,
+            serde_yaml::from_str(
+                r#"
+default_policy: allow
+source_groups:
+  - id: inactive-legacy
+    mode: enforce
+    sources:
+      ips: ["192.0.2.10"]
+    rules: []
+"#,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
         write_legacy_record(&store, &record);
         fs::write(
             store.active_path(),
