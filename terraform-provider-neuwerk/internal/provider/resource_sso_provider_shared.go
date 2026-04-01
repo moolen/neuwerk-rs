@@ -286,6 +286,11 @@ func (r *ssoProviderResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
+	resourceID, ok := ssoProviderResourceID(plan.ID, prior.ID, &resp.Diagnostics)
+	if !ok {
+		return
+	}
+
 	if !validateSsoProviderRequiredEndpoints(r.kindConfig.kind, plan, &resp.Diagnostics) {
 		return
 	}
@@ -296,7 +301,7 @@ func (r *ssoProviderResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	current, err := r.client.GetSsoProvider(ctx, plan.ID.ValueString())
+	current, err := r.client.GetSsoProvider(ctx, resourceID)
 	if err != nil {
 		resp.Diagnostics.AddError("Update SSO Provider Failed", err.Error())
 		return
@@ -306,7 +311,7 @@ func (r *ssoProviderResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	record, err := r.client.UpdateSsoProvider(ctx, plan.ID.ValueString(), buildSsoProviderUpdateRequest(plan, configClientSecret))
+	record, err := r.client.UpdateSsoProvider(ctx, resourceID, buildSsoProviderUpdateRequest(plan, configClientSecret))
 	if err != nil {
 		resp.Diagnostics.AddError("Update SSO Provider Failed", err.Error())
 		return
@@ -450,6 +455,29 @@ func parseSsoProviderImportID(raw string, diags *diag.Diagnostics) (string, bool
 		return "", false
 	}
 	return id, true
+}
+
+func ssoProviderResourceID(planID types.String, priorID types.String, diags *diag.Diagnostics) (string, bool) {
+	if !planID.IsNull() && !planID.IsUnknown() {
+		id := strings.TrimSpace(planID.ValueString())
+		if id != "" {
+			return id, true
+		}
+	}
+
+	if !priorID.IsNull() && !priorID.IsUnknown() {
+		id := strings.TrimSpace(priorID.ValueString())
+		if id != "" {
+			return id, true
+		}
+	}
+
+	diags.AddAttributeError(
+		path.Root("id"),
+		"Missing SSO Provider ID",
+		"id must be known before updating an SSO provider.",
+	)
+	return "", false
 }
 
 func validateSsoProviderRequiredEndpoints(kind string, plan ssoProviderResourceModel, diags *diag.Diagnostics) bool {

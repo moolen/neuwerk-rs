@@ -634,6 +634,124 @@ func TestGoogleSsoProviderUpdateUsesConfiguredSecretWhenSet(t *testing.T) {
 	}
 }
 
+func TestGoogleSsoProviderUpdateUsesPriorStateIDWhenPlanIDUnknown(t *testing.T) {
+	t.Parallel()
+
+	var sawGet bool
+	var sawPut bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6":
+			sawGet = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
+				"name":"Google Workspace",
+				"kind":"google",
+				"enabled":true,
+				"display_order":0,
+				"issuer_url":"https://accounts.google.com",
+				"client_id":"google-client-id",
+				"client_secret_configured":true,
+				"scopes":["openid","email","profile"],
+				"pkce_required":true,
+				"subject_claim":"sub",
+				"admin_subjects":[],
+				"admin_groups":[],
+				"admin_email_domains":[],
+				"readonly_subjects":[],
+				"readonly_groups":[],
+				"readonly_email_domains":[],
+				"allowed_email_domains":[],
+				"session_ttl_secs":3600,
+				"created_at":"2026-03-22T00:00:00Z",
+				"updated_at":"2026-03-22T00:00:02Z"
+			}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/settings/sso/providers/26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6":
+			sawPut = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6",
+				"name":"Google Workspace",
+				"kind":"google",
+				"enabled":true,
+				"display_order":0,
+				"issuer_url":"https://accounts.google.com",
+				"client_id":"google-client-id",
+				"client_secret_configured":true,
+				"scopes":["openid","email","profile"],
+				"pkce_required":true,
+				"subject_claim":"sub",
+				"admin_subjects":[],
+				"admin_groups":[],
+				"admin_email_domains":[],
+				"readonly_subjects":[],
+				"readonly_groups":[],
+				"readonly_email_domains":[],
+				"allowed_email_domains":[],
+				"session_ttl_secs":3600,
+				"created_at":"2026-03-22T00:00:00Z",
+				"updated_at":"2026-03-22T00:00:03Z"
+			}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	res := newGoogleSsoProviderResource()
+	configurable, ok := res.(resource.ResourceWithConfigure)
+	if !ok {
+		t.Fatalf("resource does not implement configure")
+	}
+	configurable.Configure(context.Background(), resource.ConfigureRequest{ProviderData: newTestAPIClient(t, server)}, &resource.ConfigureResponse{})
+
+	ctx := context.Background()
+	schemaResp := googleSsoProviderSchema(t)
+
+	planValue := emptyGoogleSsoProviderModel()
+	planValue.ID = types.StringUnknown()
+	planValue.Name = types.StringValue("Google Workspace")
+	planValue.ClientID = types.StringValue("google-client-id")
+	plan := tfsdk.Plan{Schema: schemaResp.Schema}
+	diags := plan.Set(ctx, planValue)
+	if diags.HasError() {
+		t.Fatalf("unexpected plan diagnostics: %#v", diags)
+	}
+
+	priorStateValue := emptyGoogleSsoProviderModel()
+	priorStateValue.ID = types.StringValue("26fd7f8d-4f9f-4e0f-a252-a86bb0f018f6")
+	priorStateValue.Name = types.StringValue("Google Workspace")
+	priorStateValue.ClientID = types.StringValue("google-client-id")
+	priorStateValue.ClientSecret = types.StringValue("existing-secret")
+	priorState := tfsdk.State{Schema: schemaResp.Schema}
+	diags = priorState.Set(ctx, priorStateValue)
+	if diags.HasError() {
+		t.Fatalf("unexpected state diagnostics: %#v", diags)
+	}
+
+	req := resource.UpdateRequest{
+		Plan:  plan,
+		State: priorState,
+		Config: tfsdk.Config{
+			Schema: schemaResp.Schema,
+			Raw:    plan.Raw,
+		},
+	}
+	resp := resource.UpdateResponse{State: tfsdk.State{Schema: schemaResp.Schema}}
+	res.Update(ctx, req, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %#v", resp.Diagnostics)
+	}
+	if !sawGet {
+		t.Fatalf("expected update to GET the existing provider using the prior state ID")
+	}
+	if !sawPut {
+		t.Fatalf("expected update to PUT the provider using the prior state ID")
+	}
+}
+
 func TestGoogleSsoProviderReadRejectsKindMismatch(t *testing.T) {
 	t.Parallel()
 

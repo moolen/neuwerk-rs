@@ -9,6 +9,7 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
@@ -643,6 +644,7 @@ impl StoredSsoProvider {
 pub struct SsoDiskStore {
     base_dir: PathBuf,
     secret_sealer: SsoSecretSealer,
+    io_lock: Arc<Mutex<()>>,
 }
 
 impl SsoDiskStore {
@@ -650,6 +652,7 @@ impl SsoDiskStore {
         Self {
             secret_sealer: SsoSecretSealer::local(&base_dir),
             base_dir,
+            io_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -680,24 +683,25 @@ impl SsoDiskStore {
     }
 
     pub fn read_provider(&self, id: Uuid) -> io::Result<Option<SsoProvider>> {
-        let raw: Option<StoredSsoProvider> = read_json(&self.item_path(id))?;
-        match raw {
-            Some(raw) => raw
-                .into_provider(&self.secret_sealer)
-                .map(Some)
-                .map_err(to_io_err),
-            None => Ok(None),
-        }
+        let _guard = self.lock_io()?;
+        self.read_provider_unlocked(id)
     }
 
     pub fn list_providers(&self) -> io::Result<Vec<SsoProvider>> {
-        let index = self.read_index()?;
+        let _guard = self.lock_io()?;
+        let mut index = self.read_index()?;
         let mut out = Vec::with_capacity(index.providers.len());
-        for id in index.providers {
-            let provider = self.read_provider(id)?.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "missing sso provider record")
-            })?;
+        let mut seen = Vec::with_capacity(index.providers.len());
+        for id in index.providers.iter().copied() {
+            let Some(provider) = self.read_provider_unlocked(id)? else {
+                continue;
+            };
+            seen.push(id);
             out.push(provider);
+        }
+        if seen.len() != index.providers.len() {
+            index.providers = seen;
+            self.write_index(&index)?;
         }
         out.sort_by(|left, right| {
             left.display_order
@@ -713,6 +717,7 @@ impl SsoDiskStore {
     }
 
     pub fn write_provider(&self, provider: &SsoProvider) -> io::Result<()> {
+        let _guard = self.lock_io()?;
         self.ensure()?;
         let stored =
             StoredSsoProvider::from_provider(provider, &self.secret_sealer).map_err(to_io_err)?;
@@ -726,6 +731,7 @@ impl SsoDiskStore {
     }
 
     pub fn delete_provider(&self, id: Uuid) -> io::Result<()> {
+        let _guard = self.lock_io()?;
         self.ensure()?;
         if let Err(err) = fs::remove_file(self.item_path(id)) {
             if err.kind() != io::ErrorKind::NotFound {
@@ -735,6 +741,23 @@ impl SsoDiskStore {
         let mut index = self.read_index()?;
         index.providers.retain(|entry| *entry != id);
         self.write_index(&index)
+    }
+
+    fn read_provider_unlocked(&self, id: Uuid) -> io::Result<Option<SsoProvider>> {
+        let raw: Option<StoredSsoProvider> = read_json(&self.item_path(id))?;
+        match raw {
+            Some(raw) => raw
+                .into_provider(&self.secret_sealer)
+                .map(Some)
+                .map_err(to_io_err),
+            None => Ok(None),
+        }
+    }
+
+    fn lock_io(&self) -> io::Result<std::sync::MutexGuard<'_, ()>> {
+        self.io_lock
+            .lock()
+            .map_err(|_| io::Error::other("sso disk store lock poisoned"))
     }
 
     pub fn ensure_state_key(&self) -> io::Result<Vec<u8>> {
