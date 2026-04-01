@@ -83,12 +83,7 @@ pub async fn run_cluster(
 
     let store = ClusterStore::open(cfg.data_dir.join("raft")).map_err(io::Error::other)?;
     let tls = RaftTlsConfig::load(tls_dir.clone()).map_err(io::Error::other)?;
-    let raft_config = openraft::Config {
-        cluster_name: "neuwerk".to_string(),
-        ..Default::default()
-    }
-    .validate()
-    .map_err(|err| io::Error::other(err.to_string()))?;
+    let raft_config = build_raft_config().map_err(|err| io::Error::other(err.to_string()))?;
     let raft = openraft::Raft::new(
         raft_node_id,
         Arc::new(raft_config),
@@ -197,6 +192,20 @@ pub async fn run_cluster(
         server_handle,
         shutdown_tx: Some(shutdown_tx),
     })
+}
+
+fn build_raft_config() -> Result<openraft::Config, openraft::ConfigError> {
+    openraft::Config {
+        cluster_name: "neuwerk".to_string(),
+        heartbeat_interval: 500,
+        election_timeout_min: 2_000,
+        election_timeout_max: 4_000,
+        install_snapshot_timeout: 5_000,
+        // Keep append batches well below the tonic transport cap for large replicated values.
+        max_payload_entries: 32,
+        ..Default::default()
+    }
+    .validate()
 }
 
 fn ensure_rustls_provider() {
@@ -534,5 +543,39 @@ mod tests {
         assert_eq!(key_mode, 0o600);
         assert_eq!(cert_mode, 0o644);
         assert_eq!(ca_mode, 0o644);
+    }
+
+    #[test]
+    fn raft_config_is_tuned_for_homelab() {
+        let config = build_raft_config().unwrap();
+
+        assert_eq!(config.cluster_name, "neuwerk");
+        assert_eq!(config.heartbeat_interval, 500);
+        assert_eq!(config.election_timeout_min, 2_000);
+        assert_eq!(config.election_timeout_max, 4_000);
+        assert_eq!(config.install_snapshot_timeout, 5_000);
+        assert_eq!(config.max_payload_entries, 32);
+    }
+
+    #[test]
+    fn raft_config_keeps_large_append_batches_under_transport_cap() {
+        let config = build_raft_config().unwrap();
+        let large_entry = openraft::Entry::<ClusterTypeConfig> {
+            log_id: openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), 1),
+            payload: openraft::EntryPayload::Normal(ClusterCommand::Put {
+                key: b"threat_intel/snapshot".to_vec(),
+                value: vec![0u8; 261_778],
+            }),
+        };
+        let entry_size = bincode::serialize(&large_entry).unwrap().len() as u64;
+        let total_batch_bytes = entry_size * config.max_payload_entries;
+
+        assert!(
+            total_batch_bytes < RAFT_GRPC_MAX_MESSAGE_BYTES as u64,
+            "representative append batch must fit within raft grpc cap: entry_size={entry_size} max_payload_entries={} total_batch_bytes={} grpc_cap={}",
+            config.max_payload_entries,
+            total_batch_bytes,
+            RAFT_GRPC_MAX_MESSAGE_BYTES,
+        );
     }
 }
