@@ -1,5 +1,7 @@
 use super::*;
 
+use neuwerk::controlplane::cluster::types::ClusterCommand;
+
 #[tokio::test]
 async fn http_api_metrics_bind_public_requires_explicit_allow_override() {
     ensure_rustls_provider();
@@ -318,6 +320,26 @@ async fn cluster_ready_degrades_on_quorum_loss_and_recovers() {
         .await
         .unwrap();
 
+    let replicated_policy = neuwerk::controlplane::policy_repository::StoredPolicy::default();
+    let leader_raft = if leader_id == seed_id {
+        seed_runtime.raft.clone()
+    } else {
+        join_runtime.raft.clone()
+    };
+    leader_raft
+        .client_write(ClusterCommand::Put {
+            key: POLICY_STATE_KEY.to_vec(),
+            value: serde_json::to_vec(&replicated_policy).unwrap(),
+        })
+        .await
+        .unwrap();
+    wait_for_state_value(&seed_runtime.store, POLICY_STATE_KEY, Duration::from_secs(5))
+        .await
+        .unwrap();
+    wait_for_state_value(&join_runtime.store, POLICY_STATE_KEY, Duration::from_secs(5))
+        .await
+        .unwrap();
+
     // Drive readiness from a real follower raft handle, but run HTTP API in local mode
     // to avoid cluster HTTP TLS/bootstrap ordering from dominating this readiness test.
     let (api_raft, api_store, stopped_runtime, restart_cfg) = if leader_id == seed_id {
@@ -343,6 +365,9 @@ async fn cluster_ready_degrades_on_quorum_loss_and_recovers() {
     let local_store = PolicyDiskStore::new(api_dir.path().join("policies"));
     let api_token = api_dir.path().join("token.json");
     let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
+    policy_store
+        .rebuild_from_config(replicated_policy.policy.clone())
+        .unwrap();
     let dataplane_config = DataplaneConfigStore::new();
     dataplane_config.set(DataplaneConfig {
         ip: Ipv4Addr::new(10, 0, 0, 2),

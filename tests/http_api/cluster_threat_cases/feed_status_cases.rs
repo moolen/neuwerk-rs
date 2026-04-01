@@ -348,7 +348,7 @@ async fn http_api_threat_feed_status_repairs_stale_local_state_from_cluster_snap
     assert_eq!(
         body.get("last_refresh_outcome")
             .and_then(|value| value.as_str()),
-        None
+        Some("success")
     );
     let feeds = body
         .get("feeds")
@@ -376,7 +376,10 @@ async fn http_api_threat_feed_status_repairs_stale_local_state_from_cluster_snap
         .expect("repaired local feed status");
     assert_eq!(repaired.snapshot_version, 12);
     assert_eq!(repaired.snapshot_generated_at, Some(5_000));
-    assert_eq!(repaired.last_refresh_outcome, None);
+    assert_eq!(
+        repaired.last_refresh_outcome,
+        Some(ThreatRefreshOutcome::Success)
+    );
     assert!(repaired
         .feeds
         .iter()
