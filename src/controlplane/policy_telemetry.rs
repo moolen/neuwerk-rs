@@ -31,14 +31,12 @@ pub struct PolicyTelemetryResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct PolicyTelemetryBucketKey {
-    policy_id: Uuid,
     source_group_id: String,
     hour_bucket: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PolicyTelemetryBucketRecord {
-    policy_id: Uuid,
     source_group_id: String,
     hour_bucket: u64,
     hits: u64,
@@ -65,7 +63,7 @@ impl PolicyTelemetryStore {
         store
     }
 
-    pub fn record_hit(&self, policy_id: Uuid, source_group_id: &str, observed_at: u64) {
+    pub fn record_hit(&self, source_group_id: &str, observed_at: u64) {
         let source_group_id = source_group_id.trim();
         if source_group_id.is_empty() {
             return;
@@ -74,29 +72,17 @@ impl PolicyTelemetryStore {
         let hour_bucket = hour_bucket_for(observed_at);
         if let Ok(mut lock) = self.inner.write() {
             let key = PolicyTelemetryBucketKey {
-                policy_id,
                 source_group_id: source_group_id.to_string(),
                 hour_bucket,
             };
-            *lock.entry(key).or_insert(0) = lock
-                .get(&PolicyTelemetryBucketKey {
-                    policy_id,
-                    source_group_id: source_group_id.to_string(),
-                    hour_bucket,
-                })
-                .copied()
-                .unwrap_or(0)
-                .saturating_add(1);
+            let hits = lock.entry(key).or_insert(0);
+            *hits = hits.saturating_add(1);
             prune_locked(&mut lock, hour_bucket);
             let _ = self.persist_snapshot_locked(&lock);
         }
     }
 
-    pub fn policy_24h_summary(
-        &self,
-        policy_id: Uuid,
-        now: u64,
-    ) -> Result<Vec<PolicyTelemetrySummary>, String> {
+    pub fn singleton_24h_summary(&self, now: u64) -> Result<Vec<PolicyTelemetrySummary>, String> {
         let current_hour = hour_bucket_for(now);
         let current_start = current_hour.saturating_sub(CURRENT_WINDOW_HOURS - 1);
         let previous_end = current_start.saturating_sub(1);
@@ -109,10 +95,6 @@ impl PolicyTelemetryStore {
 
         let mut by_source_group: HashMap<String, PolicyTelemetrySummary> = HashMap::new();
         for (key, hits) in lock.iter() {
-            if key.policy_id != policy_id {
-                continue;
-            }
-
             let entry = by_source_group
                 .entry(key.source_group_id.clone())
                 .or_insert_with(|| PolicyTelemetrySummary {
@@ -140,7 +122,9 @@ impl PolicyTelemetryStore {
         Ok(summaries)
     }
 
-    pub fn merge_summaries(sources: Vec<Vec<PolicyTelemetrySummary>>) -> Vec<PolicyTelemetrySummary> {
+    pub fn merge_summaries(
+        sources: Vec<Vec<PolicyTelemetrySummary>>,
+    ) -> Vec<PolicyTelemetrySummary> {
         let mut merged: HashMap<String, PolicyTelemetrySummary> = HashMap::new();
         for summaries in sources {
             for summary in summaries {
@@ -151,8 +135,9 @@ impl PolicyTelemetryStore {
                         current_24h_hits: 0,
                         previous_24h_hits: 0,
                     });
-                entry.current_24h_hits =
-                    entry.current_24h_hits.saturating_add(summary.current_24h_hits);
+                entry.current_24h_hits = entry
+                    .current_24h_hits
+                    .saturating_add(summary.current_24h_hits);
                 entry.previous_24h_hits = entry
                     .previous_24h_hits
                     .saturating_add(summary.previous_24h_hits);
@@ -195,7 +180,6 @@ impl PolicyTelemetryStore {
         for record in snapshot.buckets {
             lock.insert(
                 PolicyTelemetryBucketKey {
-                    policy_id: record.policy_id,
                     source_group_id: record.source_group_id,
                     hour_bucket: record.hour_bucket,
                 },
@@ -214,7 +198,6 @@ impl PolicyTelemetryStore {
             buckets: buckets
                 .iter()
                 .map(|(key, hits)| PolicyTelemetryBucketRecord {
-                    policy_id: key.policy_id,
                     source_group_id: key.source_group_id.clone(),
                     hour_bucket: key.hour_bucket,
                     hits: *hits,
@@ -250,21 +233,17 @@ mod tests {
     use super::*;
 
     use tempfile::TempDir;
-    use uuid::Uuid;
 
     #[test]
     fn policy_telemetry_records_hourly_hits_and_rolls_up_current_window() {
         let dir = TempDir::new().expect("tempdir");
         let store = PolicyTelemetryStore::new(dir.path().join("policy-telemetry-store"));
-        let policy_id = Uuid::new_v4();
         let hour = 1_744_000_000u64;
 
-        store.record_hit(policy_id, "apps", hour);
-        store.record_hit(policy_id, "apps", hour + 120);
+        store.record_hit("apps", hour);
+        store.record_hit("apps", hour + 120);
 
-        let summaries = store
-            .policy_24h_summary(policy_id, hour + 180)
-            .expect("summary");
+        let summaries = store.singleton_24h_summary(hour + 180).expect("summary");
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].source_group_id, "apps");
@@ -276,14 +255,13 @@ mod tests {
     fn policy_telemetry_tracks_previous_window_for_trend() {
         let dir = TempDir::new().expect("tempdir");
         let store = PolicyTelemetryStore::new(dir.path().join("policy-telemetry-store"));
-        let policy_id = Uuid::new_v4();
         let now = 1_744_086_400u64;
 
-        store.record_hit(policy_id, "apps", now - (2 * SECONDS_PER_HOUR));
-        store.record_hit(policy_id, "apps", now - (26 * SECONDS_PER_HOUR));
-        store.record_hit(policy_id, "db", now - (27 * SECONDS_PER_HOUR));
+        store.record_hit("apps", now - (2 * SECONDS_PER_HOUR));
+        store.record_hit("apps", now - (26 * SECONDS_PER_HOUR));
+        store.record_hit("db", now - (27 * SECONDS_PER_HOUR));
 
-        let summaries = store.policy_24h_summary(policy_id, now).expect("summary");
+        let summaries = store.singleton_24h_summary(now).expect("summary");
 
         assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].source_group_id, "apps");
@@ -298,16 +276,15 @@ mod tests {
     fn policy_telemetry_persists_and_prunes_old_buckets() {
         let dir = TempDir::new().expect("tempdir");
         let base_dir = dir.path().join("policy-telemetry-store");
-        let policy_id = Uuid::new_v4();
         let now = 1_744_086_400u64;
         let stale = now - (RETENTION_HOURS * SECONDS_PER_HOUR) - SECONDS_PER_HOUR;
 
         let store = PolicyTelemetryStore::new(base_dir.clone());
-        store.record_hit(policy_id, "apps", stale);
-        store.record_hit(policy_id, "apps", now);
+        store.record_hit("apps", stale);
+        store.record_hit("apps", now);
 
         let reloaded = PolicyTelemetryStore::new(base_dir);
-        let summaries = reloaded.policy_24h_summary(policy_id, now).expect("summary");
+        let summaries = reloaded.singleton_24h_summary(now).expect("summary");
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].current_24h_hits, 1);

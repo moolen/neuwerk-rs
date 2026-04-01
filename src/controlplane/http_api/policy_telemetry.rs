@@ -4,7 +4,6 @@ use crate::controlplane::policy_telemetry::PolicyTelemetryResponse;
 
 pub(super) async fn policy_telemetry(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
     headers: HeaderMap,
     request: Request,
 ) -> Response {
@@ -12,29 +11,20 @@ pub(super) async fn policy_telemetry(
         Ok(request) => request,
         Err(response) => return response,
     };
-    let policy_id = match parse_uuid(&id, "policy id") {
-        Ok(policy_id) => policy_id,
-        Err(response) => return response,
-    };
     if state.cluster.is_none() {
-        return policy_telemetry_local_response(&state, policy_id);
+        return policy_telemetry_local_response(&state);
     }
-    policy_telemetry_leader_response(&state, policy_id, &headers).await
+    policy_telemetry_leader_response(&state, &headers).await
 }
 
 pub(super) async fn policy_telemetry_local(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
     _request: Request,
 ) -> Response {
-    let policy_id = match parse_uuid(&id, "policy id") {
-        Ok(policy_id) => policy_id,
-        Err(response) => return response,
-    };
-    policy_telemetry_local_response(&state, policy_id)
+    policy_telemetry_local_response(&state)
 }
 
-fn policy_telemetry_local_response(state: &ApiState, policy_id: uuid::Uuid) -> Response {
+fn policy_telemetry_local_response(state: &ApiState) -> Response {
     let Some(store) = &state.policy_telemetry_store else {
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -43,7 +33,7 @@ fn policy_telemetry_local_response(state: &ApiState, policy_id: uuid::Uuid) -> R
     };
 
     let now = OffsetDateTime::now_utc().unix_timestamp().max(0) as u64;
-    let items = match store.policy_24h_summary(policy_id, now) {
+    let items = match store.singleton_24h_summary(now) {
         Ok(items) => items,
         Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
     };
@@ -58,15 +48,11 @@ fn policy_telemetry_local_response(state: &ApiState, policy_id: uuid::Uuid) -> R
     .into_response()
 }
 
-async fn policy_telemetry_leader_response(
-    state: &ApiState,
-    policy_id: uuid::Uuid,
-    headers: &HeaderMap,
-) -> Response {
+async fn policy_telemetry_leader_response(state: &ApiState, headers: &HeaderMap) -> Response {
     let local_items = match &state.policy_telemetry_store {
         Some(store) => {
             let now = OffsetDateTime::now_utc().unix_timestamp().max(0) as u64;
-            match store.policy_24h_summary(policy_id, now) {
+            match store.singleton_24h_summary(now) {
                 Ok(items) => items,
                 Err(err) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, err),
             }
@@ -123,7 +109,7 @@ async fn policy_telemetry_leader_response(
             }
         };
         let peer_http_addr = SocketAddr::new(addr.ip(), state.http_port);
-        let path = format!("https://{peer_http_addr}/api/v1/policies/{policy_id}/telemetry/local");
+        let path = format!("https://{peer_http_addr}/api/v1/policy/telemetry/local");
 
         let mut req = client.get(path);
         if let Some(value) = headers.get(AUTHORIZATION) {
@@ -173,7 +159,9 @@ async fn policy_telemetry_leader_response(
     }
 
     Json(PolicyTelemetryResponse {
-        items: crate::controlplane::policy_telemetry::PolicyTelemetryStore::merge_summaries(sources),
+        items: crate::controlplane::policy_telemetry::PolicyTelemetryStore::merge_summaries(
+            sources,
+        ),
         partial: !node_errors.is_empty(),
         node_errors,
         nodes_queried,

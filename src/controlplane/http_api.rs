@@ -553,7 +553,10 @@ async fn run_http_api_with_shutdown_impl(
 
     let api_protected = Router::new()
         .route("/auth/whoami", get(auth_whoami))
-        .route("/policy", get(get_policy_singleton).put(put_policy_singleton))
+        .route(
+            "/policy",
+            get(get_policy_singleton).put(put_policy_singleton),
+        )
         .route(
             "/policies",
             get(legacy_policy_route_gone)
@@ -603,8 +606,8 @@ async fn run_http_api_with_shutdown_impl(
         )
         .route("/audit/findings", get(audit_findings))
         .route("/audit/findings/local", get(audit_findings_local))
-        .route("/policies/:id/telemetry", get(policy_telemetry))
-        .route("/policies/:id/telemetry/local", get(policy_telemetry_local))
+        .route("/policy/telemetry", get(policy_telemetry))
+        .route("/policy/telemetry/local", get(policy_telemetry_local))
         .route("/threats/findings", get(threat_findings))
         .route("/threats/findings/local", get(threat_findings_local))
         .route(

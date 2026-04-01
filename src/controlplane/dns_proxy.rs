@@ -156,12 +156,7 @@ pub async fn run_dns_proxy(
             .as_secs();
 
         if matches!(peer.ip(), IpAddr::V4(_)) {
-            ingest_dns_policy_hit(
-                policy_telemetry_store.as_ref(),
-                policy_id,
-                &source_group,
-                observed_at,
-            );
+            ingest_dns_policy_hit(policy_telemetry_store.as_ref(), &source_group, observed_at);
         }
 
         if matches!(peer.ip(), IpAddr::V4(_)) && would_deny {
@@ -462,12 +457,7 @@ async fn handle_dns_tcp_client(
             .as_secs();
 
         if matches!(peer.ip(), IpAddr::V4(_)) {
-            ingest_dns_policy_hit(
-                policy_telemetry_store.as_ref(),
-                policy_id,
-                &source_group,
-                observed_at,
-            );
+            ingest_dns_policy_hit(policy_telemetry_store.as_ref(), &source_group, observed_at);
         }
 
         if matches!(peer.ip(), IpAddr::V4(_)) && would_deny {
@@ -683,17 +673,13 @@ fn ingest_dns_deny_audit(
 
 fn ingest_dns_policy_hit(
     policy_telemetry_store: Option<&PolicyTelemetryStore>,
-    policy_id: Option<Uuid>,
     source_group: &str,
     observed_at: u64,
 ) {
     let Some(policy_telemetry_store) = policy_telemetry_store else {
         return;
     };
-    let Some(policy_id) = policy_id else {
-        return;
-    };
-    policy_telemetry_store.record_hit(policy_id, source_group, observed_at);
+    policy_telemetry_store.record_hit(source_group, observed_at);
 }
 
 #[derive(Debug, Clone)]

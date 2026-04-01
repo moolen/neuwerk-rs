@@ -8,7 +8,6 @@ use crate::dataplane::policy::{
 };
 use regex::Regex;
 use tokio::net::UdpSocket;
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UpstreamMode {
@@ -274,18 +273,12 @@ fn evaluate_dns_policy_decision_marks_audit_group_implicit_deny_as_would_deny() 
 fn ingest_dns_policy_hit_records_telemetry_for_active_policy() {
     let dir = tempfile::TempDir::new().unwrap();
     let telemetry_store = PolicyTelemetryStore::new(dir.path().join("policy-telemetry"));
-    let policy_id = Uuid::new_v4();
     let observed_at = 1_744_086_400u64;
 
-    ingest_dns_policy_hit(
-        Some(&telemetry_store),
-        Some(policy_id),
-        "client-primary",
-        observed_at,
-    );
+    ingest_dns_policy_hit(Some(&telemetry_store), "client-primary", observed_at);
 
     let summaries = telemetry_store
-        .policy_24h_summary(policy_id, observed_at)
+        .singleton_24h_summary(observed_at)
         .expect("summary");
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].source_group_id, "client-primary");

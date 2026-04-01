@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from "vitest";
 
-import { createMockRouter } from '../router';
+import { createMockRouter } from "../router";
 
 function createTestMockServer() {
   const router = createMockRouter();
@@ -8,12 +8,12 @@ function createTestMockServer() {
   async function request(
     method: string,
     url: string,
-    body?: unknown
+    body?: unknown,
   ): Promise<NonNullable<Awaited<ReturnType<typeof router.handle>>>> {
     const response = await router.handle({
       method,
       url,
-      headers: body ? { 'content-type': 'application/json' } : {},
+      headers: body ? { "content-type": "application/json" } : {},
       body: body ? Buffer.from(JSON.stringify(body)) : undefined,
     });
     if (!response) {
@@ -22,27 +22,34 @@ function createTestMockServer() {
     return response;
   }
 
-  async function requestJson<T>(method: string, url: string, body?: unknown): Promise<T> {
+  async function requestJson<T>(
+    method: string,
+    url: string,
+    body?: unknown,
+  ): Promise<T> {
     const response = await request(method, url, body);
     expect(response.status).toBeLessThan(400);
-    expect(response.kind).toBe('json');
+    expect(response.kind).toBe("json");
     return response.json as T;
   }
 
   async function requestText(method: string, url: string): Promise<string> {
     const response = await request(method, url);
     expect(response.status).toBeLessThan(400);
-    expect(response.kind).toBe('text');
-    return response.text ?? '';
+    expect(response.kind).toBe("text");
+    return response.text ?? "";
   }
 
-  async function requestBlob(method: string, url: string): Promise<{
+  async function requestBlob(
+    method: string,
+    url: string,
+  ): Promise<{
     body: Uint8Array;
     headers: Record<string, string>;
   }> {
     const response = await request(method, url);
     expect(response.status).toBeLessThan(400);
-    expect(response.kind).toBe('blob');
+    expect(response.kind).toBe("blob");
     return {
       body: response.body ?? new Uint8Array(),
       headers: response.headers,
@@ -52,300 +59,320 @@ function createTestMockServer() {
   return { request, requestJson, requestText, requestBlob };
 }
 
-describe('dev mock CRUD domain routes', () => {
-  it('persists policy creates updates and deletes in memory', async () => {
+describe("dev mock CRUD domain routes", () => {
+  it("persists policy creates updates and deletes in memory", async () => {
     const server = createTestMockServer();
 
-    const created = await server.requestJson<{ id: string; name: string; mode: string }>(
-      'POST',
-      '/api/v1/policies',
-      {
-        name: 'Local policy',
-        mode: 'audit',
-        policy: {
-          source_groups: [],
-        },
-      }
-    );
+    const created = await server.requestJson<{
+      id: string;
+      name: string;
+      mode: string;
+    }>("POST", "/api/v1/policies", {
+      name: "Local policy",
+      mode: "audit",
+      policy: {
+        source_groups: [],
+      },
+    });
 
-    const updated = await server.requestJson<{ id: string; name: string; mode: string }>(
-      'PUT',
+    const updated = await server.requestJson<{
+      id: string;
+      name: string;
+      mode: string;
+    }>("PUT", `/api/v1/policies/${created.id}`, {
+      name: "Renamed policy",
+      mode: "enforce",
+      policy: {
+        source_groups: [],
+      },
+    });
+
+    const fetched = await server.requestJson<{
+      id: string;
+      name: string;
+      mode: string;
+    }>("GET", `/api/v1/policies/${created.id}`);
+    const telemetry = await server.requestJson<{
+      items: unknown[];
+      partial: boolean;
+    }>("GET", "/api/v1/policy/telemetry");
+    const deleteResponse = await server.request(
+      "DELETE",
       `/api/v1/policies/${created.id}`,
-      {
-        name: 'Renamed policy',
-        mode: 'enforce',
-        policy: {
-          source_groups: [],
-        },
-      }
     );
-
-    const fetched = await server.requestJson<{ id: string; name: string; mode: string }>(
-      'GET',
-      `/api/v1/policies/${created.id}`
+    const afterDeleteRead = await server.request(
+      "GET",
+      `/api/v1/policies/${created.id}`,
     );
-    const telemetry = await server.requestJson<{ items: unknown[]; partial: boolean }>(
-      'GET',
-      `/api/v1/policies/${created.id}/telemetry`
-    );
-    const deleteResponse = await server.request('DELETE', `/api/v1/policies/${created.id}`);
-    const afterDeleteRead = await server.request('GET', `/api/v1/policies/${created.id}`);
     const listAfterDelete = await server.requestJson<Array<{ id: string }>>(
-      'GET',
-      '/api/v1/policies'
+      "GET",
+      "/api/v1/policies",
     );
 
-    expect(updated.name).toBe('Renamed policy');
-    expect(updated.mode).toBe('enforce');
-    expect(fetched.name).toBe('Renamed policy');
+    expect(updated.name).toBe("Renamed policy");
+    expect(updated.mode).toBe("enforce");
+    expect(fetched.name).toBe("Renamed policy");
     expect(telemetry).toMatchObject({
       items: expect.any(Array),
       partial: expect.any(Boolean),
     });
     expect(deleteResponse.status).toBeLessThan(400);
     expect(afterDeleteRead.status).toBe(404);
-    expect(listAfterDelete.some((policy) => policy.id === created.id)).toBe(false);
+    expect(listAfterDelete.some((policy) => policy.id === created.id)).toBe(
+      false,
+    );
   });
 
-  it('persists integrations edits and deletes in list results', async () => {
+  it("persists integrations edits and deletes in list results", async () => {
     const server = createTestMockServer();
-    const created = await server.requestJson<{ name: string; token_configured: boolean }>(
-      'POST',
-      '/api/v1/integrations',
-      {
-        name: 'cluster-a',
-        kind: 'kubernetes',
-        api_server_url: 'https://cluster-a.internal',
-        ca_cert_pem: '-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----',
-        service_account_token: 'token-a',
-      }
-    );
+    const created = await server.requestJson<{
+      name: string;
+      token_configured: boolean;
+    }>("POST", "/api/v1/integrations", {
+      name: "cluster-a",
+      kind: "kubernetes",
+      api_server_url: "https://cluster-a.internal",
+      ca_cert_pem: "-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----",
+      service_account_token: "token-a",
+    });
 
-    const updated = await server.requestJson<{ name: string; api_server_url: string }>(
-      'PUT',
-      '/api/v1/integrations/cluster-a',
-      {
-        api_server_url: 'https://cluster-a-updated.internal',
-        ca_cert_pem: '-----BEGIN CERTIFICATE-----\nB\n-----END CERTIFICATE-----',
-        service_account_token: 'token-b',
-      }
-    );
+    const updated = await server.requestJson<{
+      name: string;
+      api_server_url: string;
+    }>("PUT", "/api/v1/integrations/cluster-a", {
+      api_server_url: "https://cluster-a-updated.internal",
+      ca_cert_pem: "-----BEGIN CERTIFICATE-----\nB\n-----END CERTIFICATE-----",
+      service_account_token: "token-b",
+    });
 
-    const list = await server.requestJson<Array<{ name: string; api_server_url: string }>>(
-      'GET',
-      '/api/v1/integrations'
-    );
+    const list = await server.requestJson<
+      Array<{ name: string; api_server_url: string }>
+    >("GET", "/api/v1/integrations");
 
     expect(created.token_configured).toBe(true);
-    expect(updated.api_server_url).toBe('https://cluster-a-updated.internal');
+    expect(updated.api_server_url).toBe("https://cluster-a-updated.internal");
     expect(list).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          name: 'cluster-a',
-          api_server_url: 'https://cluster-a-updated.internal',
+          name: "cluster-a",
+          api_server_url: "https://cluster-a-updated.internal",
         }),
-      ])
+      ]),
     );
 
-    const deleteResponse = await server.request('DELETE', '/api/v1/integrations/cluster-a');
-    const afterDeleteRead = await server.request('GET', '/api/v1/integrations/cluster-a');
+    const deleteResponse = await server.request(
+      "DELETE",
+      "/api/v1/integrations/cluster-a",
+    );
+    const afterDeleteRead = await server.request(
+      "GET",
+      "/api/v1/integrations/cluster-a",
+    );
     const listAfterDelete = await server.requestJson<Array<{ name: string }>>(
-      'GET',
-      '/api/v1/integrations'
+      "GET",
+      "/api/v1/integrations",
     );
     expect(deleteResponse.status).toBeLessThan(400);
     expect(afterDeleteRead.status).toBe(404);
-    expect(listAfterDelete.some((integration) => integration.name === 'cluster-a')).toBe(false);
+    expect(
+      listAfterDelete.some((integration) => integration.name === "cluster-a"),
+    ).toBe(false);
   });
 
-  it('creates updates and disables service accounts with token lifecycle', async () => {
+  it("creates updates and disables service accounts with token lifecycle", async () => {
     const server = createTestMockServer();
-    const account = await server.requestJson<{ id: string; name: string; status: string }>(
-      'POST',
-      '/api/v1/service-accounts',
-      {
-        name: 'automation',
-        description: 'CI automation',
-        role: 'admin',
-      }
-    );
+    const account = await server.requestJson<{
+      id: string;
+      name: string;
+      status: string;
+    }>("POST", "/api/v1/service-accounts", {
+      name: "automation",
+      description: "CI automation",
+      role: "admin",
+    });
 
-    const updated = await server.requestJson<{ id: string; name: string; status: string }>(
-      'PUT',
-      `/api/v1/service-accounts/${account.id}`,
-      {
-        name: 'automation-renamed',
-        description: 'CI automation updated',
-        role: 'readonly',
-      }
-    );
+    const updated = await server.requestJson<{
+      id: string;
+      name: string;
+      status: string;
+    }>("PUT", `/api/v1/service-accounts/${account.id}`, {
+      name: "automation-renamed",
+      description: "CI automation updated",
+      role: "readonly",
+    });
 
     const tokenResponse = await server.requestJson<{
       token: string;
       token_meta: { id: string; status: string; role: string };
-    }>('POST', `/api/v1/service-accounts/${account.id}/tokens`, {
-      name: 'build-token',
-      role: 'readonly',
+    }>("POST", `/api/v1/service-accounts/${account.id}/tokens`, {
+      name: "build-token",
+      role: "readonly",
       eternal: true,
     });
-    expect(tokenResponse.token).toContain('.');
+    expect(tokenResponse.token).toContain(".");
 
-    const tokens = await server.requestJson<Array<{ id: string; status: string }>>(
-      'GET',
-      `/api/v1/service-accounts/${account.id}/tokens`
-    );
+    const tokens = await server.requestJson<
+      Array<{ id: string; status: string }>
+    >("GET", `/api/v1/service-accounts/${account.id}/tokens`);
     expect(tokens).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: tokenResponse.token_meta.id, status: 'active' }),
-      ])
+        expect.objectContaining({
+          id: tokenResponse.token_meta.id,
+          status: "active",
+        }),
+      ]),
     );
 
     const revokeTokenResponse = await server.request(
-      'DELETE',
-      `/api/v1/service-accounts/${account.id}/tokens/${tokenResponse.token_meta.id}`
+      "DELETE",
+      `/api/v1/service-accounts/${account.id}/tokens/${tokenResponse.token_meta.id}`,
     );
     expect(revokeTokenResponse.status).toBeLessThan(400);
 
     const disableResponse = await server.request(
-      'DELETE',
-      `/api/v1/service-accounts/${account.id}`
+      "DELETE",
+      `/api/v1/service-accounts/${account.id}`,
     );
     expect(disableResponse.status).toBeLessThan(400);
 
-    const list = await server.requestJson<Array<{ id: string; status: string; name: string }>>(
-      'GET',
-      '/api/v1/service-accounts'
-    );
+    const list = await server.requestJson<
+      Array<{ id: string; status: string; name: string }>
+    >("GET", "/api/v1/service-accounts");
 
-    expect(updated.name).toBe('automation-renamed');
+    expect(updated.name).toBe("automation-renamed");
     expect(list).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: account.id,
-          status: 'disabled',
+          status: "disabled",
         }),
-      ])
+      ]),
     );
   });
 
-  it('supports SSO provider create update test and delete', async () => {
+  it("supports SSO provider create update test and delete", async () => {
     const server = createTestMockServer();
-    const created = await server.requestJson<{ id: string; name: string; enabled: boolean }>(
-      'POST',
-      '/api/v1/settings/sso/providers',
-      {
-        name: 'Local OIDC',
-        kind: 'generic-oidc',
-        enabled: true,
-        issuer_url: 'https://sso.example.test',
-        client_id: 'dev-client',
-        client_secret: 'dev-secret',
-      }
-    );
+    const created = await server.requestJson<{
+      id: string;
+      name: string;
+      enabled: boolean;
+    }>("POST", "/api/v1/settings/sso/providers", {
+      name: "Local OIDC",
+      kind: "generic-oidc",
+      enabled: true,
+      issuer_url: "https://sso.example.test",
+      client_id: "dev-client",
+      client_secret: "dev-secret",
+    });
 
-    const updated = await server.requestJson<{ id: string; name: string; enabled: boolean }>(
-      'PUT',
-      `/api/v1/settings/sso/providers/${created.id}`,
-      {
-        name: 'Local OIDC Updated',
-        enabled: false,
-      }
-    );
+    const updated = await server.requestJson<{
+      id: string;
+      name: string;
+      enabled: boolean;
+    }>("PUT", `/api/v1/settings/sso/providers/${created.id}`, {
+      name: "Local OIDC Updated",
+      enabled: false,
+    });
 
-    const testResult = await server.requestJson<{ ok: boolean; details: string }>(
-      'POST',
-      `/api/v1/settings/sso/providers/${created.id}/test`
-    );
+    const testResult = await server.requestJson<{
+      ok: boolean;
+      details: string;
+    }>("POST", `/api/v1/settings/sso/providers/${created.id}/test`);
     expect(testResult.ok).toBe(true);
 
     const deleteResponse = await server.request(
-      'DELETE',
-      `/api/v1/settings/sso/providers/${created.id}`
+      "DELETE",
+      `/api/v1/settings/sso/providers/${created.id}`,
     );
     expect(deleteResponse.status).toBeLessThan(400);
 
-    const providers = await server.requestJson<Array<{ id: string; name: string }>>(
-      'GET',
-      '/api/v1/settings/sso/providers'
-    );
+    const providers = await server.requestJson<
+      Array<{ id: string; name: string }>
+    >("GET", "/api/v1/settings/sso/providers");
 
-    expect(updated.name).toBe('Local OIDC Updated');
-    expect(providers.some((provider) => provider.id === created.id)).toBe(false);
+    expect(updated.name).toBe("Local OIDC Updated");
+    expect(providers.some((provider) => provider.id === created.id)).toBe(
+      false,
+    );
   });
 
-  it('returns 400 for malformed SSO update payloads instead of crashing', async () => {
+  it("returns 400 for malformed SSO update payloads instead of crashing", async () => {
     const server = createTestMockServer();
     const created = await server.requestJson<{ id: string }>(
-      'POST',
-      '/api/v1/settings/sso/providers',
+      "POST",
+      "/api/v1/settings/sso/providers",
       {
-        name: 'Strict SSO',
-        kind: 'generic-oidc',
+        name: "Strict SSO",
+        kind: "generic-oidc",
         enabled: true,
-        issuer_url: 'https://strict.example.test',
-        client_id: 'strict-client',
-        client_secret: 'strict-secret',
-      }
+        issuer_url: "https://strict.example.test",
+        client_id: "strict-client",
+        client_secret: "strict-secret",
+      },
     );
 
     const malformedNameResponse = await server.request(
-      'PUT',
+      "PUT",
       `/api/v1/settings/sso/providers/${created.id}`,
-      { name: null }
+      { name: null },
     );
     const malformedClientIdResponse = await server.request(
-      'PUT',
+      "PUT",
       `/api/v1/settings/sso/providers/${created.id}`,
-      { client_id: null }
+      { client_id: null },
     );
 
     expect(malformedNameResponse.status).toBe(400);
     expect(malformedClientIdResponse.status).toBe(400);
   });
 
-  it('writes performance and threat-intel toggles and handles TLS CA workflows', async () => {
+  it("writes performance and threat-intel toggles and handles TLS CA workflows", async () => {
     const server = createTestMockServer();
     const perf = await server.requestJson<{ enabled: boolean; source: string }>(
-      'PUT',
-      '/api/v1/settings/performance-mode',
+      "PUT",
+      "/api/v1/settings/performance-mode",
       {
         enabled: false,
-      }
+      },
     );
-    const threat = await server.requestJson<{ enabled: boolean; source: string }>(
-      'PUT',
-      '/api/v1/settings/threat-intel',
-      {
-        enabled: false,
-      }
+    const threat = await server.requestJson<{
+      enabled: boolean;
+      source: string;
+    }>("PUT", "/api/v1/settings/threat-intel", {
+      enabled: false,
+    });
+    const tlsUpdated = await server.requestJson<{
+      configured: boolean;
+      source: string;
+    }>("PUT", "/api/v1/settings/tls-intercept-ca", {
+      ca_cert_pem: "-----BEGIN CERTIFICATE-----\nC\n-----END CERTIFICATE-----",
+      ca_key_pem: "-----BEGIN PRIVATE KEY-----\nD\n-----END PRIVATE KEY-----",
+    });
+    const tlsGenerated = await server.requestJson<{
+      configured: boolean;
+      source: string;
+    }>("POST", "/api/v1/settings/tls-intercept-ca/generate");
+    const cert = await server.requestText(
+      "GET",
+      "/api/v1/settings/tls-intercept-ca/cert",
     );
-    const tlsUpdated = await server.requestJson<{ configured: boolean; source: string }>(
-      'PUT',
-      '/api/v1/settings/tls-intercept-ca',
-      {
-        ca_cert_pem: '-----BEGIN CERTIFICATE-----\nC\n-----END CERTIFICATE-----',
-        ca_key_pem: '-----BEGIN PRIVATE KEY-----\nD\n-----END PRIVATE KEY-----',
-      }
-    );
-    const tlsGenerated = await server.requestJson<{ configured: boolean; source: string }>(
-      'POST',
-      '/api/v1/settings/tls-intercept-ca/generate'
-    );
-    const cert = await server.requestText('GET', '/api/v1/settings/tls-intercept-ca/cert');
 
-    expect(perf).toMatchObject({ enabled: false, source: 'local' });
-    expect(threat).toMatchObject({ enabled: false, source: 'local' });
-    expect(tlsUpdated).toMatchObject({ configured: true, source: 'local' });
-    expect(tlsGenerated).toMatchObject({ configured: true, source: 'local' });
-    expect(cert).toContain('BEGIN CERTIFICATE');
+    expect(perf).toMatchObject({ enabled: false, source: "local" });
+    expect(threat).toMatchObject({ enabled: false, source: "local" });
+    expect(tlsUpdated).toMatchObject({ configured: true, source: "local" });
+    expect(tlsGenerated).toMatchObject({ configured: true, source: "local" });
+    expect(cert).toContain("BEGIN CERTIFICATE");
   });
 
-  it('returns a synthetic cluster sysdump blob with filename metadata', async () => {
+  it("returns a synthetic cluster sysdump blob with filename metadata", async () => {
     const server = createTestMockServer();
-    const response = await server.requestBlob('POST', '/api/v1/support/sysdump/cluster');
-    const decoded = Buffer.from(response.body).toString('utf-8');
+    const response = await server.requestBlob(
+      "POST",
+      "/api/v1/support/sysdump/cluster",
+    );
+    const decoded = Buffer.from(response.body).toString("utf-8");
 
-    expect(response.headers['content-disposition']).toContain('filename=');
-    expect(decoded).toContain('mock');
+    expect(response.headers["content-disposition"]).toContain("filename=");
+    expect(decoded).toContain("mock");
   });
 });

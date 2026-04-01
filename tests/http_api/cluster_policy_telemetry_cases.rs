@@ -1,5 +1,4 @@
 use super::*;
-use uuid::Uuid;
 
 #[tokio::test]
 async fn http_api_policy_telemetry_local_returns_hourly_items() {
@@ -13,10 +12,9 @@ async fn http_api_policy_telemetry_local_returns_hourly_items() {
     let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
     let local_store = PolicyDiskStore::new(local_store_dir);
     let telemetry_store = PolicyTelemetryStore::new(dir.path().join("policy-telemetry"));
-    let policy_id = Uuid::new_v4();
     let now = OffsetDateTime::now_utc().unix_timestamp() as u64;
-    telemetry_store.record_hit(policy_id, "apps", now - (2 * 3_600));
-    telemetry_store.record_hit(policy_id, "apps", now - (26 * 3_600));
+    telemetry_store.record_hit("apps", now - (2 * 3_600));
+    telemetry_store.record_hit("apps", now - (26 * 3_600));
 
     let cfg = HttpApiConfig {
         bind_addr,
@@ -71,9 +69,7 @@ async fn http_api_policy_telemetry_local_returns_hourly_items() {
 
     let client = http_api_client(&tls_dir).unwrap();
     let response = client
-        .get(format!(
-            "https://{bind_addr}/api/v1/policies/{policy_id}/telemetry"
-        ))
+        .get(format!("https://{bind_addr}/api/v1/policy/telemetry"))
         .bearer_auth(&token.token)
         .send()
         .await
@@ -192,12 +188,11 @@ async fn http_api_policy_telemetry_cluster_aggregates_and_returns_partial() {
         tls_intercept_ca_generation: None,
     };
 
-    let policy_id = Uuid::new_v4();
     let now = OffsetDateTime::now_utc().unix_timestamp() as u64;
     let seed_telemetry_store = PolicyTelemetryStore::new(seed_dir.path().join("policy-telemetry"));
     let join_telemetry_store = PolicyTelemetryStore::new(join_dir.path().join("policy-telemetry"));
-    seed_telemetry_store.record_hit(policy_id, "apps", now - (1 * 3_600));
-    join_telemetry_store.record_hit(policy_id, "apps", now - (2 * 3_600));
+    seed_telemetry_store.record_hit("apps", now - (1 * 3_600));
+    join_telemetry_store.record_hit("apps", now - (2 * 3_600));
 
     let seed_policy = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
     let join_policy = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24);
@@ -227,9 +222,12 @@ async fn http_api_policy_telemetry_cluster_aggregates_and_returns_partial() {
         .await
         .map_err(|err| format!("seed http api error: {err}"))
     });
-    wait_for_file(&seed_dir.path().join("http-tls").join("ca.crt"), Duration::from_secs(2))
-        .await
-        .unwrap();
+    wait_for_file(
+        &seed_dir.path().join("http-tls").join("ca.crt"),
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
     wait_for_state_value(&join_runtime.store, b"http/ca/cert", Duration::from_secs(5))
         .await
         .unwrap();
@@ -254,11 +252,18 @@ async fn http_api_policy_telemetry_cluster_aggregates_and_returns_partial() {
         .map_err(|err| format!("join http api error: {err}"))
     });
 
-    wait_for_file(&join_dir.path().join("http-tls").join("ca.crt"), Duration::from_secs(5))
+    wait_for_file(
+        &join_dir.path().join("http-tls").join("ca.crt"),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    wait_for_tcp(seed_http_addr, Duration::from_secs(2))
         .await
         .unwrap();
-    wait_for_tcp(seed_http_addr, Duration::from_secs(2)).await.unwrap();
-    wait_for_tcp(join_http_addr, Duration::from_secs(5)).await.unwrap();
+    wait_for_tcp(join_http_addr, Duration::from_secs(5))
+        .await
+        .unwrap();
 
     let token = api_auth_token_from_store(&seed_runtime.store).unwrap();
 
@@ -272,7 +277,7 @@ async fn http_api_policy_telemetry_cluster_aggregates_and_returns_partial() {
         Duration::from_secs(10),
         |client, addr| {
             client
-                .get(format!("https://{addr}/api/v1/policies/{policy_id}/telemetry"))
+                .get(format!("https://{addr}/api/v1/policy/telemetry"))
                 .bearer_auth(&token)
         },
     )
@@ -303,7 +308,7 @@ async fn http_api_policy_telemetry_cluster_aggregates_and_returns_partial() {
         Duration::from_secs(10),
         |client, addr| {
             client
-                .get(format!("https://{addr}/api/v1/policies/{policy_id}/telemetry"))
+                .get(format!("https://{addr}/api/v1/policy/telemetry"))
                 .bearer_auth(&token)
         },
     )
@@ -317,7 +322,10 @@ async fn http_api_policy_telemetry_cluster_aggregates_and_returns_partial() {
     );
     assert_eq!(payload["items"][0]["current_24h_hits"].as_u64(), Some(1));
     assert_eq!(payload["partial"].as_bool(), Some(true));
-    assert_eq!(payload["node_errors"].as_array().map(|v| !v.is_empty()), Some(true));
+    assert_eq!(
+        payload["node_errors"].as_array().map(|v| !v.is_empty()),
+        Some(true)
+    );
 
     seed_server.abort();
 }

@@ -1,14 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState } from "react";
 import {
   getAuditFindings,
   getPerformanceModeStatus,
   getThreatFindings,
-} from '../../services/api';
-import type { AuditFinding, AuditFindingType } from '../../types';
+} from "../../services/api";
+import type { AuditFinding, AuditFindingType } from "../../types";
 import {
   buildAuditThreatAnnotations,
   type AuditThreatAnnotation,
-} from './threatAnnotations';
+} from "./threatAnnotations";
 
 export function useAuditPage() {
   const [items, setItems] = useState<AuditFinding[]>([]);
@@ -18,14 +18,20 @@ export function useAuditPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [partial, setPartial] = useState(false);
-  const [nodes, setNodes] = useState<{ queried: number; responded: number }>({ queried: 0, responded: 0 });
-  const [nodeErrors, setNodeErrors] = useState<Array<{ node_id: string; error: string }>>([]);
-  const [typeFilter, setTypeFilter] = useState<AuditFindingType | 'all'>('all');
-  const [sourceGroup, setSourceGroup] = useState('');
-  const [policyId, setPolicyId] = useState('');
+  const [nodes, setNodes] = useState<{ queried: number; responded: number }>({
+    queried: 0,
+    responded: 0,
+  });
+  const [nodeErrors, setNodeErrors] = useState<
+    Array<{ node_id: string; error: string }>
+  >([]);
+  const [typeFilter, setTypeFilter] = useState<AuditFindingType | "all">("all");
+  const [sourceGroup, setSourceGroup] = useState("");
   const [performanceModeEnabled, setPerformanceModeEnabled] = useState(true);
   const [performanceModeLoading, setPerformanceModeLoading] = useState(true);
-  const [performanceModeError, setPerformanceModeError] = useState<string | null>(null);
+  const [performanceModeError, setPerformanceModeError] = useState<
+    string | null
+  >(null);
 
   const load = async () => {
     if (!performanceModeEnabled) {
@@ -42,19 +48,24 @@ export function useAuditPage() {
     try {
       const [response, threatResponse] = await Promise.all([
         getAuditFindings({
-          finding_type: typeFilter === 'all' ? [] : [typeFilter],
+          finding_type: typeFilter === "all" ? [] : [typeFilter],
           source_group: sourceGroup.trim() ? [sourceGroup.trim()] : [],
-          policy_id: policyId.trim() || undefined,
           limit: 1000,
         }),
         getThreatFindings({ limit: 1000 }).catch((err) => {
-          console.error('Failed to load threat annotations for audit page:', err);
+          console.error(
+            "Failed to load threat annotations for audit page:",
+            err,
+          );
           return null;
         }),
       ]);
       setItems(response.items);
       setPartial(response.partial);
-      setNodes({ queried: response.nodes_queried, responded: response.nodes_responded });
+      setNodes({
+        queried: response.nodes_queried,
+        responded: response.nodes_responded,
+      });
       setNodeErrors(response.node_errors ?? []);
       setThreatAnnotations(
         threatResponse
@@ -62,7 +73,9 @@ export function useAuditPage() {
           : {},
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load audit findings');
+      setError(
+        err instanceof Error ? err.message : "Failed to load audit findings",
+      );
     } finally {
       setLoading(false);
     }
@@ -90,7 +103,9 @@ export function useAuditPage() {
         }
         setPerformanceModeEnabled(true);
         setPerformanceModeError(
-          err instanceof Error ? err.message : 'Failed to load performance mode status'
+          err instanceof Error
+            ? err.message
+            : "Failed to load performance mode status",
         );
         await load();
       } finally {
@@ -116,8 +131,6 @@ export function useAuditPage() {
     setTypeFilter,
     sourceGroup,
     setSourceGroup,
-    policyId,
-    setPolicyId,
     load,
     threatAnnotations,
     performanceModeEnabled,

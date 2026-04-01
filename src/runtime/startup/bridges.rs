@@ -30,7 +30,6 @@ pub fn spawn_event_bridges(
     let policy_telemetry_store_for_audit = policy_telemetry_store.clone();
     let policy_telemetry_store_for_allowed = policy_telemetry_store;
     let policy_store_for_audit = policy_store;
-    let policy_store_for_allowed = policy_store_for_audit.clone();
     let threat_runtime_for_audit = threat_runtime;
     let node_id_for_wiretap = node_id.clone();
     let node_id_for_audit = node_id;
@@ -79,7 +78,6 @@ pub fn spawn_event_bridges(
                 audit_store_for_events.ingest(enriched, policy_id, &node_id_for_audit);
                 record_policy_hit(
                     &policy_telemetry_store_for_audit,
-                    policy_id,
                     &event.source_group,
                     event.observed_at,
                 );
@@ -102,10 +100,8 @@ pub fn spawn_event_bridges(
         .name("policy-telemetry-bridge".to_string())
         .spawn(move || {
             while let Some(event) = policy_telemetry_rx.blocking_recv() {
-                let policy_id = policy_store_for_allowed.active_policy_id();
                 record_policy_hit(
                     &policy_telemetry_store_for_allowed,
-                    policy_id,
                     &event.source_group,
                     event.observed_at,
                 );
@@ -117,16 +113,8 @@ pub fn spawn_event_bridges(
     Ok(())
 }
 
-fn record_policy_hit(
-    store: &PolicyTelemetryStore,
-    policy_id: Option<uuid::Uuid>,
-    source_group: &str,
-    observed_at: u64,
-) {
-    let Some(policy_id) = policy_id else {
-        return;
-    };
-    store.record_hit(policy_id, source_group, observed_at);
+fn record_policy_hit(store: &PolicyTelemetryStore, source_group: &str, observed_at: u64) {
+    store.record_hit(source_group, observed_at);
 }
 
 #[cfg(test)]
@@ -135,12 +123,11 @@ mod tests {
     use neuwerk::controlplane::policy_telemetry::PolicyTelemetryStore;
     use neuwerk::dataplane::{PolicyTelemetryEvent, WiretapEventType};
     use tempfile::TempDir;
-    use uuid::Uuid;
 
-    fn wait_for_hits(store: &PolicyTelemetryStore, policy_id: Uuid, now: u64, expected: u64) {
+    fn wait_for_hits(store: &PolicyTelemetryStore, now: u64, expected: u64) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         loop {
-            let summaries = store.policy_24h_summary(policy_id, now).expect("summary");
+            let summaries = store.singleton_24h_summary(now).expect("summary");
             let hits = summaries
                 .iter()
                 .find(|summary| summary.source_group_id == "apps")
@@ -167,9 +154,7 @@ mod tests {
             std::net::Ipv4Addr::new(10, 0, 0, 0),
             24,
         );
-        let policy_id = Uuid::new_v4();
         let observed_at = 1_744_086_400u64;
-        policy_store.set_active_policy_id(Some(policy_id));
 
         let (wiretap_tx, wiretap_rx) = mpsc::channel(4);
         let (audit_tx, audit_rx) = mpsc::channel(4);
@@ -207,7 +192,7 @@ mod tests {
         drop(telemetry_tx);
         drop(wiretap_tx);
 
-        wait_for_hits(&telemetry_store, policy_id, observed_at, 1);
+        wait_for_hits(&telemetry_store, observed_at, 1);
     }
 
     #[test]
@@ -220,9 +205,7 @@ mod tests {
             std::net::Ipv4Addr::new(10, 0, 0, 0),
             24,
         );
-        let policy_id = Uuid::new_v4();
         let observed_at = 1_744_086_400u64;
-        policy_store.set_active_policy_id(Some(policy_id));
 
         let (wiretap_tx, wiretap_rx) = mpsc::channel(4);
         let (audit_tx, audit_rx) = mpsc::channel(4);
@@ -265,6 +248,6 @@ mod tests {
             .expect("send wiretap event");
         drop(wiretap_tx);
 
-        wait_for_hits(&telemetry_store, policy_id, observed_at, 1);
+        wait_for_hits(&telemetry_store, observed_at, 1);
     }
 }

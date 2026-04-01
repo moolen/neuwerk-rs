@@ -1,49 +1,32 @@
-import { jsonResponse, textResponse } from '../http';
-import type { MockState } from '../state';
-import type { MockRequest, MockRoute } from '../types';
-import type { PolicyCreateRequest, PolicyRecord } from '../../types';
+import { jsonResponse, textResponse } from "../http";
+import type { MockState } from "../state";
+import type { MockRequest, MockRoute } from "../types";
+import type { PolicyCreateRequest, PolicyRecord } from "../../types";
 
 function parseJsonBody(request: MockRequest): unknown {
   if (!request.body || request.body.length === 0) {
     return undefined;
   }
   try {
-    return JSON.parse(request.body.toString('utf-8'));
+    return JSON.parse(request.body.toString("utf-8"));
   } catch {
     return undefined;
   }
 }
 
 function readPolicyId(pathname: string): string | null {
-  const prefix = '/api/v1/policies/';
+  const prefix = "/api/v1/policies/";
   if (!pathname.startsWith(prefix)) {
     return null;
   }
   const tail = pathname.slice(prefix.length);
-  if (!tail || tail.includes('/')) {
+  if (!tail || tail.includes("/")) {
     return null;
   }
   try {
     return decodeURIComponent(tail);
   } catch {
     return tail;
-  }
-}
-
-function readTelemetryPolicyId(pathname: string): string | null {
-  const prefix = '/api/v1/policies/';
-  const suffix = '/telemetry';
-  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) {
-    return null;
-  }
-  const value = pathname.slice(prefix.length, pathname.length - suffix.length);
-  if (!value || value.includes('/')) {
-    return null;
-  }
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
   }
 }
 
@@ -56,20 +39,32 @@ export function createPolicyRoutes(state: MockState): MockRoute[] {
 
   return [
     {
-      method: 'GET',
-      pathname: '/api/v1/policies',
+      method: "GET",
+      pathname: "/api/v1/policies",
       handler: () => jsonResponse(state.policies),
     },
     {
-      method: 'POST',
-      pathname: '/api/v1/policies',
+      method: "POST",
+      pathname: "/api/v1/policies",
       handler: (request) => {
-        const payload = parseJsonBody(request) as PolicyCreateRequest | undefined;
-        if (!payload || !payload.policy || !Array.isArray(payload.policy.source_groups)) {
-          return jsonResponse({ error: 'Policy source_groups are required' }, { status: 400 });
+        const payload = parseJsonBody(request) as
+          | PolicyCreateRequest
+          | undefined;
+        if (
+          !payload ||
+          !payload.policy ||
+          !Array.isArray(payload.policy.source_groups)
+        ) {
+          return jsonResponse(
+            { error: "Policy source_groups are required" },
+            { status: 400 },
+          );
         }
         if (!payload.mode) {
-          return jsonResponse({ error: 'Policy mode is required' }, { status: 400 });
+          return jsonResponse(
+            { error: "Policy mode is required" },
+            { status: 400 },
+          );
         }
 
         const created: PolicyRecord = {
@@ -84,30 +79,33 @@ export function createPolicyRoutes(state: MockState): MockRoute[] {
       },
     },
     {
-      method: 'GET',
-      pathname: '/api/v1/policies/:id',
+      method: "GET",
+      pathname: "/api/v1/policies/:id",
       handler: (request) => {
         const id = readPolicyId(request.pathname);
         if (!id) {
-          return jsonResponse({ error: 'Not found' }, { status: 404 });
+          return jsonResponse({ error: "Not found" }, { status: 404 });
         }
         const policy = findPolicy(state, id);
         if (!policy) {
-          return jsonResponse({ error: 'Not found' }, { status: 404 });
+          return jsonResponse({ error: "Not found" }, { status: 404 });
         }
 
-        const format = new URL(request.url, 'http://neuwerk.dev').searchParams.get('format');
-        if (format === 'yaml') {
+        const format = new URL(
+          request.url,
+          "http://neuwerk.dev",
+        ).searchParams.get("format");
+        if (format === "yaml") {
           const yaml = [
             `id: ${policy.id}`,
             `mode: ${policy.mode}`,
-            `name: ${policy.name ?? ''}`,
-            'policy:',
+            `name: ${policy.name ?? ""}`,
+            "policy:",
             `  source_groups: ${policy.policy.source_groups.length}`,
-            '',
-          ].join('\n');
+            "",
+          ].join("\n");
           return textResponse(yaml, {
-            headers: { 'content-type': 'application/yaml; charset=utf-8' },
+            headers: { "content-type": "application/yaml; charset=utf-8" },
           });
         }
 
@@ -115,23 +113,35 @@ export function createPolicyRoutes(state: MockState): MockRoute[] {
       },
     },
     {
-      method: 'PUT',
-      pathname: '/api/v1/policies/:id',
+      method: "PUT",
+      pathname: "/api/v1/policies/:id",
       handler: (request) => {
         const id = readPolicyId(request.pathname);
         if (!id) {
-          return jsonResponse({ error: 'Not found' }, { status: 404 });
+          return jsonResponse({ error: "Not found" }, { status: 404 });
         }
         const existing = findPolicy(state, id);
         if (!existing) {
-          return jsonResponse({ error: 'Not found' }, { status: 404 });
+          return jsonResponse({ error: "Not found" }, { status: 404 });
         }
-        const payload = parseJsonBody(request) as PolicyCreateRequest | undefined;
-        if (!payload || !payload.policy || !Array.isArray(payload.policy.source_groups)) {
-          return jsonResponse({ error: 'Policy source_groups are required' }, { status: 400 });
+        const payload = parseJsonBody(request) as
+          | PolicyCreateRequest
+          | undefined;
+        if (
+          !payload ||
+          !payload.policy ||
+          !Array.isArray(payload.policy.source_groups)
+        ) {
+          return jsonResponse(
+            { error: "Policy source_groups are required" },
+            { status: 400 },
+          );
         }
         if (!payload.mode) {
-          return jsonResponse({ error: 'Policy mode is required' }, { status: 400 });
+          return jsonResponse(
+            { error: "Policy mode is required" },
+            { status: 400 },
+          );
         }
 
         const updated: PolicyRecord = {
@@ -146,32 +156,28 @@ export function createPolicyRoutes(state: MockState): MockRoute[] {
       },
     },
     {
-      method: 'DELETE',
-      pathname: '/api/v1/policies/:id',
+      method: "DELETE",
+      pathname: "/api/v1/policies/:id",
       handler: (request) => {
         const id = readPolicyId(request.pathname);
         if (!id) {
-          return jsonResponse({ error: 'Not found' }, { status: 404 });
+          return jsonResponse({ error: "Not found" }, { status: 404 });
         }
         const index = state.policies.findIndex((item) => item.id === id);
         if (index < 0) {
-          return jsonResponse({ error: 'Not found' }, { status: 404 });
+          return jsonResponse({ error: "Not found" }, { status: 404 });
         }
         state.policies.splice(index, 1);
         return jsonResponse(undefined, { status: 204 });
       },
     },
     {
-      method: 'GET',
-      pathname: '/api/v1/policies/:id/telemetry',
-      handler: (request) => {
-        const id = readTelemetryPolicyId(request.pathname);
-        if (!id) {
-          return jsonResponse({ error: 'Not found' }, { status: 404 });
-        }
-        const policy = findPolicy(state, id);
+      method: "GET",
+      pathname: "/api/v1/policy/telemetry",
+      handler: () => {
+        const policy = state.policies[0];
         if (!policy) {
-          return jsonResponse({ error: 'Not found' }, { status: 404 });
+          return jsonResponse({ error: "Not found" }, { status: 404 });
         }
 
         return jsonResponse({

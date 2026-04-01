@@ -1,6 +1,6 @@
-import type { PolicyTelemetryResponse } from '../../types';
-import { getPolicyTelemetry } from '../../services/api';
+import type { PolicyTelemetryResponse } from "../../types";
+import { getPolicyTelemetry } from "../../services/api";
 
-export async function loadPolicyTelemetryRemote(policyId: string): Promise<PolicyTelemetryResponse> {
-  return getPolicyTelemetry(policyId);
+export async function loadPolicyTelemetryRemote(): Promise<PolicyTelemetryResponse> {
+  return getPolicyTelemetry();
 }

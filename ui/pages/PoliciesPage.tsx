@@ -1,17 +1,17 @@
-import React from 'react';
+import React from "react";
 
-import { PageLayout } from '../components/layout/PageLayout';
-import type { PolicySourceGroupTelemetry } from '../types';
-import { PoliciesPageHeader } from './policies/components/PoliciesPageHeader';
-import { PolicyEditorActions } from './policies/components/PolicyEditorActions';
-import { PolicyEditorCard } from './policies/components/PolicyEditorCard';
-import { PolicyEditorMessages } from './policies/components/PolicyEditorMessages';
-import { PolicySelector } from './policies/components/PolicySelector';
-import { PolicySourceGroupEditorOverlay } from './policies/components/PolicySourceGroupEditorOverlay';
-import { PolicySourceGroupsTable } from './policies/components/PolicySourceGroupsTable';
-import { ScopedSourceGroupEditor } from './policies/components/ScopedSourceGroupEditor';
-import { loadPolicyTelemetryRemote } from './policies/policyTelemetryRemote';
-import { usePolicyBuilder } from './policies/usePolicyBuilder';
+import { PageLayout } from "../components/layout/PageLayout";
+import type { PolicySourceGroupTelemetry } from "../types";
+import { PoliciesPageHeader } from "./policies/components/PoliciesPageHeader";
+import { PolicyEditorActions } from "./policies/components/PolicyEditorActions";
+import { PolicyEditorCard } from "./policies/components/PolicyEditorCard";
+import { PolicyEditorMessages } from "./policies/components/PolicyEditorMessages";
+import { PolicySelector } from "./policies/components/PolicySelector";
+import { PolicySourceGroupEditorOverlay } from "./policies/components/PolicySourceGroupEditorOverlay";
+import { PolicySourceGroupsTable } from "./policies/components/PolicySourceGroupsTable";
+import { ScopedSourceGroupEditor } from "./policies/components/ScopedSourceGroupEditor";
+import { loadPolicyTelemetryRemote } from "./policies/policyTelemetryRemote";
+import { usePolicyBuilder } from "./policies/usePolicyBuilder";
 
 const POLICY_TELEMETRY_REFRESH_MS = 30_000;
 
@@ -65,25 +65,28 @@ export const PoliciesPage: React.FC = () => {
     deleteRule,
   } = actions;
 
-  const selectedPolicy = policies.find((policy) => policy.id === selectedPolicyId) ?? null;
-  const selectedPolicyLabel = selectedPolicy?.name?.trim() || selectedPolicy?.id || 'No policy selected';
+  const selectedPolicy =
+    policies.find((policy) => policy.id === selectedPolicyId) ?? null;
+  const selectedPolicyLabel =
+    selectedPolicy?.name?.trim() || selectedPolicy?.id || "No policy selected";
   const canDeleteSelectedPolicy =
-    editorMode === 'edit' &&
+    editorMode === "edit" &&
     selectedPolicyId !== null &&
     editorTargetId === selectedPolicyId;
   const selectedSourceGroups =
     editorTargetId === selectedPolicyId
       ? draft.policy.source_groups
-      : selectedPolicy?.policy.source_groups ?? [];
-  const overlayOpen = overlayMode !== 'closed';
+      : (selectedPolicy?.policy.source_groups ?? []);
+  const overlayOpen = overlayMode !== "closed";
   const activeSourceGroupId = overlayOpen ? overlaySourceGroupId : null;
-  const showCreatePolicyEditor = editorMode === 'create' && selectedPolicyId === null;
+  const showCreatePolicyEditor =
+    editorMode === "create" && selectedPolicyId === null;
   const overlaySourceGroupLabel =
     selectedSourceGroups.find(
       (group) => (group.client_key ?? group.id) === overlaySourceGroupId,
     )?.id ??
     overlaySourceGroupId ??
-    'source group';
+    "source group";
 
   React.useEffect(() => {
     let cancelled = false;
@@ -104,7 +107,7 @@ export const PoliciesPage: React.FC = () => {
 
     const refreshTelemetry = async () => {
       try {
-        const response = await loadPolicyTelemetryRemote(selectedPolicyId);
+        const response = await loadPolicyTelemetryRemote();
         if (cancelled) {
           return;
         }
@@ -210,100 +213,112 @@ export const PoliciesPage: React.FC = () => {
         }
       >
         {error && (
-          <div className="rounded-lg p-4" style={{ background: 'var(--red-bg)', border: '1px solid var(--red-border)', color: 'var(--red)' }}>
+          <div
+            className="rounded-lg p-4"
+            style={{
+              background: "var(--red-bg)",
+              border: "1px solid var(--red-border)",
+              color: "var(--red)",
+            }}
+          >
             {error}
           </div>
         )}
 
         <div className="space-y-5" data-policies-main-content="true">
-        {showCreatePolicyEditor ? (
-          <>
-            <PolicyEditorCard
-              editorMode={editorMode}
-              editorTargetId={editorTargetId}
-              draft={draft}
-              integrations={integrations}
-              setDraft={setDraft}
-              updateDraft={updateDraft}
-              addGroup={addGroup}
-              duplicateGroup={duplicateGroup}
-              moveGroup={moveGroup}
-              deleteGroup={deleteGroup}
-              addRule={addRule}
-              duplicateRule={duplicateRule}
-              moveRule={moveRule}
-              deleteRule={deleteRule}
-              validationIssues={validationIssues}
-              editorError={editorError}
-              onDelete={(policyId) => {
-                void handleDelete(policyId);
-              }}
-            />
-
-            <PolicyEditorActions
-              editorMode={editorMode}
-              editorTargetId={editorTargetId}
-              saving={saving}
-              validationIssueCount={validationIssues.length}
-              onReloadEditor={(policyId) => {
-                void loadEditorForPolicy(policyId);
-              }}
-              onCreate={handleCreate}
-              onSave={() => {
-                void handleSave();
-              }}
-            />
-          </>
-        ) : (
-          <>
-            <PolicySelector
-              policies={policies}
-              selectedPolicyId={selectedPolicyId}
-              onSelect={handleSelectPolicy}
-            />
-
-            {loading ? (
-              <div
-                className="rounded-[1.5rem] px-4 py-6 text-sm"
-                style={{
-                  background: 'var(--bg-glass-subtle)',
-                  border: '1px solid var(--border-glass)',
-                  color: 'var(--text-muted)',
-                }}
-              >
-                Loading policies...
-              </div>
-            ) : (
-              <PolicySourceGroupsTable
-                groups={selectedSourceGroups}
-                activeSourceGroupId={activeSourceGroupId}
-                telemetryBySourceGroupId={telemetryState.bySourceGroupId}
-                telemetryPartial={telemetryState.partial}
-                telemetryNodesQueried={telemetryState.nodesQueried}
-                telemetryNodesResponded={telemetryState.nodesResponded}
-                telemetryNodeErrorCount={telemetryState.nodeErrorCount}
-                createActionLabel={selectedPolicyId ? 'Add source group' : 'Create first policy'}
-                emptyStateDescription={
-                  selectedPolicyId
-                    ? 'Create the first source group to start shaping the selected policy.'
-                    : 'Create a policy first, then start organizing traffic by source group.'
-                }
-                emptyStateTitle={
-                  selectedPolicyId ? 'No source groups configured' : 'No policy selected'
-                }
-                onCreateGroup={() => {
-                  void handleCreateSourceGroup();
-                }}
-                onDeleteGroup={handleDeleteSourceGroup}
-                onMoveGroup={handleMoveSourceGroup}
-                onSelectGroup={(groupId) => {
-                  void handleOpenSourceGroup(groupId);
+          {showCreatePolicyEditor ? (
+            <>
+              <PolicyEditorCard
+                editorMode={editorMode}
+                editorTargetId={editorTargetId}
+                draft={draft}
+                integrations={integrations}
+                setDraft={setDraft}
+                updateDraft={updateDraft}
+                addGroup={addGroup}
+                duplicateGroup={duplicateGroup}
+                moveGroup={moveGroup}
+                deleteGroup={deleteGroup}
+                addRule={addRule}
+                duplicateRule={duplicateRule}
+                moveRule={moveRule}
+                deleteRule={deleteRule}
+                validationIssues={validationIssues}
+                editorError={editorError}
+                onDelete={(policyId) => {
+                  void handleDelete(policyId);
                 }}
               />
-            )}
-          </>
-        )}
 
+              <PolicyEditorActions
+                editorMode={editorMode}
+                editorTargetId={editorTargetId}
+                saving={saving}
+                validationIssueCount={validationIssues.length}
+                onReloadEditor={(policyId) => {
+                  void loadEditorForPolicy(policyId);
+                }}
+                onCreate={handleCreate}
+                onSave={() => {
+                  void handleSave();
+                }}
+              />
+            </>
+          ) : (
+            <>
+              <PolicySelector
+                policies={policies}
+                selectedPolicyId={selectedPolicyId}
+                onSelect={handleSelectPolicy}
+              />
+
+              {loading ? (
+                <div
+                  className="rounded-[1.5rem] px-4 py-6 text-sm"
+                  style={{
+                    background: "var(--bg-glass-subtle)",
+                    border: "1px solid var(--border-glass)",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  Loading policies...
+                </div>
+              ) : (
+                <PolicySourceGroupsTable
+                  groups={selectedSourceGroups}
+                  activeSourceGroupId={activeSourceGroupId}
+                  telemetryBySourceGroupId={telemetryState.bySourceGroupId}
+                  telemetryPartial={telemetryState.partial}
+                  telemetryNodesQueried={telemetryState.nodesQueried}
+                  telemetryNodesResponded={telemetryState.nodesResponded}
+                  telemetryNodeErrorCount={telemetryState.nodeErrorCount}
+                  createActionLabel={
+                    selectedPolicyId
+                      ? "Add source group"
+                      : "Create first policy"
+                  }
+                  emptyStateDescription={
+                    selectedPolicyId
+                      ? "Create the first source group to start shaping the selected policy."
+                      : "Create a policy first, then start organizing traffic by source group."
+                  }
+                  emptyStateTitle={
+                    selectedPolicyId
+                      ? "No source groups configured"
+                      : "No policy selected"
+                  }
+                  onCreateGroup={() => {
+                    void handleCreateSourceGroup();
+                  }}
+                  onDeleteGroup={handleDeleteSourceGroup}
+                  onMoveGroup={handleMoveSourceGroup}
+                  onSelectGroup={(groupId) => {
+                    void handleOpenSourceGroup(groupId);
+                  }}
+                />
+              )}
+            </>
+          )}
         </div>
       </PageLayout>
 
