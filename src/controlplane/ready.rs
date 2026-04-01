@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::ClusterTypeConfig;
-use crate::controlplane::policy_repository::{PolicyActive, POLICY_ACTIVE_KEY};
+use crate::controlplane::policy_repository::{StoredPolicy, POLICY_STATE_KEY};
 use crate::controlplane::PolicyStore;
 use crate::dataplane::{DataplaneConfigStore, DrainControl};
 
@@ -197,18 +197,16 @@ impl ReadinessState {
         let Some(store) = &self.cluster_store else {
             return true;
         };
-        let active = match store.get_state_value(POLICY_ACTIVE_KEY) {
-            Ok(active) => active,
+        let state = match store.get_state_value(POLICY_STATE_KEY) {
+            Ok(state) => state,
             Err(_) => return false,
         };
-        let Some(active) = active else {
-            return true;
-        };
-        let active: PolicyActive = match serde_json::from_slice(&active) {
-            Ok(active) => active,
-            Err(_) => return false,
-        };
-        self.policy_store.active_policy_id() == Some(active.id)
+        if let Some(state) = state {
+            if serde_json::from_slice::<StoredPolicy>(&state).is_err() {
+                return false;
+            }
+        }
+        self.policy_ready.load(Ordering::Relaxed) && self.policy_store.policy_generation() > 0
     }
 }
 
@@ -382,7 +380,7 @@ mod tests {
         addr
     }
 
-    async fn write_cluster_active_bytes(
+    async fn write_cluster_policy_state_bytes(
         store: &mut ClusterStore,
         bytes: Vec<u8>,
     ) -> Result<(), String> {
@@ -390,7 +388,7 @@ mod tests {
             .apply([Entry {
                 log_id: LogId::new(openraft::CommittedLeaderId::new(1, 1), 1),
                 payload: EntryPayload::Normal(ClusterCommand::Put {
-                    key: POLICY_ACTIVE_KEY.to_vec(),
+                    key: POLICY_STATE_KEY.to_vec(),
                     value: bytes,
                 }),
             }])
@@ -403,7 +401,7 @@ mod tests {
     async fn ready_status_is_not_ready_when_policy_replication_payload_is_invalid() {
         let dir = TempDir::new().unwrap();
         let mut store = ClusterStore::open(dir.path()).unwrap();
-        write_cluster_active_bytes(&mut store, b"{invalid-json".to_vec())
+        write_cluster_policy_state_bytes(&mut store, b"{invalid-json".to_vec())
             .await
             .unwrap();
 
@@ -427,12 +425,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ready_status_is_not_ready_when_cluster_active_policy_differs_from_local() {
+    async fn ready_status_is_not_ready_when_cluster_policy_has_not_been_replayed_locally() {
         let dir = TempDir::new().unwrap();
         let mut store = ClusterStore::open(dir.path()).unwrap();
-        let active_id = Uuid::new_v4();
-        let payload = serde_json::to_vec(&PolicyActive { id: active_id }).unwrap();
-        write_cluster_active_bytes(&mut store, payload)
+        let payload = serde_json::to_vec(&StoredPolicy::default()).unwrap();
+        write_cluster_policy_state_bytes(&mut store, payload)
             .await
             .unwrap();
 
@@ -450,7 +447,6 @@ mod tests {
             24,
             dataplane_config.clone(),
         );
-        policy_store.set_active_policy_id(Some(Uuid::new_v4()));
         let readiness = ReadinessState::new(dataplane_config, policy_store, Some(store), None);
         readiness.set_dataplane_running(true);
         readiness.set_policy_ready(true);

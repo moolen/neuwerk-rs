@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use neuwerk::controlplane::policy_repository::PolicyDiskStore;
+use neuwerk::controlplane::policy_repository::{singleton_policy_id, PolicyDiskStore};
 use neuwerk::controlplane::PolicyStore;
 
 use crate::runtime::cli::CliConfig;
@@ -41,21 +41,13 @@ fn init_local_controlplane_state_with_store(
     let local_integrations_dir = local_data_root.join("integrations");
 
     if !cfg.cluster.enabled {
-        if let Ok(Some(active_id)) = local_policy_store.active_id() {
-            match local_policy_store.read_record(active_id) {
-                Ok(Some(record)) if record.mode.is_active() => {
-                    if let Err(err) =
-                        policy_store.rebuild_from_config_with_mode(record.policy, record.mode)
-                    {
-                        return Err(format!("local policy error: {err}"));
-                    }
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    return Err(format!("local policy read error: {err}"));
-                }
-            }
+        let stored = local_policy_store
+            .load_or_bootstrap_singleton()
+            .map_err(|err| format!("local policy read error: {err}"))?;
+        if let Err(err) = policy_store.rebuild_from_config(stored.policy) {
+            return Err(format!("local policy error: {err}"));
         }
+        policy_store.set_active_policy_id(Some(singleton_policy_id()));
     }
 
     Ok(LocalControlplaneState {
@@ -72,10 +64,10 @@ mod tests {
 
     use neuwerk::controlplane::cloud::types::IntegrationMode;
     use neuwerk::controlplane::cluster::config::ClusterConfig;
+    use neuwerk::controlplane::policy_config::PolicyConfig;
+    use neuwerk::controlplane::policy_repository::{PolicyRecord, StoredPolicy};
     use neuwerk::controlplane::trafficd::TlsInterceptSettings;
     use neuwerk::dataplane::engine::EngineRuntimeConfig;
-    use neuwerk::controlplane::policy_config::{PolicyConfig, PolicyMode};
-    use neuwerk::controlplane::policy_repository::PolicyRecord;
     use neuwerk::dataplane::policy::DefaultPolicy;
     use neuwerk::dataplane::{EncapMode, SnatMode, SoftMode};
     use tempfile::TempDir;
@@ -148,38 +140,22 @@ mod tests {
         serde_yaml::from_str(yaml).expect("policy yaml")
     }
 
-    fn write_record(
-        store: &PolicyDiskStore,
-        mode: PolicyMode,
-        policy: PolicyConfig,
-    ) -> PolicyRecord {
-        let record = PolicyRecord {
-            id: Uuid::new_v4(),
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            name: Some("test".to_string()),
-            mode,
-            policy,
-        };
-        store.write_record(&record).expect("write record");
-        record
+    fn write_state(store: &PolicyDiskStore, policy: PolicyConfig) {
+        store.write_state(&StoredPolicy { policy }).expect("write state");
     }
 
     #[test]
-    fn local_boot_ignores_missing_active_record() {
+    fn bootstrap_singleton_policy_when_missing() {
         let cfg = test_cli_config();
         let policy_store = policy_store();
         let dir = TempDir::new().unwrap();
         let local_store = PolicyDiskStore::new(dir.path().join("local-policy-store"));
-        let missing_id = Uuid::new_v4();
-        local_store
-            .set_active(Some(missing_id))
-            .expect("set active");
 
         let state =
             init_local_controlplane_state_with_store(&cfg, &policy_store, local_store.clone())
                 .expect("init local state");
 
-        assert_eq!(policy_store.policy_generation(), 0);
+        assert_eq!(policy_store.policy_generation(), 1);
         assert_eq!(state.local_policy_store.base_dir(), local_store.base_dir());
         assert_eq!(
             state.local_service_accounts_dir,
@@ -189,6 +165,13 @@ mod tests {
             state.local_integrations_dir,
             dir.path().join("integrations")
         );
+        let stored = local_store.read_state().unwrap().expect("stored singleton");
+        assert!(matches!(
+            stored.policy.default_policy,
+            Some(neuwerk::controlplane::policy_config::PolicyValue::String(ref value))
+                if value == "deny"
+        ));
+        assert!(stored.policy.source_groups.is_empty());
     }
 
     #[test]
@@ -203,59 +186,13 @@ mod tests {
     }
 
     #[test]
-    fn local_boot_ignores_disabled_active_policy() {
+    fn local_boot_reports_corrupted_stored_policy() {
         let cfg = test_cli_config();
         let policy_store = policy_store();
         let dir = TempDir::new().unwrap();
         let local_store = PolicyDiskStore::new(dir.path().join("local-policy-store"));
-        let record = write_record(
-            &local_store,
-            PolicyMode::Disabled,
-            parse_policy(
-                r#"
-default_policy: allow
-source_groups:
-  - id: "apps"
-    sources:
-      cidrs: ["10.0.0.0/24"]
-    rules: []
-"#,
-            ),
-        );
-        local_store.set_active(Some(record.id)).expect("set active");
-
-        init_local_controlplane_state_with_store(&cfg, &policy_store, local_store)
-            .expect("init local state");
-
-        assert_eq!(policy_store.policy_generation(), 0);
-    }
-
-    #[test]
-    fn local_boot_reports_corrupted_active_policy_record() {
-        let cfg = test_cli_config();
-        let policy_store = policy_store();
-        let dir = TempDir::new().unwrap();
-        let local_store = PolicyDiskStore::new(dir.path().join("local-policy-store"));
-        let record = write_record(
-            &local_store,
-            PolicyMode::Enforce,
-            parse_policy(
-                r#"
-default_policy: deny
-source_groups:
-  - id: "apps"
-    sources:
-      cidrs: ["10.0.0.0/24"]
-    rules: []
-"#,
-            ),
-        );
-        local_store.set_active(Some(record.id)).expect("set active");
-        let record_path = local_store
-            .base_dir()
-            .join("policies")
-            .join(format!("{}.json", record.id));
-        std::fs::write(&record_path, b"{not-json").expect("corrupt record");
+        std::fs::write(local_store.base_dir().join("policy.json"), b"{not-json")
+            .expect("corrupt record");
 
         let err = init_local_controlplane_state_with_store(&cfg, &policy_store, local_store)
             .err()
@@ -266,14 +203,13 @@ source_groups:
     }
 
     #[test]
-    fn local_boot_reports_compile_failure_for_active_policy() {
+    fn local_boot_reports_compile_failure_for_stored_policy() {
         let cfg = test_cli_config();
         let policy_store = policy_store();
         let dir = TempDir::new().unwrap();
         let local_store = PolicyDiskStore::new(dir.path().join("local-policy-store"));
-        let record = write_record(
+        write_state(
             &local_store,
-            PolicyMode::Enforce,
             parse_policy(
                 r#"
 source_groups:
@@ -283,7 +219,6 @@ source_groups:
 "#,
             ),
         );
-        local_store.set_active(Some(record.id)).expect("set active");
 
         let err = init_local_controlplane_state_with_store(&cfg, &policy_store, local_store)
             .err()
@@ -294,14 +229,13 @@ source_groups:
     }
 
     #[test]
-    fn local_boot_restores_active_enforcing_policy() {
+    fn local_boot_restores_stored_policy() {
         let cfg = test_cli_config();
         let policy_store = policy_store();
         let dir = TempDir::new().unwrap();
         let local_store = PolicyDiskStore::new(dir.path().join("local-policy-store"));
-        let record = write_record(
+        write_state(
             &local_store,
-            PolicyMode::Enforce,
             parse_policy(
                 r#"
 default_policy: allow
@@ -313,7 +247,6 @@ source_groups:
 "#,
             ),
         );
-        local_store.set_active(Some(record.id)).expect("set active");
 
         init_local_controlplane_state_with_store(&cfg, &policy_store, local_store)
             .expect("init local state");

@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,8 +15,8 @@ use crate::controlplane::intercept_tls::{
     load_local_intercept_ca_pair, INTERCEPT_CA_CERT_KEY, INTERCEPT_CA_ENVELOPE_KEY,
 };
 use crate::controlplane::policy_repository::{
-    policy_item_key, PolicyActive, PolicyDiskStore, PolicyIndex, PolicyMeta, PolicyRecord,
-    POLICY_ACTIVE_KEY, POLICY_INDEX_KEY,
+    policy_item_key, PolicyDiskStore, PolicyIndex, StoredPolicy, POLICY_ACTIVE_KEY, POLICY_INDEX_KEY,
+    POLICY_STATE_KEY,
 };
 use crate::controlplane::service_accounts::{
     account_item_key, token_index_key, token_item_key, ServiceAccount, ServiceAccountClusterStore,
@@ -151,7 +150,9 @@ fn marker_path(cluster_data_dir: &Path) -> PathBuf {
 }
 
 fn ensure_empty_state(store: &ClusterStore) -> Result<(), String> {
-    if store.get_state_value(POLICY_INDEX_KEY)?.is_some() {
+    if store.get_state_value(POLICY_STATE_KEY)?.is_some()
+        || store.get_state_value(POLICY_INDEX_KEY)?.is_some()
+    {
         return Err(
             "cluster already contains policies; abort migration or use --cluster-migrate-force"
                 .to_string(),
@@ -209,73 +210,21 @@ async fn seed_policies(
     cfg: &MigrationConfig,
     report: &mut MigrationReport,
 ) -> Result<(), String> {
-    let records = cfg
+    let state = cfg
         .local_policy_store
-        .list_records()
-        .map_err(|err| format!("read local policies failed: {err}"))?;
-    let mut index = PolicyIndex::default();
-    for record in &records {
-        let record_bytes = serde_json::to_vec(record).map_err(|err| err.to_string())?;
-        let cmd = ClusterCommand::Put {
-            key: policy_item_key(record.id),
-            value: record_bytes,
-        };
-        raft.client_write(cmd)
-            .await
-            .map_err(|err| err.to_string())?;
-        index.policies.push(PolicyMeta::from(record));
-    }
-    index.policies.sort_by(|a, b| {
-        let ts = a.created_at.cmp(&b.created_at);
-        if ts == std::cmp::Ordering::Equal {
-            a.id.as_bytes().cmp(b.id.as_bytes())
-        } else {
-            ts
-        }
-    });
-    let index_bytes = serde_json::to_vec(&index).map_err(|err| err.to_string())?;
+        .load_or_bootstrap_singleton()
+        .map_err(|err| format!("read local policy failed: {err}"))?;
+    let state_bytes = serde_json::to_vec(&state).map_err(|err| err.to_string())?;
     raft.client_write(ClusterCommand::Put {
-        key: POLICY_INDEX_KEY.to_vec(),
-        value: index_bytes,
+        key: POLICY_STATE_KEY.to_vec(),
+        value: state_bytes,
     })
     .await
     .map_err(|err| err.to_string())?;
 
-    let active_id = cfg
-        .local_policy_store
-        .active_id()
-        .map_err(|err| format!("read local active policy failed: {err}"))?;
-    let active_id = match active_id {
-        Some(id) => match cfg
-            .local_policy_store
-            .read_record(id)
-            .map_err(|err| format!("read local policy failed: {err}"))?
-        {
-            Some(record) if record.mode.is_active() => Some(id),
-            _ => None,
-        },
-        None => None,
-    };
-    if let Some(active_id) = active_id {
-        let active = PolicyActive { id: active_id };
-        let active_bytes = serde_json::to_vec(&active).map_err(|err| err.to_string())?;
-        raft.client_write(ClusterCommand::Put {
-            key: POLICY_ACTIVE_KEY.to_vec(),
-            value: active_bytes,
-        })
-        .await
-        .map_err(|err| err.to_string())?;
-    } else {
-        raft.client_write(ClusterCommand::Delete {
-            key: POLICY_ACTIVE_KEY.to_vec(),
-        })
-        .await
-        .map_err(|err| err.to_string())?;
-    }
-
-    report.policies_seeded = records.len();
+    report.policies_seeded = 1;
     if cfg.force {
-        cleanup_policy_extras(raft, store, &records).await?;
+        cleanup_policy_extras(raft, store).await?;
     }
     Ok(())
 }
@@ -283,22 +232,29 @@ async fn seed_policies(
 async fn cleanup_policy_extras(
     raft: &openraft::Raft<ClusterTypeConfig>,
     store: &ClusterStore,
-    local_records: &[PolicyRecord],
 ) -> Result<(), String> {
+    raft.client_write(ClusterCommand::Delete {
+        key: POLICY_INDEX_KEY.to_vec(),
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+    raft.client_write(ClusterCommand::Delete {
+        key: POLICY_ACTIVE_KEY.to_vec(),
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+
     let raw = store.get_state_value(POLICY_INDEX_KEY)?;
     let Some(raw) = raw else {
         return Ok(());
     };
     let existing: PolicyIndex = serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
-    let local_ids: HashSet<Uuid> = local_records.iter().map(|r| r.id).collect();
     for meta in existing.policies {
-        if !local_ids.contains(&meta.id) {
-            raft.client_write(ClusterCommand::Delete {
-                key: policy_item_key(meta.id),
-            })
-            .await
-            .map_err(|err| err.to_string())?;
-        }
+        raft.client_write(ClusterCommand::Delete {
+            key: policy_item_key(meta.id),
+        })
+        .await
+        .map_err(|err| err.to_string())?;
     }
     Ok(())
 }
@@ -483,43 +439,19 @@ fn keyset_equivalent(left: &ApiKeySet, right: &ApiKeySet) -> bool {
 }
 
 fn verify_policies(store: &ClusterStore, cfg: &MigrationConfig) -> Result<(), String> {
-    let local_records = cfg
+    let local_state = cfg
         .local_policy_store
-        .list_records()
-        .map_err(|err| format!("read local policies failed: {err}"))?;
-    let mut local_ids: Vec<Uuid> = local_records.iter().map(|r| r.id).collect();
-    let cluster_index_raw = store.get_state_value(POLICY_INDEX_KEY)?;
-    let cluster_index: PolicyIndex = match cluster_index_raw {
-        Some(raw) => serde_json::from_slice(&raw).map_err(|err| err.to_string())?,
-        None => PolicyIndex::default(),
-    };
-    let mut cluster_ids: Vec<Uuid> = cluster_index.policies.iter().map(|m| m.id).collect();
-    local_ids.sort();
-    cluster_ids.sort();
-    if local_ids != cluster_ids {
-        return Err("policy index mismatch between local and cluster".to_string());
-    }
-    let expected_active = cfg
-        .local_policy_store
-        .active_id()
-        .map_err(|err| format!("read local active policy failed: {err}"))?
-        .and_then(|id| {
-            cfg.local_policy_store
-                .read_record(id)
-                .ok()
-                .flatten()
-                .filter(|record| record.mode.is_active())
-                .map(|_| id)
-        });
-    let cluster_active_raw = store.get_state_value(POLICY_ACTIVE_KEY)?;
-    let cluster_active: Option<PolicyActive> = match cluster_active_raw {
-        Some(raw) => Some(serde_json::from_slice(&raw).map_err(|err| err.to_string())?),
-        None => None,
-    };
-    if expected_active.map(|id| id.to_string())
-        != cluster_active.map(|active| active.id.to_string())
+        .load_or_bootstrap_singleton()
+        .map_err(|err| format!("read local policy failed: {err}"))?;
+    let cluster_state_raw = store
+        .get_state_value(POLICY_STATE_KEY)?
+        .ok_or_else(|| "cluster singleton policy missing".to_string())?;
+    let cluster_state: StoredPolicy =
+        serde_json::from_slice(&cluster_state_raw).map_err(|err| err.to_string())?;
+    if serde_json::to_value(&local_state.policy).map_err(|err| err.to_string())?
+        != serde_json::to_value(&cluster_state.policy).map_err(|err| err.to_string())?
     {
-        return Err("active policy mismatch between local and cluster".to_string());
+        return Err("singleton policy mismatch between local and cluster".to_string());
     }
     Ok(())
 }
@@ -661,7 +593,7 @@ mod tests {
     use openraft::{CommittedLeaderId, Entry, LogId};
     use tempfile::TempDir;
 
-    use crate::controlplane::policy_config::{PolicyConfig, PolicyMode};
+    use crate::controlplane::policy_config::PolicyConfig;
 
     fn sample_policy() -> PolicyConfig {
         serde_yaml::from_str(
@@ -710,9 +642,11 @@ source_groups:
 
         let keyset = api_auth::ensure_local_keyset(&cfg.http_tls_dir).unwrap();
 
-        let record = PolicyRecord::new(PolicyMode::Enforce, sample_policy(), None).unwrap();
-        cfg.local_policy_store.write_record(&record).unwrap();
-        cfg.local_policy_store.set_active(Some(record.id)).unwrap();
+        cfg.local_policy_store
+            .write_state(&StoredPolicy {
+                policy: sample_policy(),
+            })
+            .unwrap();
 
         let local_service_accounts =
             ServiceAccountDiskStore::new(cfg.local_service_accounts_dir.clone());
@@ -746,23 +680,10 @@ source_groups:
                 value: serde_json::to_vec(&cluster_keyset).unwrap(),
             },
             ClusterCommand::Put {
-                key: POLICY_INDEX_KEY.to_vec(),
+                key: POLICY_STATE_KEY.to_vec(),
                 value: serde_json::to_vec(&serde_json::json!({
-                    "policies": [{
-                        "id": record.id,
-                        "created_at": record.created_at,
-                        "mode": "enforce",
-                        "future_meta_field": 7
-                    }],
-                    "future_index_field": "ignored"
-                }))
-                .unwrap(),
-            },
-            ClusterCommand::Put {
-                key: POLICY_ACTIVE_KEY.to_vec(),
-                value: serde_json::to_vec(&serde_json::json!({
-                    "id": record.id,
-                    "future_active_field": true
+                    "policy": serde_json::to_value(sample_policy()).unwrap(),
+                    "future_state_field": true
                 }))
                 .unwrap(),
             },

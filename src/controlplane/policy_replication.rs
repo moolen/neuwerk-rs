@@ -3,13 +3,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::MissedTickBehavior;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
 use crate::controlplane::cluster::store::ClusterStore;
 use crate::controlplane::cluster::types::ClusterTypeConfig;
-use crate::controlplane::policy_config::{DnsPolicy, PolicyMode};
 use crate::controlplane::policy_repository::{
-    policy_item_key, PolicyActive, PolicyDiskStore, PolicyRecord, POLICY_ACTIVE_KEY,
+    singleton_policy_id, PolicyDiskStore, StoredPolicy, POLICY_STATE_KEY,
 };
 use crate::controlplane::PolicyStore;
 use crate::dataplane::policy::EnforcementMode;
@@ -47,38 +46,34 @@ pub async fn run_policy_replication_with_local_apply_guard(
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut last_record: Option<Vec<u8>> = None;
 
-    fn clear_active_policy(
+    fn apply_state(
         policy_store: &PolicyStore,
         local_store: &PolicyDiskStore,
+        state: &StoredPolicy,
     ) -> Result<(), String> {
-        policy_store.rebuild(
-            Vec::new(),
-            DnsPolicy::new(Vec::new()),
-            None,
+        let compiled = state.policy.clone().compile()?;
+        policy_store.rebuild_with_kubernetes_bindings(
+            compiled.groups,
+            compiled.dns_policy,
+            compiled.default_policy,
             EnforcementMode::Enforce,
+            compiled.kubernetes_bindings,
         )?;
-        policy_store.set_active_policy_id(None);
         local_store
-            .set_active(None)
-            .map_err(|err| format!("clear local active policy failed: {err}"))?;
+            .write_state(state)
+            .map_err(|err| format!("persist local singleton policy failed: {err}"))?;
+        policy_store.set_active_policy_id(Some(singleton_policy_id()));
         Ok(())
     }
 
-    fn local_active_record_matches(local_store: &PolicyDiskStore, record: &PolicyRecord) -> bool {
-        if local_store.active_id().ok().flatten() != Some(record.id) {
-            return false;
-        }
+    fn local_state_matches(local_store: &PolicyDiskStore, state: &StoredPolicy) -> bool {
         local_store
-            .read_record(record.id)
+            .read_state()
             .ok()
             .flatten()
-            .is_some_and(|local_record| {
-                local_record.id == record.id
-                    && local_record.created_at == record.created_at
-                    && local_record.name == record.name
-                    && local_record.mode == record.mode
-                    && serde_json::to_value(&local_record.policy).ok()
-                        == serde_json::to_value(&record.policy).ok()
+            .is_some_and(|local_state| {
+                serde_json::to_value(&local_state.policy).ok()
+                    == serde_json::to_value(&state.policy).ok()
             })
     }
 
@@ -98,74 +93,31 @@ pub async fn run_policy_replication_with_local_apply_guard(
         {
             continue;
         }
-        let active = match store.get_state_value(POLICY_ACTIVE_KEY) {
+        let record = match store.get_state_value(POLICY_STATE_KEY) {
             Ok(value) => value,
             Err(err) => {
-                warn!(error = %err, "policy replication failed to read active policy");
+                warn!(error = %err, "policy replication failed to read singleton policy");
                 continue;
             }
         };
-        let Some(active) = active else {
-            let needs_clear = policy_store.active_policy_id().is_some()
-                || local_store.active_id().ok().flatten().is_some();
-            if needs_clear {
-                if let Err(err) = clear_active_policy(&policy_store, &local_store) {
-                    error!(error = %err, "policy replication failed to clear inactive policy");
-                    continue;
-                }
-                last_record = None;
-            }
-            if let Some(readiness) = &readiness {
-                readiness.set_policy_ready(true);
-            }
-            continue;
-        };
-        let active: PolicyActive = match serde_json::from_slice(&active) {
-            Ok(active) => active,
-            Err(err) => {
-                warn!(error = %err, "policy replication active policy record invalid");
-                continue;
-            }
-        };
-        let record_key = policy_item_key(active.id);
-        let record = match store.get_state_value(&record_key) {
-            Ok(value) => value,
-            Err(err) => {
-                warn!(error = %err, policy_id = %active.id, "policy replication failed to read policy record");
-                continue;
-            }
-        };
-        let Some(record) = record else {
-            continue;
-        };
+        let record = record.unwrap_or_else(|| serde_json::to_vec(&StoredPolicy::default()).unwrap());
         if last_record.as_ref().is_some_and(|prev| prev == &record) {
             continue;
         }
         let record_bytes = record;
-        let record: PolicyRecord = match serde_json::from_slice(&record_bytes) {
-            Ok(record) => record,
+        let state: StoredPolicy = match serde_json::from_slice(&record_bytes) {
+            Ok(state) => state,
             Err(err) => {
-                warn!(error = %err, "policy replication policy record invalid");
+                warn!(error = %err, "policy replication singleton policy invalid");
                 continue;
             }
         };
-        if !record.mode.is_active() {
-            info!(policy_id = %record.id, mode = ?record.mode, "policy replication observed disabled active policy");
-            if policy_store.active_policy_id() == Some(record.id) {
-                if let Err(err) = clear_active_policy(&policy_store, &local_store) {
-                    error!(error = %err, policy_id = %record.id, "policy replication failed to clear disabled active policy");
-                    continue;
-                }
-                last_record = None;
-            }
-            continue;
-        }
         // The leader applies local HTTP API writes synchronously. Reapplying the
-        // identical active record on the next replication tick would rebuild the
+        // identical singleton policy on the next replication tick would rebuild the
         // policy store and discard in-memory DNS grants for established flows.
         if snapshot.current_leader == Some(snapshot.id)
-            && policy_store.active_policy_id() == Some(record.id)
-            && local_active_record_matches(&local_store, &record)
+            && policy_store.active_policy_id() == Some(singleton_policy_id())
+            && local_state_matches(&local_store, &state)
         {
             last_record = Some(record_bytes);
             if let Some(readiness) = &readiness {
@@ -173,37 +125,10 @@ pub async fn run_policy_replication_with_local_apply_guard(
             }
             continue;
         }
-        let enforcement_mode = if record.mode == PolicyMode::Audit {
-            EnforcementMode::Audit
-        } else {
-            EnforcementMode::Enforce
-        };
-        let compiled = match record.policy.clone().compile() {
-            Ok(compiled) => compiled,
-            Err(err) => {
-                error!(error = %err, policy_id = %record.id, "policy replication compile failed");
-                continue;
-            }
-        };
-        if let Err(err) = policy_store.rebuild_with_kubernetes_bindings(
-            compiled.groups,
-            compiled.dns_policy,
-            compiled.default_policy,
-            enforcement_mode,
-            compiled.kubernetes_bindings,
-        ) {
-            error!(error = %err, policy_id = %record.id, "policy replication update failed");
+        if let Err(err) = apply_state(&policy_store, &local_store, &state) {
+            error!(error = %err, "policy replication failed to apply singleton policy");
             continue;
         }
-        if let Err(err) = local_store.write_record(&record) {
-            error!(error = %err, policy_id = %record.id, "policy replication failed to persist policy");
-            continue;
-        }
-        if let Err(err) = local_store.set_active(Some(record.id)) {
-            error!(error = %err, policy_id = %record.id, "policy replication failed to persist active policy");
-            continue;
-        }
-        policy_store.set_active_policy_id(Some(record.id));
         last_record = Some(record_bytes);
         if let Some(readiness) = &readiness {
             readiness.set_policy_ready(true);
@@ -222,12 +147,12 @@ mod tests {
     use std::time::Instant;
 
     use tempfile::TempDir;
-    use uuid::Uuid;
 
     use crate::controlplane::cluster::bootstrap;
     use crate::controlplane::cluster::config::ClusterConfig;
     use crate::controlplane::cluster::types::ClusterCommand;
     use crate::controlplane::policy_config::PolicyConfig;
+    use crate::controlplane::policy_repository::{singleton_policy_id, StoredPolicy, POLICY_STATE_KEY};
     use crate::controlplane::ready::ReadinessState;
     use crate::dataplane::policy::DefaultPolicy;
     use crate::dataplane::{DataplaneConfig, DataplaneConfigStore};
@@ -292,14 +217,10 @@ mod tests {
         }
     }
 
-    async fn wait_for_active_policy(
-        policy_store: &PolicyStore,
-        id: Uuid,
-        timeout: Duration,
-    ) -> Result<(), String> {
+    async fn wait_for_active_policy(policy_store: &PolicyStore, timeout: Duration) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         loop {
-            if policy_store.active_policy_id() == Some(id) {
+            if policy_store.active_policy_id() == Some(singleton_policy_id()) {
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -307,6 +228,18 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    async fn put_cluster_policy_state(
+        raft: &openraft::Raft<ClusterTypeConfig>,
+        state: &StoredPolicy,
+    ) {
+        raft.client_write(ClusterCommand::Put {
+            key: POLICY_STATE_KEY.to_vec(),
+            value: serde_json::to_vec(state).unwrap(),
+        })
+        .await
+        .unwrap();
     }
 
     async fn wait_for_policy_decision(
@@ -386,6 +319,7 @@ default_policy: allow
 source_groups:
   - id: homenet
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["192.168.178.0/24"]
       ips: []
@@ -401,24 +335,8 @@ source_groups:
 "#,
         )
         .unwrap();
-        let record = PolicyRecord::new(PolicyMode::Audit, policy, None).unwrap();
-
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: policy_item_key(record.id),
-                value: serde_json::to_vec(&record).unwrap(),
-            })
-            .await
-            .unwrap();
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: POLICY_ACTIVE_KEY.to_vec(),
-                value: serde_json::to_vec(&PolicyActive { id: record.id }).unwrap(),
-            })
-            .await
-            .unwrap();
+        let state = StoredPolicy { policy };
+        put_cluster_policy_state(&cluster.raft, &state).await;
 
         let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::UNSPECIFIED, 32);
         let local_store = PolicyDiskStore::new(local_dir.path().join("local-policy-store"));
@@ -431,14 +349,14 @@ source_groups:
             Duration::from_millis(25),
         ));
 
-        wait_for_active_policy(&policy_store, record.id, Duration::from_secs(3))
+        wait_for_active_policy(&policy_store, Duration::from_secs(3))
             .await
             .unwrap();
 
         assert_eq!(
             policy_store.enforcement_mode(),
-            EnforcementMode::Audit,
-            "policy mode should be replayed into runtime state"
+            EnforcementMode::Enforce,
+            "singleton replication should not reintroduce removed top-level audit mode"
         );
 
         let src_ip = Ipv4Addr::new(192, 168, 178, 91);
@@ -453,8 +371,8 @@ source_groups:
             "dns policy source group should be available after leader replay"
         );
 
-        assert_eq!(local_store.active_id().unwrap(), Some(record.id));
-        assert!(local_store.read_record(record.id).unwrap().is_some());
+        assert_eq!(local_store.active_id().unwrap(), Some(singleton_policy_id()));
+        assert!(local_store.read_state().unwrap().is_some());
 
         task.abort();
         let _ = task.await;
@@ -487,6 +405,7 @@ source_groups:
 default_policy: allow
 source_groups:
   - id: homes
+    mode: enforce
     sources:
       ips: ["10.0.0.8"]
     rules:
@@ -498,11 +417,7 @@ source_groups:
 "#,
         )
         .unwrap();
-        let record = PolicyRecord::new(PolicyMode::Enforce, policy.clone(), None).unwrap();
         let raw_record = serde_json::json!({
-            "id": record.id,
-            "created_at": record.created_at,
-            "mode": "enforce",
             "policy": serde_json::to_value(&policy).unwrap(),
             "future_cluster_field": { "version": 2 }
         });
@@ -510,20 +425,8 @@ source_groups:
         cluster
             .raft
             .client_write(ClusterCommand::Put {
-                key: policy_item_key(record.id),
+                key: POLICY_STATE_KEY.to_vec(),
                 value: serde_json::to_vec(&raw_record).unwrap(),
-            })
-            .await
-            .unwrap();
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: POLICY_ACTIVE_KEY.to_vec(),
-                value: serde_json::to_vec(&serde_json::json!({
-                    "id": record.id,
-                    "future_active_field": "ignored"
-                }))
-                .unwrap(),
             })
             .await
             .unwrap();
@@ -539,7 +442,7 @@ source_groups:
             Duration::from_millis(25),
         ));
 
-        wait_for_active_policy(&policy_store, record.id, Duration::from_secs(3))
+        wait_for_active_policy(&policy_store, Duration::from_secs(3))
             .await
             .unwrap();
 
@@ -548,8 +451,8 @@ source_groups:
             EnforcementMode::Enforce,
             "schema-compatible cluster records should still replay"
         );
-        assert_eq!(local_store.active_id().unwrap(), Some(record.id));
-        assert!(local_store.read_record(record.id).unwrap().is_some());
+        assert_eq!(local_store.active_id().unwrap(), Some(singleton_policy_id()));
+        assert!(local_store.read_state().unwrap().is_some());
 
         task.abort();
         let _ = task.await;
@@ -557,7 +460,7 @@ source_groups:
     }
 
     #[tokio::test]
-    async fn active_policy_updates_replay_even_when_uuid_stays_the_same() {
+    async fn policy_state_updates_replay_when_cluster_key_stays_the_same() {
         ensure_rustls_provider();
 
         let cluster_dir = TempDir::new().unwrap();
@@ -583,24 +486,10 @@ default_policy: allow
 "#,
         )
         .unwrap();
-        let mut record = PolicyRecord::new(PolicyMode::Enforce, initial_policy, None).unwrap();
-
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: policy_item_key(record.id),
-                value: serde_json::to_vec(&record).unwrap(),
-            })
-            .await
-            .unwrap();
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: POLICY_ACTIVE_KEY.to_vec(),
-                value: serde_json::to_vec(&PolicyActive { id: record.id }).unwrap(),
-            })
-            .await
-            .unwrap();
+        let mut state = StoredPolicy {
+            policy: initial_policy,
+        };
+        put_cluster_policy_state(&cluster.raft, &state).await;
 
         let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::UNSPECIFIED, 32);
         let local_store = PolicyDiskStore::new(local_dir.path().join("local-policy-store"));
@@ -613,7 +502,7 @@ default_policy: allow
             Duration::from_millis(25),
         ));
 
-        wait_for_active_policy(&policy_store, record.id, Duration::from_secs(3))
+        wait_for_active_policy(&policy_store, Duration::from_secs(3))
             .await
             .unwrap();
 
@@ -635,20 +524,13 @@ default_policy: allow
         .await
         .unwrap();
 
-        record.policy = serde_yaml::from_str(
+        state.policy = serde_yaml::from_str(
             r#"
 default_policy: deny
 "#,
         )
         .unwrap();
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: policy_item_key(record.id),
-                value: serde_json::to_vec(&record).unwrap(),
-            })
-            .await
-            .unwrap();
+        put_cluster_policy_state(&cluster.raft, &state).await;
 
         wait_for_policy_decision(
             &policy_store,
@@ -665,7 +547,7 @@ default_policy: deny
     }
 
     #[tokio::test]
-    async fn invalid_active_policy_json_does_not_mark_readiness_ready() {
+    async fn invalid_singleton_policy_json_does_not_mark_readiness_ready() {
         ensure_rustls_provider();
 
         let cluster_dir = TempDir::new().unwrap();
@@ -688,7 +570,7 @@ default_policy: deny
         cluster
             .raft
             .client_write(ClusterCommand::Put {
-                key: POLICY_ACTIVE_KEY.to_vec(),
+                key: POLICY_STATE_KEY.to_vec(),
                 value: b"{not-json".to_vec(),
             })
             .await
@@ -718,7 +600,7 @@ default_policy: deny
     }
 
     #[tokio::test]
-    async fn disabled_active_policy_clears_runtime_without_marking_ready() {
+    async fn missing_singleton_policy_bootstraps_default_and_marks_ready() {
         ensure_rustls_provider();
 
         let cluster_dir = TempDir::new().unwrap();
@@ -738,45 +620,8 @@ default_policy: deny
             .await
             .unwrap();
 
-        let policy: PolicyConfig = serde_yaml::from_str(
-            r#"
-default_policy: allow
-source_groups:
-  - id: apps
-    sources:
-      ips: ["10.0.0.2"]
-    rules:
-      - id: allow-dns
-        action: allow
-        match:
-          proto: udp
-          dst_ports: ["53"]
-"#,
-        )
-        .unwrap();
-        let record = PolicyRecord::new(PolicyMode::Disabled, policy, None).unwrap();
-
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: policy_item_key(record.id),
-                value: serde_json::to_vec(&record).unwrap(),
-            })
-            .await
-            .unwrap();
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: POLICY_ACTIVE_KEY.to_vec(),
-                value: serde_json::to_vec(&PolicyActive { id: record.id }).unwrap(),
-            })
-            .await
-            .unwrap();
-
         let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::UNSPECIFIED, 32);
-        policy_store.set_active_policy_id(Some(record.id));
         let local_store = PolicyDiskStore::new(local_dir.path().join("local-policy-store"));
-        local_store.set_active(Some(record.id)).unwrap();
         let readiness = readiness_with_basics(&policy_store);
         let task = tokio::spawn(run_policy_replication(
             cluster.store.clone(),
@@ -789,9 +634,25 @@ source_groups:
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        assert_eq!(policy_store.active_policy_id(), None);
-        assert_eq!(local_store.active_id().unwrap(), None);
-        assert!(!policy_ready_check(&readiness));
+        assert_eq!(policy_store.active_policy_id(), Some(singleton_policy_id()));
+        assert_eq!(local_store.active_id().unwrap(), Some(singleton_policy_id()));
+        assert!(policy_ready_check(&readiness));
+        wait_for_policy_decision(
+            &policy_store,
+            crate::dataplane::policy::PacketMeta {
+                src_ip: Ipv4Addr::new(192, 0, 2, 2),
+                dst_ip: Ipv4Addr::new(203, 0, 113, 10),
+                proto: 6,
+                src_port: 40000,
+                dst_port: 443,
+                icmp_type: None,
+                icmp_code: None,
+            },
+            crate::dataplane::policy::PolicyDecision::Deny,
+            Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
 
         task.abort();
         let _ = task.await;
@@ -825,6 +686,7 @@ default_policy: deny
 source_groups:
   - id: "client-primary"
     priority: 0
+    mode: enforce
     sources:
       ips: ["192.0.2.2"]
     rules:
@@ -836,24 +698,10 @@ source_groups:
 "#,
         )
         .unwrap();
-        let record = PolicyRecord::new(PolicyMode::Enforce, policy.clone(), None).unwrap();
-
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: policy_item_key(record.id),
-                value: serde_json::to_vec(&record).unwrap(),
-            })
-            .await
-            .unwrap();
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: POLICY_ACTIVE_KEY.to_vec(),
-                value: serde_json::to_vec(&PolicyActive { id: record.id }).unwrap(),
-            })
-            .await
-            .unwrap();
+        let state = StoredPolicy {
+            policy: policy.clone(),
+        };
+        put_cluster_policy_state(&cluster.raft, &state).await;
 
         let compiled = policy.compile().unwrap();
         let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::UNSPECIFIED, 32);
@@ -866,14 +714,13 @@ source_groups:
                 compiled.kubernetes_bindings,
             )
             .unwrap();
-        policy_store.set_active_policy_id(Some(record.id));
+        policy_store.set_active_policy_id(Some(singleton_policy_id()));
 
         let granted_ip = Ipv4Addr::new(203, 0, 113, 10);
         policy_store.record_dns_grants("client-primary", "foo.allowed", &[granted_ip], 10);
 
         let local_store = PolicyDiskStore::new(local_dir.path().join("local-policy-store"));
-        local_store.write_record(&record).unwrap();
-        local_store.set_active(Some(record.id)).unwrap();
+        local_store.write_state(&state).unwrap();
         let readiness = readiness_with_basics(&policy_store);
         let task = tokio::spawn(run_policy_replication_with_local_apply_guard(
             cluster.store.clone(),
@@ -932,6 +779,7 @@ source_groups:
             r#"
 source_groups:
   - id: "tls"
+    mode: enforce
     sources:
       ips: ["10.0.0.2"]
     rules:
@@ -944,24 +792,8 @@ source_groups:
 "#,
         )
         .unwrap();
-        let record = PolicyRecord::new(PolicyMode::Enforce, bad_policy, None).unwrap();
-
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: policy_item_key(record.id),
-                value: serde_json::to_vec(&record).unwrap(),
-            })
-            .await
-            .unwrap();
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: POLICY_ACTIVE_KEY.to_vec(),
-                value: serde_json::to_vec(&PolicyActive { id: record.id }).unwrap(),
-            })
-            .await
-            .unwrap();
+        let state = StoredPolicy { policy: bad_policy };
+        put_cluster_policy_state(&cluster.raft, &state).await;
 
         let policy_store = PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::UNSPECIFIED, 32);
         let local_store = PolicyDiskStore::new(local_dir.path().join("local-policy-store"));
@@ -1012,6 +844,7 @@ source_groups:
 default_policy: allow
 source_groups:
   - id: apps
+    mode: enforce
     sources:
       ips: ["10.0.0.2"]
     rules:
@@ -1023,24 +856,8 @@ source_groups:
 "#,
         )
         .unwrap();
-        let record = PolicyRecord::new(PolicyMode::Enforce, policy, None).unwrap();
-
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: policy_item_key(record.id),
-                value: serde_json::to_vec(&record).unwrap(),
-            })
-            .await
-            .unwrap();
-        cluster
-            .raft
-            .client_write(ClusterCommand::Put {
-                key: POLICY_ACTIVE_KEY.to_vec(),
-                value: serde_json::to_vec(&PolicyActive { id: record.id }).unwrap(),
-            })
-            .await
-            .unwrap();
+        let state = StoredPolicy { policy };
+        put_cluster_policy_state(&cluster.raft, &state).await;
 
         let broken_path = local_dir.path().join("not-a-directory");
         fs::write(&broken_path, b"file").unwrap();

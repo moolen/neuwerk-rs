@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use super::*;
+use crate::controlplane::policy_repository::{singleton_policy_id, StoredPolicy, POLICY_STATE_KEY};
 
 pub(super) async fn persist_cluster_policy(
     cluster: &HttpApiCluster,
@@ -14,50 +15,14 @@ async fn persist_cluster_policy_with_step_delay(
     record: &PolicyRecord,
     step_delay: Option<Duration>,
 ) -> Result<(), String> {
-    let record_bytes = serde_json::to_vec(record).map_err(|err| err.to_string())?;
-    let item_key = policy_item_key(record.id);
-    let mut index = read_cluster_index(&cluster.store)?;
-    let meta = PolicyMeta::from(record);
-    if let Some(existing) = index.policies.iter_mut().find(|item| item.id == meta.id) {
-        *existing = meta;
-    } else {
-        index.policies.push(meta);
-    }
-    index.policies.sort_by(|a, b| {
-        let ts = a.created_at.cmp(&b.created_at);
-        if ts == std::cmp::Ordering::Equal {
-            a.id.as_bytes().cmp(b.id.as_bytes())
-        } else {
-            ts
-        }
-    });
-    let index_bytes = serde_json::to_vec(&index).map_err(|err| err.to_string())?;
-    let mut commands = Vec::new();
-    if record.mode.is_active() {
-        let active = PolicyActive { id: record.id };
-        let active_bytes = serde_json::to_vec(&active).map_err(|err| err.to_string())?;
-        commands.push(ClusterCommand::Put {
-            key: POLICY_ACTIVE_KEY.to_vec(),
-            value: active_bytes,
-        });
-    } else if let Ok(Some(active)) = read_cluster_active(&cluster.store) {
-        if active.id == record.id {
-            commands.push(ClusterCommand::Delete {
-                key: POLICY_ACTIVE_KEY.to_vec(),
-            });
-        }
-    }
-    // Move the active pointer first so leader-local applies are never rolled
-    // back by replication while the new record and index are still being
-    // persisted to the cluster store.
-    commands.push(ClusterCommand::Put {
-        key: item_key,
-        value: record_bytes,
-    });
-    commands.push(ClusterCommand::Put {
-        key: POLICY_INDEX_KEY.to_vec(),
-        value: index_bytes,
-    });
+    let state = StoredPolicy {
+        policy: record.policy.clone(),
+    };
+    let state_bytes = serde_json::to_vec(&state).map_err(|err| err.to_string())?;
+    let commands = vec![ClusterCommand::Put {
+        key: POLICY_STATE_KEY.to_vec(),
+        value: state_bytes,
+    }];
 
     let last_idx = commands.len().saturating_sub(1);
     for (idx, cmd) in commands.into_iter().enumerate() {
@@ -78,60 +43,49 @@ async fn persist_cluster_policy_with_step_delay(
 
 pub(super) async fn delete_cluster_policy(
     cluster: &HttpApiCluster,
-    id: Uuid,
+    _id: Uuid,
 ) -> Result<(), String> {
-    let cmd = ClusterCommand::Delete {
-        key: policy_item_key(id),
-    };
-    cluster
-        .raft
-        .client_write(cmd)
-        .await
-        .map_err(|err| err.to_string())?;
-
-    let mut index = read_cluster_index(&cluster.store)?;
-    index.policies.retain(|meta| meta.id != id);
-    let index_bytes = serde_json::to_vec(&index).map_err(|err| err.to_string())?;
     let cmd = ClusterCommand::Put {
-        key: POLICY_INDEX_KEY.to_vec(),
-        value: index_bytes,
+        key: POLICY_STATE_KEY.to_vec(),
+        value: serde_json::to_vec(&StoredPolicy::default()).map_err(|err| err.to_string())?,
     };
     cluster
         .raft
         .client_write(cmd)
         .await
         .map_err(|err| err.to_string())?;
-
-    if let Ok(Some(active)) = read_cluster_active(&cluster.store) {
-        if active.id == id {
-            let cmd = ClusterCommand::Delete {
-                key: POLICY_ACTIVE_KEY.to_vec(),
-            };
-            cluster
-                .raft
-                .client_write(cmd)
-                .await
-                .map_err(|err| err.to_string())?;
-        }
-    }
-
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(super) fn read_cluster_index(store: &ClusterStore) -> Result<PolicyIndex, String> {
-    let raw = store.get_state_value(POLICY_INDEX_KEY)?;
+    let raw = store.get_state_value(POLICY_STATE_KEY)?;
     match raw {
-        Some(raw) => serde_json::from_slice(&raw).map_err(|err| err.to_string()),
+        Some(raw) => {
+            let _: StoredPolicy = serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
+            Ok(PolicyIndex {
+                policies: vec![PolicyMeta {
+                    id: singleton_policy_id(),
+                    created_at: "1970-01-01T00:00:00Z".to_string(),
+                    name: None,
+                    mode: crate::controlplane::policy_config::PolicyMode::Enforce,
+                }],
+            })
+        }
         None => Ok(PolicyIndex::default()),
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn read_cluster_active(store: &ClusterStore) -> Result<Option<PolicyActive>, String> {
-    let raw = store.get_state_value(POLICY_ACTIVE_KEY)?;
+    let raw = store.get_state_value(POLICY_STATE_KEY)?;
     match raw {
-        Some(raw) => serde_json::from_slice(&raw)
-            .map(Some)
-            .map_err(|err| err.to_string()),
+        Some(raw) => {
+            let _: StoredPolicy = serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
+            Ok(Some(PolicyActive {
+                id: singleton_policy_id(),
+            }))
+        }
         None => Ok(None),
     }
 }

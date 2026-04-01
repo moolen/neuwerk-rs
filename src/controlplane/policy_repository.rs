@@ -7,10 +7,27 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::controlplane::policy_config::{PolicyConfig, PolicyMode};
+use crate::controlplane::policy_config::{PolicyConfig, PolicyMode, PolicyValue};
 
+pub const POLICY_STATE_KEY: &[u8] = b"policy/state";
 pub const POLICY_INDEX_KEY: &[u8] = b"policies/index";
 pub const POLICY_ACTIVE_KEY: &[u8] = b"policies/active";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredPolicy {
+    pub policy: PolicyConfig,
+}
+
+impl Default for StoredPolicy {
+    fn default() -> Self {
+        Self {
+            policy: PolicyConfig {
+                default_policy: Some(PolicyValue::String("deny".to_string())),
+                source_groups: Vec::new(),
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyRecord {
@@ -92,131 +109,91 @@ impl PolicyDiskStore {
     }
 
     pub fn ensure(&self) -> io::Result<()> {
-        fs::create_dir_all(self.base_dir.join("policies"))
+        fs::create_dir_all(&self.base_dir)
+    }
+
+    pub fn read_state(&self) -> io::Result<Option<StoredPolicy>> {
+        read_json(&self.state_path())
+    }
+
+    pub fn write_state(&self, state: &StoredPolicy) -> io::Result<()> {
+        self.ensure()?;
+        let payload = serde_json::to_vec_pretty(state).map_err(to_io_err)?;
+        atomic_write(&self.state_path(), &payload)
+    }
+
+    pub fn load_or_bootstrap_singleton(&self) -> io::Result<StoredPolicy> {
+        if let Some(state) = self.read_state()? {
+            return Ok(state);
+        }
+
+        let state = self
+            .read_legacy_active_state()?
+            .unwrap_or_else(StoredPolicy::default);
+        self.write_state(&state)?;
+        Ok(state)
     }
 
     pub fn write_record(&self, record: &PolicyRecord) -> io::Result<()> {
-        self.ensure()?;
-        let policy_path = self.policy_path(record.id);
-        let payload = serde_json::to_vec_pretty(record).map_err(to_io_err)?;
-        atomic_write(&policy_path, &payload)?;
-
-        let mut index = self.read_index()?;
-        let meta = PolicyMeta::from(record);
-        if let Some(existing) = index.policies.iter_mut().find(|item| item.id == meta.id) {
-            *existing = meta;
-        } else {
-            index.policies.push(meta);
-        }
-        index.policies.sort_by(|a, b| {
-            let ts = a.created_at.cmp(&b.created_at);
-            if ts == std::cmp::Ordering::Equal {
-                a.id.as_bytes().cmp(b.id.as_bytes())
-            } else {
-                ts
-            }
-        });
-        self.write_index(&index)?;
-        Ok(())
+        self.write_state(&StoredPolicy {
+            policy: record.policy.clone(),
+        })
     }
 
     pub fn list_records(&self) -> io::Result<Vec<PolicyRecord>> {
-        let index = self.read_index()?;
-        let mut records = Vec::with_capacity(index.policies.len());
-        for meta in index.policies {
-            let record = self
-                .read_record(meta.id)?
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing policy record"))?;
-            records.push(record);
-        }
-        Ok(records)
+        Ok(vec![compat_record(self.load_or_bootstrap_singleton()?)])
     }
 
-    pub fn delete_record(&self, id: Uuid) -> io::Result<()> {
-        let path = self.policy_path(id);
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err),
-        }
-        let mut index = self.read_index()?;
-        index.policies.retain(|meta| meta.id != id);
-        self.write_index(&index)?;
-        Ok(())
+    pub fn delete_record(&self, _id: Uuid) -> io::Result<()> {
+        self.write_state(&StoredPolicy::default())
     }
 
     pub fn read_record(&self, id: Uuid) -> io::Result<Option<PolicyRecord>> {
-        let path = self.policy_path(id);
-        read_json(&path)
+        if id != singleton_policy_id() {
+            return Ok(None);
+        }
+        Ok(Some(compat_record(self.load_or_bootstrap_singleton()?)))
     }
 
-    pub fn read_record_by_name(&self, name: &str) -> io::Result<Option<PolicyRecord>> {
-        let index = self.read_index()?;
-        let matches: Vec<_> = index
-            .policies
-            .into_iter()
-            .filter(|meta| {
-                meta.name
-                    .as_deref()
-                    .map(|candidate| policy_names_equal(candidate, name))
-                    .unwrap_or(false)
-            })
-            .collect();
-        match matches.as_slice() {
-            [] => Ok(None),
-            [meta] => self.read_record(meta.id),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("duplicate policy name: {}", name.trim()),
-            )),
-        }
+    pub fn read_record_by_name(&self, _name: &str) -> io::Result<Option<PolicyRecord>> {
+        Ok(None)
     }
 
     pub fn name_in_use_by_other_record(
         &self,
-        name: &str,
-        exclude_id: Option<Uuid>,
+        _name: &str,
+        _exclude_id: Option<Uuid>,
     ) -> io::Result<bool> {
-        let index = self.read_index()?;
-        Ok(index.policies.iter().any(|meta| {
-            exclude_id.map(|id| meta.id != id).unwrap_or(true)
-                && meta
-                    .name
-                    .as_deref()
-                    .map(|candidate| policy_names_equal(candidate, name))
-                    .unwrap_or(false)
-        }))
+        Ok(false)
     }
 
     pub fn set_active(&self, id: Option<Uuid>) -> io::Result<()> {
-        let path = self.active_path();
         match id {
-            Some(id) => {
-                let payload = serde_json::to_vec_pretty(&PolicyActive { id }).map_err(to_io_err)?;
-                atomic_write(&path, &payload)
-            }
-            None => match fs::remove_file(path) {
-                Ok(()) => Ok(()),
-                Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-                Err(err) => Err(err),
-            },
+            Some(_) => self.load_or_bootstrap_singleton().map(|_| ()),
+            None => self.write_state(&StoredPolicy::default()),
         }
     }
 
     pub fn active_id(&self) -> io::Result<Option<Uuid>> {
-        let path = self.active_path();
-        let active: Option<PolicyActive> = read_json(&path)?;
-        Ok(active.map(|entry| entry.id))
+        let state = self.read_state()?;
+        if state.is_some() || self.read_legacy_active_state()?.is_some() {
+            return Ok(Some(singleton_policy_id()));
+        }
+        Ok(None)
     }
 
     pub fn read_index(&self) -> io::Result<PolicyIndex> {
-        let path = self.index_path();
-        Ok(read_json(&path)?.unwrap_or_default())
+        let Some(state) = self.read_state()? else {
+            return Ok(PolicyIndex::default());
+        };
+        Ok(PolicyIndex {
+            policies: vec![PolicyMeta::from(&compat_record(state))],
+        })
     }
 
-    fn write_index(&self, index: &PolicyIndex) -> io::Result<()> {
-        let payload = serde_json::to_vec_pretty(index).map_err(to_io_err)?;
-        atomic_write(&self.index_path(), &payload)
+    #[allow(dead_code)]
+    fn write_index(&self, _index: &PolicyIndex) -> io::Result<()> {
+        self.load_or_bootstrap_singleton().map(|_| ())
     }
 
     fn index_path(&self) -> PathBuf {
@@ -230,10 +207,42 @@ impl PolicyDiskStore {
     fn policy_path(&self, id: Uuid) -> PathBuf {
         self.base_dir.join("policies").join(format!("{id}.json"))
     }
+
+    fn state_path(&self) -> PathBuf {
+        self.base_dir.join("policy.json")
+    }
+
+    fn read_legacy_active_state(&self) -> io::Result<Option<StoredPolicy>> {
+        let active: Option<PolicyActive> = read_json(&self.active_path())?;
+        let Some(active) = active else {
+            return Ok(None);
+        };
+        let record: Option<PolicyRecord> = read_json(&self.policy_path(active.id))?;
+        match record {
+            Some(record) if record.mode.is_active() => Ok(Some(StoredPolicy {
+                policy: record.policy,
+            })),
+            _ => Ok(None),
+        }
+    }
 }
 
 pub fn policy_item_key(id: Uuid) -> Vec<u8> {
     format!("policies/item/{id}").into_bytes()
+}
+
+pub fn singleton_policy_id() -> Uuid {
+    Uuid::nil()
+}
+
+fn compat_record(state: StoredPolicy) -> PolicyRecord {
+    PolicyRecord {
+        id: singleton_policy_id(),
+        created_at: "1970-01-01T00:00:00Z".to_string(),
+        name: None,
+        mode: PolicyMode::Enforce,
+        policy: state.policy,
+    }
 }
 
 fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
@@ -292,6 +301,16 @@ default_policy: deny
             Some("test-policy".to_string()),
         )
         .unwrap()
+    }
+
+    fn write_legacy_record(store: &PolicyDiskStore, record: &PolicyRecord) {
+        store.ensure().unwrap();
+        fs::create_dir_all(store.policy_path(record.id).parent().unwrap()).unwrap();
+        fs::write(
+            store.policy_path(record.id),
+            serde_json::to_vec_pretty(record).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -488,5 +507,72 @@ default_policy: deny
             Some(crate::controlplane::policy_config::PolicyValue::String(ref value))
                 if value == "deny"
         ));
+    }
+
+    #[test]
+    fn migrate_active_legacy_policy_to_singleton() {
+        let dir = TempDir::new().unwrap();
+        let store = PolicyDiskStore::new(dir.path().to_path_buf());
+        let record = sample_record();
+        write_legacy_record(&store, &record);
+        fs::write(
+            store.active_path(),
+            serde_json::to_vec_pretty(&PolicyActive { id: record.id }).unwrap(),
+        )
+        .unwrap();
+
+        let state = store.load_or_bootstrap_singleton().unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&state.policy).unwrap(),
+            serde_json::to_value(&record.policy).unwrap()
+        );
+        let persisted = store.read_state().unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&persisted.policy).unwrap(),
+            serde_json::to_value(&record.policy).unwrap()
+        );
+    }
+
+    #[test]
+    fn inactive_legacy_records_are_ignored_when_bootstrapping_singleton() {
+        let dir = TempDir::new().unwrap();
+        let store = PolicyDiskStore::new(dir.path().to_path_buf());
+        let record = PolicyRecord::new(PolicyMode::Disabled, sample_policy(), None).unwrap();
+        write_legacy_record(&store, &record);
+        fs::write(
+            store.active_path(),
+            serde_json::to_vec_pretty(&PolicyActive { id: record.id }).unwrap(),
+        )
+        .unwrap();
+
+        let state = store.load_or_bootstrap_singleton().unwrap();
+
+        assert_ne!(
+            serde_json::to_value(&state.policy).unwrap(),
+            serde_json::to_value(&record.policy).unwrap()
+        );
+        assert!(matches!(
+            state.policy.default_policy,
+            Some(crate::controlplane::policy_config::PolicyValue::String(ref value))
+                if value == "deny"
+        ));
+        assert!(state.policy.source_groups.is_empty());
+    }
+
+    #[test]
+    fn bootstrap_singleton_policy_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let store = PolicyDiskStore::new(dir.path().to_path_buf());
+
+        let state = store.load_or_bootstrap_singleton().unwrap();
+
+        assert!(matches!(
+            state.policy.default_policy,
+            Some(crate::controlplane::policy_config::PolicyValue::String(ref value))
+                if value == "deny"
+        ));
+        assert!(state.policy.source_groups.is_empty());
+        assert!(store.read_state().unwrap().is_some());
     }
 }

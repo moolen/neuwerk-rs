@@ -82,8 +82,12 @@ pub(super) fn cluster_migrate_from_local_enforce() -> Result<(), String> {
             return Err("migration did not seed tls intercept ca".to_string());
         }
 
-        wait_for_state_present(&seed.store, POLICY_INDEX_KEY, Duration::from_secs(5)).await?;
-        wait_for_state_present(&seed.store, POLICY_ACTIVE_KEY, Duration::from_secs(5)).await?;
+        wait_for_state_present(
+            &seed.store,
+            crate::controlplane::policy_repository::POLICY_STATE_KEY,
+            Duration::from_secs(5),
+        )
+        .await?;
         wait_for_state_present(
             &seed.store,
             b"auth/service-accounts/index",
@@ -113,7 +117,12 @@ pub(super) fn cluster_migrate_from_local_enforce() -> Result<(), String> {
             .map_err(|err| format!("joiner cluster start failed: {err}"))?;
         let joiner_id = load_node_id(&joiner_dir)?;
         wait_for_voter(&seed.raft, joiner_id, Duration::from_secs(5)).await?;
-        wait_for_state_present(&joiner.store, POLICY_INDEX_KEY, Duration::from_secs(5)).await?;
+        wait_for_state_present(
+            &joiner.store,
+            crate::controlplane::policy_repository::POLICY_STATE_KEY,
+            Duration::from_secs(5),
+        )
+        .await?;
         wait_for_state_present(
             &joiner.store,
             b"auth/service-accounts/index",
@@ -228,16 +237,22 @@ pub(super) fn cluster_migrate_from_local_audit() -> Result<(), String> {
             return Err("migration did not run".to_string());
         }
 
-        wait_for_state_present(&seed.store, POLICY_INDEX_KEY, Duration::from_secs(5)).await?;
-        wait_for_state_present(&seed.store, POLICY_ACTIVE_KEY, Duration::from_secs(5)).await?;
-        let active_raw = seed
+        wait_for_state_present(
+            &seed.store,
+            crate::controlplane::policy_repository::POLICY_STATE_KEY,
+            Duration::from_secs(5),
+        )
+        .await?;
+        let state_raw = seed
             .store
-            .get_state_value(POLICY_ACTIVE_KEY)?
-            .ok_or_else(|| "missing cluster active policy".to_string())?;
-        let active: crate::controlplane::policy_repository::PolicyActive =
-            serde_json::from_slice(&active_raw).map_err(|err| err.to_string())?;
-        if active.id != record.id {
-            return Err("audit policy should be active after migration".to_string());
+            .get_state_value(crate::controlplane::policy_repository::POLICY_STATE_KEY)?
+            .ok_or_else(|| "missing cluster singleton policy".to_string())?;
+        let state: crate::controlplane::policy_repository::StoredPolicy =
+            serde_json::from_slice(&state_raw).map_err(|err| err.to_string())?;
+        if serde_json::to_value(&state.policy).map_err(|err| err.to_string())?
+            != serde_json::to_value(&record.policy).map_err(|err| err.to_string())?
+        {
+            return Err("audit policy should be migrated into singleton state".to_string());
         }
 
         seed.shutdown().await;
@@ -432,23 +447,16 @@ pub(super) fn cluster_migrate_force_overwrites() -> Result<(), String> {
             return Err("force migration did not run".to_string());
         }
 
-        let cluster_index_raw = seed
+        let cluster_state_raw = seed
             .store
-            .get_state_value(POLICY_INDEX_KEY)?
-            .ok_or_else(|| "missing cluster policy index".to_string())?;
-        let cluster_index: crate::controlplane::policy_repository::PolicyIndex =
-            serde_json::from_slice(&cluster_index_raw).map_err(|err| err.to_string())?;
-        if cluster_index.policies.len() != 1 || cluster_index.policies[0].id != record_b.id {
-            return Err("force migration did not replace policy index".to_string());
-        }
-        let active_raw = seed
-            .store
-            .get_state_value(POLICY_ACTIVE_KEY)?
-            .ok_or_else(|| "missing cluster active policy".to_string())?;
-        let active: crate::controlplane::policy_repository::PolicyActive =
-            serde_json::from_slice(&active_raw).map_err(|err| err.to_string())?;
-        if active.id != record_b.id {
-            return Err("force migration did not update active policy".to_string());
+            .get_state_value(crate::controlplane::policy_repository::POLICY_STATE_KEY)?
+            .ok_or_else(|| "missing cluster singleton policy".to_string())?;
+        let cluster_state: crate::controlplane::policy_repository::StoredPolicy =
+            serde_json::from_slice(&cluster_state_raw).map_err(|err| err.to_string())?;
+        if serde_json::to_value(&cluster_state.policy).map_err(|err| err.to_string())?
+            != serde_json::to_value(&record_b.policy).map_err(|err| err.to_string())?
+        {
+            return Err("force migration did not replace singleton policy".to_string());
         }
 
         let local_keyset =

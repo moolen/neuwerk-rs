@@ -11,8 +11,7 @@ use neuwerk::controlplane::api_auth::{list_summaries, load_keyset_from_file, Api
 use neuwerk::controlplane::audit::AuditFinding;
 use neuwerk::controlplane::cluster::store::{ClusterStore, ClusterStoreMetadata};
 use neuwerk::controlplane::integrations::IntegrationKind;
-use neuwerk::controlplane::policy_config::PolicyMode;
-use neuwerk::controlplane::policy_repository::{PolicyActive, PolicyIndex, PolicyMeta};
+use neuwerk::controlplane::policy_repository::{StoredPolicy, POLICY_STATE_KEY};
 use neuwerk::controlplane::service_accounts::{
     ServiceAccount, ServiceAccountDiskStore, ServiceAccountStatus, TokenMeta, TokenStatus,
 };
@@ -70,9 +69,7 @@ struct SysdumpStateSummary {
     mode_guess: String,
     node_id: Option<String>,
     local_policy_count: usize,
-    local_active_policy_id: Option<String>,
     cluster_policy_count: Option<usize>,
-    cluster_active_policy_id: Option<String>,
     local_service_account_count: usize,
     local_token_count: usize,
     cluster_service_account_count: Option<usize>,
@@ -92,17 +89,9 @@ struct DetailedPolicySummary {
 
 #[derive(Debug, Serialize)]
 struct PolicyStoreSummary {
-    count: usize,
-    active_policy_id: Option<String>,
-    policies: Vec<PolicyMetaSummary>,
-}
-
-#[derive(Debug, Serialize)]
-struct PolicyMetaSummary {
-    id: String,
-    created_at: String,
-    name: Option<String>,
-    mode: PolicyMode,
+    present: bool,
+    default_policy: Option<String>,
+    source_group_count: usize,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -268,8 +257,6 @@ const API_AUTH_FILENAME: &str = "api-auth.json";
 const HTTP_CA_CERT_FILENAME: &str = "ca.crt";
 const INTERCEPT_CA_CERT_FILENAME: &str = "intercept-ca.crt";
 
-const POLICY_INDEX_KEY: &[u8] = b"policies/index";
-const POLICY_ACTIVE_KEY: &[u8] = b"policies/active";
 const SERVICE_ACCOUNTS_INDEX_KEY: &[u8] = b"auth/service-accounts/index";
 const INTEGRATIONS_INDEX_KEY: &[u8] = b"integrations/index";
 const API_KEYS_KEY: &[u8] = b"auth/api_keys";
@@ -373,16 +360,15 @@ async fn build_local_sysdump_archive_with_paths_and_time(
     state.metrics_success_count = metrics.attempts.iter().filter(|item| item.success).count();
 
     let policies = collect_policy_summaries(&paths, &mut manifest);
-    state.local_policy_count = policies.local.as_ref().map(|item| item.count).unwrap_or(0);
-    state.local_active_policy_id = policies
+    state.local_policy_count = policies
         .local
         .as_ref()
-        .and_then(|item| item.active_policy_id.clone());
-    state.cluster_policy_count = policies.cluster.as_ref().map(|item| item.count);
-    state.cluster_active_policy_id = policies
+        .map(|item| usize::from(item.present))
+        .unwrap_or(0);
+    state.cluster_policy_count = policies
         .cluster
         .as_ref()
-        .and_then(|item| item.active_policy_id.clone());
+        .map(|item| usize::from(item.present));
 
     let service_accounts = collect_service_account_summaries(&paths, &mut manifest);
     state.local_service_account_count = service_accounts
@@ -944,37 +930,25 @@ fn collect_local_policy_summary(path: &Path) -> Result<Option<PolicyStoreSummary
     if !path.exists() {
         return Ok(None);
     }
-    let index: PolicyIndex = read_json_file(&path.join("index.json"))?.unwrap_or_default();
-    let active: Option<PolicyActive> = read_json_file(&path.join("active.json"))?;
-    Ok(Some(PolicyStoreSummary {
-        count: index.policies.len(),
-        active_policy_id: active.map(|item| item.id.to_string()),
-        policies: policy_meta_summaries(index.policies),
-    }))
+    let state: Option<StoredPolicy> = read_json_file(&path.join("policy.json"))?;
+    Ok(state.map(policy_store_summary_from_state))
 }
 
 fn collect_cluster_policy_summary(
     store: &ClusterStore,
 ) -> Result<Option<PolicyStoreSummary>, String> {
-    let index: PolicyIndex = read_state_json(store, POLICY_INDEX_KEY)?.unwrap_or_default();
-    let active: Option<PolicyActive> = read_state_json(store, POLICY_ACTIVE_KEY)?;
-    Ok(Some(PolicyStoreSummary {
-        count: index.policies.len(),
-        active_policy_id: active.map(|item| item.id.to_string()),
-        policies: policy_meta_summaries(index.policies),
-    }))
+    let state: Option<StoredPolicy> = read_state_json(store, POLICY_STATE_KEY)?;
+    Ok(state.map(policy_store_summary_from_state))
 }
 
-fn policy_meta_summaries(items: Vec<PolicyMeta>) -> Vec<PolicyMetaSummary> {
-    items
-        .into_iter()
-        .map(|item| PolicyMetaSummary {
-            id: item.id.to_string(),
-            created_at: item.created_at,
-            name: item.name,
-            mode: item.mode,
-        })
-        .collect()
+fn policy_store_summary_from_state(state: StoredPolicy) -> PolicyStoreSummary {
+    PolicyStoreSummary {
+        present: true,
+        default_policy: state.policy.default_policy.and_then(|value| match value {
+            neuwerk::controlplane::policy_config::PolicyValue::String(value) => Some(value),
+        }),
+        source_group_count: state.policy.source_groups.len(),
+    }
 }
 
 fn collect_service_account_summaries(
