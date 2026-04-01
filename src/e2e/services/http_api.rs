@@ -710,6 +710,28 @@ pub async fn http_api_post_raw(
     Ok(resp.status())
 }
 
+pub async fn http_api_put_raw(
+    addr: SocketAddr,
+    tls_dir: &Path,
+    path: &str,
+    body: Vec<u8>,
+    auth_token: Option<&str>,
+) -> Result<reqwest::StatusCode, String> {
+    let client = http_api_client(tls_dir)?;
+    let mut req = client
+        .put(format!("https://{addr}{path}"))
+        .header("content-type", "application/json")
+        .body(body);
+    if let Some(token) = auth_token {
+        req = req.bearer_auth(token);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("api put request failed: {e}"))?;
+    Ok(resp.status())
+}
+
 pub async fn http_stream(
     addr: SocketAddr,
     host: &str,

@@ -34,8 +34,8 @@ mod upstream;
 
 pub use dns::{dns_query, dns_query_response, dns_query_response_tcp, DnsResponse};
 pub use http_api::{
-    http_api_client_with_cookie, http_api_health, http_api_post_raw, http_api_status,
-    http_auth_token_login, http_auth_whoami, http_create_service_account,
+    http_api_client_with_cookie, http_api_health, http_api_post_raw, http_api_put_raw,
+    http_api_status, http_auth_token_login, http_auth_whoami, http_create_service_account,
     http_create_service_account_token, http_delete_policy, http_delete_service_account,
     http_delete_tls_intercept_ca, http_get, http_get_audit_findings, http_get_dns_cache,
     http_get_path, http_get_policy, http_get_policy_by_name, http_get_stats, http_list_policies,

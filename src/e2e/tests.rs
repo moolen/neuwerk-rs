@@ -29,10 +29,10 @@ use crate::dataplane::{
 };
 use crate::e2e::services::{
     dns_query, dns_query_response, dns_query_response_tcp, http_api_client_with_cookie,
-    http_api_health, http_api_post_raw, http_api_status, http_auth_token_login, http_auth_whoami,
-    http_create_service_account, http_create_service_account_token, http_delete_policy,
-    http_delete_service_account, http_get, http_get_audit_findings, http_get_dns_cache,
-    http_get_path, http_get_policy, http_get_stats, http_list_policies,
+    http_api_health, http_api_post_raw, http_api_put_raw, http_api_status, http_auth_token_login,
+    http_auth_whoami, http_create_service_account, http_create_service_account_token,
+    http_delete_policy, http_delete_service_account, http_get, http_get_audit_findings,
+    http_get_dns_cache, http_get_path, http_get_policy, http_get_stats, http_list_policies,
     http_list_service_account_tokens, http_list_service_accounts,
     http_put_tls_intercept_ca_from_http_ca, http_revoke_service_account_token, http_set_policy,
     http_stream, http_stream_path, http_update_policy, http_update_service_account,

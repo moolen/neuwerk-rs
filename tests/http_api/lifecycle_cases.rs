@@ -101,10 +101,7 @@ async fn http_api_get_singleton_policy() {
 
     let old_routes = [
         format!("https://{bind_addr}/api/v1/policies"),
-        format!(
-            "https://{bind_addr}/api/v1/policies/{}",
-            Uuid::new_v4()
-        ),
+        format!("https://{bind_addr}/api/v1/policies/{}", Uuid::new_v4()),
         format!("https://{bind_addr}/api/v1/policies/by-name/prod-default"),
     ];
     for path in old_routes {
@@ -432,37 +429,34 @@ async fn http_api_integrations_lifecycle_and_policy_ref_validation() {
     assert!(updated.get("service_account_token").is_none());
 
     let missing_ref_policy = serde_json::json!({
-        "mode": "enforce",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "pods",
-                    "mode": "enforce",
-                    "sources": {
-                        "kubernetes": [
-                            {
-                                "integration": "missing",
-                                "pod_selector": {
-                                    "namespace": "default",
-                                    "match_labels": { "app": "web" }
-                                }
-                            }
-                        ]
-                    },
-                    "rules": [
+        "default_policy": "deny",
+        "source_groups": [
+            {
+                "id": "pods",
+                "mode": "enforce",
+                "sources": {
+                    "kubernetes": [
                         {
-                            "id": "deny-all",
-                            "action": "deny",
-                            "match": {}
+                            "integration": "missing",
+                            "pod_selector": {
+                                "namespace": "default",
+                                "match_labels": { "app": "web" }
+                            }
                         }
                     ]
-                }
-            ]
-        }
+                },
+                "rules": [
+                    {
+                        "id": "deny-all",
+                        "action": "deny",
+                        "match": {}
+                    }
+                ]
+            }
+        ]
     });
     let resp = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
         .json(&missing_ref_policy)
         .send()
@@ -473,75 +467,69 @@ async fn http_api_integrations_lifecycle_and_policy_ref_validation() {
     assert!(body.contains("unknown kubernetes integration"));
 
     let valid_policy = serde_json::json!({
-        "mode": "enforce",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "pods",
-                    "mode": "enforce",
-                    "sources": {
-                        "kubernetes": [
-                            {
-                                "integration": "prod-k8s",
-                                "pod_selector": {
-                                    "namespace": "default",
-                                    "match_labels": { "app": "web" }
-                                }
-                            }
-                        ]
-                    },
-                    "rules": [
+        "default_policy": "deny",
+        "source_groups": [
+            {
+                "id": "pods",
+                "mode": "enforce",
+                "sources": {
+                    "kubernetes": [
                         {
-                            "id": "allow-https",
-                            "action": "allow",
-                            "match": {
-                                "proto": "tcp",
-                                "dst_ports": [443]
+                            "integration": "prod-k8s",
+                            "pod_selector": {
+                                "namespace": "default",
+                                "match_labels": { "app": "web" }
                             }
                         }
                     ]
-                }
-            ]
-        }
+                },
+                "rules": [
+                    {
+                        "id": "allow-https",
+                        "action": "allow",
+                        "match": {
+                            "proto": "tcp",
+                            "dst_ports": [443]
+                        }
+                    }
+                ]
+            }
+        ]
     });
     let resp = client
-        .post(format!("https://{bind_addr}/api/v1/policies"))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
         .json(&valid_policy)
         .send()
         .await
         .unwrap();
     assert!(resp.status().is_success());
-    let created_policy: PolicyRecord = resp.json().await.unwrap();
+    let created_policy: neuwerk::controlplane::policy_config::PolicyConfig =
+        resp.json().await.unwrap();
+    assert_eq!(created_policy.source_groups.len(), 1);
+    assert_eq!(created_policy.source_groups[0].id, "pods");
 
     let bad_update = serde_json::json!({
-        "mode": "enforce",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": [
-                {
-                    "id": "pods",
-                    "mode": "enforce",
-                    "sources": {
-                        "kubernetes": [
-                            {
-                                "integration": "missing",
-                                "node_selector": {
-                                    "match_labels": { "node-role.kubernetes.io/control-plane": "true" }
-                                }
+        "default_policy": "deny",
+        "source_groups": [
+            {
+                "id": "pods",
+                "mode": "enforce",
+                "sources": {
+                    "kubernetes": [
+                        {
+                            "integration": "missing",
+                            "node_selector": {
+                                "match_labels": { "node-role.kubernetes.io/control-plane": "true" }
                             }
-                        ]
-                    }
+                        }
+                    ]
                 }
-            ]
-        }
+            }
+        ]
     });
     let resp = client
-        .put(format!(
-            "https://{bind_addr}/api/v1/policies/{}",
-            created_policy.id
-        ))
+        .put(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
         .json(&bad_update)
         .send()
@@ -750,15 +738,18 @@ source_groups:
         .await
         .unwrap();
     let listed = client
-        .get(format!("https://{bind_addr}/api/v1/policies"))
+        .get(format!("https://{bind_addr}/api/v1/policy"))
         .bearer_auth(&token.token)
         .send()
         .await
         .unwrap();
     assert!(listed.status().is_success());
-    let listed: Vec<PolicyRecord> = listed.json().await.unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].id, seeded_policy.id);
+    let listed: neuwerk::controlplane::policy_config::PolicyConfig = listed.json().await.unwrap();
+    assert_eq!(listed.source_groups.len(), 1);
+    assert_eq!(
+        listed.source_groups[0].id,
+        seeded_policy.policy.source_groups[0].id
+    );
 
     restarted_shutdown.shutdown();
     tokio::time::timeout(Duration::from_secs(2), restarted)

@@ -2,12 +2,17 @@ use super::*;
 
 fn service_account_policy_payload(name: &str) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&serde_json::json!({
-        "name": name,
-        "mode": "audit",
-        "policy": {
-            "default_policy": "deny",
-            "source_groups": []
-        }
+        "default_policy": "deny",
+        "source_groups": [
+            {
+                "id": name,
+                "mode": "audit",
+                "sources": {
+                    "cidrs": ["10.0.0.0/24"]
+                },
+                "rules": []
+            }
+        ]
     }))
     .map_err(|err| format!("policy payload encode failed: {err}"))
 }
@@ -72,11 +77,16 @@ pub(super) fn api_auth_required(cfg: &TopologyConfig) -> Result<(), String> {
         if !health.is_success() {
             return Err(format!("unexpected health status: {health}"));
         }
-        let policies = http_api_status(api_addr, &tls_dir, "/api/v1/policies", None).await?;
-        if policies != reqwest::StatusCode::UNAUTHORIZED {
-            return Err(format!("expected unauthorized, got {policies}"));
+        let policy = http_api_status(api_addr, &tls_dir, "/api/v1/policy", None).await?;
+        if policy != reqwest::StatusCode::UNAUTHORIZED {
+            return Err(format!("expected unauthorized, got {policy}"));
         }
-        let _ = http_list_policies(api_addr, &tls_dir, Some(&token)).await?;
+        let policy = http_api_status(api_addr, &tls_dir, "/api/v1/policy", Some(&token)).await?;
+        if !policy.is_success() {
+            return Err(format!(
+                "expected authorized singleton policy read, got {policy}"
+            ));
+        }
         Ok(())
     })
 }
@@ -170,8 +180,7 @@ pub(super) fn api_auth_rejects_expired(cfg: &TopologyConfig) -> Result<(), Strin
         .map_err(|e| format!("tokio runtime error: {e}"))?;
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
-        let status =
-            http_api_status(api_addr, &tls_dir, "/api/v1/policies", Some(&expired)).await?;
+        let status = http_api_status(api_addr, &tls_dir, "/api/v1/policy", Some(&expired)).await?;
         if status != reqwest::StatusCode::UNAUTHORIZED {
             return Err(format!("expected unauthorized, got {status}"));
         }
@@ -251,7 +260,7 @@ pub(super) fn api_auth_rotation_keeps_old_tokens(cfg: &TopologyConfig) -> Result
             .mint_token("e2e-rotate-old", None, Some(&active_kid), None)
             .await?;
         let status =
-            http_api_status(api_addr, &tls_dir, "/api/v1/policies", Some(&old_token)).await?;
+            http_api_status(api_addr, &tls_dir, "/api/v1/policy", Some(&old_token)).await?;
         if !status.is_success() {
             return Err(format!("expected ok before rotation, got {status}"));
         }
@@ -259,7 +268,7 @@ pub(super) fn api_auth_rotation_keeps_old_tokens(cfg: &TopologyConfig) -> Result
         let _ = client.rotate_key().await?;
 
         let status =
-            http_api_status(api_addr, &tls_dir, "/api/v1/policies", Some(&old_token)).await?;
+            http_api_status(api_addr, &tls_dir, "/api/v1/policy", Some(&old_token)).await?;
         if !status.is_success() {
             return Err(format!("old token rejected after rotation: {status}"));
         }
@@ -268,7 +277,7 @@ pub(super) fn api_auth_rotation_keeps_old_tokens(cfg: &TopologyConfig) -> Result
             .mint_token("e2e-rotate-new", None, None, None)
             .await?;
         let status =
-            http_api_status(api_addr, &tls_dir, "/api/v1/policies", Some(&new_token)).await?;
+            http_api_status(api_addr, &tls_dir, "/api/v1/policy", Some(&new_token)).await?;
         if !status.is_success() {
             return Err(format!("new token rejected after rotation: {status}"));
         }
@@ -317,7 +326,7 @@ pub(super) fn api_auth_retire_revokes_old_kid(cfg: &TopologyConfig) -> Result<()
             .mint_token("e2e-retire-old", None, Some(&target_kid), None)
             .await?;
         let status =
-            http_api_status(api_addr, &tls_dir, "/api/v1/policies", Some(&old_token)).await?;
+            http_api_status(api_addr, &tls_dir, "/api/v1/policy", Some(&old_token)).await?;
         if !status.is_success() {
             return Err(format!("expected ok before retire, got {status}"));
         }
@@ -325,7 +334,7 @@ pub(super) fn api_auth_retire_revokes_old_kid(cfg: &TopologyConfig) -> Result<()
         client.retire_key(&target_kid).await?;
 
         let status =
-            http_api_status(api_addr, &tls_dir, "/api/v1/policies", Some(&old_token)).await?;
+            http_api_status(api_addr, &tls_dir, "/api/v1/policy", Some(&old_token)).await?;
         if status != reqwest::StatusCode::UNAUTHORIZED {
             return Err(format!("expected unauthorized after retire, got {status}"));
         }
@@ -334,7 +343,7 @@ pub(super) fn api_auth_retire_revokes_old_kid(cfg: &TopologyConfig) -> Result<()
             .mint_token("e2e-retire-new", None, None, None)
             .await?;
         let status =
-            http_api_status(api_addr, &tls_dir, "/api/v1/policies", Some(&new_token)).await?;
+            http_api_status(api_addr, &tls_dir, "/api/v1/policy", Some(&new_token)).await?;
         if !status.is_success() {
             return Err(format!("new token rejected after retire: {status}"));
         }
@@ -419,7 +428,7 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
         let status = http_api_status(
             api_addr,
             &tls_dir,
-            "/api/v1/policies",
+            "/api/v1/policy",
             Some(&token_resp.token),
         )
         .await?;
@@ -444,15 +453,8 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
         let readonly_mutation = http_api_post_raw(
             api_addr,
             &tls_dir,
-            "/api/v1/policies",
-            serde_json::to_vec(&serde_json::json!({
-                "mode": "audit",
-                "policy": {
-                    "default_policy": "deny",
-                    "source_groups": []
-                }
-            }))
-            .map_err(|e| e.to_string())?,
+            "/api/v1/policy",
+            service_account_policy_payload("readonly-policy-mutation")?,
             Some(&readonly_token_resp.token),
         )
         .await?;
@@ -521,7 +523,7 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
         let status = http_api_status(
             api_addr,
             &tls_dir,
-            "/api/v1/policies",
+            "/api/v1/policy",
             Some(&token_resp.token),
         )
         .await?;
@@ -547,7 +549,7 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
         let status = http_api_status(
             api_addr,
             &tls_dir,
-            "/api/v1/policies",
+            "/api/v1/policy",
             Some(&eternal_resp.token),
         )
         .await?;
@@ -575,7 +577,7 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
         let status = http_api_status(
             api_addr,
             &tls_dir,
-            "/api/v1/policies",
+            "/api/v1/policy",
             Some(&eternal_resp.token),
         )
         .await?;
@@ -637,7 +639,7 @@ pub(super) fn api_service_accounts_lifecycle(cfg: &TopologyConfig) -> Result<(),
         let status = http_api_status(
             api_addr,
             &tls_dir,
-            "/api/v1/policies",
+            "/api/v1/policy",
             Some(&eternal_resp.token),
         )
         .await?;
@@ -676,10 +678,10 @@ pub(super) fn api_service_account_admin_token_allows_mutation(
         let policy_name = "e2e-sa-admin-mutation";
         let policy_body = service_account_policy_payload(policy_name)?;
 
-        let status = http_api_post_raw(
+        let status = http_api_put_raw(
             api_addr,
             &tls_dir,
-            "/api/v1/policies",
+            "/api/v1/policy",
             policy_body,
             Some(&service_token),
         )
@@ -691,31 +693,18 @@ pub(super) fn api_service_account_admin_token_allows_mutation(
         }
 
         let deadline = Instant::now() + Duration::from_secs(3);
-        let created_policy_id = loop {
-            let policies = http_list_policies(api_addr, &tls_dir, Some(&service_token)).await?;
-            if let Some(policy) = policies
-                .iter()
-                .find(|policy| policy.name.as_deref() == Some(policy_name))
-            {
-                break policy.id.to_string();
+        loop {
+            let status =
+                http_api_status(api_addr, &tls_dir, "/api/v1/policy", Some(&service_token)).await?;
+            if status.is_success() {
+                break;
             }
             if Instant::now() >= deadline {
-                return Err("mutated policy not visible via service-account token".to_string());
+                return Err(
+                    "mutated singleton policy not visible via service-account token".to_string(),
+                );
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
-        };
-
-        let delete_status = http_delete_policy(
-            api_addr,
-            &tls_dir,
-            &created_policy_id,
-            Some(&bootstrap_token),
-        )
-        .await?;
-        if delete_status != reqwest::StatusCode::NO_CONTENT {
-            return Err(format!(
-                "unexpected cleanup delete status after admin mutation: {delete_status}"
-            ));
         }
 
         let account_delete =
@@ -745,10 +734,10 @@ pub(super) fn api_service_account_rejects_malformed_and_revoked_tokens(
     rt.block_on(async {
         http_wait_for_health(api_addr, &tls_dir, Duration::from_secs(5)).await?;
 
-        let malformed_status = http_api_post_raw(
+        let malformed_status = http_api_put_raw(
             api_addr,
             &tls_dir,
-            "/api/v1/policies",
+            "/api/v1/policy",
             service_account_policy_payload("e2e-sa-malformed-token")?,
             Some("definitely-not-a-jwt"),
         )
@@ -782,10 +771,10 @@ pub(super) fn api_service_account_rejects_malformed_and_revoked_tokens(
             ));
         }
 
-        let revoked_status = http_api_post_raw(
+        let revoked_status = http_api_put_raw(
             api_addr,
             &tls_dir,
-            "/api/v1/policies",
+            "/api/v1/policy",
             service_account_policy_payload("e2e-sa-revoked-token")?,
             Some(&service_token),
         )
@@ -844,10 +833,10 @@ pub(super) fn api_service_account_readonly_token_cannot_modify_resource(
         )
         .await?;
 
-        let status = http_api_post_raw(
+        let status = http_api_put_raw(
             api_addr,
             &tls_dir,
-            "/api/v1/policies",
+            "/api/v1/policy",
             service_account_policy_payload("e2e-sa-readonly-token")?,
             Some(&readonly_token.token),
         )
