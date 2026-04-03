@@ -440,13 +440,26 @@ fn keyset_equivalent(left: &ApiKeySet, right: &ApiKeySet) -> bool {
 fn verify_policies(store: &ClusterStore, cfg: &MigrationConfig) -> Result<(), String> {
     let local_state = cfg
         .local_policy_store
-        .load_or_bootstrap_singleton()
+        .read_state()
         .map_err(|err| format!("read local policy failed: {err}"))?;
     let cluster_state_raw = store
         .get_state_value(POLICY_STATE_KEY)?
         .ok_or_else(|| "cluster singleton policy missing".to_string())?;
     let cluster_state: StoredPolicy =
         serde_json::from_slice(&cluster_state_raw).map_err(|err| err.to_string())?;
+    let local_id = local_state.as_ref().map(|state| state.record().id);
+    let cluster_id = cluster_state.record().id;
+    if local_id != Some(cluster_id) {
+        return Err("policy index mismatch between local and cluster".to_string());
+    }
+    if local_state.as_ref().and_then(StoredPolicy::active_id).map(|id| id.to_string())
+        != cluster_state.active_id().map(|id| id.to_string())
+    {
+        return Err("active policy mismatch between local and cluster".to_string());
+    }
+    let Some(local_state) = local_state else {
+        return Err("policy index mismatch between local and cluster".to_string());
+    };
     if serde_json::to_value(&local_state.policy).map_err(|err| err.to_string())?
         != serde_json::to_value(&cluster_state.policy).map_err(|err| err.to_string())?
     {
@@ -740,5 +753,33 @@ source_groups:
             .unwrap();
 
         verify_state(&store, &cfg).unwrap();
+    }
+
+    #[tokio::test]
+    async fn verify_policies_reports_missing_local_singleton_without_bootstrapping() {
+        let dir = TempDir::new().unwrap();
+        let cfg = migration_config(&dir);
+        let mut store = ClusterStore::open(dir.path().join("cluster-store")).unwrap();
+        let state = StoredPolicy::from_policy(sample_policy());
+
+        cfg.local_policy_store.write_state(&state).unwrap();
+        cfg.local_policy_store
+            .delete_record(state.record().id)
+            .unwrap();
+
+        store
+            .apply(vec![test_entry(
+                1,
+                ClusterCommand::Put {
+                    key: POLICY_STATE_KEY.to_vec(),
+                    value: serde_json::to_vec(&state).unwrap(),
+                },
+            )])
+            .await
+            .unwrap();
+
+        let err = verify_policies(&store, &cfg).unwrap_err();
+        assert!(err.contains("policy index mismatch"), "unexpected error: {err}");
+        assert!(cfg.local_policy_store.read_state().unwrap().is_none());
     }
 }
