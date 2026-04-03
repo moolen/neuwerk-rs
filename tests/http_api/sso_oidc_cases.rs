@@ -81,6 +81,7 @@ async fn http_api_sso_oidc_dex_full_flow() {
         token_path: dir.path().join("token.json"),
         external_url: Some(format!("https://{bind_addr}")),
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -220,6 +221,7 @@ async fn http_api_sso_state_tamper_is_denied() {
         token_path: dir.path().join("token.json"),
         external_url: Some(format!("https://{bind_addr}")),
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };

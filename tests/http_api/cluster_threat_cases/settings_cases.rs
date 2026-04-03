@@ -25,6 +25,7 @@ async fn http_api_threat_settings_round_trip_local_state() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -149,6 +150,7 @@ async fn http_api_threat_settings_round_trip_cluster_state() {
         token_path: token_path.clone(),
         external_url: None,
         cluster_tls_dir: Some(cluster_dir.join("tls")),
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };

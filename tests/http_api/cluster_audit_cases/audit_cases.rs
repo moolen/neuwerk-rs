@@ -43,6 +43,7 @@ async fn http_api_audit_findings_local_returns_deduped_items() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -180,6 +181,7 @@ async fn http_api_audit_findings_cluster_aggregates_and_returns_partial() {
         token_path: seed_token.clone(),
         external_url: None,
         cluster_tls_dir: Some(seed_dir.path().join("tls")),
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -197,6 +199,7 @@ async fn http_api_audit_findings_cluster_aggregates_and_returns_partial() {
         token_path: join_token.clone(),
         external_url: None,
         cluster_tls_dir: Some(join_dir.path().join("tls")),
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -411,6 +414,7 @@ async fn http_api_audit_findings_persist_across_restart() {
         token_path: token_path.clone(),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };

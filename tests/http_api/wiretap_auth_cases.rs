@@ -27,6 +27,7 @@ async fn http_api_wiretap_stream_local_cookie_auth_emits_events() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -173,6 +174,7 @@ async fn http_api_wiretap_stream_local_query_token_is_rejected() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -250,6 +252,7 @@ async fn http_api_query_token_auth_is_wiretap_only() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };

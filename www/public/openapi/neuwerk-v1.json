@@ -163,6 +163,170 @@
         ]
       }
     },
+    "/api/v1/cluster/members": {
+      "get": {
+        "tags": [
+          "Diagnostics"
+        ],
+        "operationId": "list_cluster_members",
+        "responses": {
+          "200": {
+            "description": "Cluster membership",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterMembersResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Cluster mode required or leader unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/cluster/members/voters": {
+      "put": {
+        "tags": [
+          "Diagnostics"
+        ],
+        "operationId": "replace_cluster_voters",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceClusterVotersRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Voter set updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterVotersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Cluster mode required or leader unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/cluster/members/{node_id}/remove": {
+      "post": {
+        "tags": [
+          "Diagnostics"
+        ],
+        "operationId": "remove_cluster_member",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveClusterMemberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Member removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterVotersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Cluster mode required or leader unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
     "/api/v1/dns-cache": {
       "get": {
         "tags": [
@@ -2028,6 +2192,65 @@
           }
         }
       },
+      "ClusterMemberView": {
+        "type": "object",
+        "required": [
+          "node_id",
+          "addr",
+          "role",
+          "is_voter",
+          "cloud_status"
+        ],
+        "properties": {
+          "addr": {
+            "type": "string"
+          },
+          "auto_evict_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cloud_status": {
+            "type": "string"
+          },
+          "drain_state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_voter": {
+            "type": "boolean"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "termination_event_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ClusterMembersResponse": {
+        "type": "object",
+        "required": [
+          "members"
+        ],
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClusterMemberView"
+            }
+          }
+        }
+      },
       "ClusterNodeCatchup": {
         "type": "object",
         "required": [
@@ -2117,6 +2340,20 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ClusterNodeCatchup"
+            }
+          }
+        }
+      },
+      "ClusterVotersResponse": {
+        "type": "object",
+        "required": [
+          "voters"
+        ],
+        "properties": {
+          "voters": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         }
@@ -2743,6 +2980,31 @@
             "minimum": 0
           }
         ]
+      },
+      "RemoveClusterMemberRequest": {
+        "type": "object",
+        "properties": {
+          "force": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ReplaceClusterVotersRequest": {
+        "type": "object",
+        "required": [
+          "ids"
+        ],
+        "properties": {
+          "force": {
+            "type": "boolean"
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
       },
       "RuleConfig": {
         "type": "object",

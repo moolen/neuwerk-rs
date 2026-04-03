@@ -29,6 +29,7 @@ async fn http_api_authz_enforces_admin_for_mutations() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -188,6 +189,7 @@ async fn http_api_service_account_roles_authorize_mutations_and_fail_closed_on_d
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -435,6 +437,7 @@ async fn http_api_auth_rejects_tokens_outside_clock_skew_window() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -573,6 +576,7 @@ async fn http_api_service_account_auth_honors_clock_skew_window() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };

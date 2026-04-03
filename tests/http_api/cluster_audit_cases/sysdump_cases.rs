@@ -98,6 +98,7 @@ async fn http_api_cluster_sysdump_proxies_and_reports_partial_failures() {
         token_path: seed_token.clone(),
         external_url: None,
         cluster_tls_dir: Some(seed_dir.path().join("tls")),
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -115,6 +116,7 @@ async fn http_api_cluster_sysdump_proxies_and_reports_partial_failures() {
         token_path: join_token.clone(),
         external_url: None,
         cluster_tls_dir: Some(join_dir.path().join("tls")),
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };

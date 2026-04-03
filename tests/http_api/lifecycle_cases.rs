@@ -28,6 +28,7 @@ async fn http_api_get_singleton_policy() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -166,6 +167,7 @@ async fn http_api_put_singleton_policy() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -294,6 +296,7 @@ async fn http_api_integrations_lifecycle_and_policy_ref_validation() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -621,6 +624,7 @@ source_groups:
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };

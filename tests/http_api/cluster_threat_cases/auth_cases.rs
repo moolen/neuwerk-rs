@@ -123,6 +123,7 @@ async fn http_api_cluster_follower_accepts_locally_minted_http_tls_token() {
         token_path: seed_token.clone(),
         external_url: None,
         cluster_tls_dir: Some(seed_cluster_dir.join("tls")),
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -140,6 +141,7 @@ async fn http_api_cluster_follower_accepts_locally_minted_http_tls_token() {
         token_path: join_token.clone(),
         external_url: None,
         cluster_tls_dir: Some(join_cluster_dir.join("tls")),
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };

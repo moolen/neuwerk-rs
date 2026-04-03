@@ -93,6 +93,7 @@ async fn http_api_threat_findings_and_feed_status_report_disabled_state() {
         token_path: dir.path().join("token.json"),
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -280,6 +281,7 @@ async fn http_api_threat_silences_round_trip_cluster_state_and_replicate_to_foll
         token_path: seed_token.clone(),
         external_url: None,
         cluster_tls_dir: Some(seed_dir.path().join("tls")),
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -297,6 +299,7 @@ async fn http_api_threat_silences_round_trip_cluster_state_and_replicate_to_foll
         token_path: join_token.clone(),
         external_url: None,
         cluster_tls_dir: Some(join_dir.path().join("tls")),
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
@@ -499,6 +502,7 @@ async fn http_api_threat_silences_reject_invalid_hostname_regex() {
         token_path: token_path.clone(),
         external_url: None,
         cluster_tls_dir: Some(cluster_dir.join("tls")),
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
