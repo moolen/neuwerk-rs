@@ -143,11 +143,24 @@ pub struct IntegrationConfigFile {
     #[serde(default)]
     pub reconcile_interval_secs: Option<u64>,
     #[serde(default)]
+    pub membership: Option<IntegrationMembershipConfigFile>,
+    #[serde(default)]
     pub aws: Option<AwsIntegrationConfigFile>,
     #[serde(default)]
     pub azure: Option<AzureIntegrationConfigFile>,
     #[serde(default)]
     pub gcp: Option<GcpIntegrationConfigFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationMembershipConfigFile {
+    #[serde(default)]
+    pub auto_evict_terminating: Option<bool>,
+    #[serde(default)]
+    pub stale_after_secs: Option<u64>,
+    #[serde(default)]
+    pub min_voters: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

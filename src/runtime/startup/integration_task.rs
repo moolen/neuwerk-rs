@@ -33,6 +33,9 @@ pub fn spawn_integration_manager_task(
         route_name: cfg.integration_route_name.clone(),
         drain_timeout_secs: cfg.integration_drain_timeout_secs,
         reconcile_interval_secs: cfg.integration_reconcile_interval_secs,
+        membership_auto_evict_terminating: cfg.integration_membership_auto_evict_terminating,
+        membership_stale_after_secs: cfg.integration_membership_stale_after_secs,
+        membership_min_voters: cfg.integration_membership_min_voters,
         tag_filter: integration_tag_filter(cfg),
         http_ready_port: http_advertise.port(),
         cluster_tls_dir: if cfg.cluster.enabled {
@@ -93,6 +96,7 @@ mod tests {
     use super::*;
 
     use std::collections::HashMap;
+    use std::fs;
     use std::net::{IpAddr, Ipv4Addr};
 
     use async_trait::async_trait;
@@ -105,6 +109,7 @@ mod tests {
     use neuwerk::controlplane::trafficd::TlsInterceptSettings;
     use neuwerk::dataplane::engine::EngineRuntimeConfig;
     use neuwerk::dataplane::{EncapMode, SnatMode, SoftMode};
+    use rcgen::{BasicConstraints, Certificate, CertificateParams, IsCa};
     use tempfile::TempDir;
 
     use crate::runtime::cli::{CloudProviderKind, DataPlaneMode};
@@ -230,6 +235,9 @@ mod tests {
             integration_drain_timeout_secs: 300,
             integration_reconcile_interval_secs: 15,
             integration_cluster_name: "neuwerk".to_string(),
+            integration_membership_auto_evict_terminating: true,
+            integration_membership_stale_after_secs: 0,
+            integration_membership_min_voters: 3,
             azure_subscription_id: None,
             azure_resource_group: None,
             azure_vmss_name: None,
@@ -240,6 +248,25 @@ mod tests {
             gcp_region: None,
             gcp_ig_name: None,
         }
+    }
+
+    fn test_cli_config_with_membership(dir: &TempDir) -> CliConfig {
+        let ca_path = dir.path().join("ca.crt");
+        let mut params = CertificateParams::default();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let cert = Certificate::from_params(params).expect("build test ca");
+        fs::write(
+            &ca_path,
+            cert.serialize_pem().expect("serialize test ca pem"),
+        )
+        .expect("write test ca");
+
+        let mut cfg = test_cli_config(dir);
+        cfg.http_ca_path = Some(ca_path);
+        cfg.integration_membership_auto_evict_terminating = false;
+        cfg.integration_membership_stale_after_secs = 30;
+        cfg.integration_membership_min_voters = 5;
+        cfg
     }
 
     #[tokio::test]
@@ -267,5 +294,24 @@ mod tests {
             }
             Ok(None) => panic!("expected missing HTTP CA to produce an error"),
         }
+    }
+
+    #[tokio::test]
+    async fn spawn_integration_manager_threads_membership_settings() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_cli_config_with_membership(&dir);
+
+        let handle = spawn_integration_manager_task(
+            &cfg,
+            Some(Arc::new(TestProvider)),
+            None,
+            SocketAddr::from(([127, 0, 0, 1], 8443)),
+            Metrics::new().unwrap(),
+            DrainControl::new(),
+        )
+        .unwrap()
+        .expect("expected integration task handle");
+
+        drop(handle);
     }
 }

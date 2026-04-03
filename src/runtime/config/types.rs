@@ -102,9 +102,17 @@ pub struct IntegrationConfig {
     pub cluster_name: String,
     pub drain_timeout_secs: u64,
     pub reconcile_interval_secs: u64,
+    pub membership: IntegrationMembershipConfig,
     pub aws: Option<AwsIntegrationConfig>,
     pub azure: Option<AzureIntegrationConfig>,
     pub gcp: Option<GcpIntegrationConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntegrationMembershipConfig {
+    pub auto_evict_terminating: bool,
+    pub stale_after_secs: u64,
+    pub min_voters: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,9 +431,20 @@ impl Default for IntegrationConfig {
             cluster_name: "neuwerk".to_string(),
             drain_timeout_secs: 300,
             reconcile_interval_secs: 15,
+            membership: IntegrationMembershipConfig::default(),
             aws: None,
             azure: None,
             gcp: None,
+        }
+    }
+}
+
+impl Default for IntegrationMembershipConfig {
+    fn default() -> Self {
+        Self {
+            auto_evict_terminating: true,
+            stale_after_secs: 0,
+            min_voters: 3,
         }
     }
 }

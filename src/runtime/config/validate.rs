@@ -6,8 +6,8 @@ use super::types::{
     AwsIntegrationConfig, AzureIntegrationConfig, BootstrapConfig, ClusterConfig, DataplaneConfig,
     DefaultPolicy, DnsConfig, DpdkConfig, DpdkIovaMode, DpdkOverlayConfig, DpdkPerfMode,
     DpdkSingleQueueMode, EncapMode, GcpIntegrationConfig, HttpConfig, IntegrationConfig,
-    IntegrationMode, LoadedConfig, MetricsConfig, PolicyConfig, RuntimeBehaviorConfig, SnatMode,
-    TlsInterceptConfig, TlsInterceptH2Config, ValidatedConfig,
+    IntegrationMembershipConfig, IntegrationMode, LoadedConfig, MetricsConfig, PolicyConfig,
+    RuntimeBehaviorConfig, SnatMode, TlsInterceptConfig, TlsInterceptH2Config, ValidatedConfig,
 };
 use neuwerk::controlplane::trafficd::UpstreamTlsVerificationMode;
 
@@ -278,6 +278,22 @@ fn build_integration_config(
     }
     if let Some(reconcile_interval_secs) = raw.reconcile_interval_secs {
         cfg.reconcile_interval_secs = reconcile_interval_secs;
+    }
+    if let Some(membership) = raw.membership {
+        cfg.membership = IntegrationMembershipConfig {
+            auto_evict_terminating: membership
+                .auto_evict_terminating
+                .unwrap_or(cfg.membership.auto_evict_terminating),
+            stale_after_secs: membership
+                .stale_after_secs
+                .unwrap_or(cfg.membership.stale_after_secs),
+            min_voters: membership.min_voters.unwrap_or(cfg.membership.min_voters),
+        };
+    }
+    if cfg.membership.min_voters == 0 {
+        return Err(
+            "config validation error: integration.membership.min_voters must be > 0".to_string(),
+        );
     }
     cfg.aws = raw.aws.map(|aws| AwsIntegrationConfig {
         region: aws.region,
@@ -1170,6 +1186,60 @@ mod tests {
 
     use super::super::load_config_str;
     use super::super::types::{DpdkIovaMode, DpdkPerfMode, DpdkSingleQueueMode, SnatMode};
+
+    fn parse_runtime_config(raw: &str) -> Result<super::super::LoadedConfig, String> {
+        load_config_str(raw)
+    }
+
+    #[test]
+    fn integration_membership_defaults_are_applied() {
+        let cfg = parse_runtime_config(
+            r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  cloud_provider: none
+  data_plane_mode: tun
+dns:
+  target_ips:
+    - 10.0.0.53
+  upstreams:
+    - 10.0.0.2:53
+integration:
+  mode: none
+"#,
+        )
+        .unwrap();
+        assert!(cfg.integration.membership.auto_evict_terminating);
+        assert_eq!(cfg.integration.membership.stale_after_secs, 0);
+        assert_eq!(cfg.integration.membership.min_voters, 3);
+    }
+
+    #[test]
+    fn integration_membership_rejects_zero_min_voters() {
+        let err = parse_runtime_config(
+            r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  cloud_provider: none
+  data_plane_mode: tun
+dns:
+  target_ips:
+    - 10.0.0.53
+  upstreams:
+    - 10.0.0.2:53
+integration:
+  mode: aws-asg
+  membership:
+    min_voters: 0
+"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("integration.membership.min_voters"), "{err}");
+    }
 
     #[test]
     fn load_config_rejects_missing_version() {

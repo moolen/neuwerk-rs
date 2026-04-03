@@ -189,6 +189,17 @@ pub fn build_runtime_cli_config(cfg: &DerivedRuntimeConfig) -> Result<CliConfig,
         integration_drain_timeout_secs: cfg.operator.integration.drain_timeout_secs,
         integration_reconcile_interval_secs: cfg.operator.integration.reconcile_interval_secs,
         integration_cluster_name: cfg.operator.integration.cluster_name.clone(),
+        integration_membership_auto_evict_terminating: cfg
+            .operator
+            .integration
+            .membership
+            .auto_evict_terminating,
+        integration_membership_stale_after_secs: cfg
+            .operator
+            .integration
+            .membership
+            .stale_after_secs,
+        integration_membership_min_voters: cfg.operator.integration.membership.min_voters,
         azure_subscription_id: cfg
             .operator
             .integration
