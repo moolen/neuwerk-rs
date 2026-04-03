@@ -81,6 +81,11 @@ pub struct TerminationEvent {
     pub deadline_epoch: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MissingMemberState {
+    pub first_missing_epoch: i64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DiscoveryFilter {
     pub tags: HashMap<String, String>,

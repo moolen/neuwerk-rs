@@ -1,3 +1,4 @@
+pub mod membership;
 pub mod provider;
 pub mod providers;
 pub mod types;
@@ -11,20 +12,25 @@ use async_trait::async_trait;
 use tokio::time::MissedTickBehavior;
 use tracing::{error, warn};
 
+use crate::controlplane::cloud::membership::{
+    correlate_members, plan_missing_member_updates, select_eviction_candidate,
+};
+use crate::controlplane::cluster::membership_admin::MembershipAdmin;
 use crate::controlplane::cluster::rpc::{IntegrationClient, RaftTlsConfig};
 use crate::controlplane::cluster::store::ClusterStore;
-use crate::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig};
+use crate::controlplane::cluster::types::{ClusterCommand, ClusterTypeConfig, NodeId};
 use crate::controlplane::metrics::Metrics;
 use crate::dataplane::DrainControl;
 
 use provider::CloudProvider;
 use types::{
     DrainState, DrainStatus, InstanceObservation, InstanceRef, IntegrationConfig, IntegrationMode,
-    RouteChange, SubnetRef, TerminationEvent,
+    MissingMemberState, RouteChange, SubnetRef, TerminationEvent,
 };
 
 const ASSIGNMENT_PREFIX: &[u8] = b"integration/assignments/";
 const DRAIN_PREFIX: &[u8] = b"integration/drain/";
+const MISSING_MEMBER_PREFIX: &[u8] = b"integration/membership/missing/";
 const OBSERVED_PREFIX: &[u8] = b"integration/observed/";
 const TERMINATION_PREFIX: &[u8] = b"integration/termination/";
 const TERMINATION_HEARTBEAT_LEAD_SECS: i64 = 30;
@@ -90,6 +96,7 @@ pub struct IntegrationManager {
 struct IntegrationCache {
     assignments: HashMap<String, String>,
     drains: HashMap<String, DrainState>,
+    missing_members: HashMap<NodeId, MissingMemberState>,
     terminations: HashMap<String, TerminationEvent>,
 }
 
@@ -456,6 +463,9 @@ impl IntegrationManager {
             self.update_drains(&instances, &assigned_instances, now)
                 .await?;
         }
+        if let Err(err) = self.reconcile_membership(&instances, now).await {
+            warn!(error = %err, "integration membership reconcile failed");
+        }
 
         Ok(())
     }
@@ -614,6 +624,26 @@ impl IntegrationManager {
         Ok(self.local_cache.terminations.clone())
     }
 
+    async fn load_missing_members(&mut self) -> Result<HashMap<NodeId, MissingMemberState>, String> {
+        if let Some(store) = &self.store {
+            let entries = store
+                .scan_state_prefix(MISSING_MEMBER_PREFIX)
+                .map_err(|err| format!("missing member scan: {err}"))?;
+            let mut map = HashMap::new();
+            for (key, value) in entries {
+                let node_id = String::from_utf8_lossy(&key[MISSING_MEMBER_PREFIX.len()..])
+                    .parse::<NodeId>()
+                    .map_err(|err| format!("missing member node id: {err}"))?;
+                let state: MissingMemberState = serde_json::from_slice(&value)
+                    .map_err(|err| format!("missing member decode: {err}"))?;
+                map.insert(node_id, state);
+            }
+            self.local_cache.missing_members = map.clone();
+            return Ok(map);
+        }
+        Ok(self.local_cache.missing_members.clone())
+    }
+
     async fn persist_drain(&mut self, instance_id: &str, state: &DrainState) -> Result<(), String> {
         if let Some(raft) = &self.raft {
             let key = drain_key(instance_id);
@@ -624,6 +654,26 @@ impl IntegrationManager {
             self.local_cache
                 .drains
                 .insert(instance_id.to_string(), state.clone());
+        }
+        Ok(())
+    }
+
+    async fn persist_missing_member(
+        &mut self,
+        node_id: NodeId,
+        state: &MissingMemberState,
+    ) -> Result<(), String> {
+        if let Some(raft) = &self.raft {
+            let key = missing_member_key(node_id);
+            let value = serde_json::to_vec(state)
+                .map_err(|err| format!("missing member encode: {err}"))?;
+            let cmd = ClusterCommand::Put { key, value };
+            raft.client_write(cmd)
+                .await
+                .map_err(|err| err.to_string())?;
+            return Ok(());
+        } else if self.store.is_none() {
+            self.local_cache.missing_members.insert(node_id, state.clone());
         }
         Ok(())
     }
@@ -688,6 +738,19 @@ impl IntegrationManager {
         Ok(())
     }
 
+    async fn clear_missing_member(&mut self, node_id: NodeId) -> Result<(), String> {
+        if let Some(raft) = &self.raft {
+            let key = missing_member_key(node_id);
+            let cmd = ClusterCommand::Delete { key };
+            raft.client_write(cmd)
+                .await
+                .map_err(|err| err.to_string())?;
+            return Ok(());
+        }
+        self.local_cache.missing_members.remove(&node_id);
+        Ok(())
+    }
+
     async fn persist_observation(&self, instance: &InstanceRef, observation: &InstanceObservation) {
         if let Some(raft) = &self.raft {
             let key = observed_key(&instance.id);
@@ -698,6 +761,59 @@ impl IntegrationManager {
             let cmd = ClusterCommand::Put { key, value };
             let _ = raft.client_write(cmd).await;
         }
+    }
+
+    async fn reconcile_membership(
+        &mut self,
+        instances: &[InstanceRef],
+        now: i64,
+    ) -> Result<(), String> {
+        let Some(raft) = self.raft.clone() else {
+            return Ok(());
+        };
+        let metrics = raft.metrics().borrow().clone();
+        let members = correlate_members(&metrics, instances);
+
+        let mut missing_members = self.load_missing_members().await?;
+        for update in plan_missing_member_updates(&members, &missing_members, metrics.id, now) {
+            match update.state {
+                Some(state) => {
+                    self.persist_missing_member(update.node_id, &state).await?;
+                    missing_members.insert(update.node_id, state);
+                }
+                None => {
+                    self.clear_missing_member(update.node_id).await?;
+                    missing_members.remove(&update.node_id);
+                }
+            }
+        }
+
+        let drains = self.load_drains().await?;
+        let terminations = self.load_termination_events().await?;
+        let Some(candidate) = select_eviction_candidate(
+            &members,
+            &drains,
+            &terminations,
+            &missing_members,
+            metrics.id,
+            self.cfg.membership_auto_evict_terminating,
+            self.cfg.membership_stale_after_secs,
+            now,
+        ) else {
+            return Ok(());
+        };
+
+        let admin = MembershipAdmin::new(raft);
+        admin.remove_member(candidate.node_id, false, self.cfg.membership_min_voters)
+            .await?;
+        if let Err(err) = self.clear_missing_member(candidate.node_id).await {
+            warn!(
+                error = %err,
+                node_id = candidate.node_id,
+                "integration missing-member cleanup failed"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -868,6 +984,14 @@ pub(crate) fn termination_key(instance_id: &str) -> Vec<u8> {
     let mut key = Vec::with_capacity(TERMINATION_PREFIX.len() + instance_id.len());
     key.extend_from_slice(TERMINATION_PREFIX);
     key.extend_from_slice(instance_id.as_bytes());
+    key
+}
+
+pub(crate) fn missing_member_key(node_id: NodeId) -> Vec<u8> {
+    let node_id = node_id.to_string();
+    let mut key = Vec::with_capacity(MISSING_MEMBER_PREFIX.len() + node_id.len());
+    key.extend_from_slice(MISSING_MEMBER_PREFIX);
+    key.extend_from_slice(node_id.as_bytes());
     key
 }
 
