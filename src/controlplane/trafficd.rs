@@ -116,6 +116,7 @@ pub use upstream_tls::UpstreamTlsVerificationMode;
 pub struct TrafficdConfig {
     pub dns_bind: std::net::SocketAddr,
     pub dns_upstreams: Vec<std::net::SocketAddr>,
+    pub dns_upstream_timeout: Duration,
     pub dns_policy: Arc<RwLock<DnsPolicy>>,
     pub dns_map: DnsMap,
     pub metrics: Metrics,
@@ -338,6 +339,11 @@ fn compile_intercept_steering_rules(snapshot: &PolicySnapshot) -> Vec<InterceptS
                 .as_ref()
                 .map(|set| set.cidrs().to_vec())
                 .unwrap_or_default();
+            if dst_cidrs.is_empty() && rule.matcher.dst_ports.is_empty() {
+                // Kernel steering happens before SNI or certificate metadata is available, so
+                // hostname-only intercept rules must not expand into a blanket TCP redirect.
+                continue;
+            }
             let dst_ports = if rule.matcher.dst_ports.is_empty() {
                 vec![None]
             } else {
@@ -757,6 +763,7 @@ pub async fn run(cfg: TrafficdConfig) -> Result<(), String> {
     dns_proxy::run_dns_proxy(
         cfg.dns_bind,
         cfg.dns_upstreams,
+        cfg.dns_upstream_timeout,
         cfg.dns_policy,
         cfg.dns_map,
         cfg.metrics,

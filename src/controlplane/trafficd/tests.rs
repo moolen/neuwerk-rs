@@ -8,7 +8,7 @@ use crate::controlplane::intercept_tls::{
 use crate::dataplane::policy::{
     CidrV4, DefaultPolicy, EnforcementMode, HttpPathMatcher, HttpQueryMatcher, HttpRequestPolicy,
     HttpResponsePolicy, HttpStringMatcher, IpSetV4, PortRange, Proto, Rule, RuleAction, RuleMatch,
-    SourceGroup, Tls13Uninspectable, TlsInterceptHttpPolicy, TlsMatch,
+    SourceGroup, Tls13Uninspectable, TlsInterceptHttpPolicy, TlsMatch, TlsNameMatch,
 };
 use openraft::entry::EntryPayload;
 use openraft::storage::RaftStateMachine;
@@ -130,6 +130,49 @@ fn intercept_snapshot(generation: u64) -> PolicySnapshot {
     PolicySnapshot::new_with_generation(DefaultPolicy::Deny, vec![group], generation)
 }
 
+fn intercept_sni_snapshot(generation: u64, dst_ports: Vec<PortRange>) -> PolicySnapshot {
+    let mut sources = IpSetV4::new();
+    let src_cidr = CidrV4::new(Ipv4Addr::new(10, 0, 0, 0), 24);
+    sources.add_cidr(src_cidr);
+    let rule = Rule {
+        id: "intercept-sni".to_string(),
+        priority: 0,
+        matcher: RuleMatch {
+            dst_ips: None,
+            proto: Proto::Tcp,
+            src_ports: Vec::new(),
+            dst_ports,
+            icmp_types: Vec::new(),
+            icmp_codes: Vec::new(),
+            tls: Some(TlsMatch {
+                mode: TlsMode::Intercept,
+                sni: Some(TlsNameMatch {
+                    exact: vec!["github.com".to_string()],
+                    regex: None,
+                }),
+                server_dn: None,
+                server_san: None,
+                server_cn: None,
+                fingerprints_sha256: Vec::new(),
+                trust_anchors: Vec::new(),
+                tls13_uninspectable: Tls13Uninspectable::Deny,
+                intercept_http: None,
+            }),
+        },
+        action: RuleAction::Allow,
+        mode: crate::dataplane::policy::RuleMode::Enforce,
+    };
+    let group = SourceGroup {
+        id: "internal".to_string(),
+        priority: 0,
+        mode: crate::dataplane::policy::RuleMode::Enforce,
+        sources,
+        rules: vec![rule],
+        default_action: None,
+    };
+    PolicySnapshot::new_with_generation(DefaultPolicy::Deny, vec![group], generation)
+}
+
 fn intercept_http_snapshot(generation: u64) -> PolicySnapshot {
     let mut sources = IpSetV4::new();
     sources.add_cidr(CidrV4::new(Ipv4Addr::new(127, 0, 0, 0), 8));
@@ -206,6 +249,43 @@ fn intercept_h2_passthrough_snapshot(generation: u64) -> PolicySnapshot {
         default_action: None,
     };
     PolicySnapshot::new_with_generation(DefaultPolicy::Deny, vec![group], generation)
+}
+
+#[test]
+fn hostname_only_intercept_rule_does_not_compile_kernel_steering() {
+    let snapshot = intercept_sni_snapshot(1, Vec::new());
+
+    let rules = compile_intercept_steering_rules(&snapshot);
+
+    assert!(
+        rules.is_empty(),
+        "hostname-only intercept rules must not compile blanket kernel steering"
+    );
+}
+
+#[test]
+fn intercept_rule_with_destination_port_still_compiles_kernel_steering() {
+    let snapshot = intercept_sni_snapshot(
+        1,
+        vec![PortRange {
+            start: 443,
+            end: 443,
+        }],
+    );
+
+    let rules = compile_intercept_steering_rules(&snapshot);
+
+    assert_eq!(
+        rules,
+        vec![InterceptSteeringRule {
+            src_cidr: CidrV4::new(Ipv4Addr::new(10, 0, 0, 0), 24),
+            dst_cidr: None,
+            dst_port: Some(PortRange {
+                start: 443,
+                end: 443,
+            }),
+        }]
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
