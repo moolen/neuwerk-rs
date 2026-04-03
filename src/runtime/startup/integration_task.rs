@@ -13,6 +13,25 @@ use tracing::{error, warn};
 use crate::runtime::bootstrap::integration::integration_tag_filter;
 use crate::runtime::cli::{load_http_ca, CliConfig};
 
+fn build_integration_config(cfg: &CliConfig, http_advertise: SocketAddr) -> IntegrationConfig {
+    IntegrationConfig {
+        cluster_name: cfg.integration_cluster_name.clone(),
+        route_name: cfg.integration_route_name.clone(),
+        drain_timeout_secs: cfg.integration_drain_timeout_secs,
+        reconcile_interval_secs: cfg.integration_reconcile_interval_secs,
+        membership_auto_evict_terminating: cfg.integration_membership_auto_evict_terminating,
+        membership_stale_after_secs: cfg.integration_membership_stale_after_secs,
+        membership_min_voters: cfg.integration_membership_min_voters,
+        tag_filter: integration_tag_filter(cfg),
+        http_ready_port: http_advertise.port(),
+        cluster_tls_dir: if cfg.cluster.enabled {
+            Some(cfg.cluster.data_dir.join("tls"))
+        } else {
+            None
+        },
+    }
+}
+
 pub fn spawn_integration_manager_task(
     cfg: &CliConfig,
     integration_provider: Option<Arc<dyn CloudProviderTrait>>,
@@ -28,22 +47,7 @@ pub fn spawn_integration_manager_task(
         return Ok(None);
     };
 
-    let integration_cfg = IntegrationConfig {
-        cluster_name: cfg.integration_cluster_name.clone(),
-        route_name: cfg.integration_route_name.clone(),
-        drain_timeout_secs: cfg.integration_drain_timeout_secs,
-        reconcile_interval_secs: cfg.integration_reconcile_interval_secs,
-        membership_auto_evict_terminating: cfg.integration_membership_auto_evict_terminating,
-        membership_stale_after_secs: cfg.integration_membership_stale_after_secs,
-        membership_min_voters: cfg.integration_membership_min_voters,
-        tag_filter: integration_tag_filter(cfg),
-        http_ready_port: http_advertise.port(),
-        cluster_tls_dir: if cfg.cluster.enabled {
-            Some(cfg.cluster.data_dir.join("tls"))
-        } else {
-            None
-        },
-    };
+    let integration_cfg = build_integration_config(cfg, http_advertise);
     let ca_pem = match load_http_ca(cfg) {
         Ok(ca_pem) => ca_pem,
         Err(err) => {
@@ -96,7 +100,6 @@ mod tests {
     use super::*;
 
     use std::collections::HashMap;
-    use std::fs;
     use std::net::{IpAddr, Ipv4Addr};
 
     use async_trait::async_trait;
@@ -109,7 +112,6 @@ mod tests {
     use neuwerk::controlplane::trafficd::TlsInterceptSettings;
     use neuwerk::dataplane::engine::EngineRuntimeConfig;
     use neuwerk::dataplane::{EncapMode, SnatMode, SoftMode};
-    use rcgen::{BasicConstraints, Certificate, CertificateParams, IsCa};
     use tempfile::TempDir;
 
     use crate::runtime::cli::{CloudProviderKind, DataPlaneMode};
@@ -251,18 +253,7 @@ mod tests {
     }
 
     fn test_cli_config_with_membership(dir: &TempDir) -> CliConfig {
-        let ca_path = dir.path().join("ca.crt");
-        let mut params = CertificateParams::default();
-        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        let cert = Certificate::from_params(params).expect("build test ca");
-        fs::write(
-            &ca_path,
-            cert.serialize_pem().expect("serialize test ca pem"),
-        )
-        .expect("write test ca");
-
         let mut cfg = test_cli_config(dir);
-        cfg.http_ca_path = Some(ca_path);
         cfg.integration_membership_auto_evict_terminating = false;
         cfg.integration_membership_stale_after_secs = 30;
         cfg.integration_membership_min_voters = 5;
@@ -296,22 +287,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn spawn_integration_manager_threads_membership_settings() {
+    #[test]
+    fn spawn_integration_manager_threads_membership_settings() {
         let dir = TempDir::new().unwrap();
         let cfg = test_cli_config_with_membership(&dir);
-
-        let handle = spawn_integration_manager_task(
-            &cfg,
-            Some(Arc::new(TestProvider)),
-            None,
-            SocketAddr::from(([127, 0, 0, 1], 8443)),
-            Metrics::new().unwrap(),
-            DrainControl::new(),
-        )
-        .unwrap()
-        .expect("expected integration task handle");
-
-        drop(handle);
+        let integration_cfg =
+            build_integration_config(&cfg, SocketAddr::from(([127, 0, 0, 1], 8443)));
+        assert!(!integration_cfg.membership_auto_evict_terminating);
+        assert_eq!(integration_cfg.membership_stale_after_secs, 30);
+        assert_eq!(integration_cfg.membership_min_voters, 5);
     }
 }

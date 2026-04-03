@@ -137,6 +137,10 @@ integration:
   cluster_name: neuwerk
   drain_timeout_secs: 300
   reconcile_interval_secs: 15
+  membership:
+    auto_evict_terminating: true
+    stale_after_secs: 0
+    min_voters: 3
   # Populate only the subsection that matches integration.mode.
   aws:
     region: us-east-1
@@ -337,6 +341,9 @@ For that document model:
 | `integration.cluster_name` | `neuwerk` | Shared integration naming must be pinned |
 | `integration.drain_timeout_secs` | `300` | Instances need a different drain grace period |
 | `integration.reconcile_interval_secs` | `15` | Provider reconciliation is too slow or too chatty |
+| `integration.membership.auto_evict_terminating` | `true` | Disable only when you must avoid automatic terminating-instance membership eviction |
+| `integration.membership.stale_after_secs` | `0` | Add a grace period before considering unseen instances stale for membership handling |
+| `integration.membership.min_voters` | `3` | Tune the minimum healthy voters threshold used by membership handling |
 | `integration.aws.region` | `unset` | Required for `integration.mode: aws-asg` |
 | `integration.aws.vpc_id` | `unset` | Required for `integration.mode: aws-asg` |
 | `integration.aws.asg_name` | `unset` | Required for `integration.mode: aws-asg` |
