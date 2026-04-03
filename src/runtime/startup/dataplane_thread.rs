@@ -14,8 +14,8 @@ use neuwerk::metrics::Metrics;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::runtime::cli::DataPlaneMode;
-use crate::runtime::dpdk::run::run_dataplane;
 use crate::runtime::config::RuntimeDpdkConfig;
+use crate::runtime::dpdk::run::run_dataplane;
 
 pub struct DataplaneRuntimeConfig {
     pub data_plane_iface: String,

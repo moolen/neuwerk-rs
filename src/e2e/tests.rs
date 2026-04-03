@@ -35,9 +35,9 @@ use crate::e2e::services::{
     http_get_path, http_get_policy, http_get_stats, http_list_service_account_tokens,
     http_list_service_accounts, http_put_tls_intercept_ca_from_http_ca,
     http_revoke_service_account_token, http_set_policy, http_stream, http_stream_path,
-    http_update_service_account, http_wait_for_health, https_get, https_get_path,
-    https_get_tls12, https_get_tls13, https_h2_get_path, https_leaf_cert_sha256,
-    tls_client_hello_raw, udp_echo, udp_echo_eventually,
+    http_update_service_account, http_wait_for_health, https_get, https_get_path, https_get_tls12,
+    https_get_tls13, https_h2_get_path, https_leaf_cert_sha256, tls_client_hello_raw, udp_echo,
+    udp_echo_eventually,
 };
 use crate::e2e::topology::TopologyConfig;
 use ::time::format_description::well_known::Rfc3339;

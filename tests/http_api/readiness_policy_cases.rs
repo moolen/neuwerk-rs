@@ -333,12 +333,20 @@ async fn cluster_ready_degrades_on_quorum_loss_and_recovers() {
         })
         .await
         .unwrap();
-    wait_for_state_value(&seed_runtime.store, POLICY_STATE_KEY, Duration::from_secs(5))
-        .await
-        .unwrap();
-    wait_for_state_value(&join_runtime.store, POLICY_STATE_KEY, Duration::from_secs(5))
-        .await
-        .unwrap();
+    wait_for_state_value(
+        &seed_runtime.store,
+        POLICY_STATE_KEY,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    wait_for_state_value(
+        &join_runtime.store,
+        POLICY_STATE_KEY,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
 
     // Drive readiness from a real follower raft handle, but run HTTP API in local mode
     // to avoid cluster HTTP TLS/bootstrap ordering from dominating this readiness test.

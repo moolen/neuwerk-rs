@@ -59,8 +59,7 @@ pub enum DpdkSingleQueueStrategy {
     SingleWorker,
 }
 
-impl DpdkSingleQueueStrategy {
-}
+impl DpdkSingleQueueStrategy {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct DpdkWorkerPlan {
@@ -126,8 +125,7 @@ pub enum DpdkPerfMode {
     Aggressive,
 }
 
-impl DpdkPerfMode {
-}
+impl DpdkPerfMode {}
 
 pub fn service_lane_enabled_with_override(
     perf_mode: DpdkPerfMode,

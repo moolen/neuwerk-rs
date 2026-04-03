@@ -6,7 +6,10 @@ pub const RUNTIME_STARTUP_UNSUPPORTED_MESSAGE: &str =
 
 #[cfg(test)]
 fn parse_args(bin: &str, args: Vec<String>) -> Result<CliConfig, String> {
-    if args.iter().any(|arg| matches!(arg.as_str(), "-h" | "--help")) {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
         return Err(usage(bin));
     }
 
@@ -35,7 +38,7 @@ mod tests {
                 "data0".to_string(),
             ],
         )
-            .expect_err("legacy runtime flags must be rejected");
+        .expect_err("legacy runtime flags must be rejected");
 
         assert_eq!(err, RUNTIME_STARTUP_UNSUPPORTED_MESSAGE);
     }
@@ -61,13 +64,9 @@ mod tests {
 
         match cmd {
             AuthCommand::KeyList {
-                target:
-                    AuthTarget::Cluster { addr, tls_dir },
+                target: AuthTarget::Cluster { addr, tls_dir },
             } => {
-                assert_eq!(
-                    addr,
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7000)
-                );
+                assert_eq!(addr, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7000));
                 assert_eq!(tls_dir, PathBuf::from("/var/lib/neuwerk/cluster/tls"));
             }
             other => panic!("unexpected auth command: {other:?}"),

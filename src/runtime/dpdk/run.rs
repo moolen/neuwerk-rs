@@ -4,16 +4,16 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crossbeam_queue::ArrayQueue;
+use neuwerk::dataplane::engine::EngineRuntimeConfig;
 use neuwerk::dataplane::policy::{
     PolicySnapshot, SharedExactSourceGroupIndex, SharedPolicySnapshot,
 };
 #[cfg(feature = "dpdk")]
 use neuwerk::dataplane::DpdkTransferredRxPacket;
-use neuwerk::dataplane::engine::EngineRuntimeConfig;
 use neuwerk::dataplane::{
     AuditEmitter, DataplaneConfigStore, DhcpRx, DhcpTx, DpdkAdapter, DpdkIo, DrainControl,
-    EngineState, FrameIo, FrameOut, OverlayConfig, Packet, PolicyTelemetryEmitter,
-    SharedArpState, SharedInterceptDemuxState, SnatMode, SoftAdapter, WiretapEmitter,
+    EngineState, FrameIo, FrameOut, OverlayConfig, Packet, PolicyTelemetryEmitter, SharedArpState,
+    SharedInterceptDemuxState, SnatMode, SoftAdapter, WiretapEmitter,
 };
 use neuwerk::metrics::{
     current_dpdk_worker_id, set_current_dpdk_worker_id, DpdkFlowSteerMetricHandles, Metrics,
@@ -689,9 +689,8 @@ pub fn run_dataplane(
             }
             let mut requested_workers = requested_workers_target.min(worker_core_ids.len()).max(1);
             let running_on_azure = current_runtime_knobs().cloud_provider == CloudProvider::Azure;
-            let azure_reliability_guard = running_on_azure
-                && requested_workers > 1
-                && !dpdk.allow_azure_multiworker;
+            let azure_reliability_guard =
+                running_on_azure && requested_workers > 1 && !dpdk.allow_azure_multiworker;
             if azure_reliability_guard {
                 warn!(
                     requested_workers,
@@ -844,9 +843,7 @@ pub fn run_dataplane(
                     );
                 }
                 if !service_lane_enabled {
-                    warn!(
-                        "dpdk service lane disabled; TLS intercept steering is bypassed"
-                    );
+                    warn!("dpdk service lane disabled; TLS intercept steering is bypassed");
                 }
                 if lockless_qpw {
                     info!("dpdk lockless queue-per-worker enabled");

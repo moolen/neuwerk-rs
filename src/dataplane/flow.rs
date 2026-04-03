@@ -26,7 +26,8 @@ impl Default for FlowTableRuntimeConfig {
         Self {
             capacity: FLOW_TABLE_DEFAULT_CAPACITY,
             incomplete_tcp_idle_timeout_secs: None,
-            incomplete_tcp_syn_sent_idle_timeout_secs: DEFAULT_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS,
+            incomplete_tcp_syn_sent_idle_timeout_secs:
+                DEFAULT_INCOMPLETE_TCP_SYN_SENT_IDLE_TIMEOUT_SECS,
         }
     }
 }
@@ -408,8 +409,10 @@ impl FlowTable {
         cfg: FlowTableRuntimeConfig,
     ) -> Self {
         let capacity = normalize_capacity(cfg.capacity);
-        let incomplete_tcp_idle_timeout_secs =
-            cfg.incomplete_tcp_idle_timeout_secs.unwrap_or(idle_timeout_secs).max(1);
+        let incomplete_tcp_idle_timeout_secs = cfg
+            .incomplete_tcp_idle_timeout_secs
+            .unwrap_or(idle_timeout_secs)
+            .max(1);
         let incomplete_tcp_syn_sent_idle_timeout_secs =
             cfg.incomplete_tcp_syn_sent_idle_timeout_secs.max(1);
         Self {

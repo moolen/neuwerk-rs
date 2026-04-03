@@ -30,9 +30,9 @@ pub use nat::DEFAULT_IDLE_TIMEOUT_SECS;
 pub use nat::{NatEntry, NatTable, ReverseKey};
 pub use overlay::{EncapMode, OverlayConfig, OverlayPacket, SnatMode};
 pub use packet::Packet;
+pub use policy_telemetry::{PolicyTelemetryEmitter, PolicyTelemetryEvent};
 pub use soft_adapter::{SoftAdapter, SoftMode};
 pub use tls::{TlsFlowDecision, TlsFlowState, TlsVerifier};
-pub use policy_telemetry::{PolicyTelemetryEmitter, PolicyTelemetryEvent};
 pub use wiretap::{
     WiretapEmitter, WiretapEvent, WiretapEventType, DEFAULT_WIRETAP_REPORT_INTERVAL_SECS,
 };

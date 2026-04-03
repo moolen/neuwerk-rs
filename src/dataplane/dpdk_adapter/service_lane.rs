@@ -5,11 +5,15 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use crate::support::runtime_knobs::current_runtime_knobs;
 
 pub(super) fn intercept_service_ip() -> Ipv4Addr {
-    current_runtime_knobs().dpdk.service_lane_intercept_service_ip
+    current_runtime_knobs()
+        .dpdk
+        .service_lane_intercept_service_ip
 }
 
 pub(super) fn intercept_service_port() -> u16 {
-    current_runtime_knobs().dpdk.service_lane_intercept_service_port
+    current_runtime_knobs()
+        .dpdk
+        .service_lane_intercept_service_port
 }
 
 #[repr(C)]

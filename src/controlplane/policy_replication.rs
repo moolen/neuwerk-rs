@@ -100,7 +100,8 @@ pub async fn run_policy_replication_with_local_apply_guard(
                 continue;
             }
         };
-        let record = record.unwrap_or_else(|| serde_json::to_vec(&StoredPolicy::default()).unwrap());
+        let record =
+            record.unwrap_or_else(|| serde_json::to_vec(&StoredPolicy::default()).unwrap());
         if last_record.as_ref().is_some_and(|prev| prev == &record) {
             continue;
         }
@@ -152,7 +153,9 @@ mod tests {
     use crate::controlplane::cluster::config::ClusterConfig;
     use crate::controlplane::cluster::types::ClusterCommand;
     use crate::controlplane::policy_config::PolicyConfig;
-    use crate::controlplane::policy_repository::{singleton_policy_id, StoredPolicy, POLICY_STATE_KEY};
+    use crate::controlplane::policy_repository::{
+        singleton_policy_id, StoredPolicy, POLICY_STATE_KEY,
+    };
     use crate::controlplane::ready::ReadinessState;
     use crate::dataplane::policy::DefaultPolicy;
     use crate::dataplane::{DataplaneConfig, DataplaneConfigStore};
@@ -217,7 +220,10 @@ mod tests {
         }
     }
 
-    async fn wait_for_active_policy(policy_store: &PolicyStore, timeout: Duration) -> Result<(), String> {
+    async fn wait_for_active_policy(
+        policy_store: &PolicyStore,
+        timeout: Duration,
+    ) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         loop {
             if policy_store.active_policy_id() == Some(singleton_policy_id()) {
@@ -371,7 +377,10 @@ source_groups:
             "dns policy source group should be available after leader replay"
         );
 
-        assert_eq!(local_store.active_id().unwrap(), Some(singleton_policy_id()));
+        assert_eq!(
+            local_store.active_id().unwrap(),
+            Some(singleton_policy_id())
+        );
         assert!(local_store.read_state().unwrap().is_some());
 
         task.abort();
@@ -451,7 +460,10 @@ source_groups:
             EnforcementMode::Enforce,
             "schema-compatible cluster records should still replay"
         );
-        assert_eq!(local_store.active_id().unwrap(), Some(singleton_policy_id()));
+        assert_eq!(
+            local_store.active_id().unwrap(),
+            Some(singleton_policy_id())
+        );
         assert!(local_store.read_state().unwrap().is_some());
 
         task.abort();
@@ -633,7 +645,10 @@ default_policy: deny
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         assert_eq!(policy_store.active_policy_id(), Some(singleton_policy_id()));
-        assert_eq!(local_store.active_id().unwrap(), Some(singleton_policy_id()));
+        assert_eq!(
+            local_store.active_id().unwrap(),
+            Some(singleton_policy_id())
+        );
         assert!(policy_ready_check(&readiness));
         wait_for_policy_decision(
             &policy_store,

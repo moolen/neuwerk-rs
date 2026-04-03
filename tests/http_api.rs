@@ -15,9 +15,7 @@ use neuwerk::controlplane::http_api::{HttpApiCluster, HttpApiConfig};
 use neuwerk::controlplane::intercept_tls::local_intercept_ca_paths;
 use neuwerk::controlplane::metrics::Metrics;
 use neuwerk::controlplane::policy_config::PolicyMode;
-use neuwerk::controlplane::policy_repository::{
-    PolicyDiskStore, PolicyRecord, POLICY_STATE_KEY,
-};
+use neuwerk::controlplane::policy_repository::{PolicyDiskStore, PolicyRecord, POLICY_STATE_KEY};
 use neuwerk::controlplane::policy_telemetry::PolicyTelemetryStore;
 use neuwerk::controlplane::ready::ReadinessState;
 use neuwerk::controlplane::wiretap::{WiretapEvent, WiretapHub};

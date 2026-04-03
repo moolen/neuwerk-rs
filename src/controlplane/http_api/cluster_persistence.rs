@@ -44,7 +44,8 @@ pub(super) fn read_cluster_index(store: &ClusterStore) -> Result<PolicyIndex, St
     let raw = store.get_state_value(POLICY_STATE_KEY)?;
     match raw {
         Some(raw) => {
-            let state: StoredPolicy = serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
+            let state: StoredPolicy =
+                serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
             Ok(PolicyIndex {
                 policies: vec![PolicyMeta::from(&state.record())],
             })
@@ -58,7 +59,8 @@ pub(super) fn read_cluster_active(store: &ClusterStore) -> Result<Option<PolicyA
     let raw = store.get_state_value(POLICY_STATE_KEY)?;
     match raw {
         Some(raw) => {
-            let state: StoredPolicy = serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
+            let state: StoredPolicy =
+                serde_json::from_slice(&raw).map_err(|err| err.to_string())?;
             Ok(state.active_id().map(|id| PolicyActive { id }))
         }
         None => Ok(None),

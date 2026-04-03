@@ -81,8 +81,12 @@ dataplane:
             Err(err) => return Err(format!("read existing runtime config failed: {err}")),
         };
 
-        fs::write(config_path, yaml)
-            .map_err(|err| format!("write runtime config {} failed: {err}", config_path.display()))?;
+        fs::write(config_path, yaml).map_err(|err| {
+            format!(
+                "write runtime config {} failed: {err}",
+                config_path.display()
+            )
+        })?;
 
         Ok(Self {
             lock_file,

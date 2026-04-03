@@ -446,10 +446,7 @@ impl NatTable {
         Self::new_with_timeout_and_config(idle_timeout_secs, NatTableRuntimeConfig::default())
     }
 
-    pub fn new_with_timeout_and_config(
-        idle_timeout_secs: u64,
-        cfg: NatTableRuntimeConfig,
-    ) -> Self {
+    pub fn new_with_timeout_and_config(idle_timeout_secs: u64, cfg: NatTableRuntimeConfig) -> Self {
         let capacity = normalize_capacity(cfg.capacity);
         Self {
             map: OpenMap::new_with_capacity(capacity, flow_hash),

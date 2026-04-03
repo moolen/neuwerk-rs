@@ -34,9 +34,7 @@ use crate::controlplane::intercept_tls::{
 };
 use crate::controlplane::kubernetes::run_kubernetes_resolver;
 use crate::controlplane::policy_config::{PolicyConfig, PolicyMode};
-use crate::controlplane::policy_repository::{
-    PolicyDiskStore, PolicyRecord, POLICY_STATE_KEY,
-};
+use crate::controlplane::policy_repository::{PolicyDiskStore, PolicyRecord, POLICY_STATE_KEY};
 use crate::controlplane::service_accounts::{
     ServiceAccount, ServiceAccountDiskStore, ServiceAccountStatus, TokenMeta, TokenStatus,
 };

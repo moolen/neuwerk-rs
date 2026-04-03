@@ -108,10 +108,7 @@ fn state() -> &'static RwLock<RuntimeKnobs> {
 }
 
 pub fn current_runtime_knobs() -> RuntimeKnobs {
-    state()
-        .read()
-        .expect("runtime knob lock poisoned")
-        .clone()
+    state().read().expect("runtime knob lock poisoned").clone()
 }
 
 pub fn install_runtime_knobs(knobs: RuntimeKnobs) {

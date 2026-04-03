@@ -641,7 +641,9 @@ pub(super) async fn http_set_policy(
     auth_token: Option<&str>,
 ) -> Result<PolicyConfig, String> {
     let client = http_api_client(tls_dir)?;
-    let mut builder = client.put(format!("https://{addr}/api/v1/policy")).json(&policy);
+    let mut builder = client
+        .put(format!("https://{addr}/api/v1/policy"))
+        .json(&policy);
     if let Some(token) = auth_token {
         builder = builder.bearer_auth(token);
     }
