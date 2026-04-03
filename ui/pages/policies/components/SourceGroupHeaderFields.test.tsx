@@ -12,6 +12,7 @@ describe('SourceGroupHeaderFields', () => {
       <SourceGroupHeaderFields group={group} groupIndex={0} updateDraft={vi.fn()} />,
     );
 
+    expect(html).toContain('sm:grid-cols-2');
     expect(html).toContain('Mode');
     expect(html).toContain('Audit');
     expect(html).toContain('Enforce');

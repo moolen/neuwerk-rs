@@ -27,7 +27,7 @@ export const RuleHeaderFields: React.FC<RuleHeaderFieldsProps> = ({
   updateDraft,
 }) => {
   return (
-    <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(16rem,1.2fr)_minmax(12rem,0.8fr)_minmax(12rem,0.8fr)] xl:items-start">
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(14rem,1.4fr)_minmax(10rem,0.8fr)_minmax(10rem,0.8fr)] md:items-start">
       {/* Rule name / ID */}
       <div className="space-y-1">
         <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>

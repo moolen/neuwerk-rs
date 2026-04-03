@@ -15,7 +15,7 @@ export const SourceGroupSourcesSection: React.FC<SourceGroupContextProps> = ({
   updateDraft,
 }) => (
   <>
-    <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
       <div>
         <label className="block text-xs mb-1 uppercase tracking-[0.22em]" style={{ color: 'var(--text-muted)' }}>
           Source CIDRs

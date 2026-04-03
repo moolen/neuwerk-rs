@@ -8,13 +8,6 @@ import type { SourceGroupActionProps, SourceGroupContextProps } from './sourceGr
 
 type SourceGroupCardProps = SourceGroupContextProps & SourceGroupActionProps;
 
-function innerSectionStyle(): React.CSSProperties {
-  return {
-    border: '1px solid var(--border-glass)',
-    background: 'rgba(255,255,255,0.035)',
-  };
-}
-
 export const SourceGroupCard: React.FC<SourceGroupCardProps> = ({
   group,
   groupIndex,
@@ -41,130 +34,132 @@ export const SourceGroupCard: React.FC<SourceGroupCardProps> = ({
   return (
     <div
       className="rounded-[1.35rem] overflow-hidden"
-      style={{
-        border: '1px solid var(--border-glass)',
-        background: 'linear-gradient(180deg, var(--bg-glass-strong), rgba(255,255,255,0.04))',
-        boxShadow: 'var(--shadow-glass)',
-      }}
+      style={{ border: '1px solid var(--border-subtle)' }}
     >
       {/* Summary header row */}
       <div
-        className="flex items-center gap-2.5 px-4 py-3 cursor-pointer select-none"
+        className="flex cursor-pointer select-none flex-col gap-3 px-4 py-3 sm:flex-row sm:items-start"
         onClick={() => setIsExpanded((v) => !v)}
       >
-        {/* Group name */}
-        <span
-          className="text-sm font-semibold flex-1 min-w-0 truncate"
-          style={{ color: 'var(--text)' }}
-        >
-          {displayName}
-        </span>
-
-        {/* Source count badge */}
-        {sourceCount > 0 && (
+        <div className="min-w-0 flex-1 space-y-2">
+          {/* Group name */}
           <span
-            className="px-2 py-0.5 rounded text-xs shrink-0"
-            style={{
-              background: 'var(--accent-soft)',
-              color: 'var(--accent)',
-              border: '1px solid rgba(79,110,247,0.2)',
-            }}
+            className="block min-w-0 text-sm font-semibold truncate"
+            style={{ color: 'var(--text)' }}
           >
-            {sourceCount} {sourceCount === 1 ? 'source' : 'sources'}
+            {displayName}
           </span>
-        )}
 
-        {/* Rule count badge */}
-        <span
-          className="px-2 py-0.5 rounded text-xs shrink-0"
-          style={{
-            background: 'var(--bg-glass-subtle)',
-            color: 'var(--text-muted)',
-            border: '1px solid var(--border-subtle)',
-          }}
-        >
-          {ruleCount} {ruleCount === 1 ? 'rule' : 'rules'}
-        </span>
+          <div className="flex flex-wrap gap-2">
+            {/* Source count badge */}
+            {sourceCount > 0 && (
+              <span
+                className="px-2 py-0.5 rounded text-xs shrink-0"
+                style={{
+                  background: 'var(--accent-soft)',
+                  color: 'var(--accent)',
+                  border: '1px solid rgba(79,110,247,0.2)',
+                }}
+              >
+                {sourceCount} {sourceCount === 1 ? 'source' : 'sources'}
+              </span>
+            )}
 
-        {/* Fallback action chip */}
-        <span
-          className="px-2 py-0.5 rounded text-xs font-medium shrink-0"
-          style={
-            fallbackAction === 'allow'
-              ? {
-                  background: 'var(--green-bg)',
-                  color: 'var(--green)',
-                  border: '1px solid var(--green-border)',
-                }
-              : {
-                  background: 'var(--red-bg)',
-                  color: 'var(--red)',
-                  border: '1px solid var(--red-border)',
-                }
-          }
-        >
-          fallback: {fallbackAction}
-        </span>
+            {/* Rule count badge */}
+            <span
+              className="px-2 py-0.5 rounded text-xs shrink-0"
+              style={{
+                background: 'var(--bg-glass-subtle)',
+                color: 'var(--text-muted)',
+                border: '1px solid var(--border-subtle)',
+              }}
+            >
+              {ruleCount} {ruleCount === 1 ? 'rule' : 'rules'}
+            </span>
 
-        {/* Action buttons */}
-        <div
-          className="flex items-center gap-0.5 shrink-0"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            type="button"
-            onClick={() => moveGroup(groupIndex, -1)}
-            className="p-1.5 rounded"
-            style={{ color: 'var(--text-muted)' }}
-            title="Move up"
-          >
-            <MoveUp className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => moveGroup(groupIndex, 1)}
-            className="p-1.5 rounded"
-            style={{ color: 'var(--text-muted)' }}
-            title="Move down"
-          >
-            <MoveDown className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => duplicateGroup(groupIndex)}
-            className="p-1.5 rounded"
-            style={{ color: 'var(--text-muted)' }}
-            title="Duplicate group"
-          >
-            <Copy className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => deleteGroup(groupIndex)}
-            className="p-1.5 rounded"
-            style={{ color: 'var(--red)' }}
-            title="Delete group"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
+            {/* Fallback action chip */}
+            <span
+              className="px-2 py-0.5 rounded text-xs font-medium shrink-0"
+              style={
+                fallbackAction === 'allow'
+                  ? {
+                      background: 'var(--green-bg)',
+                      color: 'var(--green)',
+                      border: '1px solid var(--green-border)',
+                    }
+                  : {
+                      background: 'var(--red-bg)',
+                      color: 'var(--red)',
+                      border: '1px solid var(--red-border)',
+                    }
+              }
+            >
+              fallback: {fallbackAction}
+            </span>
+          </div>
         </div>
 
-        {/* Expand chevron */}
-        <ChevronDown
-          className="w-4 h-4 shrink-0"
-          style={{
-            color: 'var(--text-muted)',
-            transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
-            transition: 'transform 150ms ease',
-          }}
-        />
+        <div className="flex items-center justify-between gap-2 sm:shrink-0">
+          {/* Action buttons */}
+          <div
+            className="flex items-center gap-0.5 shrink-0"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => moveGroup(groupIndex, -1)}
+              className="p-1.5 rounded"
+              style={{ color: 'var(--text-muted)' }}
+              title="Move up"
+            >
+              <MoveUp className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => moveGroup(groupIndex, 1)}
+              className="p-1.5 rounded"
+              style={{ color: 'var(--text-muted)' }}
+              title="Move down"
+            >
+              <MoveDown className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => duplicateGroup(groupIndex)}
+              className="p-1.5 rounded"
+              style={{ color: 'var(--text-muted)' }}
+              title="Duplicate group"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => deleteGroup(groupIndex)}
+              className="p-1.5 rounded"
+              style={{ color: 'var(--red)' }}
+              title="Delete group"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Expand chevron */}
+          <ChevronDown
+            className="w-4 h-4 shrink-0"
+            style={{
+              color: 'var(--text-muted)',
+              transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+              transition: 'transform 150ms ease',
+            }}
+          />
+        </div>
       </div>
 
       {/* Expanded content */}
       {isExpanded && (
         <div
-          className="p-4 space-y-4"
-          style={{ borderTop: '1px solid var(--border-glass)' }}
+          className="px-4 pb-4 pt-4 space-y-5"
+          style={{ borderTop: '1px solid var(--border-subtle)' }}
         >
           <div className="grid gap-6 xl:grid-cols-[minmax(15rem,0.9fr)_minmax(0,1.1fr)] xl:items-start">
             <section className="space-y-4">
@@ -193,7 +188,10 @@ export const SourceGroupCard: React.FC<SourceGroupCardProps> = ({
             </section>
           </div>
 
-          <section className="rounded-[1.1rem] p-4 space-y-4" style={innerSectionStyle()}>
+          <section
+            className="space-y-4 pt-4"
+            style={{ borderTop: '1px solid var(--border-subtle)' }}
+          >
             <div className="space-y-1">
               <h4 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
                 Rule stack

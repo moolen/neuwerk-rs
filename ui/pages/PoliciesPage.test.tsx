@@ -169,9 +169,10 @@ describe('PoliciesPage', () => {
 
     const html = renderToStaticMarkup(<PoliciesPage />);
 
-    expect(html).toContain('Always-active singleton policy');
     expect(html).toContain('Global Fallback Action');
     expect(html).toContain('Source groups');
+    expect(html).not.toContain('Always-active singleton policy');
+    expect(html).not.toContain('Neuwerk now provisions one canonical policy document');
     expect(html).not.toContain('New Policy');
     expect(html).not.toContain('Refresh');
     expect(html).toContain('Save');

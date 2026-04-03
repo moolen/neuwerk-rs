@@ -19,6 +19,8 @@ export function buildHandleSave(
     setDraft,
     setEditorMode,
     setEditorTargetId,
+    setOverlayMode,
+    setOverlaySourceGroupId,
     setSelectedPolicyId,
   } = deps;
 
@@ -39,6 +41,8 @@ export function buildHandleSave(
       if (saved.selectedPolicyId) {
         setSelectedPolicyId(saved.selectedPolicyId);
       }
+      setOverlayMode('closed');
+      setOverlaySourceGroupId(null);
       await loadAll();
     } catch (err) {
       setEditorError(errorMessage(err, 'Failed to save policy'));

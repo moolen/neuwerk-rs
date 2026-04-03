@@ -16,7 +16,7 @@ describe('RuleHeaderFields', () => {
       />,
     );
 
-    expect(html).toContain('xl:grid-cols-[minmax(16rem,1.2fr)_minmax(12rem,0.8fr)_minmax(12rem,0.8fr)]');
+    expect(html).toContain('md:grid-cols-[minmax(14rem,1.4fr)_minmax(10rem,0.8fr)_minmax(10rem,0.8fr)]');
     expect(html).toContain('Rule name');
     expect(html).toContain('Action');
     expect(html).toContain('Mode');

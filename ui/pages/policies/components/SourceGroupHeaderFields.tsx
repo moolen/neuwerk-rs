@@ -58,108 +58,110 @@ export const SourceGroupHeaderFields: React.FC<SourceGroupHeaderFieldsProps> = (
         </p>
       </div>
 
-      {/* Mode chips */}
-      <div className="space-y-1">
-        <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-          Mode
-        </label>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() =>
-              updateDraft((next) => {
-                setSourceGroupMode(next, groupIndex, 'enforce');
-              })
-            }
-            className="px-3 py-1.5 rounded text-xs font-medium"
-            style={
-              sourceGroupMode === 'enforce'
-                ? {
-                    background: 'var(--accent-light)',
-                    color: 'var(--accent)',
-                    border: '1px solid rgba(79,110,247,0.3)',
-                  }
-                : chipBase
-            }
-          >
-            Enforce
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              updateDraft((next) => {
-                setSourceGroupMode(next, groupIndex, 'audit');
-              })
-            }
-            className="px-3 py-1.5 rounded text-xs font-medium"
-            style={
-              sourceGroupMode === 'audit'
-                ? {
-                    background: 'var(--amber-bg)',
-                    color: 'var(--amber)',
-                    border: '1px solid var(--amber-border)',
-                  }
-                : chipBase
-            }
-          >
-            Audit
-          </button>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {/* Mode chips */}
+        <div className="space-y-1">
+          <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Mode
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                updateDraft((next) => {
+                  setSourceGroupMode(next, groupIndex, 'enforce');
+                })
+              }
+              className="px-3 py-1.5 rounded text-xs font-medium"
+              style={
+                sourceGroupMode === 'enforce'
+                  ? {
+                      background: 'var(--accent-light)',
+                      color: 'var(--accent)',
+                      border: '1px solid rgba(79,110,247,0.3)',
+                    }
+                  : chipBase
+              }
+            >
+              Enforce
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                updateDraft((next) => {
+                  setSourceGroupMode(next, groupIndex, 'audit');
+                })
+              }
+              className="px-3 py-1.5 rounded text-xs font-medium"
+              style={
+                sourceGroupMode === 'audit'
+                  ? {
+                      background: 'var(--amber-bg)',
+                      color: 'var(--amber)',
+                      border: '1px solid var(--amber-border)',
+                    }
+                  : chipBase
+              }
+            >
+              Audit
+            </button>
+          </div>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Default enforcement posture for this source group; rules can override it.
+          </p>
         </div>
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          Default enforcement posture for this source group; rules can override it.
-        </p>
-      </div>
 
-      {/* Fallback action chips */}
-      <div className="space-y-1">
-        <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-          Group fallback
-        </label>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() =>
-              updateDraft((next) => {
-                setSourceGroupDefaultAction(next, groupIndex, 'allow');
-              })
-            }
-            className="px-3 py-1.5 rounded text-xs font-bold"
-            style={
-              fallbackAction === 'allow'
-                ? {
-                    background: 'var(--green-bg)',
-                    color: 'var(--green)',
-                    border: '1px solid var(--green-border)',
-                  }
-                : chipBase
-            }
-          >
-            ALLOW
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              updateDraft((next) => {
-                setSourceGroupDefaultAction(next, groupIndex, 'deny');
-              })
-            }
-            className="px-3 py-1.5 rounded text-xs font-bold"
-            style={
-              fallbackAction === 'deny'
-                ? {
-                    background: 'var(--red-bg)',
-                    color: 'var(--red)',
-                    border: '1px solid var(--red-border)',
-                  }
-                : chipBase
-            }
-          >
-            DENY
-          </button>
+        {/* Fallback action chips */}
+        <div className="space-y-1">
+          <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Group fallback
+          </label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                updateDraft((next) => {
+                  setSourceGroupDefaultAction(next, groupIndex, 'allow');
+                })
+              }
+              className="px-3 py-1.5 rounded text-xs font-bold"
+              style={
+                fallbackAction === 'allow'
+                  ? {
+                      background: 'var(--green-bg)',
+                      color: 'var(--green)',
+                      border: '1px solid var(--green-border)',
+                    }
+                  : chipBase
+              }
+            >
+              ALLOW
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                updateDraft((next) => {
+                  setSourceGroupDefaultAction(next, groupIndex, 'deny');
+                })
+              }
+              className="px-3 py-1.5 rounded text-xs font-bold"
+              style={
+                fallbackAction === 'deny'
+                  ? {
+                      background: 'var(--red-bg)',
+                      color: 'var(--red)',
+                      border: '1px solid var(--red-border)',
+                    }
+                  : chipBase
+              }
+            >
+              DENY
+            </button>
+          </div>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Applied when no rule in this group yields a decision.
+          </p>
         </div>
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          Applied when no rule in this group yields a decision.
-        </p>
       </div>
     </div>
   );

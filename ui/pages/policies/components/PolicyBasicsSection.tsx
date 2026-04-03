@@ -15,21 +15,7 @@ const chipBaseStyle: React.CSSProperties = {
 };
 
 export const PolicyBasicsSection: React.FC<PolicyBasicsSectionProps> = ({ draft, setDraft }) => (
-  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-    <div
-      className="rounded-xl p-3 text-xs leading-6"
-      style={{
-        border: '1px solid var(--border-subtle)',
-        color: 'var(--text-muted)',
-        background: 'var(--bg-glass-subtle)',
-      }}
-    >
-      <div className="text-xs mb-1 uppercase tracking-[0.22em]">Always-active singleton policy</div>
-      <p>
-        The top-level policy mode is gone. Use each source group&apos;s mode as the default rollout
-        posture, and override specific rules only when they need stricter or softer handling.
-      </p>
-    </div>
+  <div className="space-y-4">
     <div className="space-y-2">
       <label className="block text-xs mb-1 uppercase tracking-[0.22em]" style={{ color: 'var(--text-muted)' }}>
         Global Fallback Action
@@ -76,16 +62,8 @@ export const PolicyBasicsSection: React.FC<PolicyBasicsSectionProps> = ({ draft,
         Used only when no source group or rule yields a decision.
       </p>
     </div>
-    <div
-      className="rounded-xl p-3 text-xs leading-6 sm:col-span-2"
-      style={{
-        border: '1px solid var(--border-subtle)',
-        color: 'var(--text-muted)',
-        background: 'var(--bg-glass-subtle)',
-      }}
-    >
-      Effective decision path: source-group mode -&gt; optional rule mode override -&gt; rule action
-      or group fallback -&gt; global fallback
-    </div>
+    <p className="text-xs leading-6" style={{ color: 'var(--text-muted)' }}>
+      Effective decision path: source-group mode → optional rule mode override → rule action or group fallback → global fallback
+    </p>
   </div>
 );

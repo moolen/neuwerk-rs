@@ -7,7 +7,7 @@ import { RuleMatchProtocolField } from './RuleMatchProtocolField';
 export const RuleMatchProtocolDnsSection: React.FC<RuleEditorContextProps> = ({
   ...context
 }) => (
-  <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
     <RuleMatchProtocolField {...context} />
     <RuleMatchDnsHostnameField {...context} />
   </div>

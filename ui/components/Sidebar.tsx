@@ -24,7 +24,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      className={`flex flex-col transition-all duration-200 ${collapsed ? 'w-16' : 'w-64'}`}
+      className={`flex h-full flex-col transition-all duration-200 ${collapsed ? 'w-16' : 'w-64'}`}
       style={{
         background: 'var(--bg-glass-strong)',
         backdropFilter: 'blur(20px) saturate(1.5)',

@@ -177,4 +177,44 @@ describe('policyBuilderLifecycle helpers', () => {
 
     expect(selectedPolicyIds).toEqual(['singleton']);
   });
+
+  it('closes the open source-group overlay after a successful save', async () => {
+    vi.mocked(savePolicyRemote).mockResolvedValue({
+      editorMode: 'edit',
+      editorTargetId: 'singleton',
+      selectedPolicyId: 'singleton',
+      draft: createEmptyPolicyRequest(),
+    });
+
+    const overlayModes: Array<'closed' | 'create-group' | 'edit-group'> = [];
+    const overlaySourceGroupIds: Array<string | null> = [];
+    const deps: PolicyBuilderLifecycleDeps = {
+      selectedPolicyId: 'singleton',
+      editorMode: 'edit',
+      editorTargetId: 'singleton',
+      overlayMode: 'edit-group',
+      overlaySourceGroupId: 'homelab',
+      draft: createEmptyPolicyRequest(),
+      integrationNames: new Set<string>(),
+      setPolicies: () => undefined,
+      setIntegrations: () => undefined,
+      setSelectedPolicyId: () => undefined,
+      setOverlayMode: (value) => overlayModes.push(value),
+      setOverlaySourceGroupId: (value) => overlaySourceGroupIds.push(value),
+      setLoading: () => undefined,
+      setError: () => undefined,
+      setDraft: () => undefined,
+      setEditorMode: () => undefined,
+      setEditorTargetId: () => undefined,
+      setSaving: () => undefined,
+      setEditorError: () => undefined,
+    };
+
+    const handleSave = buildHandleSave(deps, async () => undefined);
+
+    await handleSave();
+
+    expect(overlayModes).toEqual(['closed']);
+    expect(overlaySourceGroupIds).toEqual([null]);
+  });
 });

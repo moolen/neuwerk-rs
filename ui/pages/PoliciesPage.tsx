@@ -188,40 +188,18 @@ export const PoliciesPage: React.FC = () => {
         )}
 
         <div className="space-y-5" data-policies-main-content="true">
-          <section
-            className="rounded-[1.5rem] p-4 sm:p-5 space-y-5"
-            style={{
-              background:
-                "linear-gradient(180deg, var(--bg-glass-strong), rgba(255,255,255,0.04))",
-              border: "1px solid var(--border-glass)",
-              boxShadow: "var(--shadow-glass)",
-            }}
+          <div
+            className="space-y-3 pb-5"
+            style={{ borderBottom: "1px solid var(--border-glass)" }}
           >
-            <div className="space-y-1.5">
-              <div
-                className="text-xs uppercase tracking-[0.24em]"
-                style={{ color: "var(--text-muted)" }}
-              >
-                Policy defaults
-              </div>
-              <h2
-                className="text-base font-semibold"
-                style={{ color: "var(--text)" }}
-              >
-                Always-active singleton policy
-              </h2>
-              <p
-                className="text-sm leading-6"
-                style={{ color: "var(--text-secondary)" }}
-              >
-                Neuwerk now provisions one canonical policy document
-                automatically. Save writes that document in place while
-                source-group and rule modes control rollout behavior.
-              </p>
+            <div
+              className="text-xs uppercase tracking-[0.24em]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Policy defaults
             </div>
-
             <PolicyBasicsSection draft={draft} setDraft={setDraft} />
-          </section>
+          </div>
 
           {loading ? (
             <div

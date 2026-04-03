@@ -24,6 +24,9 @@ describe('PolicySourceGroupEditorOverlay', () => {
 
     expect(html).toContain('Editing apps');
     expect(html).toContain('Terraform policy');
+    expect(html).not.toContain(
+      'This overlay stays on the Policies page and reuses the existing builder controls for the selected source group.',
+    );
     expect(html).toContain(
       'data-overlay-surface="full-page" class="mx-auto flex h-full w-full max-w-[92rem] flex-col overflow-hidden rounded-[1.6rem]"',
     );
@@ -59,6 +62,10 @@ describe('PolicySourceGroupEditorOverlay', () => {
     expect(html).toContain('apps');
     expect(html).not.toContain('db');
     expect(html).toContain('Rule stack');
+    expect(html).not.toContain('Scoped source-group editor');
+    expect(html).not.toContain(
+      'Only the selected source group is rendered here. Save persists the full policy snapshot.',
+    );
   });
 
   it('keeps rendering the edited source group after its name changes', () => {

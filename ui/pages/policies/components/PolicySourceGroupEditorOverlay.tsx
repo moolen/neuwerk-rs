@@ -54,9 +54,6 @@ export const PolicySourceGroupEditorOverlay: React.FC<PolicySourceGroupEditorOve
             <h2 className="text-lg font-semibold" style={{ color: 'var(--text)' }}>
               Editing {sourceGroupLabel}
             </h2>
-            <p className="text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>
-              This overlay stays on the Policies page and reuses the existing builder controls for the selected source group.
-            </p>
           </div>
 
           <button

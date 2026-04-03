@@ -31,17 +31,18 @@ export const RuleEditor: React.FC<RuleEditorProps> = ({
   const isAllow = rule.action === 'allow';
   const isAudit = rule.mode === 'audit';
 
+  const accentColor = isAllow ? 'var(--green-border)' : 'var(--red-border)';
+
   return (
     <div
-      className="rounded-[1.15rem] overflow-hidden"
       style={{
-        border: '1px solid var(--border-subtle)',
-        background: 'var(--bg-glass-strong)',
+        borderLeft: `2px solid ${accentColor}`,
+        paddingLeft: '0.75rem',
       }}
     >
       {/* Summary row — always visible, click to expand */}
       <div
-        className="flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none"
+        className="flex items-center gap-2 py-2.5 cursor-pointer select-none"
         onClick={() => setIsExpanded((v) => !v)}
       >
         {/* Action chip */}
@@ -153,7 +154,7 @@ export const RuleEditor: React.FC<RuleEditorProps> = ({
       {/* Expanded editor body */}
       {isExpanded && (
         <div
-          className="p-4 space-y-5"
+          className="pb-3 pt-3 space-y-5"
           style={{ borderTop: '1px solid var(--border-subtle)' }}
         >
           <section className="space-y-4">
