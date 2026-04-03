@@ -321,7 +321,7 @@ async fn cluster_migration_verify_detects_policy_drift() {
     .await
     .expect_err("verify-only should fail on drift");
     assert!(
-        verify_err.contains("singleton policy mismatch"),
+        verify_err.contains("policy index mismatch"),
         "unexpected verify error: {verify_err}"
     );
 
