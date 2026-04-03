@@ -551,6 +551,7 @@ pub async fn start_controlplane_runtime(
         } else {
             None
         },
+        cluster_membership_min_voters: cfg.integration_membership_min_voters,
         tls_intercept_ca_ready: Some(tls_intercept_ca_ready),
         tls_intercept_ca_generation: Some(tls_intercept_ca_generation),
     };

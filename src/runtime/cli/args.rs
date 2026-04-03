@@ -20,6 +20,7 @@ mod tests {
 
     use super::{parse_args, RUNTIME_STARTUP_UNSUPPORTED_MESSAGE};
     use crate::runtime::auth::{parse_auth_args, AuthCommand, AuthTarget};
+    use crate::runtime::cluster::{parse_cluster_args, ClusterCommand};
     use crate::runtime::cli::usage;
     use crate::runtime::sysdump::parse_sysdump_args;
 
@@ -86,5 +87,38 @@ mod tests {
             parsed.output,
             Some(PathBuf::from("/tmp/neuwerk-sysdump.tar.gz"))
         );
+    }
+
+    #[test]
+    fn cluster_members_remove_flow_parses() {
+        let args = vec![
+            "members".to_string(),
+            "remove".to_string(),
+            "42".to_string(),
+            "--http-addr".to_string(),
+            "127.0.0.1:8443".to_string(),
+            "--token".to_string(),
+            "jwt".to_string(),
+            "--force".to_string(),
+        ];
+
+        let cmd = parse_cluster_args("neuwerk", &args).expect("cluster args");
+
+        assert!(matches!(
+            cmd,
+            ClusterCommand::MemberRemove {
+                node_id: 42,
+                force: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn top_level_usage_mentions_cluster_commands() {
+        let text = usage("neuwerk");
+
+        assert!(text.contains("neuwerk cluster members list"));
+        assert!(text.contains("neuwerk cluster voters set"));
     }
 }

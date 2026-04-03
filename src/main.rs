@@ -33,6 +33,7 @@ use runtime::bootstrap::startup::{
 };
 use runtime::bootstrap::task_wait::await_runtime_tasks;
 use runtime::cli::{CloudProviderKind, RUNTIME_STARTUP_UNSUPPORTED_MESSAGE};
+use runtime::cluster::{cluster_usage, parse_cluster_args, run_cluster_command};
 #[cfg(test)]
 use runtime::dpdk::worker_plan::{
     choose_dpdk_worker_plan, flow_steer_payload, parse_truthy_flag,
@@ -131,6 +132,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         if let Err(err) = run_sysdump(cmd).await {
+            eprintln!("{err}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+    if args.first().map(|arg| arg.as_str()) == Some("cluster") {
+        let cmd = match parse_cluster_args(&bin, &args[1..]) {
+            Ok(cmd) => cmd,
+            Err(err) => {
+                eprintln!("{err}\n\n{}", cluster_usage(&bin));
+                std::process::exit(2);
+            }
+        };
+        if let Err(err) = run_cluster_command(cmd).await {
             eprintln!("{err}");
             std::process::exit(2);
         }

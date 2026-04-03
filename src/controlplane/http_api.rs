@@ -67,6 +67,7 @@ mod audit;
 mod auth;
 mod auth_routes;
 mod cluster_persistence;
+mod cluster_membership;
 mod extractors;
 mod integrations;
 mod metrics;
@@ -89,6 +90,7 @@ use app_routes::{health_handler, list_dns_cache, ready_handler, stats_handler, u
 use audit::{audit_findings, audit_findings_local};
 use auth_routes::{auth_logout, auth_token_login, auth_whoami};
 use cluster_persistence::persist_cluster_policy;
+use cluster_membership::{list_cluster_members, remove_cluster_member, replace_cluster_voters};
 use extractors::{error_response, parse_uuid, read_body_limited};
 use integrations::{
     create_integration, delete_integration, get_integration, list_integrations, update_integration,
@@ -135,6 +137,7 @@ pub struct HttpApiConfig {
     pub token_path: PathBuf,
     pub external_url: Option<String>,
     pub cluster_tls_dir: Option<PathBuf>,
+    pub cluster_membership_min_voters: u64,
     pub tls_intercept_ca_ready: Option<Arc<AtomicBool>>,
     pub tls_intercept_ca_generation: Option<Arc<AtomicU64>>,
 }
@@ -188,6 +191,7 @@ struct ApiState {
     auth_login_limiter: Arc<Mutex<auth::AuthLoginLimiter>>,
     wiretap_hub: Option<WiretapHub>,
     cluster_tls_dir: Option<PathBuf>,
+    cluster_membership_min_voters: u64,
     tls_dir: PathBuf,
     token_path: PathBuf,
     external_url: String,
@@ -527,6 +531,7 @@ async fn run_http_api_with_shutdown_impl(
         auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
         wiretap_hub,
         cluster_tls_dir: cfg.cluster_tls_dir.clone(),
+        cluster_membership_min_voters: cfg.cluster_membership_min_voters,
         tls_dir: cfg.tls_dir.clone(),
         token_path: cfg.token_path.clone(),
         external_url,
@@ -618,6 +623,9 @@ async fn run_http_api_with_shutdown_impl(
         .route("/threats/feeds/status", get(threat_feed_status))
         .route("/support/sysdump/cluster", post(cluster_sysdump))
         .route("/support/sysdump/node", post(node_sysdump))
+        .route("/cluster/members", get(list_cluster_members))
+        .route("/cluster/members/voters", put(replace_cluster_voters))
+        .route("/cluster/members/:node_id/remove", post(remove_cluster_member))
         .route("/wiretap/stream", get(wiretap_stream))
         .route("/dns-cache", get(list_dns_cache))
         .route(

@@ -31,6 +31,7 @@ fn test_api_state(dir: &TempDir, auth_source: ApiAuthSource) -> ApiState {
         auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
         wiretap_hub: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_dir: dir.path().join("http-tls"),
         token_path: dir.path().join("bootstrap-token"),
         external_url: "https://127.0.0.1:8443".to_string(),
@@ -179,6 +180,7 @@ async fn proxy_stream_forwards_auth_header() {
         auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
         wiretap_hub: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_dir: dir.path().join("http-tls"),
         token_path: dir.path().join("bootstrap-token"),
         external_url: format!("https://{}", addr),
@@ -239,6 +241,7 @@ async fn auth_metrics_record_failures() {
         auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
         wiretap_hub: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_dir: tls_dir.clone(),
         token_path: dir.path().join("bootstrap-token"),
         external_url: "https://127.0.0.1:8443".to_string(),
@@ -387,6 +390,7 @@ async fn wiretap_query_token_is_rejected_and_cookie_auth_works() {
         auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
         wiretap_hub: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_dir: tls_dir.clone(),
         token_path: dir.path().join("bootstrap-token"),
         external_url: "https://127.0.0.1:8443".to_string(),
@@ -647,6 +651,7 @@ async fn auth_token_login_rate_limits_repeated_failures() {
         auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
         wiretap_hub: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_dir,
         token_path: dir.path().join("bootstrap-token"),
         external_url: "https://127.0.0.1:8443".to_string(),
@@ -716,6 +721,7 @@ async fn auth_token_login_rate_limit_is_scoped_by_client_and_token() {
         auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
         wiretap_hub: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_dir,
         token_path: dir.path().join("bootstrap-token"),
         external_url: "https://127.0.0.1:8443".to_string(),
@@ -817,6 +823,7 @@ async fn auth_token_login_prefers_connect_info_over_forwarded_header() {
         auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
         wiretap_hub: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_dir,
         token_path: dir.path().join("bootstrap-token"),
         external_url: "https://127.0.0.1:8443".to_string(),
@@ -900,6 +907,7 @@ async fn auth_token_login_rejects_oversized_token_field() {
         auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
         wiretap_hub: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_dir,
         token_path: dir.path().join("bootstrap-token"),
         external_url: "https://127.0.0.1:8443".to_string(),
@@ -1014,6 +1022,125 @@ fn mint_admin_token(keyset_path: &std::path::Path) -> String {
         .token
 }
 
+fn write_cluster_bootstrap_token(path: &std::path::Path) {
+    let json = serde_json::json!({
+        "tokens": [
+            {
+                "kid": "test",
+                "token": "b64:dGVzdC1zZWNyZXQ=",
+                "valid_until": "2027-01-01T00:00:00Z"
+            }
+        ]
+    });
+    std::fs::write(path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+fn next_cluster_addr() -> SocketAddr {
+    let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    addr
+}
+
+fn test_cluster_config(
+    data_dir: &TempDir,
+    token_path: &std::path::Path,
+) -> crate::controlplane::cluster::config::ClusterConfig {
+    let mut cfg = crate::controlplane::cluster::config::ClusterConfig::disabled();
+    let raft_addr = next_cluster_addr();
+    cfg.enabled = true;
+    cfg.data_dir = data_dir.path().to_path_buf();
+    cfg.token_path = token_path.to_path_buf();
+    cfg.node_id_path = data_dir.path().join("node_id");
+    cfg.bind_addr = raft_addr;
+    cfg.advertise_addr = raft_addr;
+    cfg.join_bind_addr = next_cluster_addr();
+    cfg
+}
+
+async fn wait_for_cluster_leader(
+    raft: &openraft::Raft<crate::controlplane::cluster::types::ClusterTypeConfig>,
+    timeout: Duration,
+) -> u128 {
+    let mut metrics = raft.metrics();
+    let deadline = Instant::now() + timeout;
+    loop {
+        let snapshot = metrics.borrow().clone();
+        if let Some(leader) = snapshot.current_leader {
+            return leader;
+        }
+        let now = Instant::now();
+        assert!(now < deadline, "timed out waiting for leader");
+        tokio::time::timeout(deadline - now, metrics.changed())
+            .await
+            .expect("metrics wait timeout")
+            .expect("metrics channel closed");
+    }
+}
+
+async fn wait_for_cluster_voter(
+    raft: &openraft::Raft<crate::controlplane::cluster::types::ClusterTypeConfig>,
+    node_id: u128,
+    timeout: Duration,
+) {
+    let mut metrics = raft.metrics();
+    let deadline = Instant::now() + timeout;
+    loop {
+        let snapshot = metrics.borrow().clone();
+        if snapshot
+            .membership_config
+            .membership()
+            .voter_ids()
+            .any(|id| id == node_id)
+        {
+            return;
+        }
+        let now = Instant::now();
+        assert!(now < deadline, "timed out waiting for voter");
+        tokio::time::timeout(deadline - now, metrics.changed())
+            .await
+            .expect("metrics wait timeout")
+            .expect("metrics channel closed");
+    }
+}
+
+async fn wait_for_stable_membership(
+    raft: &openraft::Raft<crate::controlplane::cluster::types::ClusterTypeConfig>,
+    timeout: Duration,
+) {
+    let mut metrics = raft.metrics();
+    let deadline = Instant::now() + timeout;
+    loop {
+        let snapshot = metrics.borrow().clone();
+        if snapshot.membership_config.membership().get_joint_config().len() == 1 {
+            return;
+        }
+        let now = Instant::now();
+        assert!(now < deadline, "timed out waiting for stable membership");
+        tokio::time::timeout(deadline - now, metrics.changed())
+            .await
+            .expect("metrics wait timeout")
+            .expect("metrics channel closed");
+    }
+}
+
+async fn start_test_cluster(
+    data_dir: &TempDir,
+    token_path: &std::path::Path,
+    join_seed: Option<SocketAddr>,
+) -> crate::controlplane::cluster::ClusterRuntime {
+    let mut cfg = test_cluster_config(data_dir, token_path);
+    cfg.join_seed = join_seed;
+    crate::controlplane::cluster::bootstrap::run_cluster(cfg, None, None)
+        .await
+        .unwrap()
+}
+
 fn test_state(dir: &TempDir, keyset_path: std::path::PathBuf, metrics: Metrics) -> ApiState {
     ApiState {
         policy_store: PolicyStore::new(DefaultPolicy::Deny, Ipv4Addr::new(10, 0, 0, 0), 24),
@@ -1032,6 +1159,7 @@ fn test_state(dir: &TempDir, keyset_path: std::path::PathBuf, metrics: Metrics) 
         auth_login_limiter: Arc::new(Mutex::new(auth::AuthLoginLimiter::default())),
         wiretap_hub: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_dir: dir.path().join("http-tls"),
         token_path: dir.path().join("bootstrap-token"),
         external_url: "https://127.0.0.1:8443".to_string(),
@@ -1041,6 +1169,183 @@ fn test_state(dir: &TempDir, keyset_path: std::path::PathBuf, metrics: Metrics) 
         dns_map: None,
         readiness: None,
     }
+}
+
+#[tokio::test]
+async fn cluster_members_requires_auth() {
+    let dir = TempDir::new().unwrap();
+    let keyset_path = test_auth_setup(&dir);
+    let state = test_state(&dir, keyset_path, Metrics::new().unwrap());
+
+    let app = Router::new()
+        .route("/api/v1/cluster/members", get(list_cluster_members))
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            auth::auth_middleware,
+        ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/cluster/members")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn cluster_members_remove_rejects_min_voters_violation() {
+    let dir = TempDir::new().unwrap();
+    let keyset_path = test_auth_setup(&dir);
+    let admin_token = mint_admin_token(&keyset_path);
+
+    let seed_dir = TempDir::new().unwrap();
+    let joiner_dir = TempDir::new().unwrap();
+    let token_path = seed_dir.path().join("bootstrap.json");
+    write_cluster_bootstrap_token(&token_path);
+
+    let seed = start_test_cluster(&seed_dir, &token_path, None).await;
+    let _leader_id = wait_for_cluster_leader(&seed.raft, Duration::from_secs(10)).await;
+    let joiner = start_test_cluster(&joiner_dir, &token_path, Some(seed.join_bind_addr)).await;
+    let joiner_id = joiner.raft.metrics().borrow().id;
+    wait_for_cluster_voter(&seed.raft, joiner_id, Duration::from_secs(10)).await;
+    wait_for_stable_membership(&seed.raft, Duration::from_secs(10)).await;
+
+    let mut state = test_state(&dir, keyset_path, Metrics::new().unwrap());
+    state.cluster_membership_min_voters = 2;
+    state.cluster = Some(HttpApiCluster {
+        raft: seed.raft.clone(),
+        store: seed.store.clone(),
+    });
+
+    let app = Router::new()
+        .route(
+            "/api/v1/cluster/members/:node_id/remove",
+            post(remove_cluster_member),
+        )
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            auth::auth_middleware,
+        ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/cluster/members/{joiner_id}/remove"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::from(r#"{"force":false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .contains("min_voters")
+    );
+
+    joiner.shutdown().await;
+    seed.shutdown().await;
+}
+
+#[tokio::test]
+async fn cluster_members_list_marks_missing_members_from_replicated_state() {
+    let dir = TempDir::new().unwrap();
+    let keyset_path = test_auth_setup(&dir);
+    let admin_token = mint_admin_token(&keyset_path);
+
+    let seed_dir = TempDir::new().unwrap();
+    let joiner_dir = TempDir::new().unwrap();
+    let token_path = seed_dir.path().join("bootstrap.json");
+    write_cluster_bootstrap_token(&token_path);
+
+    let seed = start_test_cluster(&seed_dir, &token_path, None).await;
+    let _leader_id = wait_for_cluster_leader(&seed.raft, Duration::from_secs(10)).await;
+    let joiner = start_test_cluster(&joiner_dir, &token_path, Some(seed.join_bind_addr)).await;
+    let joiner_id = joiner.raft.metrics().borrow().id;
+    wait_for_cluster_voter(&seed.raft, joiner_id, Duration::from_secs(10)).await;
+    wait_for_stable_membership(&seed.raft, Duration::from_secs(10)).await;
+
+    let missing_since = 1_717_171_717_i64;
+    seed.raft
+        .client_write(crate::controlplane::cluster::types::ClusterCommand::Put {
+            key: crate::controlplane::cloud::missing_member_key(joiner_id),
+            value: serde_json::to_vec(&crate::controlplane::cloud::types::MissingMemberState {
+                first_missing_epoch: missing_since,
+            })
+            .unwrap(),
+        })
+        .await
+        .unwrap();
+
+    let mut state = test_state(&dir, keyset_path, Metrics::new().unwrap());
+    state.cluster = Some(HttpApiCluster {
+        raft: seed.raft.clone(),
+        store: seed.store.clone(),
+    });
+
+    let app = Router::new()
+        .route("/api/v1/cluster/members", get(list_cluster_members))
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            auth::auth_middleware,
+        ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/cluster/members")
+                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let members = payload
+        .get("members")
+        .and_then(serde_json::Value::as_array)
+        .expect("members array");
+    let member = members
+        .iter()
+        .find(|member| member.get("node_id") == Some(&serde_json::json!(joiner_id.to_string())))
+        .expect("joiner member");
+    assert_eq!(
+        member
+            .get("cloud_status")
+            .and_then(serde_json::Value::as_str),
+        Some("missing_from_discovery")
+    );
+    assert_eq!(
+        member
+            .get("auto_evict_reason")
+            .and_then(serde_json::Value::as_str),
+        Some(format!("missing_from_discovery:{missing_since}").as_str())
+    );
+
+    joiner.shutdown().await;
+    seed.shutdown().await;
 }
 
 #[tokio::test]

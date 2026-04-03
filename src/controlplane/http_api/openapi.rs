@@ -48,6 +48,9 @@ impl Modify for SecurityAddon {
         super::auth_routes::auth_logout,
         super::auth_routes::auth_whoami,
         super::sso_auth_routes::auth_sso_supported_providers,
+        super::cluster_membership::list_cluster_members,
+        super::cluster_membership::remove_cluster_member,
+        super::cluster_membership::replace_cluster_voters,
         super::policy::get_policy_singleton,
         super::policy::put_policy_singleton,
         super::integrations::list_integrations,
@@ -82,6 +85,11 @@ impl Modify for SecurityAddon {
     components(
         schemas(
             ErrorBody,
+            super::cluster_membership::ClusterMemberView,
+            super::cluster_membership::ClusterMembersResponse,
+            super::cluster_membership::RemoveClusterMemberRequest,
+            super::cluster_membership::ReplaceClusterVotersRequest,
+            super::cluster_membership::ClusterVotersResponse,
             crate::controlplane::policy_config::RuleMode,
             crate::controlplane::policy_config::PolicyConfig,
             crate::controlplane::policy_config::MatchModeValue,
@@ -206,6 +214,9 @@ mod tests {
             .and_then(|value| value.as_object())
             .expect("paths object");
         assert!(paths.contains_key("/api/v1/policy"));
+        assert!(paths.contains_key("/api/v1/cluster/members"));
+        assert!(paths.contains_key("/api/v1/cluster/members/{node_id}/remove"));
+        assert!(paths.contains_key("/api/v1/cluster/members/voters"));
         assert!(paths.contains_key("/api/v1/service-accounts"));
         assert!(paths.contains_key("/api/v1/settings/performance-mode"));
         assert!(paths.contains_key("/api/v1/settings/threat-intel"));

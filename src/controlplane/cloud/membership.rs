@@ -132,25 +132,22 @@ pub fn select_eviction_candidate(
 ) -> Option<EvictionCandidate> {
     if auto_evict_terminating {
         for member in members {
-            if !member.is_voter || member.node_id == local_node_id {
-                continue;
-            }
-            let MemberCloudStatus::Exact(instance) = &member.status else {
-                continue;
-            };
-            if !terminations.contains_key(&instance.id) {
-                continue;
-            }
-            let Some(drain) = drains.get(&instance.id) else {
-                continue;
-            };
-            if drain.state == DrainStatus::Drained {
-                return Some(EvictionCandidate {
-                    node_id: member.node_id,
-                    reason: EvictionReason::TerminatingAndDrained {
-                        instance_id: instance.id.clone(),
-                    },
-                });
+            if let Some(reason) = eviction_reason_for_member(
+                member,
+                drains,
+                terminations,
+                missing,
+                local_node_id,
+                auto_evict_terminating,
+                stale_after_secs,
+                now,
+            ) {
+                if matches!(reason, EvictionReason::TerminatingAndDrained { .. }) {
+                    return Some(EvictionCandidate {
+                        node_id: member.node_id,
+                        reason,
+                    });
+                }
             }
         }
     }
@@ -159,28 +156,67 @@ pub fn select_eviction_candidate(
         return None;
     }
 
-    let stale_after_secs = stale_after_secs as i64;
     for member in members {
-        if !member.is_voter || member.node_id == local_node_id {
-            continue;
-        }
-        if member.status != MemberCloudStatus::Missing {
-            continue;
-        }
-        let Some(state) = missing.get(&member.node_id) else {
-            continue;
-        };
-        if now - state.first_missing_epoch >= stale_after_secs {
-            return Some(EvictionCandidate {
-                node_id: member.node_id,
-                reason: EvictionReason::MissingFromDiscovery {
-                    missing_since: state.first_missing_epoch,
-                },
-            });
+        if let Some(reason) = eviction_reason_for_member(
+            member,
+            drains,
+            terminations,
+            missing,
+            local_node_id,
+            auto_evict_terminating,
+            stale_after_secs,
+            now,
+        ) {
+            if matches!(reason, EvictionReason::MissingFromDiscovery { .. }) {
+                return Some(EvictionCandidate {
+                    node_id: member.node_id,
+                    reason,
+                });
+            }
         }
     }
 
     None
+}
+
+pub fn eviction_reason_for_member(
+    member: &CorrelatedMember,
+    drains: &HashMap<String, DrainState>,
+    terminations: &HashMap<String, TerminationEvent>,
+    missing: &HashMap<NodeId, MissingMemberState>,
+    local_node_id: NodeId,
+    auto_evict_terminating: bool,
+    stale_after_secs: u64,
+    now: i64,
+) -> Option<EvictionReason> {
+    if !member.is_voter || member.node_id == local_node_id {
+        return None;
+    }
+
+    if auto_evict_terminating {
+        if let MemberCloudStatus::Exact(instance) = &member.status {
+            if terminations.contains_key(&instance.id) {
+                if let Some(drain) = drains.get(&instance.id) {
+                    if drain.state == DrainStatus::Drained {
+                        return Some(EvictionReason::TerminatingAndDrained {
+                            instance_id: instance.id.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if stale_after_secs == 0 || member.status != MemberCloudStatus::Missing {
+        return None;
+    }
+    let state = missing.get(&member.node_id)?;
+    if now - state.first_missing_epoch < stale_after_secs as i64 {
+        return None;
+    }
+    Some(EvictionReason::MissingFromDiscovery {
+        missing_since: state.first_missing_epoch,
+    })
 }
 
 fn correlate_member(addr: &str, instances: &[InstanceRef]) -> MemberCloudStatus {

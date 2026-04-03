@@ -434,6 +434,7 @@ mod tests {
             auth_login_limiter: Arc::new(Mutex::new(AuthLoginLimiter::default())),
             wiretap_hub: None,
             cluster_tls_dir: None,
+            cluster_membership_min_voters: 3,
             tls_dir: dir.path().join("http-tls"),
             token_path: dir.path().join("bootstrap-token"),
             external_url: "https://localhost".to_string(),

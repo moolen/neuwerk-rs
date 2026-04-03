@@ -566,6 +566,7 @@ pub(super) fn spawn_http_api_with_audit(
         token_path,
         external_url: None,
         cluster_tls_dir: None,
+        cluster_membership_min_voters: 3,
         tls_intercept_ca_ready: None,
         tls_intercept_ca_generation: None,
     };
