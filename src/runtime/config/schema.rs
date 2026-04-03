@@ -63,6 +63,8 @@ pub struct BootstrapConfigFile {
 pub struct DnsConfigFile {
     pub target_ips: Vec<Ipv4Addr>,
     pub upstreams: Vec<SocketAddr>,
+    #[serde(default)]
+    pub upstream_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

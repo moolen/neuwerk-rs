@@ -70,6 +70,8 @@ dns:
   upstreams:
     - 10.0.0.2:53
     - 10.0.0.3:53
+  # Optional per-query upstream timeout before Neuwerk returns SERVFAIL.
+  upstream_timeout_ms: 2000
 
 runtime:
   # Tokio worker count for DNS/control-plane background tasks.
@@ -290,6 +292,7 @@ dpdk:
 | `bootstrap.data_plane_mode` | required; packaged image seeds `dpdk` | Switch to `tun` or `tap` instead of DPDK |
 | `dns.target_ips` | required | Pin the local IPs Neuwerk should answer DNS on |
 | `dns.upstreams` | required | Set the upstream resolvers reachable from the management network |
+| `dns.upstream_timeout_ms` | `2000` | Upstream resolvers are slow enough that Neuwerk should wait longer before returning `SERVFAIL` |
 
 ### Runtime, Policy, HTTP, And Metrics
 

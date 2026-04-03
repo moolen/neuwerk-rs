@@ -125,20 +125,20 @@ pub(super) fn http_api_proxy_to_leader() -> Result<(), String> {
 
         let seed_id = load_node_id(&seed_dir)?;
         let (leader_addr, leader_tls, follower_addr, follower_tls) = if leader_id == seed_id {
-                (
-                    seed_api_addr,
-                    seed_tls_dir.clone(),
-                    joiner_api_addr,
-                    joiner_tls_dir.clone(),
-                )
-            } else {
-                (
-                    joiner_api_addr,
-                    joiner_tls_dir.clone(),
-                    seed_api_addr,
-                    seed_tls_dir.clone(),
-                )
-            };
+            (
+                seed_api_addr,
+                seed_tls_dir.clone(),
+                joiner_api_addr,
+                joiner_tls_dir.clone(),
+            )
+        } else {
+            (
+                joiner_api_addr,
+                joiner_tls_dir.clone(),
+                seed_api_addr,
+                seed_tls_dir.clone(),
+            )
+        };
 
         let policy = sample_policy("proxy-policy")?;
         let expected = http_set_policy(
@@ -352,13 +352,8 @@ pub(super) fn http_api_leader_loss() -> Result<(), String> {
             return Err(format!("health status unexpected: {health}"));
         }
 
-        let policies = http_api_status(
-            follower_addr,
-            &follower_tls,
-            "/api/v1/policy",
-            Some(&token),
-        )
-        .await?;
+        let policies =
+            http_api_status(follower_addr, &follower_tls, "/api/v1/policy", Some(&token)).await?;
         if policies != reqwest::StatusCode::SERVICE_UNAVAILABLE
             && policies != reqwest::StatusCode::BAD_GATEWAY
         {
@@ -531,6 +526,7 @@ source_groups:
         let seed_dns_task = tokio::spawn(run_dns_proxy(
             seed_dns_addr,
             vec![SocketAddr::new(seed_ip.into(), 9)],
+            Duration::from_secs(2),
             dns_policy.clone(),
             DnsMap::new(),
             Metrics::new().map_err(|err| format!("metrics init failed: {err}"))?,
@@ -552,6 +548,7 @@ source_groups:
         let joiner_dns_task = tokio::spawn(run_dns_proxy(
             joiner_dns_addr,
             vec![SocketAddr::new(joiner_ip.into(), 9)],
+            Duration::from_secs(2),
             dns_policy.clone(),
             DnsMap::new(),
             Metrics::new().map_err(|err| format!("metrics init failed: {err}"))?,

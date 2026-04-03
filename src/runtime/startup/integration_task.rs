@@ -198,6 +198,7 @@ mod tests {
             data_plane_iface: "data0".to_string(),
             dns_target_ips: Vec::new(),
             dns_upstreams: Vec::new(),
+            dns_upstream_timeout: std::time::Duration::from_secs(2),
             data_plane_mode: DataPlaneMode::Soft(SoftMode::Tap),
             idle_timeout_secs: 60,
             dns_allowlist_idle_secs: 60,

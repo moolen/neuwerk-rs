@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use neuwerk::controlplane::trafficd::UpstreamTlsVerificationMode;
 use neuwerk::dataplane::engine::AdmissionControlConfig;
 
+pub const DNS_UPSTREAM_TIMEOUT_MS_DEFAULT: u64 = 2_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedConfig {
     pub version: u16,
@@ -34,6 +36,7 @@ pub struct BootstrapConfig {
 pub struct DnsConfig {
     pub target_ips: Vec<Ipv4Addr>,
     pub upstreams: Vec<SocketAddr>,
+    pub upstream_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -462,6 +465,7 @@ impl Default for ValidatedConfig {
             dns: DnsConfig {
                 target_ips: vec![Ipv4Addr::new(10, 0, 0, 53)],
                 upstreams: vec![SocketAddr::from(([10, 0, 0, 2], 53))],
+                upstream_timeout_ms: DNS_UPSTREAM_TIMEOUT_MS_DEFAULT,
             },
             runtime: RuntimeBehaviorConfig::default(),
             policy: PolicyConfig::default(),

@@ -482,6 +482,7 @@ pub async fn start_controlplane_runtime(
     let dns_cfg = controlplane::trafficd::TrafficdConfig {
         dns_bind: dns_listen,
         dns_upstreams,
+        dns_upstream_timeout: cfg.dns_upstream_timeout,
         dns_policy,
         dns_map: dns_map_for_dns,
         metrics: metrics.clone(),
@@ -556,21 +557,24 @@ pub async fn start_controlplane_runtime(
         tls_intercept_ca_generation: Some(tls_intercept_ca_generation),
     };
     let http_shutdown = controlplane::http_api::HttpApiShutdown::new();
-    let http_task = spawn_http_runtime_thread(HttpRuntimeThreadConfig {
-        cfg: http_cfg,
-        policy_store,
-        local_store: local_policy_store,
-        cluster: http_cluster,
-        audit_store: Some(audit_store),
-        policy_telemetry_store: Some(policy_telemetry_store),
-        threat_store: Some(threat_store),
-        wiretap_hub: Some(wiretap_hub),
-        dns_map: Some(dns_map_for_http),
-        readiness: Some(readiness),
-        metrics,
-        shutdown: http_shutdown.clone(),
-        leader_local_policy_apply_count,
-    }, cfg.runtime.http_worker_threads)?;
+    let http_task = spawn_http_runtime_thread(
+        HttpRuntimeThreadConfig {
+            cfg: http_cfg,
+            policy_store,
+            local_store: local_policy_store,
+            cluster: http_cluster,
+            audit_store: Some(audit_store),
+            policy_telemetry_store: Some(policy_telemetry_store),
+            threat_store: Some(threat_store),
+            wiretap_hub: Some(wiretap_hub),
+            dns_map: Some(dns_map_for_http),
+            readiness: Some(readiness),
+            metrics,
+            shutdown: http_shutdown.clone(),
+            leader_local_policy_apply_count,
+        },
+        cfg.runtime.http_worker_threads,
+    )?;
 
     Ok(ControlplaneRuntimeHandles {
         dns_task,

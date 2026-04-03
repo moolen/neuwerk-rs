@@ -14,6 +14,7 @@ enum UpstreamMode {
     Valid(Ipv4Addr),
     TxIdMismatch(Ipv4Addr),
     QuestionMismatch(Ipv4Addr),
+    Blackhole,
 }
 
 async fn spawn_test_upstream(mode: UpstreamMode) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -36,6 +37,7 @@ async fn spawn_test_upstream(mode: UpstreamMode) -> (SocketAddr, tokio::task::Jo
                 resp
             }
             UpstreamMode::QuestionMismatch(ip) => build_dns_response("other.allowed", ip),
+            UpstreamMode::Blackhole => return,
         };
         let _ = socket.send_to(&response, peer).await;
     });
@@ -143,6 +145,17 @@ fn build_nxdomain_preserves_id_and_question() {
 }
 
 #[test]
+fn build_servfail_preserves_id_and_question() {
+    let query = build_dns_query("foo.allowed");
+    let response = build_servfail(&query);
+    assert!(response.len() >= 12);
+    assert_eq!(&response[0..2], &query[0..2]);
+    assert_eq!(response[3] & 0x0f, 2);
+    let qdcount = read_u16(&response, 4).unwrap();
+    assert_eq!(qdcount, 1);
+}
+
+#[test]
 fn extract_ips_populates_dns_map() {
     let ip = Ipv4Addr::new(93, 184, 216, 34);
     let response = build_dns_response("Example.COM.", ip);
@@ -167,6 +180,14 @@ fn dns_rcode_detects_nxdomain() {
     let response = build_nxdomain(&query);
     assert_eq!(dns_rcode(&response), Some(3));
     assert!(is_nxdomain(&response));
+}
+
+#[test]
+fn dns_rcode_detects_servfail() {
+    let query = build_dns_query("foo.allowed");
+    let response = build_servfail(&query);
+    assert_eq!(dns_rcode(&response), Some(2));
+    assert!(!is_nxdomain(&response));
 }
 
 #[test]
@@ -318,6 +339,7 @@ async fn udp_upstream_failover_recovers_after_mismatch() {
         &request,
         &question,
         &[bad_addr, good_addr],
+        std::time::Duration::from_secs(2),
         "unit",
         &metrics,
     )
@@ -349,6 +371,7 @@ async fn udp_upstream_failover_returns_mismatch_when_all_invalid() {
         &request,
         &question,
         &[bad_txid_addr, bad_question_addr],
+        std::time::Duration::from_secs(2),
         "unit",
         &metrics,
     )
@@ -367,6 +390,7 @@ async fn startup_status_reports_empty_upstream_error() {
     let result = run_dns_proxy(
         bind_addr,
         Vec::new(),
+        std::time::Duration::from_secs(2),
         std::sync::Arc::new(std::sync::RwLock::new(DnsPolicy::new(Vec::new()))),
         DnsMap::new(),
         Metrics::new().unwrap(),
@@ -395,6 +419,7 @@ async fn startup_status_reports_bind_error() {
     let result = run_dns_proxy(
         bind_addr,
         vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 53)],
+        std::time::Duration::from_secs(2),
         std::sync::Arc::new(std::sync::RwLock::new(DnsPolicy::new(Vec::new()))),
         DnsMap::new(),
         Metrics::new().unwrap(),
@@ -412,4 +437,74 @@ async fn startup_status_reports_bind_error() {
         .await
         .expect("startup channel should be reported");
     assert!(startup.is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn udp_transport_failures_return_servfail() {
+    let policy = std::sync::Arc::new(std::sync::RwLock::new(DnsPolicy::new(vec![
+        DnsSourceGroup {
+            id: "loopback".to_string(),
+            priority: 0,
+            mode: DataplaneRuleMode::Enforce,
+            sources: {
+                let mut sources = IpSetV4::new();
+                sources.add_ip(Ipv4Addr::LOCALHOST);
+                sources
+            },
+            rules: vec![dns_rule(
+                "allow-example",
+                0,
+                RuleAction::Allow,
+                DataplaneRuleMode::Enforce,
+                r"^example\.com$",
+            )],
+        },
+    ])));
+    let metrics = Metrics::new().unwrap();
+    let (upstream_addr, upstream_task) = spawn_test_upstream(UpstreamMode::Blackhole).await;
+    let reserved = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let bind_addr = reserved.local_addr().unwrap();
+    drop(reserved);
+    let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+
+    let proxy_task = tokio::spawn(run_dns_proxy(
+        bind_addr,
+        vec![upstream_addr],
+        std::time::Duration::from_millis(20),
+        policy,
+        DnsMap::new(),
+        metrics,
+        None,
+        None,
+        None,
+        None,
+        "node-test".to_string(),
+        Some(startup_tx),
+    ));
+
+    let startup = startup_rx
+        .await
+        .expect("startup channel should be reported");
+    assert!(startup.is_ok(), "{startup:?}");
+
+    let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let local_addr = client.local_addr().unwrap();
+    let query = build_dns_query("example.com");
+
+    client.send_to(&query, bind_addr).await.unwrap();
+
+    let mut buf = vec![0u8; 2048];
+    let (len, peer) = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        client.recv_from(&mut buf),
+    )
+    .await
+    .expect("proxy response timeout")
+    .unwrap();
+    assert_eq!(peer.ip(), bind_addr.ip());
+    assert_eq!(local_addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+    assert_eq!(dns_rcode(&buf[..len]), Some(2));
+
+    proxy_task.abort();
+    upstream_task.abort();
 }

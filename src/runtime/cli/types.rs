@@ -1,5 +1,6 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use neuwerk::controlplane;
 use neuwerk::controlplane::cloud::types::IntegrationMode;
@@ -19,6 +20,7 @@ pub struct CliConfig {
     pub data_plane_iface: String,
     pub dns_target_ips: Vec<Ipv4Addr>,
     pub dns_upstreams: Vec<SocketAddr>,
+    pub dns_upstream_timeout: Duration,
     pub data_plane_mode: DataPlaneMode,
     pub idle_timeout_secs: u64,
     pub dns_allowlist_idle_secs: u64,

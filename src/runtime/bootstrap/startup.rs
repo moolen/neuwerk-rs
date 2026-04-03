@@ -5,13 +5,13 @@ use std::time::Duration;
 
 use neuwerk::controlplane::cloud::provider::CloudProvider as CloudProviderTrait;
 use neuwerk::controlplane::cloud::types::IntegrationMode;
-use neuwerk::controlplane::trafficd::{TlsInterceptH2Settings, TlsInterceptSettings};
 use neuwerk::controlplane::cluster::config::RetryConfig;
 use neuwerk::controlplane::cluster::migration;
 use neuwerk::controlplane::cluster::ClusterRuntime;
-use neuwerk::dataplane::engine::EngineRuntimeConfig;
 use neuwerk::controlplane::policy_repository::PolicyDiskStore;
+use neuwerk::controlplane::trafficd::{TlsInterceptH2Settings, TlsInterceptSettings};
 use neuwerk::controlplane::wiretap::WiretapHub;
+use neuwerk::dataplane::engine::EngineRuntimeConfig;
 use neuwerk::dataplane::{EncapMode, OverlayConfig, SnatMode, SoftMode};
 use neuwerk::metrics::Metrics;
 use tracing::{info, warn};
@@ -19,8 +19,8 @@ use uuid::Uuid;
 
 use crate::runtime::bootstrap::integration::{integration_tag_filter, select_integration_seed};
 use crate::runtime::bootstrap::network::management_ipv4;
-use crate::runtime::cli::{CliConfig, DataPlaneMode};
 use crate::runtime::cli::CloudProviderKind;
+use crate::runtime::cli::{CliConfig, DataPlaneMode};
 use crate::runtime::config::{
     DefaultPolicy as RuntimeDefaultPolicy, DerivedRuntimeConfig, MetricsBindResolution,
     RuntimeIntegrationMode, RuntimeSnatMode,
@@ -136,6 +136,7 @@ pub fn build_runtime_cli_config(cfg: &DerivedRuntimeConfig) -> Result<CliConfig,
         data_plane_iface: cfg.operator.bootstrap.data_interface.clone(),
         dns_target_ips: cfg.operator.dns.target_ips.clone(),
         dns_upstreams: cfg.operator.dns.upstreams.clone(),
+        dns_upstream_timeout: Duration::from_millis(cfg.operator.dns.upstream_timeout_ms),
         data_plane_mode,
         idle_timeout_secs: cfg.operator.dataplane.idle_timeout_secs,
         dns_allowlist_idle_secs: cfg.operator.dataplane.dns_allowlist_idle_secs,
@@ -319,6 +320,7 @@ pub fn log_startup_summary(cfg: &DerivedRuntimeConfig) {
         default_policy = ?cfg.operator.policy.default,
         dns_targets = ?cfg.operator.dns.target_ips,
         dns_upstreams = ?cfg.operator.dns.upstreams,
+        dns_upstream_timeout_ms = cfg.operator.dns.upstream_timeout_ms,
         cloud_provider = %cfg.operator.bootstrap.cloud_provider,
         "neuwerk startup configuration"
     );
@@ -398,7 +400,10 @@ pub fn resolve_runtime_bindings_for_management_ip(
 
 pub async fn resolve_bindings(cfg: &DerivedRuntimeConfig) -> Result<Bindings, String> {
     let management_ip = management_ipv4(&cfg.operator.bootstrap.management_interface).await?;
-    Ok(resolve_runtime_bindings_for_management_ip(cfg, management_ip))
+    Ok(resolve_runtime_bindings_for_management_ip(
+        cfg,
+        management_ip,
+    ))
 }
 
 pub async fn start_cluster_runtime(
@@ -505,7 +510,10 @@ dns:
 
         let cfg = load_runtime_config(tmp.path()).expect("startup config should load");
         assert_eq!(cfg.operator.bootstrap.management_interface, "eth0");
-        assert_eq!(cfg.operator.dns.target_ips, vec![Ipv4Addr::new(10, 0, 0, 53)]);
+        assert_eq!(
+            cfg.operator.dns.target_ips,
+            vec![Ipv4Addr::new(10, 0, 0, 53)]
+        );
     }
 
     #[test]
@@ -542,10 +550,8 @@ metrics:
 "#,
         );
 
-        let bindings = resolve_runtime_bindings_for_management_ip(
-            &cfg,
-            Ipv4Addr::new(192, 0, 2, 10),
-        );
+        let bindings =
+            resolve_runtime_bindings_for_management_ip(&cfg, Ipv4Addr::new(192, 0, 2, 10));
 
         assert_eq!(
             bindings.http_bind,
@@ -579,10 +585,8 @@ dns:
 "#,
         );
 
-        let bindings = resolve_runtime_bindings_for_management_ip(
-            &cfg,
-            Ipv4Addr::new(192, 0, 2, 20),
-        );
+        let bindings =
+            resolve_runtime_bindings_for_management_ip(&cfg, Ipv4Addr::new(192, 0, 2, 20));
 
         assert_eq!(
             bindings.http_bind,

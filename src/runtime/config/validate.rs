@@ -8,6 +8,7 @@ use super::types::{
     DpdkSingleQueueMode, EncapMode, GcpIntegrationConfig, HttpConfig, IntegrationConfig,
     IntegrationMembershipConfig, IntegrationMode, LoadedConfig, MetricsConfig, PolicyConfig,
     RuntimeBehaviorConfig, SnatMode, TlsInterceptConfig, TlsInterceptH2Config, ValidatedConfig,
+    DNS_UPSTREAM_TIMEOUT_MS_DEFAULT,
 };
 use neuwerk::controlplane::trafficd::UpstreamTlsVerificationMode;
 
@@ -75,7 +76,9 @@ fn build_runtime_behavior_config(
     }
     if let Some(threads) = raw.http_worker_threads {
         if threads == 0 {
-            return Err("config validation error: runtime.http_worker_threads must be > 0".to_string());
+            return Err(
+                "config validation error: runtime.http_worker_threads must be > 0".to_string(),
+            );
         }
         cfg.http_worker_threads = threads;
     }
@@ -142,9 +145,16 @@ fn validate_dns(raw: super::schema::DnsConfigFile) -> Result<DnsConfig, String> 
     if raw.upstreams.is_empty() {
         return Err("config validation error: dns.upstreams must not be empty".to_string());
     }
+    let upstream_timeout_ms = raw
+        .upstream_timeout_ms
+        .unwrap_or(DNS_UPSTREAM_TIMEOUT_MS_DEFAULT);
+    if upstream_timeout_ms == 0 {
+        return Err("config validation error: dns.upstream_timeout_ms must be > 0".to_string());
+    }
     Ok(DnsConfig {
         target_ips: raw.target_ips,
         upstreams: raw.upstreams,
+        upstream_timeout_ms,
     })
 }
 
@@ -577,7 +587,9 @@ fn build_dpdk_config(raw: super::schema::DpdkConfigFile) -> Result<DpdkConfig, S
     cfg.pin_state_shard_guard = raw.pin_state_shard_guard;
     if let Some(value) = raw.pin_state_shard_burst {
         if value == 0 {
-            return Err("config validation error: dpdk.pin_state_shard_burst must be > 0".to_string());
+            return Err(
+                "config validation error: dpdk.pin_state_shard_burst must be > 0".to_string(),
+            );
         }
         cfg.pin_state_shard_burst = value;
     }
@@ -619,7 +631,10 @@ fn build_dpdk_config(raw: super::schema::DpdkConfigFile) -> Result<DpdkConfig, S
     if let Some(service_lane) = raw.service_lane {
         if let Some(interface) = service_lane.interface {
             if interface.trim().is_empty() {
-                return Err("config validation error: dpdk.service_lane.interface must not be empty".to_string());
+                return Err(
+                    "config validation error: dpdk.service_lane.interface must not be empty"
+                        .to_string(),
+                );
             }
             cfg.service_lane.interface = interface.trim().to_string();
         }
@@ -628,7 +643,10 @@ fn build_dpdk_config(raw: super::schema::DpdkConfigFile) -> Result<DpdkConfig, S
         }
         if let Some(port) = service_lane.intercept_service_port {
             if port == 0 {
-                return Err("config validation error: dpdk.service_lane.intercept_service_port must be > 0".to_string());
+                return Err(
+                    "config validation error: dpdk.service_lane.intercept_service_port must be > 0"
+                        .to_string(),
+                );
             }
             cfg.service_lane.intercept_service_port = port;
         }
@@ -637,19 +655,28 @@ fn build_dpdk_config(raw: super::schema::DpdkConfigFile) -> Result<DpdkConfig, S
     if let Some(intercept_demux) = raw.intercept_demux {
         if let Some(value) = intercept_demux.gc_interval_ms {
             if value == 0 {
-                return Err("config validation error: dpdk.intercept_demux.gc_interval_ms must be > 0".to_string());
+                return Err(
+                    "config validation error: dpdk.intercept_demux.gc_interval_ms must be > 0"
+                        .to_string(),
+                );
             }
             cfg.intercept_demux.gc_interval_ms = value;
         }
         if let Some(value) = intercept_demux.max_entries {
             if value == 0 {
-                return Err("config validation error: dpdk.intercept_demux.max_entries must be > 0".to_string());
+                return Err(
+                    "config validation error: dpdk.intercept_demux.max_entries must be > 0"
+                        .to_string(),
+                );
             }
             cfg.intercept_demux.max_entries = value;
         }
         if let Some(value) = intercept_demux.shard_count {
             if value == 0 {
-                return Err("config validation error: dpdk.intercept_demux.shard_count must be > 0".to_string());
+                return Err(
+                    "config validation error: dpdk.intercept_demux.shard_count must be > 0"
+                        .to_string(),
+                );
             }
             cfg.intercept_demux.shard_count = value;
         }
@@ -706,11 +733,13 @@ fn positive_u32(value: Option<u32>, field: &str) -> Result<Option<u32>, String> 
     }
 }
 
-fn parse_dpdk_workers(value: &super::schema::DpdkWorkersConfigFile) -> Result<Option<usize>, String> {
+fn parse_dpdk_workers(
+    value: &super::schema::DpdkWorkersConfigFile,
+) -> Result<Option<usize>, String> {
     match value {
-        super::schema::DpdkWorkersConfigFile::Count(0) => Err(
-            "config validation error: dpdk.workers must be > 0 or `auto`".to_string(),
-        ),
+        super::schema::DpdkWorkersConfigFile::Count(0) => {
+            Err("config validation error: dpdk.workers must be > 0 or `auto`".to_string())
+        }
         super::schema::DpdkWorkersConfigFile::Count(value) => Ok(Some(*value)),
         super::schema::DpdkWorkersConfigFile::Scalar(raw) => {
             let trimmed = raw.trim();
@@ -793,8 +822,7 @@ fn build_tls_intercept_config(
     if let Some(io_timeout_secs) = raw.io_timeout_secs {
         if io_timeout_secs == 0 {
             return Err(
-                "config validation error: tls_intercept.io_timeout_secs must be >= 1"
-                    .to_string(),
+                "config validation error: tls_intercept.io_timeout_secs must be >= 1".to_string(),
             );
         }
         cfg.io_timeout_secs = io_timeout_secs;
@@ -802,8 +830,7 @@ fn build_tls_intercept_config(
     if let Some(listen_backlog) = raw.listen_backlog {
         if listen_backlog == 0 {
             return Err(
-                "config validation error: tls_intercept.listen_backlog must be >= 1"
-                    .to_string(),
+                "config validation error: tls_intercept.listen_backlog must be >= 1".to_string(),
             );
         }
         cfg.listen_backlog = listen_backlog;
@@ -848,8 +875,7 @@ fn build_tls_intercept_h2_config(
     if let Some(pool_shards) = raw.pool_shards {
         if pool_shards == 0 {
             return Err(
-                "config validation error: tls_intercept.h2.pool_shards must be >= 1"
-                    .to_string(),
+                "config validation error: tls_intercept.h2.pool_shards must be >= 1".to_string(),
             );
         }
         cfg.pool_shards = pool_shards;
@@ -885,9 +911,7 @@ fn build_tls_intercept_h2_config(
     Ok(cfg)
 }
 
-fn parse_tls_intercept_upstream_verify(
-    value: &str,
-) -> Result<UpstreamTlsVerificationMode, String> {
+fn parse_tls_intercept_upstream_verify(value: &str) -> Result<UpstreamTlsVerificationMode, String> {
     if value.eq_ignore_ascii_case("strict") {
         return Ok(UpstreamTlsVerificationMode::Strict);
     }
@@ -1567,8 +1591,14 @@ dpdk:
         assert_eq!(tls.h2.max_concurrent_streams, 96);
         assert_eq!(cfg.dataplane.flow_table_capacity, 65536);
         assert_eq!(cfg.dataplane.nat_table_capacity, 131072);
-        assert_eq!(cfg.dataplane.flow_incomplete_tcp_idle_timeout_secs, Some(55));
-        assert_eq!(cfg.dataplane.flow_incomplete_tcp_syn_sent_idle_timeout_secs, 7);
+        assert_eq!(
+            cfg.dataplane.flow_incomplete_tcp_idle_timeout_secs,
+            Some(55)
+        );
+        assert_eq!(
+            cfg.dataplane.flow_incomplete_tcp_syn_sent_idle_timeout_secs,
+            7
+        );
         assert!(cfg.dataplane.syn_only_enabled);
         assert!(cfg.dataplane.detailed_observability);
         assert_eq!(cfg.dataplane.admission.max_active_flows, Some(500));
@@ -1809,5 +1839,44 @@ dns:
             cfg.dns.target_ips,
             vec![Ipv4Addr::new(10, 0, 0, 53), Ipv4Addr::new(10, 0, 0, 54)]
         );
+    }
+
+    #[test]
+    fn validate_defaults_dns_upstream_timeout_ms() {
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  cloud_provider: none
+  data_plane_mode: tun
+dns:
+  target_ips:
+    - 10.0.0.53
+  upstreams:
+    - 10.0.0.2:53
+"#;
+        let cfg = load_config_str(raw).expect("config should load");
+        assert_eq!(cfg.dns.upstream_timeout_ms, 2_000);
+    }
+
+    #[test]
+    fn validate_rejects_zero_dns_upstream_timeout_ms() {
+        let raw = r#"
+version: 1
+bootstrap:
+  management_interface: eth0
+  data_interface: eth1
+  cloud_provider: none
+  data_plane_mode: tun
+dns:
+  target_ips:
+    - 10.0.0.53
+  upstreams:
+    - 10.0.0.2:53
+  upstream_timeout_ms: 0
+"#;
+        let err = load_config_str(raw).expect_err("zero upstream timeout must be rejected");
+        assert!(err.contains("dns.upstream_timeout_ms"), "{err}");
     }
 }

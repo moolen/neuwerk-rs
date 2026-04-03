@@ -18,12 +18,12 @@ use crate::controlplane::wiretap::DnsMap;
 use crate::controlplane::PolicyStore;
 
 static DNS_LOGS: AtomicUsize = AtomicUsize::new(0);
-const DNS_UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run_dns_proxy(
     bind_addr: SocketAddr,
     upstream_addrs: Vec<SocketAddr>,
+    upstream_timeout: std::time::Duration,
     policy: std::sync::Arc<std::sync::RwLock<DnsPolicy>>,
     dns_map: DnsMap,
     metrics: Metrics,
@@ -77,6 +77,7 @@ pub async fn run_dns_proxy(
     let tcp_dns_map = dns_map.clone();
     let tcp_metrics = metrics.clone();
     let tcp_upstreams = upstream_addrs.clone();
+    let tcp_upstream_timeout = upstream_timeout;
     let tcp_policy_store = policy_store.clone();
     let tcp_audit_store = audit_store.clone();
     let tcp_policy_telemetry_store = policy_telemetry_store.clone();
@@ -86,6 +87,7 @@ pub async fn run_dns_proxy(
         if let Err(err) = run_dns_proxy_tcp(
             tcp_listen,
             tcp_upstreams,
+            tcp_upstream_timeout,
             tcp_policy,
             tcp_dns_map,
             tcp_metrics,
@@ -211,6 +213,7 @@ pub async fn run_dns_proxy(
             request,
             &question,
             upstream_addrs.as_ref().as_slice(),
+            upstream_timeout,
             &source_group,
             &metrics,
         )
@@ -226,8 +229,7 @@ pub async fn run_dns_proxy(
             }
             Err(UpstreamQueryError::Transport) => {
                 metrics.observe_dns_query("deny", "upstream_error", &source_group);
-                metrics.observe_dns_nxdomain("upstream_error");
-                let response = build_nxdomain(request);
+                let response = build_servfail(request);
                 listen.send_to(&response, peer).await?;
                 continue;
             }
@@ -271,6 +273,7 @@ async fn forward_dns_query_udp(
     request: &[u8],
     question: &DnsQuestion,
     upstream_addrs: &[SocketAddr],
+    upstream_timeout: std::time::Duration,
     source_group: &str,
     metrics: &Metrics,
 ) -> Result<Vec<u8>, UpstreamQueryError> {
@@ -294,7 +297,7 @@ async fn forward_dns_query_udp(
 
         let mut upstream_buf = vec![0u8; 2048];
         let recv =
-            tokio::time::timeout(DNS_UPSTREAM_TIMEOUT, upstream.recv_from(&mut upstream_buf)).await;
+            tokio::time::timeout(upstream_timeout, upstream.recv_from(&mut upstream_buf)).await;
         let (resp_len, resp_peer) = match recv {
             Ok(Ok(value)) => value,
             Ok(Err(_)) | Err(_) => {
@@ -335,6 +338,7 @@ async fn forward_dns_query_udp(
 async fn run_dns_proxy_tcp(
     listener: TcpListener,
     upstream_addrs: std::sync::Arc<Vec<SocketAddr>>,
+    upstream_timeout: std::time::Duration,
     policy: std::sync::Arc<std::sync::RwLock<DnsPolicy>>,
     dns_map: DnsMap,
     metrics: Metrics,
@@ -360,6 +364,7 @@ async fn run_dns_proxy_tcp(
                 stream,
                 peer,
                 upstream_addrs,
+                upstream_timeout,
                 policy,
                 dns_map,
                 metrics,
@@ -382,6 +387,7 @@ async fn handle_dns_tcp_client(
     mut stream: TcpStream,
     peer: SocketAddr,
     upstream_addrs: std::sync::Arc<Vec<SocketAddr>>,
+    upstream_timeout: std::time::Duration,
     policy: std::sync::Arc<std::sync::RwLock<DnsPolicy>>,
     dns_map: DnsMap,
     metrics: Metrics,
@@ -512,6 +518,7 @@ async fn handle_dns_tcp_client(
             &request,
             &question,
             upstream_addrs.as_slice(),
+            upstream_timeout,
             &source_group,
             &metrics,
         )
@@ -531,8 +538,7 @@ async fn handle_dns_tcp_client(
             }
             Err(UpstreamQueryError::Transport) => {
                 metrics.observe_dns_query("deny", "upstream_error", &source_group);
-                metrics.observe_dns_nxdomain("upstream_error");
-                build_nxdomain(&request)
+                build_servfail(&request)
             }
         };
 
@@ -781,6 +787,10 @@ fn is_nxdomain(msg: &[u8]) -> bool {
     dns_rcode(msg) == Some(3)
 }
 
+fn build_servfail(request: &[u8]) -> Vec<u8> {
+    build_error_response(request, 2)
+}
+
 fn read_name(buf: &[u8], idx: &mut usize) -> Option<String> {
     let mut labels = Vec::new();
     let mut cursor = *idx;
@@ -829,6 +839,10 @@ fn read_name(buf: &[u8], idx: &mut usize) -> Option<String> {
 }
 
 fn build_nxdomain(request: &[u8]) -> Vec<u8> {
+    build_error_response(request, 3)
+}
+
+fn build_error_response(request: &[u8], rcode: u8) -> Vec<u8> {
     if request.len() < 12 {
         return Vec::new();
     }
@@ -849,7 +863,7 @@ fn build_nxdomain(request: &[u8]) -> Vec<u8> {
 
     let mut resp = Vec::new();
     resp.extend_from_slice(&request[0..2]); // id
-    resp.extend_from_slice(&[0x81, 0x83]); // response + NXDOMAIN
+    resp.extend_from_slice(&[0x81, 0x80 | (rcode & 0x0f)]); // response + rcode
     resp.extend_from_slice(&qdcount.to_be_bytes());
     resp.extend_from_slice(&[0x00, 0x00]); // ancount
     resp.extend_from_slice(&[0x00, 0x00]); // nscount

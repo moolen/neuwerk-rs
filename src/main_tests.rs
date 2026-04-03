@@ -311,24 +311,46 @@ dpdk:
         cfg.tls_intercept.upstream_verify,
         neuwerk::controlplane::trafficd::UpstreamTlsVerificationMode::Insecure
     ));
-    assert_eq!(cfg.tls_intercept.io_timeout, std::time::Duration::from_secs(9));
+    assert_eq!(
+        cfg.tls_intercept.io_timeout,
+        std::time::Duration::from_secs(9)
+    );
     assert_eq!(cfg.tls_intercept.listen_backlog, 4096);
     assert_eq!(
         cfg.tls_intercept.h2.body_timeout,
         std::time::Duration::from_secs(12)
     );
     assert_eq!(cfg.tls_intercept.h2.max_concurrent_streams, 48);
+    assert_eq!(
+        cfg.dns_upstream_timeout,
+        std::time::Duration::from_millis(2_000)
+    );
     assert_eq!(cfg.engine_runtime.flow_table_capacity, 8192);
     assert_eq!(cfg.engine_runtime.nat_table_capacity, 16384);
-    assert_eq!(cfg.engine_runtime.flow_incomplete_tcp_idle_timeout_secs, Some(21));
-    assert_eq!(cfg.engine_runtime.flow_incomplete_tcp_syn_sent_idle_timeout_secs, 6);
+    assert_eq!(
+        cfg.engine_runtime.flow_incomplete_tcp_idle_timeout_secs,
+        Some(21)
+    );
+    assert_eq!(
+        cfg.engine_runtime
+            .flow_incomplete_tcp_syn_sent_idle_timeout_secs,
+        6
+    );
     assert!(cfg.engine_runtime.syn_only_enabled);
     assert!(cfg.engine_runtime.detailed_observability);
     assert_eq!(cfg.engine_runtime.admission.max_active_flows, Some(111));
-    assert_eq!(cfg.engine_runtime.admission.max_active_nat_entries, Some(222));
-    assert_eq!(cfg.engine_runtime.admission.max_pending_tls_flows, Some(333));
     assert_eq!(
-        cfg.engine_runtime.admission.max_active_flows_per_source_group,
+        cfg.engine_runtime.admission.max_active_nat_entries,
+        Some(222)
+    );
+    assert_eq!(
+        cfg.engine_runtime.admission.max_pending_tls_flows,
+        Some(333)
+    );
+    assert_eq!(
+        cfg.engine_runtime
+            .admission
+            .max_active_flows_per_source_group,
         Some(44)
     );
     assert_eq!(cfg.dpdk.workers, Some(5));
@@ -379,11 +401,11 @@ dpdk:
     assert_eq!(cfg.dpdk.intercept_demux.shard_count, 16);
     assert_eq!(cfg.dpdk.intercept_demux.host_frame_queue_max, 456);
     assert_eq!(cfg.dpdk.intercept_demux.pending_arp_queue_max, 78);
+    assert_eq!(cfg.dpdk.gateway_mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
     assert_eq!(
-        cfg.dpdk.gateway_mac.as_deref(),
-        Some("aa:bb:cc:dd:ee:ff")
+        cfg.dpdk.dhcp_server_ip,
+        Some(Ipv4Addr::new(169, 254, 10, 20))
     );
-    assert_eq!(cfg.dpdk.dhcp_server_ip, Some(Ipv4Addr::new(169, 254, 10, 20)));
     assert_eq!(
         cfg.dpdk.dhcp_server_mac.as_deref(),
         Some("00:11:22:33:44:55")
@@ -525,4 +547,30 @@ dataplane:
     assert_eq!(network.overlay.mode, neuwerk::dataplane::EncapMode::Vxlan);
     assert_eq!(network.overlay.udp_port, 10800);
     assert_eq!(network.overlay.vni, Some(4242));
+}
+
+#[test]
+fn build_runtime_cli_config_maps_dns_upstream_timeout() {
+    let raw = r#"
+version: 1
+bootstrap:
+  management_interface: mgmt0
+  data_interface: data0
+  cloud_provider: none
+  data_plane_mode: tun
+dns:
+  target_ips:
+    - 10.0.0.53
+  upstreams:
+    - 1.1.1.1:53
+  upstream_timeout_ms: 4500
+"#;
+    let derived =
+        runtime::config::derive_runtime_config(runtime::config::load_config_str(raw).unwrap())
+            .unwrap();
+    let cfg = runtime::bootstrap::startup::build_runtime_cli_config(&derived).unwrap();
+    assert_eq!(
+        cfg.dns_upstream_timeout,
+        std::time::Duration::from_millis(4_500)
+    );
 }

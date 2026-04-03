@@ -186,6 +186,7 @@ mod tests {
             data_plane_iface: "data0".to_string(),
             dns_target_ips: Vec::new(),
             dns_upstreams: Vec::new(),
+            dns_upstream_timeout: std::time::Duration::from_secs(2),
             data_plane_mode: crate::runtime::cli::DataPlaneMode::Dpdk,
             idle_timeout_secs: 300,
             dns_allowlist_idle_secs: 420,
