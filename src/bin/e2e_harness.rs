@@ -7,19 +7,19 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use nix::sched::{setns, CloneFlags};
+use nix::sched::{CloneFlags, setns};
 use std::os::unix::process::CommandExt;
 
 use neuwerk::controlplane::api_auth;
 use neuwerk::controlplane::cluster::store::ClusterStore;
 use neuwerk::controlplane::policy_config::{PolicyConfig, PolicyMode};
-use neuwerk::controlplane::policy_repository::PolicyActive;
+use neuwerk::controlplane::policy_repository::StoredPolicy;
 use neuwerk::e2e::cluster_tests;
 use neuwerk::e2e::services::{
-    generate_upstream_tls_material, http_set_policy, http_wait_for_health, UpstreamServices,
+    UpstreamServices, generate_upstream_tls_material, http_set_policy, http_wait_for_health,
 };
 use neuwerk::e2e::tests::{
-    cases, overlay_cases_geneve, overlay_cases_vxlan, overlay_cases_vxlan_dual_tunnel, TestCase,
+    TestCase, cases, overlay_cases_geneve, overlay_cases_vxlan, overlay_cases_vxlan_dual_tunnel,
 };
 use neuwerk::e2e::topology::{Topology, TopologyConfig};
 
@@ -264,31 +264,55 @@ fn provision_baseline_policy(cfg: &TopologyConfig, topology: &Topology) -> Resul
                     Some(&token),
                 )
                 .await?;
-                let active_path =
-                    std::path::PathBuf::from("/var/lib/neuwerk/local-policy-store/active.json");
-                wait_for_active_policy_marker(&active_path, std::time::Duration::from_secs(10))
-                    .await?;
+                let state_path =
+                    std::path::PathBuf::from("/var/lib/neuwerk/local-policy-store/policy.json");
+                wait_for_active_policy_state(
+                    &state_path,
+                    &policy,
+                    std::time::Duration::from_secs(10),
+                )
+                .await?;
                 Ok(())
             })
         })
         .map_err(|e| format!("{e}"))?
 }
 
-async fn wait_for_active_policy_marker(
+async fn wait_for_active_policy_state(
     path: &std::path::Path,
+    expected_policy: &PolicyConfig,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
+    let expected = serde_json::to_value(expected_policy)
+        .map_err(|e| format!("baseline policy json encode failed: {e}"))?;
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match std::fs::read(path)
             .ok()
-            .and_then(|payload| serde_json::from_slice::<PolicyActive>(&payload).ok())
+            .and_then(|payload| serde_json::from_slice::<StoredPolicy>(&payload).ok())
         {
-            Some(_) => return Ok(()),
+            Some(state)
+                if state.active_id().is_some()
+                    && serde_json::to_value(&state.policy)
+                        .ok()
+                        .as_ref()
+                        .is_some_and(|policy| policy == &expected) =>
+            {
+                return Ok(());
+            }
             None => {
                 if std::time::Instant::now() >= deadline {
                     return Err(format!(
-                        "timed out waiting for baseline active marker at {}",
+                        "timed out waiting for baseline policy state at {}",
+                        path.display(),
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Some(_) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "timed out waiting for baseline policy state at {}",
                         path.display(),
                     ));
                 }
@@ -786,17 +810,31 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_active_policy_marker_observes_delayed_file() {
+    fn wait_for_active_policy_state_observes_delayed_matching_state() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("active.json");
+        let path = dir.path().join("policy.json");
+        let expected = serde_yaml::from_str::<PolicyConfig>(
+            r#"
+default_policy: deny
+source_groups:
+  - id: baseline
+    mode: enforce
+    sources:
+      ips: ["192.0.2.10"]
+    rules: []
+"#,
+        )
+        .expect("expected policy");
         let writer_path = path.clone();
+        let writer_expected = expected.clone();
         let writer = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(150));
-            let active = PolicyActive {
-                id: uuid::Uuid::new_v4(),
-            };
-            std::fs::write(&writer_path, serde_json::to_vec(&active).expect("serialize active"))
-                .expect("write active");
+            let state = StoredPolicy::from_policy(writer_expected);
+            std::fs::write(
+                &writer_path,
+                serde_json::to_vec(&state).expect("serialize stored policy"),
+            )
+            .expect("write stored policy");
         });
 
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -804,17 +842,37 @@ mod tests {
             .build()
             .expect("tokio runtime");
         rt.block_on(async {
-            wait_for_active_policy_marker(&path, std::time::Duration::from_secs(1))
+            wait_for_active_policy_state(&path, &expected, std::time::Duration::from_secs(1))
                 .await
-                .expect("wait for active marker");
+                .expect("wait for active policy state");
         });
         writer.join().expect("join writer");
     }
 
     #[test]
-    fn wait_for_active_policy_marker_times_out_without_marker() {
+    fn wait_for_active_policy_state_times_out_without_matching_policy() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("active.json");
+        let path = dir.path().join("policy.json");
+        let current = serde_yaml::from_str::<PolicyConfig>(
+            r#"
+default_policy: allow
+source_groups: []
+"#,
+        )
+        .expect("current policy");
+        let expected = serde_yaml::from_str::<PolicyConfig>(
+            r#"
+default_policy: deny
+source_groups: []
+"#,
+        )
+        .expect("expected policy");
+        let state = StoredPolicy::from_policy(current);
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&state).expect("serialize stored policy"),
+        )
+        .expect("write stored policy");
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -822,10 +880,15 @@ mod tests {
             .expect("tokio runtime");
         let err = rt
             .block_on(async {
-                wait_for_active_policy_marker(&path, std::time::Duration::from_millis(100)).await
+                wait_for_active_policy_state(
+                    &path,
+                    &expected,
+                    std::time::Duration::from_millis(100),
+                )
+                .await
             })
             .expect_err("expected timeout");
-        assert!(err.contains("timed out waiting for baseline active marker"));
+        assert!(err.contains("timed out waiting for baseline policy state"));
         assert!(err.contains(&path.display().to_string()));
     }
 
