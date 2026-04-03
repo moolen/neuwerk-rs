@@ -220,29 +220,6 @@ pub(super) async fn wait_for_voter(
     }
 }
 
-pub(super) async fn wait_for_no_leader(
-    raft: &openraft::Raft<ClusterTypeConfig>,
-    timeout: Duration,
-) -> Result<(), String> {
-    let mut metrics = raft.metrics();
-    let deadline = Instant::now() + timeout;
-    loop {
-        let m: RaftMetrics<u128, openraft::BasicNode> = metrics.borrow().clone();
-        if m.current_leader.is_none() {
-            return Ok(());
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return Err("timed out waiting for leader loss".to_string());
-        }
-        let remaining = deadline - now;
-        tokio::time::timeout(remaining, metrics.changed())
-            .await
-            .map_err(|_| "metrics wait timeout".to_string())?
-            .map_err(|_| "metrics channel closed".to_string())?;
-    }
-}
-
 pub(super) async fn wait_for_stable_membership(
     raft: &openraft::Raft<ClusterTypeConfig>,
     timeout: Duration,
@@ -631,6 +608,28 @@ pub(super) async fn http_api_status(
         .await
         .map_err(|e| format!("http request failed: {e}"))?;
     Ok(resp.status())
+}
+
+pub(super) async fn http_wait_for_status(
+    addr: SocketAddr,
+    tls_dir: &Path,
+    path: &str,
+    auth_token: Option<&str>,
+    expected: &[reqwest::StatusCode],
+    timeout: Duration,
+) -> Result<reqwest::StatusCode, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(status) = http_api_status(addr, tls_dir, path, auth_token).await {
+            if expected.contains(&status) {
+                return Ok(status);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("timed out waiting for http status on {path}"));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 pub(super) async fn http_set_policy(

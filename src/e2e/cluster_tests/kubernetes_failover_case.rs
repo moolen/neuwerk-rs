@@ -141,6 +141,7 @@ pub(super) fn cluster_kubernetes_resolver_leader_failover() -> Result<(), String
             r#"default_policy: deny
 source_groups:
   - id: cluster-k8s
+    mode: enforce
     sources:
       kubernetes:
         - integration: "{integration_name}"

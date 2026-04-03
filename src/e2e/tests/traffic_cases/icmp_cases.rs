@@ -13,6 +13,7 @@ default_policy: deny
 source_groups:
   - id: "icmp"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -68,6 +69,7 @@ default_policy: deny
 source_groups:
   - id: "icmp-filter"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:

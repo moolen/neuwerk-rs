@@ -15,6 +15,7 @@ default_policy: deny
 source_groups:
   - id: "ttl"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -168,6 +169,7 @@ default_policy: deny
 source_groups:
   - id: "ttl-dec"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -326,6 +328,7 @@ default_policy: deny
 source_groups:
   - id: "frag"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:

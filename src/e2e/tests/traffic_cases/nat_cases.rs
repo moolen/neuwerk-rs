@@ -14,6 +14,7 @@ default_policy: deny
 source_groups:
   - id: "udp"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -138,6 +139,7 @@ default_policy: deny
 source_groups:
   - id: "natdet"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -301,6 +303,7 @@ default_policy: deny
 source_groups:
   - id: "nat-collision"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -446,6 +449,7 @@ default_policy: deny
 source_groups:
   - id: "nat-stream"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:
@@ -508,6 +512,7 @@ default_policy: deny
 source_groups:
   - id: "snat"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:

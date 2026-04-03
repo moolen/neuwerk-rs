@@ -224,6 +224,7 @@ source_groups:
     priority: 0
     mode: enforce
     sources:
+      ips: ["{client_ip}"]
       cidrs: ["{src_cidr}"]
     rules:
       - id: "deny-tls-sni"
@@ -239,6 +240,7 @@ source_groups:
               exact: ["{sni}"]
 "#,
         src_cidr = format!("{}/24", cfg.client_dp_ip),
+        client_ip = cfg.client_mgmt_ip,
         dst_ip = cfg.up_dp_ip,
         sni = sni
     );

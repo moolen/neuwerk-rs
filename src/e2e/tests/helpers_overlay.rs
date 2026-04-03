@@ -13,6 +13,7 @@ default_policy: deny
 source_groups:
   - id: "overlay"
     priority: 0
+    mode: enforce
     sources:
       cidrs: ["{src_cidr}"]
     rules:

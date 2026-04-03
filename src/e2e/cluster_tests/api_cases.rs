@@ -321,19 +321,17 @@ pub(super) fn http_api_leader_loss() -> Result<(), String> {
         .await?;
         let token = mint_auth_token(&seed.as_ref().unwrap().store)?;
 
-        let (leader_is_seed, follower_addr, follower_tls, follower_raft) = if leader_id == seed_id {
+        let (leader_is_seed, follower_addr, follower_tls) = if leader_id == seed_id {
             (
                 true,
                 joiner_api_addr,
                 joiner_tls_dir.clone(),
-                joiner.as_ref().unwrap().raft.clone(),
             )
         } else {
             (
                 false,
                 seed_api_addr,
                 seed_tls_dir.clone(),
-                seed.as_ref().unwrap().raft.clone(),
             )
         };
 
@@ -345,22 +343,23 @@ pub(super) fn http_api_leader_loss() -> Result<(), String> {
             joiner_http.abort();
         }
 
-        wait_for_no_leader(&follower_raft, Duration::from_secs(5)).await?;
-
         let health = http_api_status(follower_addr, &follower_tls, "/health", None).await?;
         if !health.is_success() {
             return Err(format!("health status unexpected: {health}"));
         }
 
-        let policies =
-            http_api_status(follower_addr, &follower_tls, "/api/v1/policy", Some(&token)).await?;
-        if policies != reqwest::StatusCode::SERVICE_UNAVAILABLE
-            && policies != reqwest::StatusCode::BAD_GATEWAY
-        {
-            return Err(format!(
-                "unexpected policy status after leader loss: {policies}"
-            ));
-        }
+        http_wait_for_status(
+            follower_addr,
+            &follower_tls,
+            "/api/v1/policy",
+            Some(&token),
+            &[
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                reqwest::StatusCode::BAD_GATEWAY,
+            ],
+            Duration::from_secs(20),
+        )
+        .await?;
 
         if leader_is_seed {
             joiner_http.abort();
@@ -507,6 +506,7 @@ pub(super) fn cluster_audit_findings_live_generation_and_merge() -> Result<(), S
 source_groups:
   - id: "apps"
     priority: 0
+    mode: enforce
     sources:
       ips: ["127.0.0.1", "127.0.0.2"]
     rules:

@@ -643,6 +643,7 @@ fn policy_with_pod_selector(
 default_policy: deny
 source_groups:
   - id: kind-pods
+    mode: enforce
     sources:
       kubernetes:
         - integration: "{integration_name}"
@@ -671,6 +672,7 @@ fn policy_with_node_selector(
 default_policy: deny
 source_groups:
   - id: kind-nodes
+    mode: enforce
     sources:
       kubernetes:
         - integration: "{integration_name}"
@@ -694,6 +696,7 @@ fn policy_union_and_dedupe(integration_name: &str) -> Result<PolicyConfig, Strin
 default_policy: deny
 source_groups:
   - id: kind-union
+    mode: enforce
     sources:
       kubernetes:
         - integration: "{integration_name}"
@@ -735,6 +738,7 @@ default_policy: deny
 source_groups:
   - id: dynamic-deny
     priority: 0
+    mode: enforce
     sources:
       kubernetes:
         - integration: "{integration_name}"
@@ -751,6 +755,7 @@ source_groups:
           dst_ports: [8080]
   - id: static-allow
     priority: 1
+    mode: enforce
     sources:
       ips: ["{static_ip}"]
     rules:
@@ -771,6 +776,7 @@ fn policy_pod_node_churn(integration_name: &str) -> Result<PolicyConfig, String>
 default_policy: deny
 source_groups:
   - id: churn
+    mode: enforce
     sources:
       kubernetes:
         - integration: "{integration_name}"

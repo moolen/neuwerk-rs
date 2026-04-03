@@ -397,7 +397,9 @@ default_policy: deny
 source_groups:
   - id: "tls"
     priority: 0
+    mode: enforce
     sources:
+      ips: ["{client_ip}"]
       cidrs: ["{src_cidr}"]
     rules:
       - id: "allow-tls-sni"
@@ -412,6 +414,7 @@ source_groups:
               exact: ["{sni}"]
 "#,
         src_cidr = format!("{}/24", cfg.client_dp_ip),
+        client_ip = cfg.client_mgmt_ip,
         dst_ip = cfg.up_dp_ip,
         sni = sni
     );
@@ -436,7 +439,9 @@ default_policy: deny
 source_groups:
   - id: "tls"
     priority: 0
+    mode: enforce
     sources:
+      ips: ["{client_ip}"]
       cidrs: ["{src_cidr}"]
     rules:
       - id: "allow-tls-cert"
@@ -455,6 +460,7 @@ source_groups:
             tls13_uninspectable: {tls13_uninspectable}
 "#,
         src_cidr = format!("{}/24", cfg.client_dp_ip),
+        client_ip = cfg.client_mgmt_ip,
         dst_ip = cfg.up_dp_ip,
         san = san,
         ca_block = ca_block,
@@ -471,7 +477,9 @@ pub(in crate::e2e::tests) fn tls_intercept_policy(
 default_policy: deny
 source_groups:
   - id: "tls-intercept"
+    mode: enforce
     sources:
+      ips: ["{client_ip}"]
       cidrs: ["{internal}/24"]
     rules:
       - id: "intercept-http"
@@ -489,7 +497,8 @@ source_groups:
                 path:
                   prefix: ["/external-secrets/"]
 "#,
-        internal = cfg.client_dp_ip
+        internal = cfg.client_dp_ip,
+        client_ip = cfg.client_mgmt_ip
     );
     serde_yaml::from_str(&yaml).map_err(|e| format!("policy yaml error: {e}"))
 }
@@ -502,7 +511,9 @@ pub(in crate::e2e::tests) fn tls_intercept_policy_with_response_deny(
 default_policy: deny
 source_groups:
   - id: "tls-intercept"
+    mode: enforce
     sources:
+      ips: ["{client_ip}"]
       cidrs: ["{internal}/24"]
     rules:
       - id: "intercept-http"
@@ -523,7 +534,8 @@ source_groups:
                 headers:
                   deny_present: ["x-forbidden"]
 "#,
-        internal = cfg.client_dp_ip
+        internal = cfg.client_dp_ip,
+        client_ip = cfg.client_mgmt_ip
     );
     serde_yaml::from_str(&yaml).map_err(|e| format!("policy yaml error: {e}"))
 }
