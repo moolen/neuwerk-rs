@@ -266,28 +266,36 @@ fn provision_baseline_policy(cfg: &TopologyConfig, topology: &Topology) -> Resul
                 .await?;
                 let active_path =
                     std::path::PathBuf::from("/var/lib/neuwerk/local-policy-store/active.json");
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-                loop {
-                    match std::fs::read(&active_path)
-                        .ok()
-                        .and_then(|payload| serde_json::from_slice::<PolicyActive>(&payload).ok())
-                    {
-                        Some(_) => break,
-                        _ => {
-                            if std::time::Instant::now() >= deadline {
-                                return Err(format!(
-                                    "timed out waiting for baseline active marker at {}",
-                                    active_path.display(),
-                                ));
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        }
-                    }
-                }
+                wait_for_active_policy_marker(&active_path, std::time::Duration::from_secs(10))
+                    .await?;
                 Ok(())
             })
         })
         .map_err(|e| format!("{e}"))?
+}
+
+async fn wait_for_active_policy_marker(
+    path: &std::path::Path,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match std::fs::read(path)
+            .ok()
+            .and_then(|payload| serde_json::from_slice::<PolicyActive>(&payload).ok())
+        {
+            Some(_) => return Ok(()),
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "timed out waiting for baseline active marker at {}",
+                        path.display(),
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+    }
 }
 
 fn auth_token(cfg: &TopologyConfig) -> Result<String, String> {
@@ -775,6 +783,50 @@ mod tests {
             runtime_config_lock_available(&paths),
             "runtime config lock is still held"
         );
+    }
+
+    #[test]
+    fn wait_for_active_policy_marker_observes_delayed_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("active.json");
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let active = PolicyActive {
+                id: uuid::Uuid::new_v4(),
+            };
+            std::fs::write(&writer_path, serde_json::to_vec(&active).expect("serialize active"))
+                .expect("write active");
+        });
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        rt.block_on(async {
+            wait_for_active_policy_marker(&path, std::time::Duration::from_secs(1))
+                .await
+                .expect("wait for active marker");
+        });
+        writer.join().expect("join writer");
+    }
+
+    #[test]
+    fn wait_for_active_policy_marker_times_out_without_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("active.json");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let err = rt
+            .block_on(async {
+                wait_for_active_policy_marker(&path, std::time::Duration::from_millis(100)).await
+            })
+            .expect_err("expected timeout");
+        assert!(err.contains("timed out waiting for baseline active marker"));
+        assert!(err.contains(&path.display().to_string()));
     }
 
     fn runtime_config_lock_available(paths: &RuntimeConfigPaths) -> bool {
